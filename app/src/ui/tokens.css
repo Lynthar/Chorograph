@@ -102,6 +102,8 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
   padding:5px 10px;font:400 var(--fs-xs)/1.5 var(--f-hei);color:var(--q-tx);pointer-events:none;opacity:0;z-index:99}
 .rl .tip s{color:var(--q-faint);text-decoration:none;margin-left:6px;font-family:var(--f-mono)}
 .rl:hover .tip,.rl:focus-visible .tip{opacity:1;transition-delay:.25s}
+.rl svg{width:28px;height:28px;display:block;pointer-events:none}
+#app[data-den="tight"] .rl svg{width:24px;height:24px}
 .rl-sep{width:22px;border-top:1px solid var(--q-ln);margin:5px 0}
 .rl-flex{flex:1}
 
