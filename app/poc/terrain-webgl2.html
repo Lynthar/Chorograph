@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>PoC · WebGL2 地形着色器 vs CPU 瓦片</title>
+<style>
+  body{margin:0;background:#20242a;color:#dcd6c8;font:14px/1.5 system-ui,sans-serif}
+  header{padding:10px 14px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  header b{font-size:15px}
+  #metrics{padding:4px 14px;font-size:15px;color:#ffd98a;white-space:pre-wrap}
+  .row{display:flex;gap:10px;padding:0 14px 14px}
+  .col{flex:1;min-width:0}
+  .col h3{margin:4px 0;font-size:13px;font-weight:normal;color:#9ab}
+  canvas{width:100%;display:block;background:#000;border:1px solid #444}
+  button,select,input{background:#2e3540;color:#dcd6c8;border:1px solid #555;border-radius:4px;padding:3px 8px}
+  #err{color:#ff8080;padding:0 14px}
+</style>
+</head>
+<body>
+<header>
+  <b>PoC：WebGL2 地形着色器</b>
+  种子 <input id="seed" type="number" value="1234" style="width:80px">
+  <button id="reroll">⟳ 换一换</button>
+  风格 <select id="style"><option value="continent">大陆</option><option value="archipelago">群岛</option></select>
+  网格 <select id="step"><option value="1">1°(战略)</option><option value="0.25">0.25°</option><option value="0.1">0.1°(近战术)</option></select>
+  视口 <select id="view"><option value="full">全图</option><option value="mid">中距</option><option value="deep">深放大</option></select>
+  <label><input id="diag" type="checkbox"> 诊断模式(平色分类)</label>
+  <label><input id="contour" type="checkbox"> 等高线</label>
+  <button id="rerun">重新渲染</button>
+</header>
+<div id="metrics">计算中…</div>
+<div id="err"></div>
+<div class="row">
+  <div class="col"><h3>GPU · WebGL2 片元着色器（实时逐帧）</h3><canvas id="glc" width="720" height="480"></canvas></div>
+  <div class="col"><h3>CPU · 旧版 renderRegion 逐像素（参考基准）</h3><canvas id="cpuc" width="720" height="480"></canvas></div>
+</div>
+<div style="padding:0 14px 20px;color:#8a94a0;max-width:1100px">
+  说明：分类网格（寻路/判定的游戏真源）由 CPU 按旧算法算出后作为纹理上传——大陆形状/生物群系两边**逐格一致**；
+  微观细节噪声 GPU 侧用整数哈希（sin-hash 在 fp32 下会整体失谐，且该层纯装饰、不入存档），故放大后两边的微地形颗粒不同属预期。
+  诊断模式绕过噪声与晕渲，逐像素比对分类颜色得出一致率。
+</div>
+<script>
+"use strict";
+/* ============ 旧实现数学的逐字拷贝（真源在 ../src/core；PoC 为零构建自包含刻意复制） ============ */
+const fract=x=>x-Math.floor(x);
+const hash2=(x,y)=>fract(Math.sin(x*127.1+y*311.7)*43758.5453);
+const vnoise=(x,y)=>{const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+  const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+  const a=hash2(xi,yi),b=hash2(xi+1,yi),c=hash2(xi,yi+1),d=hash2(xi+1,yi+1);
+  return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;};
+const fbm=(x,y)=>{let s=0,a=0.5,f=1;for(let i=0;i<4;i++){s+=a*vnoise(x*f,y*f);f*=2;a*=0.5;}return s;};
+const BB={lonMin:82,lonMax:130,latMin:22,latMax:54};
+function genTerrainAt(meta,lon,lat){
+  const bb=meta.bbox||BB, seed=(meta.genSeed|0)||1, isle=meta.genStyle==="archipelago";
+  const sx=(seed%233)*0.371+13.7, sy=(Math.floor(seed/233)%233)*0.531+7.13;
+  const u=(lon-bb.lonMin)/((bb.lonMax-bb.lonMin)||1), v=(lat-bb.latMin)/((bb.latMax-bb.latMin)||1);
+  const F=isle?7.0:4.2;
+  let h=0.55*fbm(u*F+sx,v*F+sy)+0.30*fbm(u*F*2.3+sx*1.7+40,v*F*2.3+sy*1.3+40)+0.15*fbm(u*F*4.9+sx+80,v*F*4.9+sy+80);
+  const dx=(u-0.5)*2,dy=(v-0.5)*2,d=Math.min(1,Math.sqrt(dx*dx+dy*dy)/1.18);
+  h=h*(1.12-(isle?1.05:0.86)*d*d);
+  h=Math.max(0,Math.min(1,(h-0.06)*1.35));
+  const SEA=isle?0.44:0.40;
+  if(h<SEA)return "water"; if(h<SEA+0.035)return "coast";
+  if(h>0.77)return "mountain"; if(h>0.61)return "hill";
+  let m=0.6*fbm(u*3.1+sx*0.7+120,v*3.1+sy*0.9+120)+0.4*fbm(u*6.3+sx+160,v*6.3+sy+160);
+  m=Math.max(0,Math.min(1,(m-0.15)*1.6));
+  const chan=1-Math.abs(2*fbm(u*3.6+sx+200,v*3.6+sy+200)-1);
+  if(h<SEA+0.16&&chan>0.9)return "marsh";
+  if(m<0.28)return "desert";
+  if(m>0.68&&h<SEA+0.12)return "marsh";
+  if(m>0.5)return "forest";
+  return "plain";
+}
+const ORDER=["plain","coast","hill","forest","desert","marsh","mountain","water"];
+const IDX=Object.fromEntries(ORDER.map((t,i)=>[t,i]));
+const ELEV={water:-0.35,marsh:0.03,coast:0.06,plain:0.16,desert:0.22,forest:0.28,hill:0.5,mountain:0.9};
+const TINT={coast:[214,203,150],plain:[176,196,120],desert:[224,206,150],forest:[110,150,96],hill:[178,168,110],marsh:[150,186,170],mountain:[168,150,128]};
+const TCOLOR={plain:"#d7e3b8",coast:"#cfe6cf",hill:"#c9cf9a",forest:"#9fbf8e",desert:"#e6d9ad",marsh:"#a9ccc4",mountain:"#c2b199",water:"#a9c7de"};
+function elevRamp(e){
+  if(e<-0.02){const t=Math.max(0,Math.min(1,(e+0.35)/0.33));return[40+t*60,90+t*70,132+t*66];}
+  if(e<0.09)return[224,216,172];
+  if(e<0.30){const t=(e-0.09)/0.21;return[132+t*38,174-t*2,98+t*12];}
+  if(e<0.55){const t=(e-0.30)/0.25;return[170+t*8,166-t*12,110-t*4];}
+  if(e<0.82){const t=(e-0.55)/0.27;return[178-t*28,152-t*24,118-t*22];}
+  const t=Math.min(1,(e-0.82)/0.18);return[140+t*100,132+t*104,124+t*118];
+}
+/* ---- 网格（游戏真源；两边共用） ---- */
+function buildGrid(meta,step){
+  const bb=BB, cols=Math.ceil((bb.lonMax-bb.lonMin)/step), rows=Math.ceil((bb.latMax-bb.latMin)/step);
+  const cells=new Uint8Array(cols*rows), elev=new Float32Array(cols*rows);
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const t=genTerrainAt(meta,bb.lonMin+(c+0.5)*step,bb.latMin+(r+0.5)*step);
+    cells[r*cols+c]=IDX[t]; elev[r*cols+c]=ELEV[t];
+  }
+  return {bb,step,cols,rows,cells,elev};
+}
+function gridElevBilinear(g,lon,lat){
+  const fx=(lon-g.bb.lonMin)/g.step-0.5, fy=(lat-g.bb.latMin)/g.step-0.5;
+  const c0=Math.max(0,Math.min(g.cols-1,Math.floor(fx))), r0=Math.max(0,Math.min(g.rows-1,Math.floor(fy)));
+  const c1=Math.min(g.cols-1,c0+1), r1=Math.min(g.rows-1,r0+1);
+  const tx=Math.max(0,Math.min(1,fx-c0)), ty=Math.max(0,Math.min(1,fy-r0));
+  const e=(r,c)=>g.elev[r*g.cols+c];
+  const top=e(r0,c0)+(e(r0,c1)-e(r0,c0))*tx, bot=e(r1,c0)+(e(r1,c1)-e(r1,c0))*tx;
+  return top+(bot-top)*ty;
+}
+const nearestIdx=(g,lon,lat)=>{
+  const r=Math.max(0,Math.min(g.rows-1,Math.floor((lat-g.bb.latMin)/g.step)));
+  const c=Math.max(0,Math.min(g.cols-1,Math.floor((lon-g.bb.lonMin)/g.step)));
+  return g.cells[r*g.cols+c];
+};
+/* ---- CPU 参考渲染（旧版 renderRegion 的逐像素移植，含细节噪声/晕渲/海岸线） ---- */
+function cpuRender(canvas,g,vb,diag){
+  const W=canvas.width,H=canvas.height,PXPD=W/(vb.lonMax-vb.lonMin);
+  const ctx=canvas.getContext("2d"), img=ctx.createImageData(W,H), d=img.data;
+  const L2P=(x,y)=>[vb.lonMin+x/PXPD, vb.latMax-y/PXPD];
+  if(diag){
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+      const p=L2P(x,y), t=ORDER[nearestIdx(g,p[0],p[1])], c=TCOLOR[t];
+      const q=(y*W+x)*4;
+      d[q]=parseInt(c.slice(1,3),16); d[q+1]=parseInt(c.slice(3,5),16); d[q+2]=parseInt(c.slice(5,7),16); d[q+3]=255;
+    }
+    ctx.putImageData(img,0,0); return;
+  }
+  const elev=new Float32Array(W*H);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const p=L2P(x,y); let e=gridElevBilinear(g,p[0],p[1]);
+    const rough=e>0.4?0.24:(e>0.2?0.08:0.025);
+    e+=(fbm(p[0]*1.1,p[1]*1.1)-0.5)*rough*2; elev[y*W+x]=e;
+  }
+  const light=[-0.6,-0.6,0.9], ll=Math.hypot(...light); light[0]/=ll;light[1]/=ll;light[2]/=ll;
+  const nrm=4.5*(PXPD/14);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const i=y*W+x, e=elev[i], p=L2P(x,y);
+    const eL=elev[y*W+Math.max(0,x-1)], eR=elev[y*W+Math.min(W-1,x+1)];
+    const eU=elev[Math.max(0,y-1)*W+x], eD=elev[Math.min(H-1,y+1)*W+x];
+    const nx=(eL-eR)*nrm, ny=(eU-eD)*nrm, nl=Math.hypot(nx,ny,1);
+    let sh=(nx/nl)*light[0]+(ny/nl)*light[1]+(1/nl)*light[2]; sh=0.6+0.75*Math.max(0,sh);
+    let col=elevRamp(e);
+    if(e>=-0.02){
+      const tint=TINT[ORDER[nearestIdx(g,p[0],p[1])]];
+      if(tint) col=[col[0]*0.55+tint[0]*0.45, col[1]*0.55+tint[1]*0.45, col[2]*0.55+tint[2]*0.45];
+      col=[col[0]*sh,col[1]*sh,col[2]*sh];
+    }
+    const q=i*4; d[q]=col[0];d[q+1]=col[1];d[q+2]=col[2];d[q+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+  ctx.strokeStyle='rgba(38,66,86,.55)'; ctx.lineWidth=Math.max(1,PXPD/14); ctx.beginPath();
+  for(let y=1;y<H;y++)for(let x=1;x<W;x++){ const a=elev[y*W+x]>=-0.02;
+    if(a!==(elev[y*W+x-1]>=-0.02)){ ctx.moveTo(x,y-0.5); ctx.lineTo(x,y+0.5); }
+    if(a!==(elev[(y-1)*W+x]>=-0.02)){ ctx.moveTo(x-0.5,y); ctx.lineTo(x+0.5,y); } }
+  ctx.stroke();
+}
+/* ============ WebGL2 ============ */
+const VS=`#version 300 es
+void main(){ vec2 p=vec2(float(gl_VertexID<<1&2), float(gl_VertexID&2)); gl_Position=vec4(p*2.0-1.0,0.0,1.0); }`;
+const FS=`#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uGrid;          // RG32F: R=格高程 G=类型索引
+uniform vec4 uGridBB;             // lonMin,latMin,step,unused
+uniform ivec2 uGridDim;           // cols,rows
+uniform vec4 uViewBB;             // lonMin,latMin,lonMax,latMax
+uniform vec2 uRes;                // 画布像素
+uniform float uPXPD;              // 像素/度
+uniform vec3 uLight;
+uniform int uMode;                // 0=着色 1=诊断平色
+uniform int uContour;
+uniform vec3 uTColor[8];          // 分类平色
+uniform vec3 uTint[8];            // 生态色调（W 无=vec3(-1)）
+out vec4 fragColor;
+
+/* 细节噪声：整数哈希(PCG2D)值噪声——纯装饰层，与 CPU 的 sin-hash 分布等价但值不同 */
+uvec2 pcg2d(uvec2 v){ v=v*1664525u+1013904223u; v.x+=v.y*1664525u; v.y+=v.x*1664525u;
+  v^=v>>16u; v.x+=v.y*1664525u; v.y+=v.x*1664525u; v^=v>>16u; return v; }
+float hashI(ivec2 p){ return float(pcg2d(uvec2(p+40000)).x)*(1.0/4294967296.0); }
+float vnoise2(vec2 x){ ivec2 i=ivec2(floor(x)); vec2 f=fract(x); vec2 u=f*f*(3.0-2.0*f);
+  float a=hashI(i),b=hashI(i+ivec2(1,0)),c=hashI(i+ivec2(0,1)),d=hashI(i+ivec2(1,1));
+  return a+(b-a)*u.x+(c-a)*u.y+(a-b-c+d)*u.x*u.y; }
+float fbm4(vec2 x){ float s=0.0,a=0.5; for(int i=0;i<4;i++){ s+=a*vnoise2(x); x*=2.0; a*=0.5; } return s; }
+
+vec2 cellAt(vec2 ll){ // 返回 (双线性高程, 最近格类型索引)
+  vec2 f=(ll-uGridBB.xy)/uGridBB.z-0.5;
+  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uGridDim-1);
+  ivec2 c1=min(c0+1, uGridDim-1);
+  vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
+  float e00=texelFetch(uGrid,ivec2(c0.x,c0.y),0).r, e10=texelFetch(uGrid,ivec2(c1.x,c0.y),0).r;
+  float e01=texelFetch(uGrid,ivec2(c0.x,c1.y),0).r, e11=texelFetch(uGrid,ivec2(c1.x,c1.y),0).r;
+  float top=e00+(e10-e00)*t.x, bot=e01+(e11-e01)*t.x;
+  ivec2 n=clamp(ivec2(floor((ll-uGridBB.xy)/uGridBB.z)), ivec2(0), uGridDim-1);
+  return vec2(top+(bot-top)*t.y, texelFetch(uGrid,n,0).g);
+}
+float elevAt(vec2 ll){
+  float e=cellAt(ll).x;
+  float rough=e>0.4?0.24:(e>0.2?0.08:0.025);
+  return e+(fbm4(ll*1.1)-0.5)*rough*2.0;
+}
+vec3 elevRamp(float e){
+  if(e<-0.02){ float t=clamp((e+0.35)/0.33,0.0,1.0); return vec3(40.0+t*60.0,90.0+t*70.0,132.0+t*66.0)/255.0; }
+  if(e<0.09) return vec3(224.0,216.0,172.0)/255.0;
+  if(e<0.30){ float t=(e-0.09)/0.21; return vec3(132.0+t*38.0,174.0-t*2.0,98.0+t*12.0)/255.0; }
+  if(e<0.55){ float t=(e-0.30)/0.25; return vec3(170.0+t*8.0,166.0-t*12.0,110.0-t*4.0)/255.0; }
+  if(e<0.82){ float t=(e-0.55)/0.27; return vec3(178.0-t*28.0,152.0-t*24.0,118.0-t*22.0)/255.0; }
+  float t=min(1.0,(e-0.82)/0.18); return vec3(140.0+t*100.0,132.0+t*104.0,124.0+t*118.0)/255.0;
+}
+void main(){
+  // 像素中心 → 经纬度（与 CPU 版 L2P 的角点采样对齐：偏移 0.5）
+  float x=gl_FragCoord.x-0.5, yTop=uRes.y-gl_FragCoord.y-0.5;
+  vec2 ll=vec2(uViewBB.x+x/uPXPD, uViewBB.w-yTop/uPXPD);
+  if(uMode==1){ // 诊断：最近格平色
+    int ti=int(cellAt(ll).y+0.5);
+    fragColor=vec4(uTColor[ti],1.0); return;
+  }
+  float px=1.0/uPXPD;
+  float e =elevAt(ll);
+  float eL=elevAt(ll+vec2(-px,0.0)), eR=elevAt(ll+vec2(px,0.0));
+  float eU=elevAt(ll+vec2(0.0, px)), eD=elevAt(ll+vec2(0.0,-px));  // U=屏幕上方=纬度更高
+  float nrm=4.5*(uPXPD/14.0);
+  vec3 nv=vec3((eL-eR)*nrm,(eU-eD)*nrm,1.0);
+  float sh=0.6+0.75*max(0.0, dot(normalize(nv), uLight));
+  vec3 col=elevRamp(e);
+  if(e>=-0.02){
+    int ti=int(cellAt(ll).y+0.5);
+    vec3 tint=uTint[ti];
+    if(tint.x>=0.0) col=col*0.55+ (tint/255.0)*0.45;
+    col*=sh;
+  }
+  // 海岸线：e 跨越 -0.02 处描边（屏幕空间导数抗锯齿）
+  float aa=fwidth(e)+1e-6;
+  float coast=1.0-smoothstep(0.0, aa*1.4, abs(e+0.02));
+  col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55);
+  if(uContour==1 && e>=-0.02){ // 等高线：8 级
+    float lv=fract((e+0.02)/0.12);
+    float d2=min(lv,1.0-lv)*0.12/aa;
+    float line=1.0-smoothstep(0.6,1.2,d2);
+    col=mix(col, vec3(90.0,70.0,40.0)/255.0, line*0.28);
+  }
+  fragColor=vec4(col,1.0);
+}`;
+function makeGL(canvas){
+  const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true});
+  if(!gl) return null;
+  const sh=(t,s)=>{const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+    if(!gl.getShaderParameter(o,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o;};
+  const pr=gl.createProgram();
+  gl.attachShader(pr,sh(gl.VERTEX_SHADER,VS)); gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,FS));
+  gl.linkProgram(pr);
+  if(!gl.getProgramParameter(pr,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+  gl.useProgram(pr);
+  const U=n=>gl.getUniformLocation(pr,n);
+  return {gl,pr,U};
+}
+function uploadGrid(G,g){
+  const gl=G.gl;
+  if(G.tex) gl.deleteTexture(G.tex);
+  const data=new Float32Array(g.cols*g.rows*2);
+  for(let i=0;i<g.cols*g.rows;i++){ data[i*2]=g.elev[i]; data[i*2+1]=g.cells[i]; }
+  const tex=gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RG32F,g.cols,g.rows,0,gl.RG,gl.FLOAT,data);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  G.tex=tex;
+}
+function gpuRender(G,g,vb,diag,contour){
+  const gl=G.gl,U=G.U,W=gl.canvas.width,H=gl.canvas.height;
+  gl.viewport(0,0,W,H);
+  gl.uniform1i(U("uGrid"),0);
+  gl.uniform4f(U("uGridBB"),g.bb.lonMin,g.bb.latMin,g.step,0);
+  gl.uniform2i(U("uGridDim"),g.cols,g.rows);
+  gl.uniform4f(U("uViewBB"),vb.lonMin,vb.latMin,vb.lonMax,vb.latMax);
+  gl.uniform2f(U("uRes"),W,H);
+  gl.uniform1f(U("uPXPD"),W/(vb.lonMax-vb.lonMin));
+  const l=[-0.6,-0.6,0.9],ll=Math.hypot(...l);
+  gl.uniform3f(U("uLight"),l[0]/ll,l[1]/ll,l[2]/ll);
+  gl.uniform1i(U("uMode"),diag?1:0);
+  gl.uniform1i(U("uContour"),contour?1:0);
+  const tc=ORDER.map(t=>{const c=TCOLOR[t];return [parseInt(c.slice(1,3),16)/255,parseInt(c.slice(3,5),16)/255,parseInt(c.slice(5,7),16)/255];});
+  gl.uniform3fv(U("uTColor[0]"),tc.flat());
+  gl.uniform3fv(U("uTint[0]"),ORDER.map(t=>TINT[t]||[-1,-1,-1]).flat());
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  gl.finish();
+}
+/* ============ 驱动 ============ */
+const $=id=>document.getElementById(id);
+const glc=$("glc"), cpuc=$("cpuc");
+let G=null;
+try{ G=makeGL(glc); }catch(e){ $("err").textContent="WebGL2 着色器错误: "+e.message; }
+if(!G) $("err").textContent=$("err").textContent||"此环境无 WebGL2——真机需走 Canvas2D 兜底路径";
+function viewBB(kind){
+  if(kind==="mid") return {lonMin:100,lonMax:116,latMin:30,latMax:40.6667};
+  if(kind==="deep")return {lonMin:106,lonMax:110,latMin:33,latMax:35.6667};
+  return {lonMin:82,lonMax:130,latMin:22,latMax:54};   // 48°×32°，画布 720×480 → 15px/°
+}
+function run(){
+  const meta={terrain:"auto",genSeed:+$("seed").value|0||1,genStyle:$("style").value,bbox:BB};
+  const step=+$("step").value; let vb=viewBB($("view").value);
+  const diag=$("diag").checked, contour=$("contour").checked;
+  /* 诊断比对时给视口加亚像素偏移：整度对齐的视口会让采样点恰落在格边界上（度量零测集），
+     D3D 把除法优化成乘倒数带来的 ~1e-6 差足以让 floor 翻格——真实使用中视口任意平移不会系统性对齐 */
+  if(diag) vb={lonMin:vb.lonMin+0.0037,lonMax:vb.lonMax+0.0037,latMin:vb.latMin+0.0041,latMax:vb.latMax+0.0041};
+  const t0=performance.now();
+  const g=buildGrid(meta,step);
+  const t1=performance.now();
+  cpuRender(cpuc,g,vb,diag);
+  const t2=performance.now();
+  let gpuMs=NaN, agree=NaN;
+  if(G){
+    uploadGrid(G,g);
+    gpuRender(G,g,vb,diag,contour);          // 预热+首帧
+    const sync=new Uint8Array(4);
+    const N=20, t3=performance.now();
+    for(let i=0;i<N;i++) gpuRender(G,g,vb,diag,contour);
+    G.gl.readPixels(0,0,1,1,G.gl.RGBA,G.gl.UNSIGNED_BYTE,sync);   // 真同步点（finish 在部分实现下不阻塞）
+    gpuMs=(performance.now()-t3)/N;
+    // 诊断模式：逐像素比对分类颜色
+    if(diag){
+      const W=glc.width,H=glc.height;
+      const px=new Uint8Array(W*H*4);
+      G.gl.readPixels(0,0,W,H,G.gl.RGBA,G.gl.UNSIGNED_BYTE,px);
+      const cctx=cpuc.getContext("2d"), im=cctx.getImageData(0,0,W,H), cd=im.data;
+      let same=0, onGrid=0, off=0; const samples=[];
+      for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+        const qa=((H-1-y)*W+x)*4, qb=(y*W+x)*4;  // GL 原点在下
+        if(Math.abs(px[qa]-cd[qb])<=2&&Math.abs(px[qa+1]-cd[qb+1])<=2&&Math.abs(px[qa+2]-cd[qb+2])<=2) same++;
+        else{
+          if(x%15===0||y%15===0) onGrid++; else off++;
+          if(samples.length<4) samples.push(`(${x},${y}) cpu ${cd[qb]},${cd[qb+1]},${cd[qb+2]} gpu ${px[qa]},${px[qa+1]},${px[qa+2]}`);
+          cd[qb]=255; cd[qb+1]=0; cd[qb+2]=0;    // 不一致像素涂红显形（在 CPU 图上）
+        }
+      }
+      window.__diagSamples=samples;
+      cctx.putImageData(im,0,0);
+      agree=100*same/(W*H);
+      window.__diagStat={mismatch:W*H-same,onGrid,off};
+    }
+  }
+  const cpuMs=t2-t1, gridMs=t1-t0;
+  $("metrics").textContent=
+    `网格 ${g.cols}×${g.rows}（${step}°/格）生成 ${gridMs.toFixed(0)} ms ｜ `+
+    `CPU 整幅 ${cpuMs.toFixed(0)} ms ｜ GPU 每帧 ${isNaN(gpuMs)?"—":gpuMs.toFixed(2)+" ms"}`+
+    (isNaN(gpuMs)?"":`（≈${(cpuMs/gpuMs).toFixed(0)}×）`)+
+    (isNaN(agree)?"":` ｜ 诊断分类一致率 ${agree.toFixed(3)}%`+
+      (window.__diagStat?`（错位 ${window.__diagStat.mismatch}：格线上 ${window.__diagStat.onGrid} / 格内 ${window.__diagStat.off}，红点标注）`:""))+
+    `\n渲染器: ${G?rendererName(G.gl):"无 WebGL2"}`+
+    (window.__diagSamples&&window.__diagSamples.length?`\n错位样本: ${window.__diagSamples.join(" ｜ ")}`:"");
+}
+function rendererName(gl){
+  const ext=gl.getExtension("WEBGL_debug_renderer_info");
+  return (ext&&gl.getParameter(ext.UNMASKED_RENDERER_WEBGL))||gl.getParameter(gl.RENDERER)||"WebGL2";
+}
+["reroll"].forEach(id=>$(id).onclick=()=>{ $("seed").value=(Math.random()*99999)|0; run(); });
+$("rerun").onclick=run;
+["style","step","view"].forEach(id=>$(id).onchange=run);
+["diag","contour"].forEach(id=>$(id).onchange=run);
+/* URL 直达参数（自动化截图用）：#seed=1234&style=archipelago&step=0.25&view=mid&diag=1&contour=1 */
+(location.hash.slice(1)||"").split("&").forEach(kv=>{
+  const [k,v]=kv.split("=");
+  if(k==="seed") $("seed").value=v;
+  if(k==="style") $("style").value=v;
+  if(k==="step") $("step").value=v;
+  if(k==="view") $("view").value=v;
+  if(k==="diag") $("diag").checked=v==="1";
+  if(k==="contour") $("contour").checked=v==="1";
+});
+run();
+</script>
+</body>
+</html>

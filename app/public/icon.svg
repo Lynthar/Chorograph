@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="舆图 Chorograph">
+  <rect width="512" height="512" fill="#20242a"/>
+  <circle cx="256" cy="256" r="152" fill="#2b4d6b"/>
+  <path d="M198 200 C232 168 298 172 320 212 C344 252 328 288 294 316 C254 346 206 334 186 294 C168 256 172 224 198 200 Z" fill="#6f8a4e"/>
+  <path d="M296 234 C318 238 324 258 310 272 C296 286 278 280 275 264 C272 248 282 232 296 234 Z" fill="#8aa066"/>
+  <ellipse cx="256" cy="256" rx="152" ry="60" fill="none" stroke="#c9a227" stroke-width="3.5" opacity="0.5"/>
+  <ellipse cx="256" cy="256" rx="60" ry="152" fill="none" stroke="#c9a227" stroke-width="3.5" opacity="0.42"/>
+  <circle cx="256" cy="256" r="152" fill="none" stroke="#c9a227" stroke-width="5" opacity="0.85"/>
+  <circle cx="238" cy="250" r="13" fill="#c9a227" stroke="#20242a" stroke-width="4"/>
+</svg>

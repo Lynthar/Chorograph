@@ -1,0 +1,16 @@
+{
+  "name": "舆图 Chorograph",
+  "short_name": "舆图",
+  "description": "浏览器端分析型世界地图工具",
+  "lang": "zh",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#20242a",
+  "theme_color": "#20242a",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

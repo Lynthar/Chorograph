@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>舆图 Chorograph</title>
+<meta name="theme-color" content="#f7f4ec">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+<link rel="manifest" href="./manifest.webmanifest">
+<style>
+  /* ============ 过渡样式 ============
+     外壳 chrome 与设计组件样式在 src/ui/tokens.css（main.ts 引入）。
+     这里只留：画布/浮层挂点、v0.14 残余内容件（表单行内小件/图例/图库/搜索/提示/作战线框），
+     后仍在用的按 token 变量重调色；全部随后续批次逐步退役。 */
+  :root{ --ink:#2c241b; --gold:#caa45a; --paper:#f6efdc; --paper2:#e7dabb; --line:#c9b888; }
+
+  /* —— 画布与浮层挂点 —— */
+  #map{ position:absolute; inset:0; width:100%; height:100%; display:block; cursor:default; }
+  #map.editing{ cursor:crosshair; }
+  #map.picking{ cursor:crosshair; }
+  #ov{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  #tip{ position:absolute; display:none; pointer-events:none; z-index:25; max-width:260px;
+    background:rgba(28,24,16,.92); color:#f0e8d0; border:1px solid var(--gold); border-radius:6px;
+    padding:4px 8px; font-size:12.5px; line-height:1.5; }
+  #tip b{ color:#ffd98a; }
+
+  /* —— 顶栏搜索（SearchBox markup 不变，token 观感） —— */
+  #searchWrap{ margin-left:auto; position:relative; }
+  #searchBox{ width:270px; height:var(--ctl); padding:0 11px; background:var(--q-in); border:1px solid var(--q-ln);
+    border-radius:var(--r-sm); color:var(--q-tx); font-size:var(--fs-sm); font-family:inherit; outline:none; }
+  #searchBox::placeholder{ color:var(--q-faint); }
+  #searchBox:focus{ border-color:var(--q-gold); }
+  #searchDrop{ display:none; position:absolute; top:110%; left:0; width:300px; z-index:40;
+    background:var(--q-pn); border:1px solid var(--q-ln2); border-radius:8px; box-shadow:var(--q-shadow);
+    max-height:330px; overflow-y:auto; }
+  .sd-item{ padding:5px 9px; font-size:13px; cursor:pointer; color:var(--q-tx); }
+  .sd-item:hover{ background:var(--q-in); }
+  .sd-k{ display:inline-block; width:18px; color:var(--q-dim); }
+  /* ⌘K 入口占位 */
+  #searchWrap .sk-hint{ position:absolute; right:9px; top:50%; transform:translateY(-50%); pointer-events:none;
+    font:600 9.5px/1 var(--f-mono); color:var(--q-faint); border:1px solid var(--q-ln);
+    border-radius:4px; padding:2px 5px; background:var(--q-top); }
+  #searchWrap:focus-within .sk-hint{ display:none; }
+
+  /* —— v0.14 残余内容件（表单/作战线列表/航点行仍在用；token 调色） —— */
+  .tbtn{ cursor:pointer; padding:4px 9px; font-size:var(--fs-sm,13px); border:1px solid var(--q-ln,#c9b888);
+    border-radius:6px; background:none; color:var(--q-dim,#5a4a26); white-space:nowrap; }
+  .tbtn:hover{ color:var(--q-tx); background:var(--q-in); }
+  a.tbtn{ text-decoration:none; }
+  .seg{ display:flex; flex-wrap:wrap; gap:3px; margin:3px 0; align-items:center; }
+  .seg .tbtn{ padding:3px 7px; font-size:var(--fs-xs,12px); }
+  .seg .tbtn.on{ background:var(--q-in2); color:var(--q-tx); border-color:var(--q-ln2); font-weight:700; }
+  .kv{ font-size:13px; margin:3px 0; line-height:1.5; }
+  .kv b{ color:var(--q-dim); }
+  .sub{ font-size:12px; color:var(--q-faint,#8a754c); }
+  .link{ color:var(--q-gold,#2f6fb0); cursor:pointer; text-decoration:underline dotted; }
+  .tag{ display:inline-block; font-size:11px; padding:1px 7px; border-radius:9px; color:#fff; }
+  kbd{ font-family:Consolas,monospace; font-size:12px; background:var(--q-in,#efe6c8); border:1px solid var(--q-ln,#c9b888);
+    border-bottom-width:2px; border-radius:4px; padding:0 5px; }
+  /* 图例（抽屉「层」面底部，静态迁入内容）——选择器收窄到 #legendBox：
+     裸 aside details 会泄漏进检查器表单的 .fgroup（钉死字号让密度轴失效、summary 重复下边线） */
+  #legendBox{ margin-top:14px; font-size:13px; }
+  #legendBox summary{ cursor:pointer; color:var(--q-dim); font-weight:bold; border-bottom:1px dashed var(--q-ln); padding-bottom:3px; }
+  .lgrow{ display:flex; align-items:center; gap:6px; margin:3px 0; font-size:12.5px; }
+  .lgs{ display:inline-block; width:20px; text-align:center; color:var(--q-dim); flex:none; }
+
+  /* —— 作战线悬浮编辑框（markup 不变，token 新皮；fprops 化随后续批次再议） —— */
+  #opBox{ display:none; position:absolute; top:52px; right:14px; z-index:28; width:240px;
+    background:var(--q-pn); border:1px solid var(--q-ln2); border-radius:10px; box-shadow:var(--q-shadow);
+    font-size:var(--fs-sm); color:var(--q-tx); }
+  #opBox .bb-head{ cursor:move; padding:6px 10px; font-weight:700; color:var(--q-dim);
+    border-bottom:1px solid var(--q-ln); display:flex; align-items:center; gap:6px; }
+  #opBox .bb-head .sp{ flex:1; }
+  #opBox .bb-row{ display:flex; align-items:center; gap:6px; padding:4px 10px; }
+  #opBox .bb-row>label{ width:30px; color:var(--q-dim); flex:none; }
+  #opBox input[type=range]{ flex:1; }
+  #opBox .bb-v{ width:26px; text-align:right; color:var(--q-gold); flex:none; font-family:var(--f-mono); }
+  #opBox .fld{ margin:0; }
+  #obClose{ cursor:pointer; color:var(--q-faint); padding:0 3px; }
+  #obClose:hover{ color:var(--q-zhu); }
+
+  /* —— 开始界面 · 地图库（v0.14 原样；#home 深底自带配色，覆盖 token 变量的影响） —— */
+  #home{ display:none; position:fixed; inset:0; z-index:45; overflow-y:auto;
+    background:radial-gradient(1100px 520px at 80% -12%, #2a3650 0%, rgba(42,54,80,0) 62%),
+               linear-gradient(180deg,#1d2536,#0e131d); color:#e8dfc8; }
+  #home .tbtn{ padding:7px 12px; font-size:13.5px; border-color:#47506a; color:#cdd6e6; }
+  #home .tbtn:hover{ background:#2a3346; color:#e6ecf7; }
+  #home .sub{ color:#8fa0b8; }
+  .hm-wrap{ max-width:1060px; margin:0 auto; padding:40px 30px 64px; }
+  .hm-head{ display:flex; align-items:baseline; gap:16px; border-bottom:2px solid var(--gold); padding-bottom:14px; }
+  .hm-title{ font-size:36px; font-weight:bold; color:var(--gold); letter-spacing:12px; text-shadow:0 2px 10px rgba(0,0,0,.5); }
+  .hm-sub{ font-size:14px; color:#9fb0c8; letter-spacing:3px; }
+  .hm-head .sp{ flex:1; }
+  .hm-actions{ display:flex; flex-wrap:wrap; gap:10px; margin:20px 0 24px; }
+  .hm-new{ cursor:pointer; padding:7px 18px; border-radius:7px; font-size:14.5px; font-weight:bold;
+    background:var(--gold); color:#2a2213; border:1px solid var(--gold); }
+  .hm-new:hover{ filter:brightness(1.1); }
+  .hm-source{ margin:-8px 0 22px; font-size:13px; color:#c4d0e2; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+  .hm-source b{ color:#e8c877; }
+  .hm-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(248px,1fr)); gap:18px; }
+  #home .mapcard{ position:relative; cursor:pointer; border:1.5px solid #47506a; border-radius:10px; overflow:hidden;
+    background:linear-gradient(180deg,var(--paper),var(--paper2)); color:var(--ink);
+    box-shadow:inset 0 0 0 1px rgba(202,164,90,.25), 0 4px 12px rgba(0,0,0,.35);
+    transition:transform .13s ease, border-color .13s ease, box-shadow .13s ease; }
+  #home .mapcard:hover{ transform:translateY(-3px); border-color:var(--gold);
+    box-shadow:inset 0 0 0 1px rgba(202,164,90,.45), 0 12px 26px rgba(0,0,0,.5); }
+  .mc-thumb{ display:block; width:100%; aspect-ratio:16/10; object-fit:cover;
+    background:#28517a; border-bottom:1px solid var(--line); }
+  div.mc-thumb{ display:flex; align-items:center; justify-content:center; font-size:46px;
+    color:#cfe0ee; background:linear-gradient(180deg,#2e5d8a,#274e75); }
+  .mc-body{ padding:9px 12px 11px; }
+  .mc-name{ font-size:17px; font-weight:bold; color:#5a4a26; }
+  .mc-sub{ font-size:12px; color:#8a754c; margin-top:3px; }
+  .mc-del{ position:absolute; top:7px; right:7px; width:27px; height:27px; border-radius:6px;
+    display:flex; align-items:center; justify-content:center; font-size:13px;
+    background:rgba(22,17,10,.55); color:#f0d9c0; opacity:0; transition:opacity .12s; }
+  #home .mapcard:hover .mc-del{ opacity:1; }
+  .mc-del:hover{ background:#b0202a; color:#fff; }
+  .hm-empty{ grid-column:1/-1; text-align:center; color:#9fb0c8; line-height:2.2;
+    padding:72px 0; border:1.5px dashed #47506a; border-radius:10px; }
+  .hm-foot{ margin-top:28px; font-size:12.5px; color:#8fa0b8; line-height:1.7;
+    border-top:1px dashed #47506a; padding-top:12px; }
+  .hm-foot b{ color:#c8b070; }
+
+  /* —— 隐藏 dev 挂点与错误条 —— */
+  #hud, #devbar{ display:none !important; }
+  #err{ position:fixed; top:0; left:0; right:0; z-index:9999; display:none;
+        background:#b0202a; color:#fff; padding:8px 14px; font:13px/1.5 system-ui,sans-serif; box-shadow:0 1px 6px rgba(0,0,0,.3); }
+  #err:not(:empty){ display:block; }
+</style>
+</head>
+<body>
+<div id="app" data-theme="light" data-den="loose">
+  <header class="topbar">
+    <div class="brand"><span class="seal">舆</span><span class="word">舆图</span></div>
+    <div class="crumb">
+      <span class="up tr" id="btnParent" style="display:none" title="返回上级战略地图（当前战术图自动保存）">⬆ 战略图</span>
+      <span class="nm" id="crumbName">—</span>
+      <span class="savest" id="savest" title=""><i></i><span class="txt" id="ftData">—</span></span>
+    </div>
+    <div id="searchWrap"></div>
+    <div class="tbacts">
+      <span class="tbact tr" id="btnHome" title="返回图库开始界面（查看/切换/新建/删除地图；当前图自动保存）">⌂ 图库</span>
+      <span class="tbact tr" id="btnSettings" title="界面偏好、世界参数、数据导入导出、出图">⚙ 设置</span>
+      <span class="tbact tr" id="btnReset" title="回到初始视角 (快捷键0)">复位</span>
+      <span class="tbact tr" id="btnHelp" title="帮助 (快捷键?)">?</span>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="mount" id="railMount"></div>
+    <div class="mount" id="drawerMount"></div>
+    <div class="canvas-wrap" id="canvasWrap">
+      <canvas id="map"></canvas><canvas id="ov"></canvas><div id="tip"></div>
+      <!-- 浮动工具属性条（FpropsBar：绘笔刷/量距读数）与作战线编辑框（OpBox） -->
+      <div id="fpropsMount"></div>
+      <div id="opMount"></div>
+      <div class="mount" id="cvTabMount"></div>
+      <!-- 读数浮签（底栏退役：坐标/高程 + 星球尺度迁此；外壳直写文本） -->
+      <div class="coords"><b id="ftCoord">经纬度 —</b><span id="ftPlanet">—</span></div>
+    </div>
+    <div class="mount" id="inspMount"></div>
+  </div>
+
+  <!-- 时间坞：TimeDock 组件直渲于此（战略年轨 / 战术 V1 双层坞） -->
+  <footer class="dock" id="dock"></footer>
+
+  <!-- 全屏覆盖层（图库/弹层/加载舞台/toast）须在 #app 内取用主题令牌 -->
+  <div id="homeMount"></div>
+  <div id="ovlMount"></div>
+  <div id="stageMount"></div>
+  <div id="toastMount"></div>
+</div>
+
+<!-- 隐藏 dev 挂点（程序化种子/风格；无世界数据时 rebuild 读取） -->
+<div id="hud">启动中…</div>
+<div id="devbar">
+  <input id="seed" type="number" value="1234"><button id="reroll">⟳</button>
+  <select id="style"><option value="continent">大陆</option><option value="archipelago">群岛</option></select>
+</div>
+<div id="err"></div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
