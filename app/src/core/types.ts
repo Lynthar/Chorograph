@@ -46,7 +46,7 @@ export interface Meta {
   tacSpan?: [number, number]; // 战术图时间轴默认范围（日戳）
   relief?: number;            // 程序化地势起伏幅度 0..1（缺省=无——旧图高程场逐位不变）
   elevUnitM?: number;         // 1 抽象高程单位 = 多少米（缺省 2000；等高距/光标高程换算用）
-  contourM?: number;          // 等高距（米）；缺省=0.12 单位×elevUnitM（与旧渲染逐位一致）
+  contourM?: number;          // 最细等高距（米）：缩放自适应 ×2 阶梯的锚/下限；缺省 10m
   view?: { lon0: number; lat0: number; degPerPx0?: number; degPerPx?: number };   // 世界默认视角（数据惯例用 degPerPx0；会话快照用 degPerPx）
 }
 

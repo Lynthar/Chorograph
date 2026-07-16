@@ -11,7 +11,7 @@ import { yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import { clampView } from "../core/projection.ts";
-import { contourInterval } from "../core/elev.ts";
+import { contourStepFor } from "../core/elev.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewSig, libActionsSig,
   playingSig, togglePlay, stopPlay, closeSettings, mutateWorld, pushHistoryOnce, clearOpSel, cancelOpDraw,
@@ -302,7 +302,10 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     exportPng() {
       if (!worldSig.peek()) return;
       closeSettings();
-      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), { contour: layersSig.peek().contour, cInt: contourInterval(ctx.meta), wrap: ctx.meta.worldModel !== "flat" });
+      if (layersSig.peek().terrain && ctx.R) {
+        const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
+        ctx.R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat" });
+      }
       const off = document.createElement("canvas");
       off.width = canvas.width; off.height = canvas.height;
       const g2 = off.getContext("2d")!;
@@ -373,7 +376,10 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   function captureThumb(): string | null {
     try {
       if (!canvas.width || !canvas.height) return null;
-      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), { contour: layersSig.peek().contour, cInt: contourInterval(ctx.meta), wrap: ctx.meta.worldModel !== "flat" });
+      if (layersSig.peek().terrain && ctx.R) {
+        const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
+        ctx.R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat" });
+      }
       const tw = 280, th = 175, off = document.createElement("canvas");
       off.width = tw; off.height = th;
       const g2 = off.getContext("2d")!;

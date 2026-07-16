@@ -7,8 +7,8 @@ import { distKm, haversine, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm } from "../src/core/geometry.ts";
 import { genTerrainAt, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, opVisibleAt, ownerAt, yearRangeOf } from "../src/core/time.ts";
-import { buildElevField, contourInterval, elevUnitM } from "../src/core/elev.ts";
-import { buildGridCells } from "../src/core/grid.ts";
+import { buildElevField, contourStepFor, elevBilinear, elevSmooth, elevUnitM } from "../src/core/elev.ts";
+import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
@@ -185,12 +185,40 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     close(at(100.5, 30.5), 0.16, 6);   // 时段外涂改不生效（Float32 容差）
     close(at(100.5, 33.5), 0.1, 6);
   });
-  it("标定：elevUnitM 缺省 2000、contourInterval 缺省 0.12（旧常数）、contourM 换算", () => {
+  it("标定：elevUnitM 缺省 2000；contourStepFor＝×2 阶梯、contourM 下限、跨档连续、随缩小单调", () => {
     assert.strictEqual(elevUnitM({}), 2000);
     assert.strictEqual(elevUnitM({ elevUnitM: 1500 }), 1500);
-    assert.strictEqual(contourInterval({}), 0.12);
-    assert.strictEqual(contourInterval({ contourM: 100 }), 100 / 2000);
-    assert.strictEqual(contourInterval({ contourM: 100, elevUnitM: 1000 }), 0.1);
+    // 深缩放贴 contourM 下限（缺省 10m），fade=0
+    assert.deepStrictEqual(contourStepFor(1e-9, {}), { minorM: 10, minor: 10 / 2000, fade: 0 });
+    assert.deepStrictEqual(contourStepFor(1e-9, { contourM: 100, elevUnitM: 1000 }), { minorM: 100, minor: 0.1, fade: 0 });
+    // 法则：理想等距=1.6×米/像素（缺省球面 R=10000 → 174.53 km/度），向上吸附 ×2 阶梯
+    const a = contourStepFor(0.001, {});   // 174.53 m/px → 理想 279.3m → 10×2^5=320m
+    assert.strictEqual(a.minorM, 320);
+    assert.ok(a.fade > 0 && a.fade < 1);
+    // 平面世界按 meta.kmPerDeg：100 m/px → 理想 160m=整档 → fade=0
+    assert.deepStrictEqual(contourStepFor(0.001, { worldModel: "flat", kmPerDeg: 100 }), { minorM: 160, minor: 0.08, fade: 0 });
+    // 跨档连续：档界两侧 minor 折半、fade 1→0（旧档半距线全显 ≡ 新档整距线）
+    const mpd = 2 * Math.PI * 10000 / 360 * 1000, dppAt = (idealM: number) => idealM / 1.6 / mpd;   // 米/度
+    const lo = contourStepFor(dppAt(160 * 1.0001), {}), hi = contourStepFor(dppAt(160 * 0.9999), {});
+    assert.strictEqual(lo.minorM, 320); assert.ok(lo.fade > 0.99);
+    assert.strictEqual(hi.minorM, 160); assert.ok(hi.fade < 0.01);
+    let prev = 0;
+    for (const dpp of [1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.1]) { const v = contourStepFor(dpp, {}).minorM; assert.ok(v >= prev, "随缩小单调不减"); prev = v; }
+  });
+  it("elevBilinear：格心=场值、格心间线性、出格钳到边缘（读数与渲染采样同源）", () => {
+    const g = { bb: { lonMin: 0, latMin: 0, lonMax: 2, latMax: 2 }, step: 1, cols: 2, rows: 2,
+      cells: [["plain", "plain"], ["plain", "plain"]] } as unknown as Grid;
+    const f = new Float32Array([0, 1, 2, 3]);   // 行主序 (r0c0,r0c1,r1c0,r1c1)
+    close(elevBilinear(f, g, 0.5, 0.5), 0);
+    close(elevBilinear(f, g, 1.5, 0.5), 1);
+    close(elevBilinear(f, g, 1.0, 0.5), 0.5);    // 两格心中点＝均值
+    close(elevBilinear(f, g, 1.0, 1.0), 1.5);    // 四格心中心＝均值
+    close(elevBilinear(f, g, -5, -5), 0);        // 出格钳到角
+    close(elevBilinear(f, g, 5, 5), 3);
+    // elevSmooth（制图面=±半格 4 抽头帐篷平滑）：均匀场不变、对称中心不变、角部为钳制平均
+    close(elevSmooth(new Float32Array([2, 2, 2, 2]), g, 1.0, 1.0), 2);
+    close(elevSmooth(f, g, 1.0, 1.0), 1.5);
+    close(elevSmooth(f, g, 0.5, 0.5), 0.75);     // avg(0, 0.5, 1, 1.5)
   });
 });
 

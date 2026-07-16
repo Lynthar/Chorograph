@@ -7,7 +7,7 @@ import { EDGE_STYLE, EVENT_TYPES, NODE_STYLE, canonComposite } from "../core/con
 import { paintStep } from "../core/territory.ts";
 import { ownerAt } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
-import { elevUnitM } from "../core/elev.ts";
+import { elevUnitM, elevSmooth } from "../core/elev.ts";
 import { distKm } from "../core/geo.ts";
 import { fmtKm } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
@@ -385,13 +385,14 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   });
   canvas.addEventListener("pointermove", e => {
     mxy = [e.offsetX, e.offsetY];
-    {   // 底栏经纬度（v0.14 fmtLon/coordDec：深放大 4 位小数）+ 光标处估算高程（高程场×标定）
+    {   // 底栏经纬度（v0.14 fmtLon/coordDec：深放大 4 位小数）+ 光标高程（场双线性×标定——与渲染面/等高线同源）
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const dec = ctx.view.degPerPx < 0.002 ? 4 : 2;
       let hTxt = "";
       if (ctx.grid && ctx.elevField) {
-        const c = Math.floor((dataLon(ctx.meta, ll[0]) - ctx.grid.bb.lonMin) / ctx.grid.step), r = Math.floor((ll[1] - ctx.grid.bb.latMin) / ctx.grid.step);
-        if (r >= 0 && r < ctx.grid.rows && c >= 0 && c < ctx.grid.cols) hTxt = ` ｜ 高程≈${Math.round(ctx.elevField[r * ctx.grid.cols + c] * elevUnitM(ctx.meta))}m`;
+        const g = ctx.grid, lonD = dataLon(ctx.meta, ll[0]);
+        if (lonD >= g.bb.lonMin && lonD <= g.bb.lonMax && ll[1] >= g.bb.latMin && ll[1] <= g.bb.latMax)
+          hTxt = ` ｜ 高程≈${Math.round(elevSmooth(ctx.elevField, g, lonD, ll[1]) * elevUnitM(ctx.meta))}m`;
       }
       $("ftCoord").textContent = `经纬度 ${dataLon(ctx.meta, ll[0]).toFixed(dec)}°, ${ll[1].toFixed(dec)}°${hTxt}`;
     }

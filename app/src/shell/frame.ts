@@ -4,7 +4,7 @@
 import { project, projectSeq, unproject, visibleWorldCopies } from "../core/projection.ts";
 import { EDGE_STYLE } from "../core/constants.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
-import { contourInterval } from "../core/elev.ts";
+import { contourStepFor } from "../core/elev.ts";
 import { hexA } from "../core/util.ts";
 import { drawOverlay, drawOp } from "../render/overlay.ts";
 import { drawAnalysis } from "../render/analysis.ts";
@@ -34,7 +34,10 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     try {   // 帧内异常：上报 #err、放弃本帧——续排在 finally，一帧出错不冻死画布（2026-07-12 P2）
     const t0 = performance.now();
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
-    if (layers.terrain) ctx.R!.render(viewBB(), { contour: layers.contour, cInt: contourInterval(ctx.meta), wrap: ctx.meta.worldModel !== "flat" });
+    if (layers.terrain) {
+      const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);   // 等高距随缩放（×2 阶梯+过渡淡入）
+      ctx.R!.render(viewBB(), { contour: layers.contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat" });
+    }
     if (world) {
       const octx = ov.getContext("2d")!;
       const selIdForOps = (selSig.value && selSig.value.kind === "node") ? selSig.value.id : null;

@@ -1,6 +1,8 @@
 /* WebGL2 地形渲染器。
    职责边界：分类网格（游戏真源）由 core/grid 在 CPU 计算、作为 RG32F 纹理上传（R=示意高程 G=类型索引）；
    本模块只做像素观感——高程双线性 + 细节噪声 + 晕渲 + 色阶 + 生态色调 + 海岸线 + 等高线。
+   等高线例外地画在**无噪声数据面**上（细节噪声纯装饰，读数不含）：细曲线+计曲线（每第 4 条），
+   等距由 core/elev.contourStepFor 随缩放 ×2 阶梯自适应、过渡档按 uCFade 淡入。
    细节噪声用整数哈希 PCG2D（纯装饰、不入存档；sin-hash 在 fp32 下大参数失谐、不可移植）。 */
 import { ELEV, terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
@@ -21,7 +23,8 @@ uniform vec4 uViewBB;             // lonMin,latMin,lonMax,latMax
 uniform vec2 uRes;                // 画布像素
 uniform float uPXPD;              // 横向像素/度（经度有 cos(lat0) 校正，与纵向不同）
 uniform float uPXPDY;             // 纵向像素/度（对齐旧 drawTile 经 project 的各向异性贴图）
-uniform float uCInt;              // 等高距（抽象单位；缺省 0.12——meta.contourM/elevUnitM 换算）
+uniform float uCMinor;            // 细曲线等距（抽象单位；contourStepFor 缩放自适应 ×2 阶梯）
+uniform float uCFade;             // 下一细分档淡入 0..1（×2 嵌套：新线在旧线正中浮现）
 uniform vec3 uLight;
 uniform int uMode;                // 0=着色 1=诊断平色
 uniform int uContour;
@@ -58,6 +61,15 @@ float elevAt(vec2 ll){
   float rough=e>0.4?0.24:(e>0.2?0.08:0.025);
   return e+(fbm4(ll*1.1)-0.5)*rough*2.0;
 }
+float elevSmooth(vec2 ll){ // 制图面：±半格 4 抽头帐篷平滑（与 core/elev.elevSmooth 同式——读数=线）
+  float h=0.5*uGridBB.z;
+  return 0.25*(cellAt(ll+vec2(-h,-h)).x+cellAt(ll+vec2(h,-h)).x+cellAt(ll+vec2(-h,h)).x+cellAt(ll+vec2(h,h)).x);
+}
+/* 等高线助手：d=到最近整倍等值面的像素距（数值 +1e-6 防零梯度平台整面刷线）。
+   cwMinor/cwIndex 带宽不同（计曲线加宽）；oddK=倍数奇偶（×2 阶梯过渡期只淡入奇数倍新线） */
+float cwMinor(float eh,float itv,float aa){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(0.8,1.5,d); }
+float cwIndex(float eh,float itv,float aa){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(1.3,2.4,d); }
+float oddK(float eh,float itv){ return mod(round(eh/itv),2.0); }
 vec3 elevRamp(float e){
   if(e<-0.02){ float t=clamp((e+0.35)/0.33,0.0,1.0); return vec3(40.0+t*60.0,90.0+t*70.0,132.0+t*66.0)/255.0; }
   if(e<0.09) return vec3(224.0,216.0,172.0)/255.0;
@@ -71,7 +83,8 @@ void main(){
   vec2 ll=vec2(uViewBB.x+x/uPXPD, uViewBB.w-yTop/uPXPDY);
   // 球面环绕：经度折回以网格中心为轴的 ±180° 域——单次绘制即无缝跨越 ±180° 经线
   if(uWrap==1) ll.x-=360.0*floor((ll.x-uGridBB.w+180.0)/360.0);
-  if(uMode==1){ int ti=int(cellAt(ll).y+0.5); fragColor=vec4(uTColor[ti],1.0); return; }
+  vec2 cd=cellAt(ll);   // (双线性数据面高程, 最近格类型索引)：等高线/类型共用，晕渲另走带噪声的 elevAt
+  if(uMode==1){ int ti=int(cd.y+0.5); fragColor=vec4(uTColor[ti],1.0); return; }
   float px=1.0/uPXPD, py=1.0/uPXPDY;
   float e =elevAt(ll);
   float eL=elevAt(ll+vec2(-px,0.0)), eR=elevAt(ll+vec2(px,0.0));
@@ -81,19 +94,25 @@ void main(){
   float sh=0.6+0.75*max(0.0, dot(normalize(nv), uLight));
   vec3 col=elevRamp(e);
   if(e>=-0.02){
-    int ti=int(cellAt(ll).y+0.5);
+    int ti=int(cd.y+0.5);
     vec3 tint=uTint[ti];
     if(tint.x>=0.0) col=col*0.55+(tint/255.0)*0.45;
     col*=sh;
   }
   float aa=fwidth(e)+1e-6;
+  float es=elevSmooth(ll);      // 制图面（帐篷平滑数据面，与光标读数同源）；导数须在一致控制流取（分支内 fwidth 未定义，软渲返 0）
+  float ad=fwidth(es)+1e-7;
   float coast=1.0-smoothstep(0.0, aa*1.4, abs(e+0.02));
   col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55);
-  if(uContour==1 && e>=-0.02){
-    float lv=fract((e+0.02)/uCInt);
-    float d2=min(lv,1.0-lv)*uCInt/aa;
-    float line=1.0-smoothstep(0.6,1.2,d2);
-    col=mix(col, vec3(90.0,70.0,40.0)/255.0, line*0.28);
+  vec2 rg=ll-uGridBB.xy;   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
+  if(uContour==1 && es>=-0.02 && rg.x>uGridBB.z && rg.y>uGridBB.z && rg.x<uGridSpan.x-uGridBB.z && rg.y<uGridSpan.y-uGridBB.z){
+    // 等高线画在制图面 es（晕渲是画，等高线是尺）。细曲线=当前档整倍+半档奇数倍×uCFade 淡入；计曲线=每第 4 条。
+    // 挤线抑制（真图规范）：线距不足数像素的陡坎处细曲线隐去；计曲线按自身 4× 线距评估而幸存。
+    float eh=es+0.02;
+    float mn=max(cwMinor(eh,uCMinor,ad), cwMinor(eh,uCMinor*0.5,ad)*oddK(eh,uCMinor*0.5)*uCFade);
+    float ix=max(cwIndex(eh,uCMinor*4.0,ad), cwIndex(eh,uCMinor*2.0,ad)*oddK(eh,uCMinor*2.0)*uCFade);
+    float sup=smoothstep(2.5,6.0,uCMinor/ad), supIx=smoothstep(2.5,6.0,uCMinor*4.0/ad);
+    col=mix(col, vec3(90.0,70.0,40.0)/255.0, max(mn*0.50*sup, ix*0.70*supIx));
   }
   fragColor=vec4(col,1.0);
 }`;
@@ -204,7 +223,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.uniform1f(U("uPXPDY"), canvas.height / (viewBB.latMax - viewBB.latMin));
       gl.uniform1i(U("uMode"), opts.diag ? 1 : 0);
       gl.uniform1i(U("uContour"), opts.contour ? 1 : 0);
-      gl.uniform1f(U("uCInt"), opts.cInt || 0.12);
+      gl.uniform1f(U("uCMinor"), opts.cMinor || 0.12);
+      gl.uniform1f(U("uCFade"), opts.cFade || 0);
       gl.uniform1i(U("uWrap"), opts.wrap ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },
