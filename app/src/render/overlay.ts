@@ -214,6 +214,7 @@ export interface OverlayOpts {
   grid?: Grid;                        // 供生态点缀层散布（缺省=不画 eco，如地形涂改时）
   multiIds?: string[] | null;         // 框选的地点 id（金圈高亮全部）
   unitSelId?: string | null;          // 选中部队 id（泥金光晕框；战术图）
+  multiUnitIds?: string[] | null;     // 框选的部队 id（同款光晕；战术图）
   unitLegs?: Map<string, Leg[]>;      // 部队可达性预算（外壳缓存；供尾迹标超速）
   smooth?: number;                    // 涂域边界平滑档（Chaikin 轮数 0–3；缺省 2，笔刷框调）
   edgeSelIdx?: number | null;         // 选中连线下标（红晕高亮，对齐旧 isSelEdge）
@@ -277,7 +278,7 @@ export function drawOverlay(
     if (on("arrows")) drawOps(ctx, c2, world, yearNow, opts.selId, opts.opSel);
     if (on("nodes")) drawNodes(ctx, c2, world, yearNow, opts, multiSet, fcolor);   // 地点记号 + 楷体标签（避让）
     if (on("units")) drawUnits(ctx, c2, world, yearNow,   // 部队压在地点之上（战场主角）
-      { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, legs: opts.unitLegs });
+      { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs });
   }
   if (on("graticule")) drawGraticule(ctx, cam, meta);   // 经纬网：拷贝循环外，屏幕空间一次绘制
   if (on("notes")) drawPinnedNotes(ctx, cam, world, yearNow, opts, fcolor);   // 屏幕角标注（帧标题/图注块）

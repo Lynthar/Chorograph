@@ -158,19 +158,19 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .dk-year .y{font:700 17px/1.2 var(--f-mono);color:var(--q-gold);letter-spacing:.03em;font-variant-numeric:tabular-nums;display:block}
 .dk-year .s{font:400 9.5px/1.4 var(--f-mono);color:var(--q-faint);letter-spacing:.08em;display:block}
 .dk-mid{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
-.dk-track{height:36px;position:relative;cursor:pointer;touch-action:none}
+.dk-track{height:42px;position:relative;cursor:pointer;touch-action:none}   /* 42px=三带预算:标签带≤10.5 / 圆点带(含金环)11.5~30.5 / 首末带≥33——改任一行尺寸须保三带不叠 */
 .dk-track.dragging{cursor:grabbing}
-.dk-track .dk-rail{position:absolute;left:0;right:0;top:21px;height:3px;border-radius:2px;background:var(--q-in2)}   /* 勿用裸 .rail——与工具轨撞名（2026-07-12 P1） */
-.dk-track .fill{position:absolute;left:0;top:21px;height:3px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--q-gold));opacity:.5;pointer-events:none}
-.dk-track .tick{position:absolute;top:17px;width:2px;height:11px;background:var(--q-gold);opacity:.8;pointer-events:none;transform:translateX(-50%)}
+.dk-track .dk-rail{position:absolute;left:0;right:0;top:19.5px;height:3px;border-radius:2px;background:var(--q-in2)}   /* 勿用裸 .rail——与工具轨撞名（2026-07-12 P1） */
+.dk-track .fill{position:absolute;left:0;top:19.5px;height:3px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--q-gold));opacity:.5;pointer-events:none}
+.dk-track .tick{position:absolute;top:15.5px;width:2px;height:11px;background:var(--q-gold);opacity:.8;pointer-events:none;transform:translateX(-50%)}
 .dk-track .tick.fut{opacity:.32}
-.dk-track .tlab{position:absolute;top:1px;transform:translateX(-50%);font-size:9.5px;color:var(--q-dim);letter-spacing:.05em;white-space:nowrap;pointer-events:none}
+.dk-track .tlab{position:absolute;top:1px;transform:translateX(-50%);font-size:9.5px;line-height:1;color:var(--q-dim);letter-spacing:.05em;white-space:nowrap;pointer-events:none}
 .dk-track .tlab.cur{color:var(--q-gold);font-weight:700}
 .dk-track .tlab.fut{opacity:.5}
 .dk-track .cl{position:absolute;top:21px;transform:translate(-50%,-50%);background:var(--q-in2);border:1px solid var(--q-ln2);color:var(--q-dim);font:700 9px/1 var(--f-mono);border-radius:999px;padding:3px 6px;pointer-events:none}
 .dk-track .cl.cur{background:var(--q-gold);border-color:var(--q-gold);color:var(--q-goldink)}
 .dk-track .cl.fut{opacity:.45}
-.dk-track .thumb{position:absolute;top:13px;width:18px;height:18px;border-radius:50%;background:var(--q-gold);border:3px solid var(--q-top);box-shadow:0 0 0 1.5px var(--q-gold);transform:translateX(-50%);pointer-events:none}
+.dk-track .thumb{position:absolute;top:13px;width:16px;height:16px;border-radius:50%;background:var(--q-gold);border:2.5px solid var(--q-top);box-shadow:0 0 0 1.5px var(--q-gold);transform:translateX(-50%);pointer-events:none}
 .dk-track.dragging .thumb{box-shadow:0 0 0 1.5px var(--q-gold),0 0 0 9px var(--q-goldwash)}
 .dk-track .mm{position:absolute;bottom:0;font:400 9px/1 var(--f-mono);color:var(--q-faint);pointer-events:none}
 .dk-seg{display:flex;border:1px solid var(--q-ln);border-radius:var(--r-sm);overflow:hidden;flex:none}

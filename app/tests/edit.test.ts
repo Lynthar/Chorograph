@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { addEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removeUnit, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { addEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removeUnit, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { buildGridCells } from "../src/core/grid.ts";
 import { canRedoSig, canUndoSig, editVerSig, gridVerSig, mutateWorld, mutateWorldLive, pushHistoryOnce,
@@ -576,6 +576,14 @@ describe("部队编辑内核（战术图）", () => {
     assert.strictEqual(u.arm, "land");
     assert.strictEqual(u.faction, null);
     assert.deepStrictEqual(u.track, [{ t: 5, lon: 100.5, lat: 30.25 }]);
+  });
+  it("addUnitUnplaced：未入场（track 空）＝合法态，列表拖入地图＝落首航点", () => {
+    const w = mkWorld();
+    const u = addUnitUnplaced(w, "未命名部队 1", "u1");
+    assert.strictEqual(w.units.length, 1);
+    assert.deepStrictEqual(u.track, []);
+    assert.strictEqual(setUnitWaypoint(w, "u1", 7, 100.5, 30.25), true);   // drop 落点
+    assert.deepStrictEqual(w.units[0].track, [{ t: 7, lon: 100.5, lat: 30.25 }]);
   });
   it("setUnitWaypoint：同日改写、异日插入并按日排序", () => {
     const w = mkWorld();

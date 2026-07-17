@@ -314,17 +314,20 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
 }
 
 /** 框选多地点（对齐旧 renderMultiInfo） */
-function MultiCard({ nodes, world }: { nodes: WorldNode[]; world: World }) {
+function MultiCard({ nodes, units, world }: { nodes: WorldNode[]; units: Unit[]; world: World }) {
   const y = yearSig.value;
+  const what = [nodes.length ? `${nodes.length} 个地点` : "", units.length ? `${units.length} 支部队` : ""].filter(Boolean).join(" + ");
   const del = () => {
-    if (!confirm(`删除框选的 ${nodes.length} 个地点及其连线与关联引用？`)) return;
-    const ids = nodes.map(n => n.id);
-    mutateWorld(w => { for (const id of ids) removeNode(w, id); });
+    const detail = [nodes.length ? `${nodes.length} 个地点及其连线与关联引用` : "",
+      units.length ? `${units.length} 支部队及其全部动向` : ""].filter(Boolean).join("与");
+    if (!confirm(`删除框选的 ${detail}？`)) return;
+    const ids = nodes.map(n => n.id), uids = units.map(u => u.id);
+    mutateWorld(w => { for (const id of ids) removeNode(w, id); for (const id of uids) removeUnit(w, id); });
     selSig.value = null;
   };
   return (
     <>
-      <CardHead title={`框选 ${nodes.length} 个地点`} />
+      <CardHead title={`框选 ${what}`} />
       <div class="rows">
         {nodes.map(n => {
           const fid = ownerAt(n, y);
@@ -338,8 +341,19 @@ function MultiCard({ nodes, world }: { nodes: WorldNode[]; world: World }) {
             </button>
           );
         })}
+        {units.map(u => {
+          const f = u.faction ? world.factions.find(x => x.id === u.faction) : null;
+          const k = unitKind(u);
+          return (
+            <button key={u.id} class="row tr" onClick={() => { selSig.value = { kind: "unit", id: u.id }; }}>
+              <span class="dot" style={{ background: (f && f.color) || "#a03030" }} />
+              <span class="nm">{u.名称 || "未命名部队"}</span>
+              <span class="eye">{k ? k.名 : "部队"}</span>
+            </button>
+          );
+        })}
       </div>
-      <div class="hint">点名称查看单个地点 · <kbd>Delete</kbd> 批量删除 · 按住框选中的地点可整体拖移</div>
+      <div class="hint">点名称查看单个对象 · <kbd>Delete</kbd> 批量删除 · 按住框选成员可整体拖移（部队＝改写当前时刻航点）</div>
       <div class="in-actions">
         <button class="bt ghost tr" onClick={() => { selSig.value = null; }}>清除选择</button>
         <button class="bt danger-ghost tr" onClick={del}>删除全部 (Del)</button>
@@ -356,10 +370,12 @@ export function InfoPanel() {
   const f = world ? selFaction(world, sel) : null;
   const u = world ? selUnit(world, sel) : null;
   const multi = world ? selMulti(world, sel) : [];
-  if (!world || (!n && !e && !f && !u && !multi.length)) return null;   // 无选中＝检查器收起（Inspector 壳控制）
+  const multiUnits = (world && sel && sel.kind === "multi" ? sel.unitIds || [] : [])
+    .map(id => (world!.units || []).find(x => x.id === id)).filter((x): x is Unit => !!x);
+  if (!world || (!n && !e && !f && !u && !multi.length && !multiUnits.length)) return null;   // 无选中＝检查器收起（Inspector 壳控制）
   return n ? <NodeCard n={n} world={world} />
     : e ? <EdgeCard e={e} idx={(sel as { idx: number }).idx} world={world} />
     : f ? <FactionCard f={f} world={world} />
     : u ? <UnitCard u={u} world={world} />
-    : <MultiCard nodes={multi} world={world} />;
+    : <MultiCard nodes={multi} units={multiUnits} world={world} />;
 }

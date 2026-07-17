@@ -25,7 +25,7 @@ export const layersSig = signal<Record<string, boolean>>(
 
 /* —— 选中：地点按 id（稳健）、连线按下标（删除后由清空兜底）、框选=地点 id 列表、部队按 id —— */
 export type Sel = { kind: "node"; id: string } | { kind: "edge"; idx: number }
-  | { kind: "faction"; id: string } | { kind: "multi"; ids: string[] } | { kind: "unit"; id: string } | null;
+  | { kind: "faction"; id: string } | { kind: "multi"; ids: string[]; unitIds?: string[] } | { kind: "unit"; id: string } | null;
 export const selSig = signal<Sel>(null);
 export const selNode = (w: World | null, s: Sel): WorldNode | null =>
   (w && s && s.kind === "node" && w.nodes.find(n => n.id === s.id)) || null;
@@ -295,7 +295,7 @@ export const inspEditSig = signal(false);
 /** 「选中变化即回卡片」的「变化」按语义比较：同目标重赋值（点同一地点、selectOp 保持事件选中）
     不打断进行中的表单编辑——否则浏览态表单里点作战线行会静默丢弃未保存输入（2026-07-12 P2）。 */
 const selKeyOf = (s: Sel): string =>
-  !s ? "" : s.kind === "edge" ? "edge:" + s.idx : s.kind === "multi" ? "multi:" + s.ids.join("|") : s.kind + ":" + s.id;
+  !s ? "" : s.kind === "edge" ? "edge:" + s.idx : s.kind === "multi" ? "multi:" + s.ids.join("|") + (s.unitIds && s.unitIds.length ? "|u:" + s.unitIds.join("|") : "") : s.kind + ":" + s.id;
 let lastSelKey = "";
 effect(() => {
   const k = selKeyOf(selSig.value);

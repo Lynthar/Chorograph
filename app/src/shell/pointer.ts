@@ -12,10 +12,11 @@ import { distKm } from "../core/geo.ts";
 import { fmtKm } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
 import { pickEdge, pickNode, pickOp, nodesInBox } from "../render/overlay.ts";
-import { pickUnit, pickRangeHandle, type RingHit } from "../render/units.ts";
+import { pickUnit, pickRangeHandle, unitsInBox, type RingHit } from "../render/units.ts";
+import { unitPos } from "../core/units.ts";
 import { pickDecor, decorIdsInRadius } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
-  modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub,
+  modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
   settingsSig, closeSettings, helpOpenSig, togglePlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
   paintFactionSig, paintLayerSig, paintTerrainSig, terrainHeightSig, decorKindSig, decorSizeSig,
@@ -23,7 +24,7 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUn
   mutateWorld, mutateWorldLive, pushHistoryOnce, beginStroke, endStroke, undoWorld, redoWorld,
   type EditSub, type Sel }
   from "../ui/state.ts";
-import { addNode, addEdge, addRiver, addLabel, addOp, addDecor, addAsset, addUnit, applyEra, removeNode, removeEdgeAt, removeOp,
+import { addNode, addEdge, addRiver, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeEdgeAt, removeOp,
   removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setNodeRangeKm, moveNode, dataLon, paintTerrainAt, paintHeightAt }
   from "../ui/editops.ts";
 import { poolGet } from "../ui/stamps.ts";
@@ -40,7 +41,9 @@ interface OpStroke { pts: [number, number][]; lastX: number; lastY: number; rive
 interface BoxSel { x0: number; y0: number; x1: number; y1: number; moved: boolean }
 interface PaintStroke { set: Set<string>; dims: PaintDims; fid: string; idx: number }
 interface DecorStroke { erase: boolean; lastX: number; lastY: number }
-interface MultiDrag { sx: number; sy: number; pushed: boolean; orig: { id: string; lon0: number; lat0: number }[] }
+interface MultiDrag { sx: number; sy: number; t: number; pushed: boolean;
+  orig: { id: string; lon0: number; lat0: number }[];        // 框选中的地点原位（moveNode 按位移整组平移）
+  uorig: { id: string; lon0: number; lat0: number }[] }      // 框选中的部队在起手时刻的原位（拖动改写该时刻航点）
 type RangeDrag = RingHit & { pushed: boolean };
 
 /** frame 每帧只读的交互视图（画线预览/框选矩形/笔刷环定位共用） */
@@ -214,6 +217,22 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       }
     });
   };
+  /* 整组拖移起手（按住框选中的地点/部队任一成员）：地点记原位走 moveNode 平移；
+     部队记「起手时刻」原位，拖动=整组改写该时刻航点（与单部队拖动同语义） */
+  const startMultiDrag = (sv: Extract<Sel, { kind: "multi" }>, e: PointerEvent): void => {
+    const world = worldSig.value!;
+    const ll0 = unproject(cam(), e.offsetX, e.offsetY);
+    const T = yearSig.peek();
+    multiDrag = { sx: ll0[0], sy: ll0[1], t: T, pushed: false,
+      orig: sv.ids.map(id => { const nd = world.nodes.find(n => n.id === id); return nd ? { id, lon0: nd.lon, lat0: nd.lat } : null; })
+        .filter((o): o is { id: string; lon0: number; lat0: number } => !!o),
+      uorig: (sv.unitIds || []).map(id => {
+        const un = (world.units || []).find(x => x.id === id), p = un && unitPos(un, T);
+        return p ? { id, lon0: p.lon, lat0: p.lat } : null;
+      }).filter((o): o is { id: string; lon0: number; lat0: number } => !!o) };
+    canvas.style.cursor = "move";
+    canvas.setPointerCapture(e.pointerId);
+  };
   canvas.addEventListener("pointerdown", e => {
     tip.style.display = "none";   // 拖动/绘制期间不出速览
     const world = worldSig.value;
@@ -306,10 +325,17 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         }
       }
     }
-    // 部队工具（战术图）：按住部队拖动=记录/改写当日位置；点空白=新建部队（成于 pointerup 点击）
+    // 部队工具（战术图）：按住部队拖动=记录/改写当日位置；Shift+拖=框选；按住框选成员=整体拖移
     if (world && modeSig.value === "edit" && editSubSig.value === "unit" && isTacSig.value) {
+      if (e.shiftKey) {
+        boxSel = { x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, moved: false };
+        canvas.setPointerCapture(e.pointerId);
+        return;
+      }
       const un = pickUnit(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);
       if (un) {
+        const s = selSig.value;
+        if (s && s.kind === "multi" && s.unitIds && s.unitIds.includes(un.id)) { startMultiDrag(s, e); return; }
         unitDrag = { id: un.id, pushed: false }; selSig.value = { kind: "unit", id: un.id };
         canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
       }
@@ -324,6 +350,8 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (isTacSig.value) {   // 部队优先于地点（框小、常压在地点上层）
         const un = pickUnit(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);
         if (un) {
+          const s = selSig.value;
+          if (s && s.kind === "multi" && s.unitIds && s.unitIds.includes(un.id)) { startMultiDrag(s, e); return; }   // 按住框选中的部队=整体拖移
           unitDrag = { id: un.id, pushed: false }; selSig.value = { kind: "unit", id: un.id };
           canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
         }
@@ -331,17 +359,14 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);
       if (hit) {
         const s = selSig.value;
-        if (s && s.kind === "multi" && s.ids.includes(hit.id)) {   // 按住框选中的地点=整体拖移
-          const ll0 = unproject(cam(), e.offsetX, e.offsetY);
-          multiDrag = { sx: ll0[0], sy: ll0[1], pushed: false,
-            orig: s.ids.map(id => { const nd = world.nodes.find(n => n.id === id); return nd ? { id, lon0: nd.lon, lat0: nd.lat } : null; })
-              .filter((o): o is { id: string; lon0: number; lat0: number } => !!o) };
+        if (s && s.kind === "multi" && s.ids.includes(hit.id)) {   // 按住框选中的地点=整体拖移（地点+部队）
+          startMultiDrag(s, e);
         } else {
           nodeDrag = { id: hit.id, pushed: false };
           selSig.value = { kind: "node", id: hit.id };
+          canvas.style.cursor = "move";
+          canvas.setPointerCapture(e.pointerId);
         }
-        canvas.style.cursor = "move";
-        canvas.setPointerCapture(e.pointerId);
         return;
       }
       const dd = pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);   // 按住布景=拖移（v0.14）
@@ -426,7 +451,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const dLon = ll[0] - multiDrag.sx, dLat = ll[1] - multiDrag.sy;
       const md = multiDrag;
-      mutateWorldLive(w => { for (const o of md.orig) moveNode(w, o.id, o.lon0 + dLon, o.lat0 + dLat); });
+      mutateWorldLive(w => {
+        for (const o of md.orig) moveNode(w, o.id, o.lon0 + dLon, o.lat0 + dLat);
+        for (const o of md.uorig) setUnitWaypoint(w, o.id, md.t, o.lon0 + dLon, o.lat0 + dLat);   // 整组改写起手时刻航点
+      });
       return;
     }
     if (rangeDrag) {
@@ -512,9 +540,18 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (paintStroke) { paintStroke = null; endStroke(); return; }
     if (terrainStroke) { terrainStroke = null; endStroke(); return; }
     if (decorStroke) { decorStroke = null; endStroke(); return; }
-    if (multiDrag) { multiDrag = null; canvas.style.cursor = ""; return; }
+    if (multiDrag) {
+      const md = multiDrag; multiDrag = null; canvas.style.cursor = "";
+      if (md.pushed && md.uorig.length)   // 含部队的整组拖移收笔：报所记时刻（时间坞忘对时的防呆）
+        showToast(`已记录 ${fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", yearSig.peek())} 位置`, { undo: true });
+      return;
+    }
     if (rangeDrag) { rangeDrag = null; canvas.style.cursor = ""; return; }   // 圈半径拖动收笔（半径已随移动写入）
-    if (unitDrag) { unitDrag = null; canvas.style.cursor = ""; return; }   // 拖动部队收笔（当日航点已随移动写入）
+    if (unitDrag) {   // 拖动部队收笔：航点已随移动写入——toast 报所记时刻（时间坞忘对时的防呆）
+      const ud = unitDrag; unitDrag = null; canvas.style.cursor = "";
+      if (ud.pushed) showToast(`已记录 ${fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", yearSig.peek())} 位置`, { undo: true });
+      return;
+    }
     if (decorDrag) { decorDrag = null; canvas.style.cursor = ""; return; }
     if (linkDrag) {   // 连线拖拽收笔：拖到另一地点=成线；拖到空处=取消起点；原地未动=保持起点（可再点第二点）
       const ld = linkDrag; linkDrag = null;
@@ -532,7 +569,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         return;
       }
       const ids = world ? nodesInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1) : [];
-      selSig.value = ids.length ? { kind: "multi", ids } : null;
+      const unitIds = world && isTacSig.peek() && layersSig.peek().units !== false   // 部队层隐藏时不隔空捕获
+        ? unitsInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1) : [];
+      selSig.value = (ids.length || unitIds.length)
+        ? { kind: "multi", ids, ...(unitIds.length ? { unitIds } : {}) } : null;
       return;
     }
     if (nodeDrag) { nodeDrag = null; canvas.style.cursor = ""; return; }
@@ -615,9 +655,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
           linkFromSig.value = null;
         }
       } else if (mode === "edit" && editSubSig.value === "unit" && isTacSig.value) {
-        // 点空白=新建部队（拖动改航点在 pointerdown/move；此处必为空击——命中部队会在 down 起拖）
-        const 名称 = prompt("新部队名称（如 龙骧军前部）：");
-        if (名称) { let uid: string | null = null; mutateWorld(w => { uid = addUnit(w, 名称, ll[0], ll[1], yearSig.value).id; }); if (uid) selSig.value = { kind: "unit", id: uid }; }
+        selSig.value = null;   // 军工具点击＝选择（空击清选）；新增走军面板「＋新增部队」→按住列表项拖入地图
       } else if (mode === "edit" && editSubSig.value === "delete") {
         if (hit) {
           if (confirm(`删除地点「${hit.名称 || hit.id}」及其连线与关联引用？`)) {
@@ -671,7 +709,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (e.key === "?") { helpOpenSig.value = true; return; }
     if (e.key === "Escape") {
       if (opStroke && opStroke.river) { opStroke = null; return; }        // 先退在画河道
-      if (opDrawSig.value) { opStroke = null; cancelOpDraw(); return; }   // 先退画线态
+      if (opDrawSig.value) { opStroke = null; cancelOpDraw(); return; }   // 再退画线态
       if (opSelSig.value) { clearOpSel(); return; }                       // 再退作战线选中
       selSig.value = null; linkFromSig.value = null; return;
     }
@@ -736,10 +774,13 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const os = opSelSig.value;
       if (os) { mutateWorld(w => { removeOp(w, os.evId, os.i); }); clearOpSel(); return; }   // 选中作战线=删线
       const sel = selSig.value;
-      if (sel && sel.kind === "multi") {   // 框选=批量删除
-        if (confirm(`删除框选的 ${sel.ids.length} 个地点及其连线与关联引用？`)) {
-          const ids = sel.ids.slice();
-          mutateWorld(w => { for (const id of ids) removeNode(w, id); });
+      if (sel && sel.kind === "multi") {   // 框选=批量删除（地点+部队）
+        const uids = sel.unitIds || [];
+        const what = [sel.ids.length ? `${sel.ids.length} 个地点及其连线与关联引用` : "",
+          uids.length ? `${uids.length} 支部队及其全部动向` : ""].filter(Boolean).join("与");
+        if (confirm(`删除框选的 ${what}？`)) {
+          const ids = sel.ids.slice(), us = uids.slice();
+          mutateWorld(w => { for (const id of ids) removeNode(w, id); for (const id of us) removeUnit(w, id); });
           selSig.value = null;
         }
         return;
@@ -757,6 +798,22 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (ed && confirm("删除选中的连线？")) { mutateWorld(w => { removeEdgeAt(w, (sel as Extract<Sel, { kind: "edge" }>).idx); }); selSig.value = null; }
       }
     }
+  });
+  /* 军面板「＋新增部队」→ 按住列表项拖入地图放置（HTML5 DnD）：落点=当前时刻首航点。
+     dragover 只对本类型放行——不碰文件拖入等其它拖放路径。 */
+  canvas.addEventListener("dragover", e => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types).includes("text/unit-id")) e.preventDefault();
+  });
+  canvas.addEventListener("drop", e => {
+    const id = e.dataTransfer ? e.dataTransfer.getData("text/unit-id") : "";
+    if (!id) return;
+    e.preventDefault();
+    const w0 = worldSig.peek();
+    if (!w0 || !isTacSig.peek() || !(w0.units || []).some(u => u.id === id)) return;
+    const ll = unproject(cam(), e.offsetX, e.offsetY);
+    mutateWorld(w => { setUnitWaypoint(w, id, yearSig.peek(), ll[0], ll[1]); });
+    selSig.value = { kind: "unit", id };
+    showToast(`已入场 ${fmtWhen(calOf(ctx.meta.calendar), true, yearSig.peek())}`, { undo: true });
   });
   canvas.addEventListener("wheel", e => {
     e.preventDefault();

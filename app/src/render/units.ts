@@ -105,6 +105,7 @@ export interface UnitDrawOpts {
   trails?: boolean;                 // 行军尾迹层
   labels?: boolean;                 // 地名标签层（部队名·兵力）
   selId?: string | null;           // 选中部队 id（泥金光晕框）
+  multiIds?: string[] | null;      // 框选的部队 id（同款光晕，全部高亮）
   legs?: Map<string, Leg[]>;        // 可达性预算（外壳缓存；缺省=不标超速）
 }
 
@@ -116,7 +117,7 @@ export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, world: Wor
     const p = unitPos(u, T); if (!p) continue;
     const [x, y] = project(cam, p.lon, p.lat);
     if (opts.trails) drawTrail(ctx, cam, world, u, T, p, opts.legs && opts.legs.get(u.id));
-    drawUnitSymbol(ctx, x, y, world, u, opts.selId === u.id, unitStatusAt(u, T));
+    drawUnitSymbol(ctx, x, y, world, u, opts.selId === u.id || !!(opts.multiIds && opts.multiIds.includes(u.id)), unitStatusAt(u, T));
     if (opts.labels) {
       const lbl = (u.名称 || "部队") + (u.strength ? ` ${u.strength}` : "");
       ctx.save(); ctx.font = "10.5px KaiTi,楷体,serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -126,6 +127,22 @@ export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, world: Wor
   }
 }
 
+
+/** 框选拾取：当前时刻位置落在屏幕矩形内的部队 id（语义对齐 overlay.nodesInBox；未入场无位置不参与） */
+export function unitsInBox(cam: Camera, meta: Meta | undefined, world: World, T: number,
+  x0: number, y0: number, x1: number, y1: number): string[] {
+  const xs = Math.min(x0, x1), xe = Math.max(x0, x1), ys = Math.min(y0, y1), ye = Math.max(y0, y1);
+  const ids = new Set<string>();
+  for (const shift of visibleWorldCopies(cam, meta)) {
+    const c2: Camera = { ...cam, lonShift: shift };
+    for (const u of world.units || []) {
+      const p = unitPos(u, T); if (!p) continue;
+      const [px, py] = project(c2, p.lon, p.lat);
+      if (px >= xs && px <= xe && py >= ys && py <= ye) ids.add(u.id);
+    }
+  }
+  return [...ids];
+}
 
 /** 某圈在屏幕上的中心与半轴（km→像素，纬向/经向各自换算——与旧 drawRanges 逐式一致） */
 function ringPx(cam: Camera, meta: Meta | undefined, lon: number, lat: number, km: number): [number, number, number, number] {
