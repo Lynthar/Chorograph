@@ -10,10 +10,10 @@ import { activeAt, opVisibleAt, ownerAt, yearRangeOf } from "../src/core/time.ts
 import { buildElevField, contourStepFor, elevBilinear, elevSmooth, elevUnitM } from "../src/core/elev.ts";
 import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
-import { project, unproject, type Camera } from "../src/core/projection.ts";
+import { clampView, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
 import { TERRAIN, TERRAIN_ORDER, flattenTerrain } from "../src/core/constants.ts";
-import { tileCovers } from "../src/render/terrainCPU.ts";
+import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, countsOf, normalizeWorld } from "../src/core/world.ts";
 import { createTacticalWorld, tacDiaDeg } from "../src/core/tactical.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
@@ -296,6 +296,18 @@ describe("投影", () => {
     const dy = project(f, 108, 35)[1] - project(f, 108, 36)[1];
     close(dx, dy, 9);
   });
+  it("clampView 坏档守卫：非有限/天文经纬度 O(1) 收敛（旧 while±360 冻页甚至死循环）", () => {
+    assert.deepStrictEqual(clampView({ lon0: NaN, lat0: NaN }, {}), { lon0: 0, lat0: 0, wrapShift: 0 });
+    assert.deepStrictEqual(clampView({ lon0: Infinity, lat0: -Infinity }, {}), { lon0: 0, lat0: 0, wrapShift: 0 });
+    assert.deepStrictEqual(clampView({ lon0: 1e300, lat0: 40 }, {}), { lon0: 0, lat0: 40, wrapShift: 0 }, "亿度开外＝坏档，归零且不携带天文 wrapShift");
+    assert.deepStrictEqual(clampView({ lon0: 3.6e10, lat0: 0 }, {}), { lon0: 0, lat0: 0, wrapShift: 0 }, "旧实现此处 1 亿次循环；新实现直接判坏档");
+    const c = clampView({ lon0: 36123.5, lat0: 0 }, {});   // 亿度以内多圈环绕：O(1) 折返且与逐圈递减逐位一致
+    assert.strictEqual(c.lon0, 123.5);
+    assert.strictEqual(c.wrapShift, -36000);
+    // 常规环绕逐位不变（黄金基准另有锁定；此处防守卫误伤）
+    assert.deepStrictEqual(clampView({ lon0: 190, lat0: 99 }, {}), { lon0: -170, lat0: 85, wrapShift: -360 });
+    assert.deepStrictEqual(clampView({ lon0: -541, lat0: -99 }, {}), { lon0: 179, lat0: -85, wrapShift: 720 });
+  });
 });
 
 describe("程序化地形", () => {
@@ -382,6 +394,19 @@ describe("CPU 兜底瓦片复用判定", () => {
   it("视口越界部分被网格范围裁掉后仍算覆盖", () => {
     assert.strictEqual(tileCovers({ bb: gridBB, pxpd: 15 }, { lonMin: 60, lonMax: 140, latMin: 10, latMax: 60 }, 15, gridBB), true);
   });
+  it("planTile：请求超像素预算时记录请求分辨率——下一帧同口径复用（记录封顶值则永判重建）", () => {
+    const vb = { lonMin: 100, lonMax: 110, latMin: 35, latMax: 40 };
+    const plan = planTile(null, "", vb, 2000, gridBB);
+    assert.ok(typeof plan === "object", "无瓦片必重建");
+    assert.ok(plan.renderPxpd < 2000 * 0.66, "前提：预算封顶已远低于请求档");
+    assert.strictEqual(plan.pxpd, 2000, "瓦片记录请求分辨率而非封顶值");
+    assert.strictEqual(planTile({ bb: plan.bb, pxpd: plan.pxpd, key: "" }, "", vb, 2000, gridBB), "keep", "同视口下一帧必须复用");
+    assert.notStrictEqual(planTile({ bb: plan.bb, pxpd: plan.renderPxpd, key: "" }, "", vb, 2000, gridBB), "keep", "（反例=旧缺陷）记录封顶值则永不复用");
+  });
+  it("planTile：视口全在网格外 → none；等高线参数换档 → 重建", () => {
+    assert.strictEqual(planTile(null, "", { lonMin: 200, lonMax: 210, latMin: 60, latMax: 70 }, 20, gridBB), "none");
+    assert.strictEqual(typeof planTile({ bb: gridBB, pxpd: 20, key: "c0.12f0" }, "c0.24f0", { lonMin: 95, lonMax: 115, latMin: 30, latMax: 45 }, 20, gridBB), "object");
+  });
 });
 
 describe("工具", () => {
@@ -437,7 +462,7 @@ describe("世界规范化（语义）", () => {
     // 加载他人分享的坏档：各数组混入 null/标量；normalize 后应只剩合法对象成员，且不抛
     const w = normalizeWorld({
       meta: {},
-      nodes: [null, { id: "a", type: "city", lon: 1, lat: 2, owners: [null, { faction: "f" }], ops: [null, { kind: "attack", pts: [[1, 2]] }] }, 42],
+      nodes: [null, { id: "a", type: "city", lon: 1, lat: 2, owners: [null, { faction: "f" }], ops: [null, { kind: "attack", pts: [[1, 2], [3, 4]] }] }, 42],
       edges: [null, { from: "a", to: "a", type: "road" }],
       units: [{ id: "u", kind: "inf", track: [null, { t: 1, lon: 0, lat: 0 }, "x"] }],
       factions: [{ id: "f", paint: [null, { cells: [null, [1, 2]] }] }],
@@ -469,6 +494,15 @@ describe("世界规范化（语义）", () => {
     assert.deepStrictEqual(w.edges[1].pts, [[1, 2], [4, 5]]);
     assert.ok(!("pts" in w.edges[2]), "不足 2 点应删键");
     assert.ok(!("pts" in w.edges[3]) && w.edges[3].from === "a", "经典边不受影响");
+  });
+  it("作战线 ops[].pts：非法坐标剔除、有效点不足 2 剔整条（渲染/拾取对 null 成员会崩）", () => {
+    const w = normalizeWorld({ meta: {}, nodes: [{ id: "e", type: "event", lon: 1, lat: 2, ops: [
+      { kind: "attack", pts: [[100, 30], null, [110, 33], ["x", 1]] },   // 剔 2 个非法成员 → 剩 2 点保留
+      { kind: "defense", pts: [[1, 2], null] },                          // 有效点不足 2 → 整条剔除
+      { kind: "attack", pts: 7 }                                         // pts 非数组 → 剔除（旧行为）
+    ] }] });
+    assert.strictEqual(w.nodes[0].ops!.length, 1);
+    assert.deepStrictEqual(w.nodes[0].ops![0].pts, [[100, 30], [110, 33]]);
   });
   it("assets（自定义印章）：合法保留、非法/空删键；旧档无此键仍无", () => {
     const w = normalizeWorld({ meta: {}, assets: [
@@ -535,6 +569,12 @@ describe("存档校验 validateWorld", () => {
     const text = r.warnings.map(i => i.path + i.msg).join("|");
     for (const frag of ["color", "没有", "重复", "无效", "since", "edges[0].to", "edges[0].type"])
       assert.ok(text.includes(frag), `应含警告片段 ${frag}：${text}`);
+  });
+  it("作战线坏成员/坏折线 = 仅警告（normalize 剔除后照常打开）", () => {
+    const r = validateWorld({ meta: {}, nodes: [{ id: "e", type: "event", lon: 1, lat: 2,
+      ops: [{ kind: "attack", pts: [[1, 2], null] }, null, { kind: "attack", pts: [[1, 2], [3, 4]] }] }] });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.warnings.filter(i => i.path.includes(".ops[")).length, 2, "坏折线+非对象成员各 1 条；合法 op 不受累");
   });
   it("红线：normalizeWorld 能整形的输入绝不报 fatal", () => {
     for (const fixable of [{ meta: "x", nodes: [] }, { meta: {}, nodes: [], factions: "坏", events: { 不是: "数组" } }])

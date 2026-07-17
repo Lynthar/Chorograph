@@ -1,6 +1,6 @@
-/* 帮助弹层（UI 1:1 还原 v0.14 #help）：.ovl 遮罩 + 宣纸 .card。
-   正文为 v0.14 静态原文（自有可信内容，整段注入保证逐字一致；仅去掉旧版号）。
-   关闭：按钮 / Esc（外壳 keydown）/ 点遮罩空白。 */
+/* 帮助弹层：.ovl 遮罩 + 宣纸 .card。
+   正文以实测快捷键/工具轨为真源重写（2026-07；帮助是交互契约，错的比没有更糟）——
+   改快捷键或子工具时**此处必须同步**。关闭：按钮 / Esc（外壳 keydown）/ 点遮罩空白。 */
 import { helpOpenSig } from "./state.ts";
 
 const HELP_HTML = `
@@ -10,11 +10,12 @@ const HELP_HTML = `
     <tr><td>一切依纪年显示</td><td>派系存续、城池归属(owners)、涂绘疆域分层、战役与攻势箭头，以及<b>地点/道路河流/布景/地形涂改的存在时段</b>（可选 since/until，不填=全期存在）。拖时间轴或按 <kbd>P</kbd> 播放，看世界随历史演变；行军寻路也按当年的道路与地形计算。</td></tr>
     <tr><td>怎么设置时段</td><td>画新东西前，在编辑面板勾选「<b>⏳ 该对象存在时间段</b>」并填起止年；已有对象在右栏表单里改「存在·起/止」。地形笔刷配合时段可表现山川变迁（如干涸的湖、新造的山）。</td></tr>
   </table>
-  <h4>三个模式</h4>
+  <h4>工具轨（快捷键 <kbd>1</kbd>~<kbd>4</kbd>）</h4>
   <table>
-    <tr><td><b>🖐 浏览</b></td><td>平移：<b>左键拖动</b>（网页地图惯例）；滚轮缩放、双击放大（Shift+双击缩小）。左键点击看详情（地点/事件/作战线/派系/河流·道路·商路）；<b>Shift+左键拖动＝框选多个地点</b>（框选后 <kbd>Delete</kbd> 可批量删除）；悬停有速览。左栏底部是<b>事件时间线</b>（点事件=时间轴跳到该年并定位）。</td></tr>
-    <tr><td><b>📐 分析</b></td><td>两个子工具：<b>量距</b>=连续点多处，逐段距离+总计，右键撤销上一点；<b>行军</b>=点起点→终点，A*按地形算路（陆军翻山慢、水军只走水域、飞行直线），给出里程/迂回率/各速度天数/<b>沿途地形与途经地</b>。</td></tr>
-    <tr><td><b>✏️ 编辑</b></td><td><b>选择</b>(默认：点选任意元素，按住地点/布景拖动，<b>空白拖=框选</b>，<b>按住框选集内地点=整体拖动</b>，方向键微调(框选=批量)，Delete 删除)/地点(11 类，各类型带<b>属性模板</b>；事件点分 ⚔战役/🏛政事/🌋灾异/✨异象/▽其他 子类型，表单可<b>「▽ 在此地新建事件点」</b>)/连线(可填河流宽深流量等)/<b>派系(涂域笔刷)</b>/地形=生态区画笔/布景(拖动连续播撒)，子工具 <kbd>Shift</kbd>+<kbd>1</kbd>~<kbd>6</kbd>。三种笔刷共用右上<b>悬浮笔刷框</b>：<kbd>[</kbd>/<kbd>]</kbd> 或 Alt+滚轮调大小(1~12)、<b>画笔↔橡皮(E)</b>、<b>Alt+点击=取样</b>。左栏「派系」区可<b>新增/编辑/删除派系</b>。全部编辑支持 <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd>，改动<b>自动保存</b>。删除＝详情页按钮 / <kbd>Delete</kbd> / 框选+<kbd>Delete</kbd>。</td></tr>
+    <tr><td><b>览 · 浏览</b></td><td>平移：<b>左键拖动</b>（网页地图惯例）；滚轮缩放、双击放大（Shift+双击缩小）。左键点击看详情（地点/事件/作战线/派系/河流·道路·商路）；<b>Shift+左键拖动＝框选</b>（地点与部队；<kbd>Delete</kbd>/<kbd>Backspace</kbd> 批量删除）；悬停有速览。左栏（览面）即<b>事件时间线</b>（点事件＝时间轴跳到该年并定位）。</td></tr>
+    <tr><td><b>测 · 分析</b></td><td>两个子工具：<b>量距</b>＝连续点多处，逐段距离＋总计，右键撤销上一点；<b>行军</b>＝点起点→终点，A* 按地形算路（陆军翻山慢、水军只走水域、飞行直线），给出里程/迂回率/各速度天数/<b>沿途地形与途经地</b>。</td></tr>
+    <tr><td><b>绘 · 编辑</b></td><td><b>选择</b>为默认态：点选任意元素、按住地点/布景/部队拖动、<b>空白拖＝框选</b>、<b>按住框选成员＝整组拖移</b>、方向键微调（框选＝批量）、<kbd>Delete</kbd>/<kbd>Backspace</kbd> 删除。六个子工具（<kbd>Shift</kbd>+<kbd>1</kbd>~<kbd>6</kbd>，再按当前＝回到选择）：<b>地形</b>＝地貌×生态双层画笔／<b>地点</b>（11 类，各类型带<b>属性模板</b>；事件点分 ⚔战役/🏛政事/🌋灾异/✨异象/▽其他 子类，表单可「▽ 在此地新建事件点」）／<b>连线</b>（道路·商路点两端相连；选「河流」＝按住拖一笔<b>自由画河</b>，可填宽深流量等）／<b>涂域</b>（派系疆域笔刷，可分时段层；左栏可新增派系）／<b>布景</b>（印章，拖动连续播撒，右键删单个）／<b>标注</b>（自由文字）。三种笔刷共用画布顶部<b>悬浮属性条</b>：<kbd>[</kbd>/<kbd>]</kbd> 或 Alt+滚轮调大小、<kbd>E</kbd> 画笔↔橡皮、<b>Alt+点击＝取样</b>。全部编辑支持 <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd>，改动<b>自动保存</b>。</td></tr>
+    <tr><td><b>军 · 兵棋</b></td><td>仅战术图（<kbd>4</kbd>；或 <kbd>Shift</kbd>+<kbd>7</kbd> 直达部队子工具）：部队列表、拖入放置与逐日动向——详见下方「战术图」。</td></tr>
   </table>
   <h4>平移与缩放（任何模式）</h4>
   <table>
@@ -34,10 +35,10 @@ const HELP_HTML = `
   </table>
   <h4>快捷键</h4>
   <table>
-    <tr><td><kbd>1</kbd>~<kbd>3</kbd> 切换模式（浏览/分析/编辑）</td><td><kbd>Shift</kbd>+<kbd>1</kbd>~<kbd>7</kbd> 编辑子工具</td><td><kbd>P</kbd> 播放/暂停时间轴</td></tr>
-    <tr><td><kbd>[</kbd>/<kbd>]</kbd> 或 Alt+滚轮 笔刷/印章大小</td><td><kbd>E</kbd> 画笔↔橡皮　Alt+点击 取样</td><td><kbd>Delete</kbd> 删除选中（框选=批量）</td></tr>
-    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销　<kbd>Ctrl</kbd>+<kbd>Y</kbd>/<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> 重做</td><td>右键单击 = 量距撤点/删单个布景/取消连线</td><td><kbd>Esc</kbd> 清除选择/关闭浮窗　<kbd>?</kbd> 帮助</td></tr>
-    <tr><td>浏览 Shift+左键拖动 = 框选地点</td><td>编辑选中地点：方向键 = 微调位置</td><td>左右栏边缘可拖宽</td></tr>
+    <tr><td><kbd>1</kbd>~<kbd>4</kbd> 工具轨：览/测/绘/军（军仅战术图）</td><td><kbd>Shift</kbd>+<kbd>1</kbd>~<kbd>6</kbd> 绘子工具（形/点/线/域/景/注，再按＝回选择）　<kbd>Shift</kbd>+<kbd>7</kbd> 部队（战术图）</td><td><kbd>P</kbd> 播放/暂停时间轴　<kbd>0</kbd> 复位视角</td></tr>
+    <tr><td><kbd>[</kbd>/<kbd>]</kbd> 或 Alt+滚轮 笔刷/印章大小</td><td><kbd>E</kbd> 画笔↔橡皮　Alt+点击 取样</td><td><kbd>Delete</kbd>/<kbd>Backspace</kbd> 删除选中（框选＝批量）</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销　<kbd>Ctrl</kbd>+<kbd>Y</kbd>/<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> 重做</td><td><kbd>Ctrl</kbd>+<kbd>K</kbd> 聚焦搜索　右键＝量距撤点/删单个布景/取消画线·连线起点</td><td><kbd>Esc</kbd> 逐层退出（画线→线选中→清选择；弹层/图库同理）　<kbd>?</kbd> 帮助</td></tr>
+    <tr><td>览/绘·选择/军：<kbd>Shift</kbd>+左键拖＝框选（地点＋部队）</td><td>绘·选中地点：方向键＝微调（<kbd>WASD</kbd> 恒为平移）</td><td>双击放大（仅浏览；Shift+双击缩小）</td></tr>
   </table>
   <h4>世界参数（⚙ 设置）</h4>
   <table>
@@ -64,7 +65,7 @@ export function HelpOverlay() {
       onClick={e => { if (e.target === e.currentTarget) helpOpenSig.value = false; }}>
       <div class="modal" style={{ width: "780px" }}>
         <div class="mo-head">
-          <span class="t">舆图 · 帮助</span><span class="s">? 随时呼出 · 文案随新界面于打磨批重写</span>
+          <span class="t">舆图 · 帮助</span><span class="s">? 随时呼出 · Esc 关闭</span>
           <button class="x tr" aria-label="关闭" onClick={() => { helpOpenSig.value = false; }}>✕</button>
         </div>
         <div class="mo-body">

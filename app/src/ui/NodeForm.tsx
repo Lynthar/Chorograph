@@ -28,15 +28,15 @@ function OpList({ n }: { n: WorldNode }) {
           ? ` · ${op.since != null ? fmtWhenForm(cal, tac, op.since) : "…"}–${op.until != null ? fmtWhenForm(cal, tac, op.until) : "…"}` : "";
         return (
           <div key={i} class="kv">
-            <span class="link" onClick={() => selectOp(n.id, i)}>{op.kind === "defense" ? "🛡" : "⚔"} {op.troop || op.label || `作战线 ${i + 1}`}</span>
+            <button type="button" class="link" onClick={() => selectOp(n.id, i)}>{op.kind === "defense" ? "🛡" : "⚔"} {op.troop || op.label || `作战线 ${i + 1}`}</button>
             {" "}<span class="sub">粗{op.w || 3}{of ? " · " + (of.名称 || of.id) : ""}{span}{op.dash ? " · 虚线" : ""}</span>
           </div>
         );
       })}
       <div class="seg">
         {/* 浏览态「随时编辑」里也可点：先入编辑模式（指针链只在 edit 消费画线态，工具轨随之自明），再武装 */}
-        <span class="tbtn" onClick={() => { if (modeSig.peek() !== "edit") setMode("edit"); startOpDraw(n.id, "attack"); }}>⚔ 画攻势线</span>
-        <span class="tbtn" onClick={() => { if (modeSig.peek() !== "edit") setMode("edit"); startOpDraw(n.id, "defense"); }}>🛡 画防线</span>
+        <button type="button" class="tbtn" onClick={() => { if (modeSig.peek() !== "edit") setMode("edit"); startOpDraw(n.id, "attack"); }}>⚔ 画攻势线</button>
+        <button type="button" class="tbtn" onClick={() => { if (modeSig.peek() !== "edit") setMode("edit"); startOpDraw(n.id, "defense"); }}>🛡 画防线</button>
       </div>
       {draw && draw.evId === n.id && (
         <div class="hint">画线中（{draw.kind === "defense" ? <>🛡防线：正面=画线方向<b>左侧</b>，画完可翻转</> : <>⚔攻势线：末端=箭头</>}）——在地图上<b>按住拖一笔</b>，松手成线；Esc/右键取消。</div>
@@ -70,11 +70,11 @@ function OwnersEditor({ n }: { n: WorldNode }) {
             <input class="fld" type={eraTy(cal, tac)} style={{ width: "40%" }} placeholder={`止(${eraPh(cal, tac)})`}
               defaultValue={o.until != null ? fmtWhenForm(cal, tac, o.until) : ""} key={n.id + ":ou" + i + ":" + (o.until ?? "")}
               onChange={e => mut(x => updateOwner(x, i, { until: tv((e.currentTarget as HTMLInputElement).value) }))} />
-            <span class="link" style={{ color: "var(--q-zhu)", alignSelf: "center" }} title="删除此段" onClick={() => mut(x => removeOwner(x, i))}>✕</span>
+            <button type="button" class="link" style={{ color: "var(--q-zhu)", alignSelf: "center" }} title="删除此段" onClick={() => mut(x => removeOwner(x, i))}>✕</button>
           </div>
         </div>
       ))}
-      <div class="seg"><span class="tbtn" onClick={() => mut(x => addOwner(x, yearSig.peek()))}>＋ 加一段归属</span></div>
+      <div class="seg"><button type="button" class="tbtn" onClick={() => mut(x => addOwner(x, yearSig.peek()))}>＋ 加一段归属</button></div>
     </>
   );
 }
@@ -181,8 +181,8 @@ export function NodeForm({ n }: { n: WorldNode }) {
       {isEv && (
         <div class="seg">
           {n.tacmap
-            ? <span class="tbtn" title="重新生成一张战术地图并改链到它（旧图保留在图库）" onClick={genTac}>⟳ 重新生成战术图</span>
-            : (tac ? null : <span class="tbtn" title="以此事件为中心生成小范围战场图（直径可输，默认200km；地形/地点/派系按当年快照继承）" onClick={genTac}>⚔ 生成战术地图</span>)}
+            ? <button type="button" class="tbtn" title="重新生成一张战术地图并改链到它（旧图保留在图库）" onClick={genTac}>⟳ 重新生成战术图</button>
+            : (tac ? null : <button type="button" class="tbtn" title="以此事件为中心生成小范围战场图（直径可输，默认200km；地形/地点/派系按当年快照继承）" onClick={genTac}>⚔ 生成战术地图</button>)}
         </div>
       )}
       {isBattle && <div class="frow"><label>对阵</label>

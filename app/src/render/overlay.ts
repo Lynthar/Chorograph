@@ -211,7 +211,8 @@ export interface OverlayOpts {
   layers?: Record<string, boolean>;   // 图层开关（缺省=开；键同 LAYERS.id）
   selId?: string | null;              // 选中地点 id（金圈高亮；战役任意年显示作战线）
   opSel?: { evId: string; i: number } | null;   // 选中的作战线（泥金光晕）
-  grid?: Grid;                        // 供生态点缀层散布（缺省=不画 eco，如地形涂改时）
+  grid?: Grid;                        // 生态点缀散布 + 布景印章尺度源（应恒传；缺则 eco 不画、印章尺度回退 1°）
+  eco?: boolean;                      // 生态点缀开关（缺省开）——独立于 grid：地形涂改只关此项，印章尺度仍用 grid.step
   multiIds?: string[] | null;         // 框选的地点 id（金圈高亮全部）
   unitSelId?: string | null;          // 选中部队 id（泥金光晕框；战术图）
   multiUnitIds?: string[] | null;     // 框选的部队 id（同款光晕；战术图）
@@ -234,7 +235,7 @@ export function drawOverlay(
   const multiSet = new Set(opts.multiIds || []);
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
-    if (on("eco") && opts.grid) drawEco(ctx, c2, opts.grid);       // 生态点缀（垫底，地形之上）
+    if (on("eco") && opts.eco !== false && opts.grid) drawEco(ctx, c2, opts.grid);   // 生态点缀（垫底，地形之上）
     if (on("decor")) drawDecor(ctx, c2, world, yearNow, opts.grid ? opts.grid.step : 1);   // 手绘布景（印章尺度随格距 step）
     if (on("politics")) drawFactions(ctx, c2, meta, world, yearNow, opts.smooth ?? 2);
     if (on("range")) drawNodeRanges(ctx, c2, meta, world, yearNow, opts.selId);   // 地点范围虚线圈

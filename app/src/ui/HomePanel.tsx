@@ -22,14 +22,14 @@ export function HomePanel() {
           <span class="hm-title">舆图</span>
           <span class="hm-sub">分析型世界地图 · 地图库</span>
           <span class="sp"></span>
-          {v.mapId && <span class="tbtn" onClick={() => acts?.toggle()}>↩ 返回当前地图 (Esc)</span>}
+          {v.mapId && <button type="button" class="tbtn" onClick={() => acts?.toggle()}>↩ 返回当前地图 (Esc)</button>}
         </div>
         <div class="hm-actions">
-          <span class="hm-new" onClick={() => openSettings("create")}>🆕 新建地图</span>
-          <span class="tbtn" title="选择一个导出过的 .json，作为一张新地图加入图库" onClick={() => fileRef.current?.click()}>📂 导入 JSON 为新图</span>
-          <span class="tbtn" title="以内置示例大陆新开一张地图" onClick={() => acts?.newFromSample()}>📜 从内置示例新建</span>
+          <button type="button" class="hm-new" onClick={() => openSettings("create")}>🆕 新建地图</button>
+          <button type="button" class="tbtn" title="选择一个导出过的 .json，作为一张新地图加入图库" onClick={() => fileRef.current?.click()}>📂 导入 JSON 为新图</button>
+          <button type="button" class="tbtn" title="以内置示例大陆新开一张地图" onClick={() => acts?.newFromSample()}>📜 从内置示例新建</button>
           {v.fsSupported && v.source !== "folder" && (
-            <span class="tbtn" title="链接一个本地文件夹作为图库，直接读写其中的 .json（需 Edge/Chrome 经 localhost 或 https）" onClick={() => acts?.linkFolder()}>📁 链接文件夹</span>
+            <button type="button" class="tbtn" title="链接一个本地文件夹作为图库，直接读写其中的 .json（需 Edge/Chrome 经 localhost 或 https）" onClick={() => acts?.linkFolder()}>📁 链接文件夹</button>
           )}
           <input ref={fileRef} type="file" accept="application/json" multiple style={{ display: "none" }}
             onChange={e => {
@@ -42,8 +42,8 @@ export function HomePanel() {
         <div class="hm-source">
           {v.source === "folder"
             ? <>当前图库：<b>📁 {v.folderName}</b> <span class="sub">实时读写此文件夹里的 .json</span>{" "}
-              <span class="tbtn" title="切回浏览器本地存储图库" onClick={() => acts?.backToBrowser()}>💾 切回浏览器存档</span>{" "}
-              <span class="tbtn" title="改链接到另一个文件夹" onClick={() => acts?.linkFolder()}>📁 更换文件夹</span></>
+              <button type="button" class="tbtn" title="切回浏览器本地存储图库" onClick={() => acts?.backToBrowser()}>💾 切回浏览器存档</button>{" "}
+              <button type="button" class="tbtn" title="改链接到另一个文件夹" onClick={() => acts?.linkFolder()}>📁 更换文件夹</button></>
             : <>当前图库：<b>💾 浏览器本地存储</b>{v.fsSupported
               ? <span class="sub"> — 也可「📁 链接文件夹」把地图存成真正的 .json 文件，随时用其它软件/网盘管理</span>
               : <span class="sub"> —「链接文件夹」需用 Edge/Chrome 经 localhost 或 https 打开（当前环境不支持）</span>}</>}
@@ -52,7 +52,9 @@ export function HomePanel() {
           {v.entries.map(m => {
             const c = m.counts || {};
             return (
-              <div key={m.id} class="mapcard" title={`打开「${m.name || "未命名"}」`} onClick={() => acts?.open(m.id)}>
+              <div key={m.id} class="mapcard" title={`打开「${m.name || "未命名"}」`} role="button" tabIndex={0}
+                onClick={() => acts?.open(m.id)}
+                onKeyDown={e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); acts?.open(m.id); } }}>
                 {m.thumb ? <img class="mc-thumb" src={m.thumb} alt="" /> : <div class="mc-thumb">🗺</div>}
                 <div class="mc-body">
                   <div class="mc-name">{m.name || "未命名"}{c.tac ? <> <span class="tag" style={{ background: "#8a2f2f" }}>⚔ 战术</span></> : null}</div>
@@ -61,7 +63,7 @@ export function HomePanel() {
                     : `${c.nodes || 0} 地点 · ${c.factions || 0} 派系 · ${c.events || 0} 战役`}</div>
                   <div class="mc-sub">更新 {fmtTime(m.updatedAt)}</div>
                 </div>
-                <span class="mc-del" title="删除此地图" onClick={e => { e.stopPropagation(); acts?.remove(m.id); }}>🗑</span>
+                <button type="button" class="mc-del" title="删除此地图" onClick={e => { e.stopPropagation(); acts?.remove(m.id); }}>🗑</button>
               </div>
             );
           })}

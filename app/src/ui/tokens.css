@@ -19,30 +19,30 @@
   --f-mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,monospace;
 }
 
-/* ── 令牌：亮 · 素笺（默认） ── */
+/* ── 令牌：亮 · 素笺（默认） ── 2026-07 对比度校准：dim/faint 提级（小字 WCAG AA 达/近标）；--fs-xs 12px＝汉字字号地板 ── */
 #app{
   --q-bg:#efece3; --q-top:#f7f4ec; --q-pn:#fcfaf4; --q-in:#eae5d8; --q-in2:#e0d9c8;
   --q-ln:#ded6c5; --q-ln2:#c8bda6;
-  --q-tx:#2b2620; --q-dim:#82796a; --q-faint:#a89e8d;
+  --q-tx:#2b2620; --q-dim:#6b6254; --q-faint:#7d7464;
   --q-gold:#8f6f24; --q-gold2:#6f5518; --q-goldink:#fdf6e3; --q-goldwash:#8f6f2414;
   --q-zhu:#b73527; --q-zhu2:#992b1f; --q-zhuink:#fdf3ef; --q-zhuwash:#b7352712;
   --q-ok:#5f7d4f; --q-shadow:0 10px 34px rgb(60 48 20/.18);
-  --fs:13px; --fs-sm:12px; --fs-xs:11px;
+  --fs:13px; --fs-sm:12px; --fs-xs:12px;
   --h-top:52px; --h-dock:66px; --h-sub:34px; --w-rail:56px; --w-dw:264px; --w-in:292px;
   --pad:14px; --gap:10px; --r:10px; --r-sm:8px; --ctl:32px;
 }
-/* ── 暗 · 漆 ── */
+/* ── 暗 · 漆 ──（faint 提级；朱改「浅朱深墨」镜像金按钮——错误文案与按钮字对比双达标） */
 #app[data-theme="dark"]{
   --q-bg:#131110; --q-top:#1b1815; --q-pn:#201c18; --q-in:#292420; --q-in2:#332d26;
   --q-ln:#363028; --q-ln2:#4a4136;
-  --q-tx:#eae4d8; --q-dim:#9c9284; --q-faint:#6e665b;
+  --q-tx:#eae4d8; --q-dim:#9c9284; --q-faint:#877e72;
   --q-gold:#d9b36b; --q-gold2:#e6c98d; --q-goldink:#241b09; --q-goldwash:#d9b36b1a;
-  --q-zhu:#ce4a38; --q-zhu2:#e0664f; --q-zhuink:#fff6f1; --q-zhuwash:#ce4a381f;
+  --q-zhu:#dd6047; --q-zhu2:#e56b52; --q-zhuink:#2b1009; --q-zhuwash:#dd60471f;
   --q-ok:#8aa878; --q-shadow:0 10px 34px rgb(0 0 0/.5);
 }
 /* ── 密度 · 紧（兵棋编辑；只动尺寸令牌） ── */
 #app[data-den="tight"]{
-  --fs:12px; --fs-sm:11.5px; --fs-xs:10.5px;
+  --fs:12px; --fs-sm:11.5px; --fs-xs:11px;
   --h-top:46px; --h-dock:56px; --h-sub:30px; --w-rail:48px; --w-dw:232px; --w-in:264px;
   --pad:10px; --gap:7px; --r:8px; --r-sm:6px; --ctl:28px;
 }

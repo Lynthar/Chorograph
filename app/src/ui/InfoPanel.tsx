@@ -240,7 +240,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
         const setPt = (lon: number, lat: number) => { mutateWorld(w => { setUnitWaypoint(w, u.id, q.t, lon, lat); }); };
         return (
           <div key={i} class="kv">
-            <span class="link" onClick={() => { yearSig.value = q.t; }}>{fmtT(cal, q.t)}</span>
+            <button type="button" class="link" onClick={() => { yearSig.value = q.t; }}>{fmtT(cal, q.t)}</button>
             {editable ? <>{" "}
               <input class="fld" type="number" step={0.0001} title="经度°" key={i + ":lon" + q.lon}
                 style={{ width: "5.4em", display: "inline-block", padding: "1px 3px", margin: 0 }}
@@ -260,7 +260,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
               </select>
             </> : (q.st && UNIT_STATUS[q.st] ? <> <span class="tg" style={{ background: UNIT_STATUS[q.st].color, fontSize: "10px", padding: "1px 6px" }}>{UNIT_STATUS[q.st].名}</span></> : null)}
             {L && <span class="sub" style={L.ok ? undefined : { color: "var(--q-zhu)" }}> {Math.round(L.km)}km{L.route ? "" : "(直线)"}/{L.days}日·需{L.need.toFixed(1)}日{L.ok ? "" : " ⚠"}</span>}
-            {editable && <span class="link" style={{ color: "var(--q-zhu)" }} title="删此航点" onClick={() => { mutateWorld(w => { deleteUnitWaypoint(w, u.id, i); }); }}> ✕</span>}
+            {editable && <button type="button" class="link" style={{ color: "var(--q-zhu)" }} title="删此航点" onClick={() => { mutateWorld(w => { deleteUnitWaypoint(w, u.id, i); }); }}> ✕</button>}
           </div>
         );
       })}

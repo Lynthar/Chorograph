@@ -105,6 +105,12 @@ export function validateWorld(w: unknown): ValidateResult {
       if (isObj(ow)) { refFaction(`${p}.owners[${j}].faction`, ow.faction); checkTimed(`${p}.owners[${j}]`, ow); }
       else W(`${p}.owners[${j}]`, "归属沿革成员不是对象");
     });
+    if (Array.isArray(n.ops)) n.ops.forEach((op, j) => {   // 作战线：normalize 会剔坏成员/坏折线，这里仅提示（红线：不 fatal）
+      if (!isObj(op)) { W(`${p}.ops[${j}]`, "作战线成员不是对象，打开时将被剔除"); return; }
+      const usable = Array.isArray(op.pts)
+        && (op.pts as unknown[]).filter(q => Array.isArray(q) && isFinite(Number(q[0])) && isFinite(Number(q[1]))).length >= 2;
+      if (!usable) W(`${p}.ops[${j}]`, "作战线需要至少 2 个有效 [经,纬] 坐标点，打开时将被剔除");
+    });
     checkTimed(p, n);
   });
 

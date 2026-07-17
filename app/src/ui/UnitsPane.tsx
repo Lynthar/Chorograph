@@ -21,13 +21,13 @@ export function UnitsPane() {
   return (
     <>
       <div class="sec">部队<span class="cnt">{units.length}</span>
-        <span class="mini tr" title="新增未入场部队：先在右栏改名/设属性，再按住列表项拖到地图上放置"
+        <button type="button" class="mini tr" title="新增未入场部队：先在右栏改名/设属性，再按住列表项拖到地图上放置"
           onClick={() => {
             let uid: string | null = null;
             mutateWorld(w => { uid = addUnitUnplaced(w, `未命名部队 ${(w.units || []).length + 1}`).id; });
             if (uid) selSig.value = { kind: "unit", id: uid };
             showToast("已新增未入场部队——按住列表项拖到地图放置", { undo: true });
-          }}>＋ 新增部队</span></div>
+          }}>＋ 新增部队</button></div>
       {units.length === 0 && (
         <div class="empty"><span class="ph">军</span><b>还没有部队</b>
           <p>点上方「＋ 新增部队」新建（未入场），再按住列表项<b>拖到地图上</b>放置；按住图上部队拖动＝记录当日位置（先把时间坞拖到目标日）。</p></div>

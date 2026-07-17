@@ -46,7 +46,11 @@ export function normalizeWorld(w: unknown): World {
     if ((LEGACY_TYPE as any)[n.type]) n.type = LEGACY_TYPE[n.type];             // 旧地点类型自动升级
     if (n.type === "event" && !(EVENT_TYPES as any)[n.evtype]) n.evtype = "battle"; // v0.11：旧事件点默认=战役
     if (Array.isArray(n.owners)) n.owners = n.owners.filter(isRec);
-    if (Array.isArray(n.ops)) n.ops = n.ops.filter((op: any) => isRec(op) && Array.isArray(op.pts));
+    if (Array.isArray(n.ops)) n.ops = n.ops.filter((op: any) => {   // 作战线折线净化（同 edges.pts；渲染/拾取对 null 成员会崩）
+      if (!isRec(op) || !Array.isArray(op.pts)) return false;
+      op.pts = op.pts.filter((q: any) => Array.isArray(q) && isFinite(+q[0]) && isFinite(+q[1])).map((q: any) => [+q[0], +q[1]]);
+      return op.pts.length >= 2;   // op 无 from/to 可回退，有效点不足 2 剔整条
+    });
   });
   o.edges.forEach((e: any) => {   // 自由画河道折线 pts 净化（同 ops.pts 防御）：剔非法坐标、不足 2 点删键；旧 from/to 边无 pts 零影响
     if (e.pts == null) return;

@@ -14,11 +14,11 @@ export function Toast() {
   }, [msg && msg.token]);
   if (!msg) return null;
   return (
-    <div class={"toast" + (msg.err ? " err" : "") + (shown ? " show" : "")}>
+    <div class={"toast" + (msg.err ? " err" : "") + (shown ? " show" : "")} role="status" aria-live="polite">
       <span class="okdot" />
       <span class="msg">{msg.text}</span>
-      {msg.undo && <span class="und" onClick={() => { undoWorld(); setShown(false); }}>撤销</span>}
-      {msg.action && <span class="und" onClick={() => { msg.action!.run(); setShown(false); }}>{msg.action.label}</span>}
+      {msg.undo && <button type="button" class="und" onClick={() => { undoWorld(); setShown(false); }}>撤销</button>}
+      {msg.action && <button type="button" class="und" onClick={() => { msg.action!.run(); setShown(false); }}>{msg.action.label}</button>}
     </div>
   );
 }

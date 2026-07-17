@@ -109,7 +109,8 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       const c = clampView({ lon0: snap.view.lon0, lat0: snap.view.lat0 }, ctx.meta);
       ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = snap.view.degPerPx || 0.06;
     } else if (!dl.urlView && ctx.meta.view && isFinite(ctx.meta.view.lon0)) {
-      ctx.view.lon0 = ctx.meta.view.lon0; ctx.view.lat0 = ctx.meta.view.lat0; ctx.view.degPerPx = ctx.meta.view.degPerPx0 || ctx.view.degPerPx;
+      const c = clampView({ lon0: ctx.meta.view.lon0, lat0: ctx.meta.view.lat0 }, ctx.meta);   // 档内 view 不可信：lat0 可 NaN、lon0 可超界
+      ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = ctx.meta.view.degPerPx0 || ctx.view.degPerPx;
     }
     dl.urlView = dl.urlYear = false;      // URL 直达只压制首次打开
     // 强制用最终 world/year/meta 重建：上面先设 yearSig(snap) 会触发一次 rebuild，但那时 worldSig 尚未更新，

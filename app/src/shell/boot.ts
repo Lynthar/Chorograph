@@ -147,7 +147,8 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   /* 顶栏「复位」（v0.14 btnReset；快捷键 0）：回世界初始视角 */
   const resetView = (): void => {
     const v = (ctx.meta || ({} as Meta)).view || { lon0: 108, lat0: 36, degPerPx0: 0.06 };
-    ctx.view.lon0 = v.lon0; ctx.view.lat0 = v.lat0; ctx.view.degPerPx = v.degPerPx0 || 0.06;
+    const c = clampView({ lon0: v.lon0, lat0: v.lat0 }, ctx.meta);   // 档内 view 不可信（NaN/超界）
+    ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = v.degPerPx0 || 0.06;
   };
   $("btnReset").onclick = resetView;
   $("btnHome").onclick = () => goHome();

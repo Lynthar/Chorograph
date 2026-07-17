@@ -50,7 +50,7 @@ function PaintCtx() {
   }
   return (
     <>
-      <div class="sec">派系<span class="cnt">{world.factions.length}</span><span class="mini tr" onClick={addFac}>＋ 新增派系</span></div>
+      <div class="sec">派系<span class="cnt">{world.factions.length}</span><button type="button" class="mini tr" onClick={addFac}>＋ 新增派系</button></div>
       <div class="rows">
         {world.factions.map(x => (
           <button key={x.id} class={"row tr" + (pf === x.id ? " on" : "")}
@@ -64,11 +64,11 @@ function PaintCtx() {
       </div>
       {f && (
         <>
-          <div class="sec">时段层<span class="mini tr" onClick={() => {
+          <div class="sec">时段层<button type="button" class="mini tr" onClick={() => {
             let ni = 0;   // 新层下标在 mutateWorld 回调里取——`layers` 别名着被 push 的数组，回调外 length 已变（2026-07-12 P1）
             mutateWorld(w => { const wf = w.factions.find(x => x.id === f.id); if (wf) { (wf.paint = wf.paint || []).push({ cells: [] }); ni = wf.paint.length - 1; } });
             paintLayerSig.value = ni;
-          }}>＋ 新增时段层</span></div>
+          }}>＋ 新增时段层</button></div>
           {layers.length > 0 ? (
             <div class="lyr-strip">
               {layers.map((Lx, i) => (
@@ -237,8 +237,8 @@ export function DrawPane() {
   return (
     <>
       <div class="sec">子工具
-        <span class="mini tr" title="撤销 (Ctrl+Z)" onClick={undoWorld}>↶ 撤销</span>
-        <span class="mini tr" title="重做 (Ctrl+Y)" onClick={redoWorld}>↷ 重做</span>
+        <button type="button" class="mini tr" title="撤销 (Ctrl+Z)" onClick={undoWorld}>↶ 撤销</button>
+        <button type="button" class="mini tr" title="重做 (Ctrl+Y)" onClick={redoWorld}>↷ 重做</button>
       </div>
       <div class="stgrid" id="stgrid">
         {SUBS.map(({ s, g, n }, i) => (

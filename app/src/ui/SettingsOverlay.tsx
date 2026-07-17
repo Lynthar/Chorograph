@@ -127,14 +127,14 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
           <h4 style={{ margin: "10px 0 4px" }}>界面（本机偏好，不入存档）</h4>
           <div class="setrow"><label>主题</label>
             <div class="seg">
-              <span class={"tbtn" + (p.theme === "light" ? " on" : "")} onClick={() => setUiPrefs({ theme: "light" })}>亮 · 素笺</span>
-              <span class={"tbtn" + (p.theme === "dark" ? " on" : "")} onClick={() => setUiPrefs({ theme: "dark" })}>暗 · 漆</span>
+              <button type="button" class={"tbtn" + (p.theme === "light" ? " on" : "")} aria-pressed={p.theme === "light"} onClick={() => setUiPrefs({ theme: "light" })}>亮 · 素笺</button>
+              <button type="button" class={"tbtn" + (p.theme === "dark" ? " on" : "")} aria-pressed={p.theme === "dark"} onClick={() => setUiPrefs({ theme: "dark" })}>暗 · 漆</button>
             </div>
           </div>
           <div class="setrow"><label>密度</label>
             <div class="seg">
-              <span class={"tbtn" + (p.den === "loose" ? " on" : "")} onClick={() => setUiPrefs({ den: "loose" })}>浏览 · 松</span>
-              <span class={"tbtn" + (p.den === "tight" ? " on" : "")} onClick={() => setUiPrefs({ den: "tight" })}>兵棋 · 紧</span>
+              <button type="button" class={"tbtn" + (p.den === "loose" ? " on" : "")} aria-pressed={p.den === "loose"} onClick={() => setUiPrefs({ den: "loose" })}>浏览 · 松</button>
+              <button type="button" class={"tbtn" + (p.den === "tight" ? " on" : "")} aria-pressed={p.den === "tight"} onClick={() => setUiPrefs({ den: "tight" })}>兵棋 · 紧</button>
             </div>
           </div>
           <h4 style={{ margin: "12px 0 4px" }}>世界参数</h4>
@@ -161,7 +161,7 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
           <option value="archipelago" selected={d.genStyle === "archipelago"}>群岛</option>
         </select>
         <input type="number" id="sw_genseed" min={1} step={1} style={{ width: "6.5em" }} title="随机种子——同一种子永远生成同一块大陆" defaultValue={String(d.genSeed)} />
-        <span class="tbtn" title="随机换一个种子，生成另一块大陆" onClick={reroll}>⟳ 换一换</span>
+        <button type="button" class="tbtn" title="随机换一个种子，生成另一块大陆" onClick={reroll}>⟳ 换一换</button>
       </div>
       <div class="setrow"><label></label><span class="sub">「自动生成」按种子程序化生成海岸线/山川/生态；初稿只是底子——编辑模式可继续涂改，已涂改的格子(terrainOverrides)始终保留其上。</span></div>
       <div class="setrow"><label>地势起伏</label>
@@ -202,10 +202,10 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
         <div id="setDataSec">
           <h4 style={{ margin: "14px 0 4px" }}>数据文件与出图</h4>
           <div class="seg">
-            <span class="tbtn" title="导入 JSON 数据文件，替换当前地图内容（可撤销）" onClick={() => fileRef.current?.click()}>📂 导入 JSON</span>
-            <span class="tbtn" title="导出当前数据为 JSON" onClick={() => acts?.exportCurrent()}>💾 导出 JSON</span>
-            <span class="tbtn" title="把当前视图导出为 PNG 图片" onClick={() => acts?.exportPng()}>📷 出图 PNG</span>
-            <span class="tbtn" title="把当前地图内容重置为内置示例数据（可撤销）" onClick={() => acts?.resetToSample()}>↺ 重置为内置示例</span>
+            <button type="button" class="tbtn" title="导入 JSON 数据文件，替换当前地图内容（可撤销）" onClick={() => fileRef.current?.click()}>📂 导入 JSON</button>
+            <button type="button" class="tbtn" title="导出当前数据为 JSON" onClick={() => acts?.exportCurrent()}>💾 导出 JSON</button>
+            <button type="button" class="tbtn" title="把当前视图导出为 PNG 图片" onClick={() => acts?.exportPng()}>📷 出图 PNG</button>
+            <button type="button" class="tbtn" title="把当前地图内容重置为内置示例数据（可撤销）" onClick={() => acts?.resetToSample()}>↺ 重置为内置示例</button>
             <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }}
               onChange={async e => {
                 const el = e.currentTarget as HTMLInputElement;

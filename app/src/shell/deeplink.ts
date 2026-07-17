@@ -64,8 +64,8 @@ export function parseDeepLink(ctx: ShellCtx): DeepLink {
     if (k === "multi") dl.wantMulti = dec(v).split(",");    // 框选多地点（名称/ id 逗号分隔，演示/截图用）
     if (k === "pts") dl.wantPts = v.split(",").map(Number);               // lon,lat,lon,lat…
     if (k === "arm" && v) armSig.value = v as Arm;
-    if (k === "lon" && v !== "") { const n = num(v); if (n != null) { ctx.view.lon0 = n; dl.urlView = true; } }
-    if (k === "lat" && v !== "") { const n = num(v); if (n != null) { ctx.view.lat0 = n; dl.urlView = true; } }
+    if (k === "lon" && v !== "") { const n = num(v); if (n != null && Math.abs(n) <= 1e6) { ctx.view.lon0 = n; dl.urlView = true; } }   // |·|≤1e6：天文值=恶意/笔误链接（首帧渲染前不经 clampView）
+    if (k === "lat" && v !== "") { const n = num(v); if (n != null && Math.abs(n) <= 1e6) { ctx.view.lat0 = n; dl.urlView = true; } }
     if (k === "z" && v !== "") { const n = num(v); if (n != null && n > 0) { ctx.view.degPerPx = n; dl.urlView = true; } }
     if (k === "hold") { const i = new Image(); i.style.display = "none"; i.src = "/__hold__?ms=" + (+v || 5000); document.body.appendChild(i); }   // 截图等待：压后 load 到异步启动完成后
   });

@@ -17,7 +17,7 @@ import { unitPos } from "../core/units.ts";
 import { pickDecor, decorIdsInRadius } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
-  settingsSig, closeSettings, helpOpenSig, togglePlay,
+  settingsSig, closeSettings, helpOpenSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
   paintFactionSig, paintLayerSig, paintTerrainSig, terrainHeightSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, eraNewSig,
@@ -220,6 +220,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   /* 整组拖移起手（按住框选中的地点/部队任一成员）：地点记原位走 moveNode 平移；
      部队记「起手时刻」原位，拖动=整组改写该时刻航点（与单部队拖动同语义） */
   const startMultiDrag = (sv: Extract<Sel, { kind: "multi" }>, e: PointerEvent): void => {
+    stopPlay();   // 播放中拖拽冻结时刻：起手 T=写入 T=收笔 toast 报的 T（否则 toast 报松手时刻、与写入不符）
     const world = worldSig.value!;
     const ll0 = unproject(cam(), e.offsetX, e.offsetY);
     const T = yearSig.peek();
@@ -319,6 +320,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         const rh = pickRangeHandle(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, hu, hn,
           { fire: Lyr.ranges !== false, vision: Lyr.vision !== false });
         if (rh) {
+          stopPlay();   // 播放中拖半径：冻结时刻，圈心不随播放漂移
           rangeDrag = { ...rh, pushed: false };
           canvas.style.cursor = "ew-resize"; canvas.setPointerCapture(e.pointerId);
           return;
@@ -336,6 +338,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (un) {
         const s = selSig.value;
         if (s && s.kind === "multi" && s.unitIds && s.unitIds.includes(un.id)) { startMultiDrag(s, e); return; }
+        stopPlay();   // 播放中拖部队：冻结时刻，航点只落起手当日（否则逐 move 散作一串、toast 报错日）
         unitDrag = { id: un.id, pushed: false }; selSig.value = { kind: "unit", id: un.id };
         canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
       }
@@ -352,6 +355,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (un) {
           const s = selSig.value;
           if (s && s.kind === "multi" && s.unitIds && s.unitIds.includes(un.id)) { startMultiDrag(s, e); return; }   // 按住框选中的部队=整体拖移
+          stopPlay();   // 同军工具：播放中拖部队冻结时刻
           unitDrag = { id: un.id, pushed: false }; selSig.value = { kind: "unit", id: un.id };
           canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
         }
@@ -717,6 +721,8 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
        P=播放；0=复位视角；编辑内 Shift+1..7=子工具（新序重映射） */
     if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "p" || e.key === "P")) { togglePlay(); return; }
     if (e.key === " ") {   // Space=平移修饰键（按住+左键拖，任何模式）
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "BUTTON" || t.getAttribute("role") === "button")) return;   // 聚焦按钮时 Space＝激活（键盘可达性），不抢作平移
       e.preventDefault();
       if (!spaceHeld) { spaceHeld = true; if (!drag) canvas.style.cursor = "grab"; }
       return;

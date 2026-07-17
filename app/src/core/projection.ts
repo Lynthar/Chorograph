@@ -56,6 +56,8 @@ export function clampView(
 ): { lon0: number; lat0: number; wrapShift: number } {
   const m = meta || {};
   let { lon0, lat0 } = view;
+  if (!isFinite(lon0)) lon0 = 0;   // 坏档守卫：NaN 穿透 max/min 钳制、±Infinity 让经度折返死循环——非有限一律归零
+  if (!isFinite(lat0)) lat0 = 0;
   if (m.worldModel === "flat") {
     const bb: BBox = m.bbox || { lonMin: -180, lonMax: 180, latMin: -85, latMax: 85 };
     const sx = (bb.lonMax - bb.lonMin) * 0.75, sy = (bb.latMax - bb.latMin) * 0.75;
@@ -65,6 +67,11 @@ export function clampView(
   }
   lat0 = Math.max(-85, Math.min(85, lat0));
   let s = 0;
+  if (Math.abs(lon0) > 1e9) lon0 = 0;   // 亿度开外＝坏档：归零重来。旧 while±360 对其线性冻页（3.6e10≈亿次循环）甚至浮点不动点死循环（1e300-360===1e300），wrapShift 也不携带天文数
+  else if (lon0 >= 180 || lon0 < -180) {
+    const k = 360 * Math.floor((lon0 + 180) / 360);   // O(1) 预折返（≤1e9 全程精确）；floor 刀口残差至多一圈交下方 while——与旧逐圈递减逐位一致（黄金基准锁定）
+    s -= k; lon0 -= k;
+  }
   while (lon0 >= 180) { lon0 -= 360; s -= 360; }
   while (lon0 < -180) { lon0 += 360; s += 360; }
   return { lon0, lat0, wrapShift: s };

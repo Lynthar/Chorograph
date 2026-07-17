@@ -53,10 +53,10 @@ export function yearRangeOf(world: World, yearNow: number): YearRange {
     for (const t of ts) { if (t < lo) lo = t; if (t > hi) hi = t; }   // 循环取极值（避免 spread 大数组栈溢出）
     return { min: lo, max: hi, year: (!isFinite(yearNow) || yearNow < lo || yearNow > hi) ? lo : yearNow };
   }
-  const pos = (v: unknown): v is number => typeof v === "number" && v > 0;
+  const num = (v: unknown): v is number => typeof v === "number" && isFinite(v);   // 0/负年也算（0=公元前 1 年合法；原 v>0 让只有 BC 时段的图被锁在默认 3000..3100，事件年份却走 isFinite——不对称）
   const yrs = [...(world.nodes || []).filter(n => n.type === "event" && isFinite(n.year as number)).map(n => n.year as number),
-               ...(world.factions || []).filter(f => pos(f.since)).map(f => f.since as number),
-               ...[...(world.nodes || []), ...(world.edges || [])].filter(o => pos(o.since)).map(o => o.since as number)
+               ...(world.factions || []).filter(f => num(f.since)).map(f => f.since as number),
+               ...[...(world.nodes || []), ...(world.edges || [])].filter(o => num(o.since)).map(o => o.since as number)
               ].filter(y => isFinite(y));
   let lo = 3000, hi = 3100;
   if (yrs.length) { lo = hi = yrs[0]; for (const y of yrs) { if (y < lo) lo = y; if (y > hi) hi = y; } }   // 同上，循环取极值

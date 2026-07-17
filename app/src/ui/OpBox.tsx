@@ -50,7 +50,7 @@ export function OpBox() {
       <div class="bb-head" id="obHead" onPointerDown={onHeadDown} onPointerMove={onHeadMove} onPointerUp={onHeadUp} onPointerCancel={onHeadUp}>
         <span id="obKind">{op.kind === "defense" ? "🛡 防线" : "⚔ 攻势线"}</span>
         <span class="sp"></span>
-        <span id="obClose" title="关闭 (Esc)" onClick={() => clearOpSel()}>✕</span>
+        <button type="button" id="obClose" title="关闭 (Esc)" onClick={() => clearOpSel()}>✕</button>
       </div>
       <div class="bb-row"><label>派系</label>
         <select class="fld" id="obSide" style={{ flex: "1" }} title="所属派系（决定线色）" value={op.side || ""}
@@ -89,8 +89,8 @@ export function OpBox() {
       </div>
       <div class="bb-row sub" style={{ paddingTop: "0" }}>留空=只在事件{tac ? "当日" : "当年"}显示；填起/止=按时段显隐（战役分相位）。</div>
       <div class="bb-row">
-        {op.kind === "defense" && <span class="tbtn" id="obFlip" title="防线齿=正面(对敌)，翻到另一侧" onClick={() => opEdit(o => { o.reverse = !o.reverse; })}>⇄ 翻转正面</span>}
-        <span class="tbtn" id="obDel" style={{ color: "var(--q-zhu)" }} title="删除这条作战线 (Delete)" onClick={del}>🗑 删此线</span>
+        {op.kind === "defense" && <button type="button" class="tbtn" id="obFlip" title="防线齿=正面(对敌)，翻到另一侧" onClick={() => opEdit(o => { o.reverse = !o.reverse; })}>⇄ 翻转正面</button>}
+        <button type="button" class="tbtn" id="obDel" style={{ color: "var(--q-zhu)" }} title="删除这条作战线 (Delete)" onClick={del}>🗑 删此线</button>
       </div>
       <div class="bb-row sub" id="obEvName" style={{ paddingTop: "0" }}>所属事件：{ev.名称 || ev.id}</div>
     </div>

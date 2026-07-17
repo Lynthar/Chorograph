@@ -12,7 +12,8 @@ import type { TerrainRenderer, TerrainRenderOpts } from "./renderer.ts";
 
 const MAX_TILE_PX = 2_400_000;   // 瓦片总像素预算（与旧版一致）
 
-/** 瓦片是否仍可复用：完整覆盖视口，且分辨率在 [0.66, 1.5]× 档内（导出以便单测） */
+/** 瓦片是否仍可复用：完整覆盖视口，且分辨率在 [0.66, 1.5]× 档内（导出以便单测）。
+    tile.pxpd 是**请求分辨率**（planTile 记录），与本次请求同口径可比。 */
 export function tileCovers(
   tile: { bb: BBox; pxpd: number }, viewBB: BBox, pxpd: number, gridBB: BBox
 ): boolean {
@@ -23,6 +24,24 @@ export function tileCovers(
   return need(pxpd, tile.pxpd * 0.66, tile.pxpd * 1.5)
     && tile.bb.lonMin <= lonMin + 1e-9 && tile.bb.lonMax >= lonMax - 1e-9
     && tile.bb.latMin <= latMin + 1e-9 && tile.bb.latMax >= latMax - 1e-9;
+}
+
+/** 瓦片方案（导出以便单测）："keep"=复用现瓦片；"none"=视口在网格外无需瓦片；否则给出重建参数。
+    renderPxpd 按总像素预算封顶；pxpd 记录**请求分辨率**供 tileCovers 同口径比对——
+    若记录封顶值，高分屏请求一旦 >1.5×封顶将永判不覆盖、每帧全量重渲瓦片（数百 ms/帧）。 */
+export function planTile(
+  tile: { bb: BBox; pxpd: number; key: string } | null, key: string,
+  vb: BBox, pxpd: number, gridBB: BBox
+): "keep" | "none" | { bb: BBox; renderPxpd: number; pxpd: number } {
+  if (tile && tile.key === key && tileCovers(tile, vb, pxpd, gridBB)) return "keep";
+  const mLon = (vb.lonMax - vb.lonMin) * 0.3, mLat = (vb.latMax - vb.latMin) * 0.3;   // 30% 余量：平移只重贴图
+  const bb: BBox = {
+    lonMin: Math.max(gridBB.lonMin, vb.lonMin - mLon), lonMax: Math.min(gridBB.lonMax, vb.lonMax + mLon),
+    latMin: Math.max(gridBB.latMin, vb.latMin - mLat), latMax: Math.min(gridBB.latMax, vb.latMax + mLat)
+  };
+  if (bb.lonMax <= bb.lonMin || bb.latMax <= bb.latMin) return "none";
+  const cap = Math.sqrt(MAX_TILE_PX / ((bb.lonMax - bb.lonMin) * (bb.latMax - bb.latMin)));
+  return { bb, renderPxpd: Math.min(pxpd, cap), pxpd };
 }
 
 /* 等高线助手（与 GL 版同构）：sstep=smoothstep；cw=线强（w0..w1 带宽像素，数值 +1e-6 防零梯度平台整面刷线）；oddK=倍数奇偶 */
@@ -132,17 +151,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         : 0;
       const vb: BBox = k ? { lonMin: viewBB.lonMin + k, lonMax: viewBB.lonMax + k, latMin: viewBB.latMin, latMax: viewBB.latMax } : viewBB;
       const key = (opts.diag ? "d" : "") + (opts.contour ? `c${opts.cMinor || 0.12}f${Math.round((opts.cFade || 0) * 4)}` : "");   // fade 量化 1/4 桶：连续缩放不致每帧重渲瓦片
-      if (!tile || tile.key !== key || !tileCovers(tile, vb, pxpd, grid.bb)) {
-        const mLon = (vb.lonMax - vb.lonMin) * 0.3, mLat = (vb.latMax - vb.latMin) * 0.3;
-        const bb: BBox = {
-          lonMin: Math.max(grid.bb.lonMin, vb.lonMin - mLon), lonMax: Math.min(grid.bb.lonMax, vb.lonMax + mLon),
-          latMin: Math.max(grid.bb.latMin, vb.latMin - mLat), latMax: Math.min(grid.bb.latMax, vb.latMax + mLat)
-        };
-        if (bb.lonMax > bb.lonMin && bb.latMax > bb.latMin) {
-          const cap = Math.sqrt(MAX_TILE_PX / ((bb.lonMax - bb.lonMin) * (bb.latMax - bb.latMin)));
-          tile = { cv: renderTile(bb, Math.min(pxpd, cap), opts), bb, pxpd: Math.min(pxpd, cap), key };
-        } else tile = null;
-      }
+      const plan = planTile(tile, key, vb, pxpd, grid.bb);
+      if (plan === "none") tile = null;
+      else if (plan !== "keep") tile = { cv: renderTile(plan.bb, plan.renderPxpd, opts), bb: plan.bb, pxpd: plan.pxpd, key };
       // 底色=深水（视口越出网格范围的部分），再按世界拷贝贴瓦片。
       // 纵向用独立 pxpdY：viewBB 经度含 cos(lat0) 校正、纬度不含，贴图须各向异性拉伸
       //（对齐旧 drawTile 经 project 求角点的行为；瓦片内部仍为方度像素，交给 drawImage 缩放）。

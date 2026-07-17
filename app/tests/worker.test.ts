@@ -129,6 +129,14 @@ describe("时间轴范围（语义）", () => {
     const r = yearRangeOf(plainWorld(), 3050);
     assert.deepStrictEqual(r, { min: 2980, max: 3107, year: 3050 });
   });
+  it("公元前 since 也入包络（0=前 1 年合法；原 v>0 使纯 BC 图锁死默认包络、内容拨不到）", () => {
+    const w = plainWorld({ factions: [{ id: "f", since: -400 }],
+      nodes: [{ id: "n", type: "city", lon: 1, lat: 2, since: 0 }] });
+    const r = yearRangeOf(w, -400);
+    assert.strictEqual(r.min, -420);
+    assert.strictEqual(r.max, 7);
+    assert.strictEqual(r.year, -400, "-400 在范围内应保持不弹回");
+  });
 });
 
 describe("寻路 Worker 协议", () => {
