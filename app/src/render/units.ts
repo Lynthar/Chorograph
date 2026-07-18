@@ -8,6 +8,7 @@ import { unitFireKm, unitKind, unitPos, unitStatusAt, type Leg } from "../core/u
 import { UNIT_STATUS } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { hexA } from "../core/util.ts";
+import type { LabelField } from "./labels.ts";
 import type { Meta, Unit, World } from "../core/types.ts";
 
 /** 单位框色=所属派系色（缺省暗红） */
@@ -107,22 +108,38 @@ export interface UnitDrawOpts {
   selId?: string | null;           // 选中部队 id（泥金光晕框）
   multiIds?: string[] | null;      // 框选的部队 id（同款光晕，全部高亮）
   legs?: Map<string, Leg[]>;        // 可达性预算（外壳缓存；缺省=不标超速）
+  labelField?: LabelField;          // 帧内标签避让场（与地名/标注共用）；缺省=旧行为无条件画
 }
 
-/** 画所有在场部队（单相机；overlay 拷贝循环内调用）。部队压在地点之上——战场主角 */
+/** 画所有在场部队（单相机；overlay 拷贝循环内调用）。部队压在地点之上——战场主角；
+    但部队【标签】让地名（用户拍板：地点语义上固定不动，标签该稳；部队是移动体）——
+    框下→框上两候选位试进共用避让场，全撞不画（选中部队恒显并登记占位）。 */
 export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, world: World, T: number, opts: UnitDrawOpts = {}): void {
   const units = world.units || [];
   if (!units.length) return;
   for (const u of units) {
     const p = unitPos(u, T); if (!p) continue;
     const [x, y] = project(cam, p.lon, p.lat);
+    const selMe = opts.selId === u.id || !!(opts.multiIds && opts.multiIds.includes(u.id));
     if (opts.trails) drawTrail(ctx, cam, world, u, T, p, opts.legs && opts.legs.get(u.id));
-    drawUnitSymbol(ctx, x, y, world, u, opts.selId === u.id || !!(opts.multiIds && opts.multiIds.includes(u.id)), unitStatusAt(u, T));
+    drawUnitSymbol(ctx, x, y, world, u, selMe, unitStatusAt(u, T));
     if (opts.labels) {
       const lbl = (u.名称 || "部队") + (u.strength ? ` ${u.strength}` : "");
       ctx.save(); ctx.font = "10.5px KaiTi,楷体,serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.strokeText(lbl, x, y + 16);
-      ctx.fillStyle = "#2c241b"; ctx.fillText(lbl, x, y + 16); ctx.restore();
+      const w = ctx.measureText(lbl).width, h = 13;
+      let ly: number | null = y + 16;
+      if (opts.labelField) {
+        ly = null;
+        for (const cy of [y + 16, y - 17]) {   // 框下优先，占了试框上
+          if (opts.labelField.tryPlace({ x: x - w / 2, y: cy - h / 2, w, h })) { ly = cy; break; }
+        }
+        if (ly == null && selMe) { ly = y + 16; opts.labelField.claim({ x: x - w / 2, y: ly - h / 2, w, h }); }
+      }
+      if (ly != null) {
+        ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.strokeText(lbl, x, ly);
+        ctx.fillStyle = "#2c241b"; ctx.fillText(lbl, x, ly);
+      }
+      ctx.restore();
     }
   }
 }

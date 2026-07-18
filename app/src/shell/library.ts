@@ -11,8 +11,8 @@ import { countsOf, normalizeWorld } from "../core/world.ts";
 import { yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
-import { clampView } from "../core/projection.ts";
 import { contourStepFor } from "../core/elev.ts";
+import { pickBootEntry, planOpen, wantsDeepStart, type OpenSnap } from "./openplan.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewSig, libActionsSig,
   playingSig, togglePlay, stopPlay, closeSettings, mutateWorld, pushHistoryOnce, clearOpSel, cancelOpDraw,
@@ -33,12 +33,6 @@ declare global {
 
 /** 仓库根样例世界的未校验 JSON（入库/normalizeWorld 前的原料） */
 type SampleWorld = { meta?: Meta } & Record<string, unknown>;
-
-/** 开图快照（浏览器库条目 MapEntry / 文件夹库 FolderCacheEntry 的公共子形） */
-interface OpenSnap {
-  view?: { lon0: number; lat0: number; degPerPx?: number } | null;
-  year?: number | null;
-}
 
 export interface LibraryIO {
   autosave: Autosave;
@@ -101,23 +95,20 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     return openBrowserMap(e.id);
   }
   function setWorld(w: unknown, id: string | null, snap: OpenSnap | null | undefined): void {
-    const nw = normalizeWorld(w);
-    ctx.meta = nw.meta || {};
+    const p = planOpen(w, snap, dl);   // 年份/视角决策全在纯函数（openplan.test.ts 锁语义），此处只落地
+    ctx.meta = p.world.meta || {};
     ctx.mapId = id;
     // 清 builtFor＝强制按新档重建：同 id 重开时键（mapId@year@gridVer）可能相同而内容已变（如上次保存失败）。
     // 批内编排 effect 冲刷时即按【最终】世界+年份重建一次——旧「先设年份、effect 拿旧世界白建全平原」的时序病根已由 batch 杜绝。
     ctx.builtFor = null;
     batch(() => {
       selSig.value = null; hoverSig.value = null;
-      if (snap && !dl.urlYear && isFinite(snap.year as number)) yearSig.value = snap.year as number;
-      setWorldState(nw);   // worldSig 赋值 + 年份按世界范围钳制
+      if (p.year != null) yearSig.value = p.year;
+      setWorldState(p.world);   // worldSig 赋值 + 年份按世界范围钳制
     });
-    if (snap && !dl.urlView && snap.view && isFinite(snap.view.lon0)) {
-      const c = clampView({ lon0: snap.view.lon0, lat0: snap.view.lat0 }, ctx.meta);
-      ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = snap.view.degPerPx || 0.06;
-    } else if (!dl.urlView && ctx.meta.view && isFinite(ctx.meta.view.lon0)) {
-      const c = clampView({ lon0: ctx.meta.view.lon0, lat0: ctx.meta.view.lat0 }, ctx.meta);   // 档内 view 不可信：lat0 可 NaN、lon0 可超界
-      ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = ctx.meta.view.degPerPx0 || ctx.view.degPerPx;
+    if (p.view) {
+      ctx.view.lon0 = p.view.lon0; ctx.view.lat0 = p.view.lat0;
+      if (p.view.degPerPx != null) ctx.view.degPerPx = p.view.degPerPx;
     }
     dl.urlView = dl.urlYear = false;      // URL 直达只压制首次打开
     host.rebuildIfNeeded(); refreshLib();   // 兜底（正常已在批末建过、键相符＝零开销）
@@ -439,12 +430,10 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     await tryFolderBoot();
     if (dl.wantSample && await bootSample(dl.wantSample)) return;   // 指定夹具优先
     let entries = await listMaps();
-    /* v0.14 启动语义：URL 深链（#map/#preset/#year/#lon…/#sel/#mode 等）直达地图；否则进开始界面 */
-    const deep = !!(dl.wantMap || dl.wantPreset || dl.wantSel || dl.wantAnalysis || dl.wantGenTac || dl.wantMulti || dl.wantOp != null || dl.wantPts || dl.urlView || dl.urlYear);
-    if (deep) {
+    /* v0.14 启动语义：URL 深链直达地图，否则进开始界面（判定与选图规则在 openplan，测试锁定） */
+    if (wantsDeepStart(dl)) {
       const last = ctx.source === "browser" ? await ctx.lib.kvGet<string>("lastMap") : null;
-      const ent = (dl.wantMap && entries.find(e => e.name === dl.wantMap || e.id === dl.wantMap))
-        || entries.find(e => e.id === last) || entries[0];
+      const ent = pickBootEntry(entries, dl.wantMap, last);
       if (ent) { await openMapById(ent.id); return; }
     }
     host.rebuild();                  // 无图/非深链：程序化底图垫在开始界面后

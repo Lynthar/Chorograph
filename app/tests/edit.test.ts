@@ -46,6 +46,25 @@ describe("撤销栈", () => {
     const c = mkWorld({ terrainOverrides: [{ lon: 1, lat: 2, t: "forest" }] });
     assert.notStrictEqual(terrKey(a), terrKey(c));
   });
+  it("分域快照：同地形连续步共享地形串——驻留≈1×地形+N×对象，而非 N×整档", () => {
+    const h = createHistory();
+    const to = Array.from({ length: 3000 }, (_, i) => ({ lon: i % 360, lat: (i / 360) | 0, t: "hill/forest" }));
+    const full = JSON.stringify(mkWorld({ terrainOverrides: to })).length;
+    for (let i = 0; i < 10; i++) h.push(mkWorld({ terrainOverrides: to, nodes: [{ id: "n" + i, type: "city", lon: i, lat: 0 }] }));
+    const { steps, bytes } = h.stats();
+    assert.strictEqual(steps, 10);
+    assert.ok(full > 60_000, "前提自检：地形域应是体积大头");
+    assert.ok(bytes < full * 2, `10 步驻留应远小于 10×整档（实际 ${bytes}，整档 ${full}）`);
+  });
+  it("分域快照：往返逐位等价、键的有无保留（无 heightOverrides 不凭空出现）", () => {
+    const h = createHistory();
+    const w1 = mkWorld({ nodes: [{ id: "甲", type: "city", lon: 1.5, lat: 2.5 }], terrainOverrides: [{ lon: 1, lat: 2, t: "water" }] });
+    const keep = structuredClone(w1);
+    h.push(w1);
+    const back = h.undo(mkWorld())!;
+    assert.deepStrictEqual(back, keep);
+    assert.ok(!("heightOverrides" in back), "push 时没有的键恢复后也不该有");
+  });
 });
 
 describe("自动保存调度", () => {
