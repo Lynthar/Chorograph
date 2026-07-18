@@ -165,6 +165,23 @@ export function fmtWhen(cal: CalendarSpec, tac: boolean, v: number, spaced?: boo
 export function fmtWhenForm(cal: CalendarSpec, tac: boolean, v: number): string {
   return tac ? fmtYMD(cal, v) : fmtYearForm(cal, v);
 }
+/** 时段显示（作战线/卡片列表用）：起止同刻→只写一遍；战术图同日不同刻→日期一遍+「时刻A–时刻B」
+    （双全日期在 292px 窄栏挤爆版式）；其余→「A–B」；缺省侧写「…」。 */
+export function fmtWhenRange(cal: CalendarSpec, tac: boolean, since: number | null | undefined, until: number | null | undefined): string {
+  const a = since != null ? fmtWhen(cal, tac, since) : "…";
+  const b = until != null ? fmtWhen(cal, tac, until) : "…";
+  if (a === b) return a;
+  if (tac && since != null && until != null) {
+    const qa = quantT(cal, +since), qb = quantT(cal, +until);
+    if (Math.floor(qa) === Math.floor(qb)) {
+      const fa = qa - Math.floor(qa), fb = qb - Math.floor(qb);
+      const day = fmtT(cal, Math.floor(qa));
+      const t = (f: number) => cal.kind === "earth" ? fmtHM(f) : (f ? fmtShichen(f) : "子正");
+      return cal.kind === "earth" ? `${day} ${t(fa)}–${t(fb)}` : `${day}·${t(fa)}–${t(fb)}`;
+    }
+  }
+  return `${a}–${b}`;
+}
 export function parseWhenForm(cal: CalendarSpec, tac: boolean, s: unknown): number | null {
   return tac ? parseYMD(cal, s) : parseYearForm(cal, s);
 }

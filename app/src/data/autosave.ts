@@ -15,15 +15,22 @@ export interface Autosave {
 export function createAutosave(save: () => Promise<void> | void, delayMs = 600, onError?: (e: unknown) => void): Autosave {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending = false;
+  let inflight: Promise<void> | null = null;   // 在途 save：flush 须等它（否则「已落盘」谎报）、run 须排队（否则并发写同一文件）
   const run = async () => {
-    pending = false;
     if (timer) { clearTimeout(timer); timer = null; }
-    try { await save(); }
-    catch (e) {
-      pending = true;   // 写失败=改动仍未落盘；即便 save 期间有新 touch，true 也是对的
-      if (onError) onError(e);
-      else console.error("自动保存失败", e);
-    }
+    while (inflight) await inflight;           // 串行：慢速写（文件夹库）期间 timer 再触发不并发
+    if (!pending) return;                      // 排队期间已被别人写完
+    pending = false;
+    const p = (async () => {
+      try { await save(); }
+      catch (e) {
+        pending = true;   // 写失败=改动仍未落盘；即便 save 期间有新 touch，true 也是对的
+        if (onError) onError(e);
+        else console.error("自动保存失败", e);
+      }
+    })();
+    inflight = p;
+    try { await p; } finally { if (inflight === p) inflight = null; }
   };
   return {
     touch() {
@@ -32,8 +39,8 @@ export function createAutosave(save: () => Promise<void> | void, delayMs = 600, 
       timer = setTimeout(run, delayMs);
     },
     async flush() {
-      if (!pending) return;
-      await run();
+      while (inflight) await inflight;         // 先等在途（此前在途中 pending 已复位，flush 会假性早退）
+      if (pending) await run();
     },
     get pending() { return pending; },
     dispose() {

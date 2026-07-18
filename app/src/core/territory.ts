@@ -34,6 +34,30 @@ export function paintCellSet(cells: [number, number][] | undefined, bb: BBox | u
   return s;
 }
 
+/* 涂域跨图重采样（战术烘焙用）：cells 是按「源图 bbox/pd」存的格心，直接拷进 pd 更细的战术图
+   会被 paintCellSet 解码成一格一点的碎点。此处把源格视为色块重栅格化到目标网格：
+   目标格心落在任一源格块内即着色（源粗→目标细＝整块铺满；源细→目标粗＝格心采样），出目标 bbox 剔除。
+   小数位随步长（≥0.1° 两位、更细四位），与 ui/paint.setToCells 同规。 */
+export function resamplePaintCells(
+  cells: [number, number][] | undefined,
+  srcBB: BBox | undefined, srcPd: number,
+  dstBB: BBox, dstPd: number
+): [number, number][] {
+  const sb = srcBB || DEFAULT_BBOX;
+  const s = paintCellSet(cells, srcBB, srcPd);
+  if (!s.size) return [];
+  const { cols, rows } = paintDims(dstBB, dstPd);
+  const dp = dstPd >= 0.1 ? 2 : 4;
+  const out: [number, number][] = [];
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    const cx = dstBB.lonMin + (i + 0.5) * dstPd, cy = dstBB.latMin + (j + 0.5) * dstPd;
+    if (s.has(Math.floor((cx - sb.lonMin) / srcPd) + "," + Math.floor((cy - sb.latMin) / srcPd))) {
+      out.push([+cx.toFixed(dp), +cy.toFixed(dp)]);
+    }
+  }
+  return out;
+}
+
 const LUT: Record<number, [string, string][]> = {
   1: [["L", "B"]], 2: [["B", "R"]], 3: [["L", "R"]], 4: [["T", "R"]], 5: [["T", "L"], ["B", "R"]],
   6: [["T", "B"]], 7: [["T", "L"]], 8: [["T", "L"]], 9: [["T", "B"]], 10: [["T", "R"], ["B", "L"]],

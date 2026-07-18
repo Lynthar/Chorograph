@@ -29,9 +29,10 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   const { autosave } = libio;
   const times: number[] = [];
   let fps = "—", lastFtData = "";
-  (function frame() {
-    try {   // 帧内异常：上报 #err、放弃本帧——续排在 finally，一帧出错不冻死画布（2026-07-12 P2）
-    const t0 = performance.now();
+  /* 画一帧（地形+叠加层+工具预览）：rAF 循环逐帧调用；host.resize 设完画布尺寸后同步补画共用——
+     设 canvas 宽高即清屏，若等下一帧 rAF 补画，空白帧会先被合成上屏（检查器滑开/收起的 0.22s 过渡
+     经 ResizeObserver 逐帧触发 resize，空白帧与画面帧交替＝整屏闪烁）。 */
+  const paint = (): void => {
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
     if (layers.terrain) {
       const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);   // 等高距随缩放（×2 阶梯+过渡淡入）
@@ -107,19 +108,28 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       }
       if (ptr.boxSel && ptr.boxSel.moved) drawSelectBox(octx, ptr.boxSel.x0, ptr.boxSel.y0, ptr.boxSel.x1, ptr.boxSel.y1, ctx.DPR);   // 框选矩形
     }
+  };
+  ctx.repaint = paint;
+  (function frame() {
+    try {   // 帧内异常：上报 #err、放弃本帧——续排在 finally，一帧出错不冻死画布（2026-07-12 P2）
+    const t0 = performance.now();
+    paint();
+    const world = worldSig.value, yearNow = yearSig.value;
     times.push(performance.now() - t0);
     if (times.length > 30) times.shift();
     const avg = times.reduce((a, b) => a + b, 0) / times.length;
     fps = avg < 0.01 ? "<0.01" : avg.toFixed(2);
     const src = !ctx.lib ? "无图库(只读)" : ctx.source === "folder" ? `📁 ${ctx.folderDir!.name}` : "💾 图库";
     /* 顶栏保存态 savest（底栏退役：原 ftData 短化——保存态为主文案，来源/图名进 title；
-       启动提示 ☂（文件夹重授权/旧档迁移）仍随文案可见）；仅变化时写 DOM */
+       启动提示 ☂（文件夹重授权/旧档迁移）仍随文案可见）；仅变化时写 DOM。
+       可见文案不再写图名（面包屑相邻已有、画布图幅标题第三遍——2026-07-16 审阅③双写），只报来源；图名细节留 title */
     const srcLabel = !ctx.lib ? "内置示例（只读）" : ctx.source === "folder" ? `文件「${ctx.mapId || "—"}」` : `地图「${(ctx.meta || ({} as Meta)).名称 || "未命名"}」`;
+    const srcShort = !ctx.lib ? "内置示例（只读）" : ctx.source === "folder" ? "📁 文件夹图库" : "💾 浏览器图库";
     const ftTxt = (ctx.saveErr
       ? `⚠ 自动保存失败（${ctx.saveErr && ctx.saveErr.message ? ctx.saveErr.message : "存储异常"}——未落盘，随下次改动重试）`
       : autosave.pending ? "未保存"
       : ctx.savedAt ? `已自动保存 ${String(ctx.savedAt.getHours()).padStart(2, "0")}:${String(ctx.savedAt.getMinutes()).padStart(2, "0")}`
-      : srcLabel)
+      : srcShort)
       + (ctx.bootNote ? ` · ☂ ${ctx.bootNote}` : "");
     if (ftTxt !== lastFtData) {
       lastFtData = ftTxt;

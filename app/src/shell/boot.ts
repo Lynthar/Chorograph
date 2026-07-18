@@ -72,18 +72,33 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     if (ids.length) selSig.value = { kind: "multi", ids };
   }
 
-  /* 世界对象整体更换（撤销重做/导入替换）时同步外壳 ctx.meta 引用（mutateWorld 原地改不换 meta 对象）。
-     须先于下方网格重建 effects 注册，保证它们读到新 meta。 */
-  effect(() => { const w = worldSig.value; if (w) ctx.meta = w.meta || {}; });
-  /* 年份/地形版本变化 → 重建网格；地形图层开关 → 画布显隐；模式 → 光标 */
-  effect(() => { yearSig.value; rebuildIfNeeded(); });
-  effect(() => { gridVerSig.value; rebuildIfNeeded(); });
-  /* 编辑改动 → 自动保存 + 寻路上下文重发（官道格随连线增删重算） */
+  /* 编排 effect：世界/年份/地形版本/选中/编辑改动 → 依序【同步 ctx.meta → 按需重建网格 → 部队可达性预算】。
+     合为一个 effect 是有意为之——多信号赋值段已 batch()，而 batch 冲刷按「后通知者先跑」，
+     拆开的兄弟 effect 之间没有可依赖的次序；meta 同步（mutateWorld 原地改不换 meta 对象，
+     世界整体更换时须重挂引用）、重建、legs 的先后只能靠 effect 内部语句顺序保证。 */
+  effect(() => {
+    const w = worldSig.value;
+    if (w) ctx.meta = w.meta || {};
+    yearSig.value; gridVerSig.value;
+    rebuildIfNeeded();
+    /* 战术图·可达性预算：为【选中部队】算行军 legs 填 unitLegsSig（对齐旧 renderUnitInfo：只算当前查看的部队）；
+       必须在重建之后（ctx.grid 新鲜）。缓存**只保留当前选中部队**（换成 new Map，不累积）——否则换年/涂改地形后，
+       之前选中过的部队仍以旧地形的 legs 画超速⚠/可达性表（审计：非选中部队陈旧、换年不重算、replaceCurrent 不清缓存）。 */
+    const sel = selSig.value;
+    editVerSig.value;                                       // 依赖：编辑改动（拖航点实时重算）
+    const u = (w && ctx.grid && isTacSig.peek() && sel && sel.kind === "unit") ? (w.units || []).find(x => x.id === sel.id) : null;
+    if (!u) { if (unitLegsSig.peek().size) unitLegsSig.value = new Map(); return; }
+    const roads = roadCellSet(w!.nodes, w!.edges, yearSig.peek(), ctx.grid!);
+    unitLegsSig.value = new Map([[u.id, unitLegs(ctx.meta, ctx.grid!, roads, u)]]);
+  });
+  /* 编辑改动 → 自动保存 + 寻路上下文重发（官道格随连线增删重算）。
+     meta 直取 w.meta（不靠 ctx.meta 由编排 effect 先同步——batch 冲刷顺序不保证谁先跑）；
+     ctx.grid 若同批在重建，编排 effect 的 rebuild 会再发一次最终上下文，此处发的旧网格版本被覆盖。 */
   effect(() => {
     if (editVerSig.value === 0) return;
     autosave.touch();
     const w = worldSig.peek();
-    if (w && ctx.grid) ctx.routeClient.setContext({ meta: ctx.meta, grid: ctx.grid, roads: roadCellSet(w.nodes, w.edges, yearSig.peek(), ctx.grid), world: w, yearNow: yearSig.peek() });
+    if (w && ctx.grid) ctx.routeClient.setContext({ meta: w.meta || {}, grid: ctx.grid, roads: roadCellSet(w.nodes, w.edges, yearSig.peek(), ctx.grid), world: w, yearNow: yearSig.peek() });
   });
   effect(() => { canvas.style.visibility = layersSig.value.terrain ? "visible" : "hidden"; });
   /* 工具轨：「测」记住上次分析子工具（ToolRail/快捷键 1~4 经 setRailTool 消费） */
@@ -110,19 +125,6 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     if (req.degPerPx != null && isFinite(req.degPerPx) && req.degPerPx > 0
       && (req.ifAbove == null || ctx.view.degPerPx > req.ifAbove)) ctx.view.degPerPx = req.degPerPx;
   });
-  /* 战术图·可达性预算：为【选中部队】算行军 legs 填 unitLegsSig（对齐旧 renderUnitInfo：只算当前查看的部队）。
-     缓存**只保留当前选中部队**（换成 new Map，不累积）——否则换年/涂改地形后，之前选中过的部队仍以
-     旧地形的 legs 画超速⚠/可达性表（审计：非选中部队陈旧、换年不重算、replaceCurrent 不清缓存）。
-     依赖含 yearSig.value：换年即重算（rebuild effect 注册在前、先跑，此时 grid 已是新年份的）。 */
-  effect(() => {
-    const sel = selSig.value;
-    yearSig.value; editVerSig.value; gridVerSig.value;      // 依赖：换年 / 编辑改动 / 网格重建
-    const w = worldSig.peek();
-    const u = (w && ctx.grid && isTacSig.peek() && sel && sel.kind === "unit") ? (w.units || []).find(x => x.id === sel.id) : null;
-    if (!u) { if (unitLegsSig.peek().size) unitLegsSig.value = new Map(); return; }   // 无选中部队（含换图/replaceCurrent 清 sel）→清空缓存
-    const roads = roadCellSet(w!.nodes, w!.edges, yearSig.peek(), ctx.grid!);
-    unitLegsSig.value = new Map([[u.id, unitLegs(ctx.meta, ctx.grid!, roads, u)]]);
-  });
   /* 部队子工具仅战术图：换到非战术图时退回选择工具 */
   effect(() => { if (!isTacSig.value && editSubSig.peek() === "unit") editSubSig.value = "select"; });
   /* 战术图请求桥：InfoPanel 战役卡按钮设 tacReqSig → 外壳做库链接/生成/导航（组件不碰库 IO） */
@@ -136,9 +138,10 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     else if (req.type === "open" && ev) openTacmap(ev);
     else if (req.type === "gen" && ev) genTactical(ev, req.dia);
   });
-  /* 顶栏「⬆ 战略图」：仅战术图且有 parent 时显示（v0.14 #btnParent，title 带上级图名） */
+  /* 顶栏「⬆ 战略图」：仅战术图且有 parent 时显示（v0.14 #btnParent，title 带上级图名）。
+     parent 直取 worldSig（不读 ctx.meta——batch 冲刷时编排 effect 未必已同步它） */
   effect(() => {
-    const par = isTacSig.value && (ctx.meta || ({} as Meta)).parent;
+    const par = isTacSig.value && ((worldSig.value ? worldSig.value.meta : null) || ({} as Meta)).parent;
     const bp = $("btnParent");
     bp.style.display = par ? "inline-flex" : "none";
     if (par) bp.title = `返回上级战略地图「${par.mapName || ""}」（当前战术图自动保存）`;

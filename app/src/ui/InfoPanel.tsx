@@ -4,7 +4,7 @@
    数据语义与 v0.14 卡一致（对齐旧 renderInfo 系列），航点动向沿旧行内编辑（战役复原工作流）。 */
 import { EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
 import { edgeLenKm, polylineKm } from "../core/geometry.ts";
-import { calOf, fmtT, fmtWhen } from "../core/calendar.ts";
+import { calOf, fmtT, fmtWhen, fmtWhenRange } from "../core/calendar.ts";
 import { unitArm, unitFireKm, unitKind, unitPos, unitSpeed, unitStatusAt } from "../core/units.ts";
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm } from "../core/util.ts";
@@ -115,7 +115,8 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
             <button key={i} class="seg3 tr" onClick={() => selectOp(n.id, i)}>
               <i style={{ background: (op.side && (world.factions.find(x => x.id === op.side)?.color)) || "#c0453a" }} />
               <span class="nm">{op.kind === "defense" ? "🛡" : "⚔"} {op.troop || op.label || `作战线 ${i + 1}`}</span>
-              {(op.since != null || op.until != null) && <span class="yr">{op.since != null ? fmtWhen(cal, tac, op.since) : "…"}–{op.until != null ? fmtWhen(cal, tac, op.until) : "…"}</span>}
+              {(op.since != null || op.until != null) &&
+                <span class="yr">{fmtWhenRange(cal, tac, op.since, op.until)}</span>}
             </button>
           ))}
         </div>

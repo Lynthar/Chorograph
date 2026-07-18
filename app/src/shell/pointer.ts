@@ -17,7 +17,7 @@ import { unitPos } from "../core/units.ts";
 import { pickDecor, decorIdsInRadius } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
-  settingsSig, closeSettings, helpOpenSig, togglePlay, stopPlay,
+  inspEditSig, settingsSig, closeSettings, helpOpenSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
   paintFactionSig, paintLayerSig, paintTerrainSig, terrainHeightSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, eraNewSig,
@@ -123,6 +123,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   let spaceHeld = false, linkDrag: { fromId: string; x: number; y: number; moved: boolean } | null = null,
     decorDrag: { id: string; pushed: boolean } | null = null,
     clickTrack: { x: number; y: number; moved: boolean } | null = null, nudgeT = 0;
+  /* 拾取门（点选/悬停/框选与绘制同一套可见性）：图层显隐 + 编辑态全见/浏览态 rank 缩放门——
+     关掉的层不再"隐形可选"；部队/布景拾取同规则在各调用点看 units/decor 层。 */
+  const pickGate = () => ({ layers: layersSig.peek(), editing: modeSig.peek() === "edit" });
+  const decorPickable = () => layersSig.peek().decor !== false;
   const paintDab = (x: number, y: number): void => {
     if (!paintStroke) return;
     const ll = unproject(cam(), x, y);
@@ -161,7 +165,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   const decorEraseRadius = (): number => 6 + 5 * brushSizeSig.value;   // v0.14 decorEraseAt：半径随「大小」滑杆
   const decorEraseSweep = (x: number, y: number): void => {
     const w0 = worldSig.peek();
-    if (!w0) return;
+    if (!w0 || !decorPickable()) return;   // 布景层隐藏＝不许盲擦看不见的章
     const ids = decorIdsInRadius(cam(), ctx.meta, w0, yearSig.peek(), x, y, decorEraseRadius());
     if (ids.length) mutateWorldLive(w => { for (const id of ids) removeDecor(w, id); });
   };
@@ -178,7 +182,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (sub === "decor" && world) {
-      const d = pickDecor(cam(), ctx.meta, world, yearSig.peek(), x, y);
+      const d = decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.peek(), x, y) : null;
       if (d) { decorKindSig.value = d.kind; decorSizeSig.value = d.size || 1; brushEraseSig.value = false; }
       return;
     }
@@ -196,6 +200,17 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         }
       }
     }
+  };
+  /* 连线落库（点击-点击与拖拽两路径共用）：重复连线先查后报——addEdge 返 null 的静默 no-op
+     曾连"已保存"都不说一声（2026-07-16 P3）；先查也避免 mutateWorld 空改动留一步幽灵撤销。 */
+  const tryLink = (from: string, to: string): void => {
+    const w0 = worldSig.peek();
+    const tp = linkTypeSig.peek();
+    if (w0 && w0.edges.some(ed => ed.type === tp && ((ed.from === from && ed.to === to) || (ed.from === to && ed.to === from)))) {
+      showToast(`两地已有一条${(EDGE_STYLE[tp] || { 名: tp }).名}，未重复新建`);
+      return;
+    }
+    mutateWorld(w => { const ed = addEdge(w, from, to, tp); if (ed) applyEra(ed, eraNewSig.peek()); });
   };
   /* 方向键微调选中地点（对齐 v0.14 nudgeSel）：每按≈2 屏幕像素；1.2s 内连续按键合并为一步撤销 */
   const nudgeSel = (k: string): void => {
@@ -334,7 +349,8 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         canvas.setPointerCapture(e.pointerId);
         return;
       }
-      const un = pickUnit(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);
+      const un = layersSig.peek().units !== false   // 部队层隐藏＝不可点选（同框选门）
+        ? pickUnit(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY) : null;
       if (un) {
         const s = selSig.value;
         if (s && s.kind === "multi" && s.unitIds && s.unitIds.includes(un.id)) { startMultiDrag(s, e); return; }
@@ -350,7 +366,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         canvas.setPointerCapture(e.pointerId);
         return;
       }
-      if (isTacSig.value) {   // 部队优先于地点（框小、常压在地点上层）
+      if (isTacSig.value && layersSig.peek().units !== false) {   // 部队优先于地点（框小、常压在地点上层）；层隐藏不可选
         const un = pickUnit(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);
         if (un) {
           const s = selSig.value;
@@ -360,7 +376,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
           canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
         }
       }
-      const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);
+      const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate());
       if (hit) {
         const s = selSig.value;
         if (s && s.kind === "multi" && s.ids.includes(hit.id)) {   // 按住框选中的地点=整体拖移（地点+部队）
@@ -373,7 +389,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         }
         return;
       }
-      const dd = pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);   // 按住布景=拖移（v0.14）
+      const dd = decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY) : null;   // 按住布景=拖移（v0.14）；层隐藏不可选
       if (dd) {
         decorDrag = { id: dd.id, pushed: false };
         canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
@@ -384,12 +400,11 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (world && modeSig.value === "edit" && editSubSig.value === "link") {
-      const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);
+      const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate());
       if (hit) {
         const from = linkFromSig.peek();
         if (from && from !== hit.id) {            // 第二点：成线（点击-点击路径）
-          mutateWorld(w => { const ed = addEdge(w, from, hit.id, linkTypeSig.value); if (ed) applyEra(ed, eraNewSig.peek()); });
-          linkFromSig.value = null;
+          tryLink(from, hit.id);
           return;
         }
         linkFromSig.value = hit.id;               // 起点：可拖到另一地点成线（拖拽路径）
@@ -425,6 +440,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       }
       $("ftCoord").textContent = `经纬度 ${dataLon(ctx.meta, ll[0]).toFixed(dec)}°, ${ll[1].toFixed(dec)}°${hTxt}`;
     }
+    /* 拖态悬挂自愈：拖拽中弹 confirm()/alert() 会吞掉 pointerup——按键已全松而拖态仍在时，
+       按 pointercancel 语义中止（只清态不成交），免得松手后的悬停继续改写世界（2026-07-16 P3）。 */
+    if (e.buttons === 0 && (drag || nodeDrag || unitDrag || decorDrag || multiDrag || rangeDrag
+      || boxSel || linkDrag || clickTrack || paintStroke || terrainStroke || decorStroke || opStroke)) abortDrags();
     if (opStroke) {
       if (Math.hypot(e.offsetX - opStroke.lastX, e.offsetY - opStroke.lastY) >= 7) {
         const ll = unproject(cam(), e.offsetX, e.offsetY);
@@ -514,7 +533,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (over && canvas.style.cursor !== "ew-resize") canvas.style.cursor = "ew-resize";
         else if (!over && canvas.style.cursor === "ew-resize") canvas.style.cursor = "";
       }
-      const h = worldSig.value ? pickNode(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY) : null;
+      const h = worldSig.value ? pickNode(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, pickGate()) : null;
       hoverSig.value = h;
       if (!spaceHeld) updateTip(e.offsetX, e.offsetY, h);
       return;
@@ -559,9 +578,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (decorDrag) { decorDrag = null; canvas.style.cursor = ""; return; }
     if (linkDrag) {   // 连线拖拽收笔：拖到另一地点=成线；拖到空处=取消起点；原地未动=保持起点（可再点第二点）
       const ld = linkDrag; linkDrag = null;
-      const hit = world ? pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY) : null;
+      const hit = world ? pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate()) : null;
       if (hit && hit.id !== ld.fromId) {
-        mutateWorld(w => { const ed = addEdge(w, ld.fromId, hit.id, linkTypeSig.value); if (ed) applyEra(ed, eraNewSig.peek()); });
+        tryLink(ld.fromId, hit.id);
         linkFromSig.value = null;
       } else if (ld.moved) linkFromSig.value = null;
       return;
@@ -572,7 +591,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (world) clickAt(e);
         return;
       }
-      const ids = world ? nodesInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1) : [];
+      const ids = world ? nodesInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1, pickGate()) : [];
       const unitIds = world && isTacSig.peek() && layersSig.peek().units !== false   // 部队层隐藏时不隔空捕获
         ? unitsInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1) : [];
       selSig.value = (ids.length || unitIds.length)
@@ -592,10 +611,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
   });
-  canvas.addEventListener("pointercancel", () => {
-    /* 指针被系统接管（触控滚动/笔离屏/系统手势）：中止一切进行中拖态——只清态、不提交
-       （成线/框选落选中这类「成交」动作只在 pointerup 发生）；笔刷类先 endStroke 回收空笔，
-       已落下的笔迹保留（起笔时已入撤销栈一步）。缺这条时拖态残留、下次按下双重起笔（2026-07-12 P2）。 */
+  /* 中止一切进行中拖态——只清态、不提交（成线/框选落选中这类「成交」动作只在 pointerup 发生）；
+     笔刷类先 endStroke 回收空笔，已落下的笔迹保留（起笔时已入撤销栈一步）。
+     pointercancel（触控滚动/笔离屏/系统手势）与拖态悬挂自愈共用。缺这条时拖态残留、下次按下双重起笔（2026-07-12 P2）。 */
+  const abortDrags = (): void => {
     if (opStroke) opStroke = null;                    // 保持画线武装态可重画（同 <2 点收笔语义）
     if (paintStroke) { paintStroke = null; endStroke(); }
     if (terrainStroke) { terrainStroke = null; endStroke(); }
@@ -604,13 +623,14 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     nodeDrag = null; decorDrag = null; linkDrag = null; clickTrack = null;
     drag = null;
     canvas.style.cursor = spaceHeld ? "grab" : "";
-  });
+  };
+  canvas.addEventListener("pointercancel", abortDrags);
   /* 点击动作（对齐旧 handleClick）：按模式/子工具分发 */
   function clickAt(e: PointerEvent): void {
     const world = worldSig.value;
     if (world) {
       const mode = modeSig.value;
-      const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);
+      const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate());
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       if (mode === "browse" || (mode === "edit" && editSubSig.value === "select")) {
         // 拾取优先级：地点 > 作战线 > 连线（部队随战术图批次）
@@ -654,8 +674,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (!hit) linkFromSig.value = null;
         else if (!linkFromSig.value || linkFromSig.value === hit.id) linkFromSig.value = hit.id;
         else {
-          const from = linkFromSig.value;
-          mutateWorld(w => { const ed = addEdge(w, from, hit.id, linkTypeSig.value); if (ed) applyEra(ed, eraNewSig.peek()); });
+          tryLink(linkFromSig.value, hit.id);
           linkFromSig.value = null;
         }
       } else if (mode === "edit" && editSubSig.value === "unit" && isTacSig.value) {
@@ -684,9 +703,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (opStroke && opStroke.river) { opStroke = null; return; }         // 右键取消在画河道
     if (opDrawSig.value) { opStroke = null; cancelOpDraw(); return; }   // 右键取消画线
     if (mode === "measure") { routePtsSig.value = routePtsSig.value.slice(0, -1); return; }   // 右键撤上一点
-    if (mode === "edit" && editSubSig.value === "decor") {   // 右键=删单个布景
+    if (mode === "edit" && editSubSig.value === "decor") {   // 右键=删单个布景（层隐藏不许盲删）
       const world = worldSig.value;
-      const d = world ? pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY) : null;
+      const d = world && decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY) : null;
       if (d) mutateWorld(w => { removeDecor(w, d.id); });
       return;
     }
@@ -715,6 +734,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (opStroke && opStroke.river) { opStroke = null; return; }        // 先退在画河道
       if (opDrawSig.value) { opStroke = null; cancelOpDraw(); return; }   // 再退画线态
       if (opSelSig.value) { clearOpSel(); return; }                       // 再退作战线选中
+      if (inspEditSig.peek()) { inspEditSig.value = false; return; }      // 再退「随时编辑」表单回卡片（两段式：不一步清掉选中）
       selSig.value = null; linkFromSig.value = null; return;
     }
     /* 模式与子工具快捷键：1/2/3/4=览/测/绘/军；

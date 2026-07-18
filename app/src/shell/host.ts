@@ -28,10 +28,15 @@ export interface Host {
 export function createHost(ctx: ShellCtx): Host {
   const { canvas, ov } = ctx;
   function resize(): void {
-    ctx.DPR = Math.max(1, devicePixelRatio || 1);   // 重读：缩放/换屏后 devicePixelRatio 变，帧内各处每帧读 ctx 自动跟新
-    canvas.width = Math.round(canvas.clientWidth * ctx.DPR);
-    canvas.height = Math.round(canvas.clientHeight * ctx.DPR);
-    ov.width = canvas.width; ov.height = canvas.height;
+    const dpr = Math.max(1, devicePixelRatio || 1);   // 重读：缩放/换屏后 devicePixelRatio 变，帧内各处每帧读 ctx 自动跟新
+    const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+    if (dpr === ctx.DPR && canvas.width === w && canvas.height === h) return;   // 尺寸没变不碰画布（设宽高即清屏）
+    ctx.DPR = dpr;
+    canvas.width = w; canvas.height = h;
+    ov.width = w; ov.height = h;
+    /* 设完尺寸立即同步补画：ResizeObserver 回调跑在当帧 rAF 之后，清空的画布会先被合成上屏、
+       下一帧才补画——检查器滑开/收起（0.22s 过渡逐帧触发 resize）期间空白帧与画面帧交替＝整屏闪烁。 */
+    if (ctx.repaint) ctx.repaint();
   }
   function cssSize(): [number, number] { return [canvas.clientWidth, canvas.clientHeight]; }
   function viewBB(): BBox {

@@ -5,7 +5,7 @@
 
    编辑管线：一切改动经 mutateWorld（先快照进撤销栈，改完浅拷贝换引用
    通知订阅者，editVer++ 驱动外壳自动保存与寻路上下文重发；grid 标记驱动网格重建）。 */
-import { computed, effect, signal } from "@preact/signals";
+import { batch, computed, effect, signal } from "@preact/signals";
 import { LAYERS, PRESETS } from "../core/constants.ts";
 import { yearRangeOf } from "../core/time.ts";
 import { normalizeWorld } from "../core/world.ts";
@@ -105,8 +105,10 @@ export const subDaySig = signal(false);
 export function timeStep(): number { return isTacSig.peek() && subDaySig.peek() ? 1 / 24 : 1; }
 /** 切回「日」粒度时把当前时刻落回整日（避免 +1 步在小数位上漂移） */
 export function toggleSubDay(): void {
-  subDaySig.value = !subDaySig.peek();
-  if (!subDaySig.peek()) yearSig.value = Math.floor(yearSig.peek());
+  batch(() => {
+    subDaySig.value = !subDaySig.peek();
+    if (!subDaySig.peek()) yearSig.value = Math.floor(yearSig.peek());
+  });
 }
 
 /* —— 时间轴播放（对齐旧 togglePlay：300ms 一年/一日（时粒度=半时辰），到头自停；再按=暂停）—— */
@@ -120,8 +122,10 @@ export function stopPlay(): void {
 export function togglePlay(): void {
   if (playTimer != null) { stopPlay(); return; }
   const { min, max } = rangeSig.peek();
-  if (yearSig.peek() >= max) yearSig.value = min;
-  playingSig.value = true;
+  batch(() => {
+    if (yearSig.peek() >= max) yearSig.value = min;
+    playingSig.value = true;
+  });
   playTimer = setInterval(() => {
     if (yearSig.peek() >= rangeSig.peek().max) { togglePlay(); return; }
     yearSig.value = yearSig.peek() + timeStep();
@@ -138,9 +142,16 @@ export const editVerSig = signal(0);
 export const gridVerSig = signal(0);
 
 function syncHistFlags(): void {
-  canUndoSig.value = hist.canUndo();
-  canRedoSig.value = hist.canRedo();
+  batch(() => {
+    canUndoSig.value = hist.canUndo();
+    canRedoSig.value = hist.canRedo();
+  });
 }
+
+/* —— 多信号赋值段一律 batch()：中间态不触发 effect（同类时序 bug 的结构性杜绝——
+   「图库重开全平原」即「先设年份、effect 拿旧世界重建」这类中间态惹的祸）。
+   注意 batch 冲刷是「后通知的 effect 先跑」，兄弟 effect 之间没有可依赖的次序——
+   顺序敏感的反应已合并进 boot 的编排 effect（meta 同步→网格重建→legs 依内部语句序）。 —— */
 
 /** 一切编辑的总入口：快照 → 原地改 → 浅拷贝换引用广播。opts.grid=改了地形（须重建网格） */
 export function mutateWorld(fn: (w: World) => void, opts: { grid?: boolean } = {}): void {
@@ -148,10 +159,12 @@ export function mutateWorld(fn: (w: World) => void, opts: { grid?: boolean } = {
   if (!w) return;
   hist.push(w);
   fn(w);
-  worldSig.value = { ...w };
-  if (opts.grid) gridVerSig.value++;
-  syncHistFlags();
-  editVerSig.value++;
+  batch(() => {
+    worldSig.value = { ...w };
+    if (opts.grid) gridVerSig.value++;
+    syncHistFlags();
+    editVerSig.value++;
+  });
 }
 
 /** 拖动等连续操作：起手 pushHistoryOnce 记一步，随后每帧 mutateWorldLive（不进撤销栈） */
@@ -165,8 +178,10 @@ export function mutateWorldLive(fn: (w: World) => void | boolean): void {
   const w = worldSig.peek();
   if (!w) return;
   if (fn(w) === false) return;   // fn 显式返回 false=本次无实际改动（空笔），不广播、不 editVer++（不触发自动保存）
-  worldSig.value = { ...w };
-  editVerSig.value++;
+  batch(() => {
+    worldSig.value = { ...w };
+    editVerSig.value++;
+  });
 }
 
 /* —— 笔刷描画的空步回收：起笔即 push 一步撤销，若整笔零广播（涂已涂格/擦空白）则丢弃那步空快照 —— */
@@ -180,17 +195,19 @@ export function endStroke(): void {
 function applyRestored(cur: World, snapshot: World): void {
   const restored = normalizeWorld(snapshot);
   const gridChanged = terrKey(cur) !== terrKey(restored);   // 地形没变就不重建（撤销秒回）
-  stopPlay();                                              // 撤销/重做换世界：停播，避免计时器推新态
-  selSig.value = null;                                      // 旧引用失效，与旧版一致
-  routePtsSig.value = []; routeResSig.value = null;
-  linkFromSig.value = null;
-  cancelOpDraw(); clearOpSel();
-  unitLegsSig.value = new Map();                            // 部队可达性缓存失效（外壳按新网格重算）
-  worldSig.value = restored;
-  yearSig.value = yearRangeOf(restored, yearSig.peek()).year;
-  if (gridChanged) gridVerSig.value++;
-  syncHistFlags();
-  editVerSig.value++;
+  batch(() => {
+    stopPlay();                                            // 撤销/重做换世界：停播，避免计时器推新态
+    selSig.value = null;                                    // 旧引用失效，与旧版一致
+    routePtsSig.value = []; routeResSig.value = null;
+    linkFromSig.value = null;
+    cancelOpDraw(); clearOpSel();
+    unitLegsSig.value = new Map();                          // 部队可达性缓存失效（外壳按新网格重算）
+    worldSig.value = restored;
+    yearSig.value = yearRangeOf(restored, yearSig.peek()).year;
+    if (gridChanged) gridVerSig.value++;
+    syncHistFlags();
+    editVerSig.value++;
+  });
 }
 export function undoWorld(): void {
   const cur = worldSig.peek();
@@ -207,16 +224,18 @@ export function redoWorld(): void {
 
 /** 换世界：赋值 + 年份按新世界范围钳制 + 清撤销栈/选中/分析态（对应旧 enterWorld） */
 export function setWorldState(w: World): void {
-  stopPlay();                          // 换图：停播（覆盖战术图父子导航/replaceCurrent 等非 goHome 路径）
-  hist.clear();
-  syncHistFlags();
-  selSig.value = null; hoverSig.value = null;
-  routePtsSig.value = []; routeResSig.value = null;
-  linkFromSig.value = null;
-  cancelOpDraw(); clearOpSel();
-  unitLegsSig.value = new Map();
-  worldSig.value = w;
-  yearSig.value = yearRangeOf(w, yearSig.peek()).year;
+  batch(() => {
+    stopPlay();                        // 换图：停播（覆盖战术图父子导航/replaceCurrent 等非 goHome 路径）
+    hist.clear();
+    syncHistFlags();
+    selSig.value = null; hoverSig.value = null;
+    routePtsSig.value = []; routeResSig.value = null;
+    linkFromSig.value = null;
+    cancelOpDraw(); clearOpSel();
+    unitLegsSig.value = new Map();
+    worldSig.value = w;
+    yearSig.value = yearRangeOf(w, yearSig.peek()).year;
+  });
 }
 
 /** 图层预设一键切换（未实现图层忽略） */
@@ -252,21 +271,25 @@ export function railToolOf(m: ShellMode, sub: EditSub): RailTool {
 /** 点工具轨/按 1~4：切工具并关「层」、展开抽屉（对齐设计 setTool）。units 由调用方保证仅战术图。
     画线态（opDraw）是临时武装态：任何工具轨操作一律解除——绘↔军同为 edit 模式、setMode 早退不会代劳。 */
 export function setRailTool(t: RailTool): void {
-  layersOpenSig.value = false;
-  drawerOpenSig.value = true;
-  cancelOpDraw();
-  if (t === "browse") setMode("browse");
-  else if (t === "measure") setMode(analysisSubSig.peek());
-  else if (t === "draw") { setMode("edit"); if (editSubSig.peek() === "unit") { editSubSig.value = "select"; clearOpSel(); } }
-  else { setMode("edit"); if (editSubSig.peek() !== "unit") { editSubSig.value = "unit"; clearOpSel(); } }
+  batch(() => {
+    layersOpenSig.value = false;
+    drawerOpenSig.value = true;
+    cancelOpDraw();
+    if (t === "browse") setMode("browse");
+    else if (t === "measure") setMode(analysisSubSig.peek());
+    else if (t === "draw") { setMode("edit"); if (editSubSig.peek() === "unit") { editSubSig.value = "select"; clearOpSel(); } }
+    else { setMode("edit"); if (editSubSig.peek() !== "unit") { editSubSig.value = "unit"; clearOpSel(); } }
+  });
 }
 
 /** 切换绘子工具（stgrid 点击 / Shift+1~7 共用）：再点当前＝退回选择态；
     连带清理连线起点、作战线画线态与选中线（子工具语义互斥，残留即模式泄漏）。 */
 export function pickEditSub(s: EditSub): void {
-  editSubSig.value = editSubSig.peek() === s ? "select" : s;
-  linkFromSig.value = null;
-  cancelOpDraw(); clearOpSel();
+  batch(() => {
+    editSubSig.value = editSubSig.peek() === s ? "select" : s;
+    linkFromSig.value = null;
+    cancelOpDraw(); clearOpSel();
+  });
 }
 
 /* —— 界面偏好：主题（亮·素笺默认/暗·漆）×密度（浏览·松/兵棋·紧）两轴。
@@ -329,11 +352,13 @@ export const opSelSig = signal<{ evId: string; i: number } | null>(null);       
 /** 切换模式：清空分析拾取点与连线起点（外壳据 modeSig 切换点击语义与光标） */
 export function setMode(m: ShellMode): void {
   if (modeSig.peek() === m) return;
-  modeSig.value = m;
-  routePtsSig.value = [];
-  routeResSig.value = null;
-  linkFromSig.value = null;
-  cancelOpDraw(); clearOpSel();   // 离开编辑=退出画线/选中态
+  batch(() => {
+    modeSig.value = m;
+    routePtsSig.value = [];
+    routeResSig.value = null;
+    linkFromSig.value = null;
+    cancelOpDraw(); clearOpSel();   // 离开编辑=退出画线/选中态
+  });
 }
 
 /* —— 作战线编辑（对齐旧 startOpDraw/selectOp/clearOpSel/opEdit）——
@@ -350,9 +375,11 @@ export function cancelOpDraw(): void {
 }
 /** 选中一条作战线：开悬浮框，事件保持选中（线跨年可见） */
 export function selectOp(evId: string, i: number): void {
-  opDrawSig.value = null;
-  opSelSig.value = { evId, i };
-  selSig.value = { kind: "node", id: evId };
+  batch(() => {
+    opDrawSig.value = null;
+    opSelSig.value = { evId, i };
+    selSig.value = { kind: "node", id: evId };
+  });
   opDirty = false;
 }
 export function clearOpSel(): void {

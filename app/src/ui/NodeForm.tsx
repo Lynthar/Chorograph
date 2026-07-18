@@ -4,9 +4,9 @@
    · 字段框未填过时按类型模板预填，值留空的行不保存；
    · 战术图：年份/存在时段用「年-月-日」文本（parseYMD/fmtYMD），另有据点防御火力栏。
    输入用非受控 + key=节点id：换选中即重置，重渲不丢输入。 */
-import { useRef } from "preact/hooks";
+import { useLayoutEffect, useRef } from "preact/hooks";
 import { EVENT_TMPL, EVENT_TYPES, NODE_STYLE, NODE_TMPL, NODE_TYPES } from "../core/constants.ts";
-import { calOf, eraPh, eraTy, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
+import { calOf, eraPh, eraTy, fmtWhenForm, fmtWhenRange, parseWhenForm } from "../core/calendar.ts";
 import { formatRanges } from "./editops.ts";
 import { clearOpSel, inspEditSig, isTacSig, modeSig, mutateWorld, opDrawSig, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, worldSig, yearSig } from "./state.ts";
 import { addEventNear, addOwner, applyNodeForm, changeNodeType, moveNode, removeNode, removeOwner, updateOwner } from "./editops.ts";
@@ -24,8 +24,7 @@ function OpList({ n }: { n: WorldNode }) {
       <div class="sub" style={{ marginTop: "4px" }}>作战线（画完自动选中；编辑在地图上的<b>悬浮框</b>——点地图上的线或下面列表可再选）</div>
       {(n.ops || []).map((op, i) => {
         const of = op.side ? world.factions.find(f => f.id === op.side) : null;
-        const span = (op.since != null || op.until != null)
-          ? ` · ${op.since != null ? fmtWhenForm(cal, tac, op.since) : "…"}–${op.until != null ? fmtWhenForm(cal, tac, op.until) : "…"}` : "";
+        const span = (op.since != null || op.until != null) ? ` · ${fmtWhenRange(cal, tac, op.since, op.until)}` : "";
         return (
           <div key={i} class="kv">
             <button type="button" class="link" onClick={() => selectOp(n.id, i)}>{op.kind === "defense" ? "🛡" : "⚔"} {op.troop || op.label || `作战线 ${i + 1}`}</button>
@@ -79,8 +78,40 @@ function OwnersEditor({ n }: { n: WorldNode }) {
   );
 }
 
+/** 切类型时须防丢的文本控件 id（select 不参与：无 defaultValue 可比对；同版面的选择框靠 DOM 复用天然保值） */
+const TEXT_FIELDS = ["ef_name", "ef_lon", "ef_lat", "ef_r", "ef_since", "ef_until", "ef_rng", "ef_kv", "ef_note", "ef_link", "ef_year", "ef_sides", "ef_result"];
+
 export function NodeForm({ n }: { n: WorldNode }) {
   const box = useRef<HTMLDivElement>(null);
+  /* 切类型防丢字（2026-07-16 P2）：类型/事件子类「改选立即生效」即重渲表单——标注↔其他时
+     名称控件在 textarea/input 间重挂、途经他类再切回时期间不在版面上的栏重挂，重挂的控件会
+     被重置为存档值，已键入未保存的内容蒸发（实测 Preact 静态子槽 diff 不串位，丢的只是重挂控件）。
+     对策：改选前把**脏字段**（值≠defaultValue＝用户改过）记入 dirtyRef，提交后把仍在/复现的
+     控件值补回；未动过的字段不记录（属性 kv 的模板才能随新类型正常刷新），改回默认值的从记录剔除，
+     不在版面上的栏保留既有记录（切回时恢复）。 */
+  const dirtyRef = useRef<Record<string, string>>({});
+  const restoreRef = useRef(false);
+  const captureDirty = () => {
+    const b = box.current;
+    if (!b) return;
+    for (const id of TEXT_FIELDS) {
+      const el = b.querySelector<HTMLInputElement | HTMLTextAreaElement>("#" + id);
+      if (!el) continue;
+      if (el.value !== el.defaultValue) dirtyRef.current[id] = el.value;
+      else delete dirtyRef.current[id];
+    }
+    restoreRef.current = true;
+  };
+  useLayoutEffect(() => {
+    if (!restoreRef.current) return;
+    restoreRef.current = false;
+    const b = box.current;
+    if (!b) return;
+    for (const [id, v] of Object.entries(dirtyRef.current)) {
+      const el = b.querySelector<HTMLInputElement | HTMLTextAreaElement>("#" + id);
+      if (el && el.value !== v) el.value = v;
+    }
+  });
   const world = worldSig.value!;
   const tac = isTacSig.value;
   const cal = calOf((world.meta || {}).calendar);
@@ -151,6 +182,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
         <select class="fld" id="ef_type" title="改类型立即生效（可撤销），表单随之切换" value={n.type}
           onChange={e => {
             const t = (e.currentTarget as HTMLSelectElement).value;
+            captureDirty();   // 改选即重渲：先记脏字段，提交后补回（防未保存输入蒸发）
             mutateWorld(w => { const x = w.nodes.find(y => y.id === n.id); if (x) changeNodeType(x, t, yearSig.peek(), v => !!EVENT_TYPES[String(v)]); });
           }}>
           {NODE_TYPES.map(t => <option key={t} value={t}>{NODE_STYLE[t].名}</option>)}
@@ -167,6 +199,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
           <select class="fld" id="ef_evtype" title="事件子类型：只有战役带 对阵/结果/作战线" value={evt}
             onChange={e => {
               const v = (e.currentTarget as HTMLSelectElement).value;
+              captureDirty();   // 战役↔其他子类切换会插拔 对阵/结果 行，同样防丢
               mutateWorld(w => { const x = w.nodes.find(y => y.id === n.id); if (x) x.evtype = v; });
             }}>
             {Object.keys(EVENT_TYPES).map(k => <option key={k} value={k}>{EVENT_TYPES[k].sym} {EVENT_TYPES[k].名}</option>)}

@@ -1,6 +1,7 @@
 /* 图库 IO：IndexedDB/文件夹两来源的开图·入库·删除·快照回写、自动保存、
    启动流程（迁移→文件夹重连→深链/开始界面分流）、战术图生成与父子导航、
    图库动作桥（HomePanel/SettingsOverlay 组件经 libActionsSig 调用；库 IO 全在外壳）。 */
+import { batch } from "@preact/signals-core";
 import { createAutosave, type Autosave } from "../data/autosave.ts";
 import { openLibrary } from "../data/library.ts";
 import { migrateFromLocalStorage, migrateFolderHandle } from "../data/migrate.ts";
@@ -102,9 +103,15 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   function setWorld(w: unknown, id: string | null, snap: OpenSnap | null | undefined): void {
     const nw = normalizeWorld(w);
     ctx.meta = nw.meta || {};
-    ctx.mapId = id; selSig.value = null; hoverSig.value = null;
-    if (snap && !dl.urlYear && isFinite(snap.year as number)) yearSig.value = snap.year as number;
-    setWorldState(nw);   // worldSig 赋值 + 年份按世界范围钳制
+    ctx.mapId = id;
+    // 清 builtFor＝强制按新档重建：同 id 重开时键（mapId@year@gridVer）可能相同而内容已变（如上次保存失败）。
+    // 批内编排 effect 冲刷时即按【最终】世界+年份重建一次——旧「先设年份、effect 拿旧世界白建全平原」的时序病根已由 batch 杜绝。
+    ctx.builtFor = null;
+    batch(() => {
+      selSig.value = null; hoverSig.value = null;
+      if (snap && !dl.urlYear && isFinite(snap.year as number)) yearSig.value = snap.year as number;
+      setWorldState(nw);   // worldSig 赋值 + 年份按世界范围钳制
+    });
     if (snap && !dl.urlView && snap.view && isFinite(snap.view.lon0)) {
       const c = clampView({ lon0: snap.view.lon0, lat0: snap.view.lat0 }, ctx.meta);
       ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = snap.view.degPerPx || 0.06;
@@ -113,9 +120,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = ctx.meta.view.degPerPx0 || ctx.view.degPerPx;
     }
     dl.urlView = dl.urlYear = false;      // URL 直达只压制首次打开
-    // 强制用最终 world/year/meta 重建：上面先设 yearSig(snap) 会触发一次 rebuild，但那时 worldSig 尚未更新，
-    // 会拿到旧/空 terrainOverrides 建成全平原；此处清 builtFor 保证按新世界重建（战术图涂改层才不会缺失）。
-    ctx.builtFor = null; host.rebuildIfNeeded(); refreshLib();
+    host.rebuildIfNeeded(); refreshLib();   // 兜底（正常已在批末建过、键相符＝零开销）
   }
   /* 切图/离开前把视角与纪年快照回写（浏览器库→条目；文件夹库→foldercache） */
   function snapView(): void {
@@ -290,14 +295,17 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       Object.assign(w, nw);
       /* 非 setWorldState 路径（保撤销栈），清理项须对齐 applyRestored：停播/清选中悬停/清分析态，
          年份钳到新档范围——否则跨时基替换（战术日戳档↔战略年档）后时段过滤全空、开出白图（2026-07-12 P2） */
-      stopPlay();
-      selSig.value = null; hoverSig.value = null; clearOpSel(); cancelOpDraw();
-      routePtsSig.value = []; routeResSig.value = null; linkFromSig.value = null;
-      unitLegsSig.value = new Map();
-      worldSig.value = { ...w };     // meta 引用同步靠 worldSig effect
-      yearSig.value = yearRangeOf(worldSig.peek()!, yearSig.peek()).year;
-      gridVerSig.value++;
-      editVerSig.value++;
+      batch(() => {
+        stopPlay();
+        selSig.value = null; hoverSig.value = null; clearOpSel(); cancelOpDraw();
+        routePtsSig.value = []; routeResSig.value = null; linkFromSig.value = null;
+        unitLegsSig.value = new Map();
+        worldSig.value = { ...w };     // meta 引用同步靠编排 effect（批末按最终态跑一遍）
+        yearSig.value = yearRangeOf(worldSig.peek()!, yearSig.peek()).year;
+        gridVerSig.value++;
+        editVerSig.value++;
+      });
+      showToast(`已导入「${srcName}」替换当前图`, { undo: true });
     },
     /* 设置弹层「📷 出图 PNG」：地形+叠加层合成一张全分辨率 PNG 下载 */
     exportPng() {

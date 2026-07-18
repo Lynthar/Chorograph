@@ -111,6 +111,7 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
       const seed = Math.max(1, parseInt(el.value, 10) || 1);
       const style = (q<HTMLSelectElement>("#sw_genstyle").value === "archipelago" ? "archipelago" : "continent") as GenStyle;
       mutateWorld(w => { w.meta.genSeed = seed; w.meta.genStyle = style; }, { grid: true });
+      showToast(`已按种子 ${seed} 重生成地形`, { undo: true });   // 与「应用」同回执（此前静默）
     }
   };
 

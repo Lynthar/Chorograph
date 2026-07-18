@@ -34,6 +34,9 @@ export interface ShellCtx {
   R: TerrainRenderer | null;
   /** `${mapId}@${year}@${gridVer}`——年份/换图/地形改动重建网格的去重键 */
   builtFor: string | null;
+  /** 同步重画一帧（frame 启动时挂入；host.resize 设完画布尺寸立即调用——
+      设 canvas 宽高即清屏，若等下一帧 rAF 补画，检查器滑开/收起期间 ResizeObserver 逐帧清屏＝空白帧闪烁） */
+  repaint: (() => void) | null;
   /* —— 图库+ 自动保存共享态 —— */
   lib: Library | null;
   mapId: string | null;
@@ -54,7 +57,7 @@ export function createShellCtx(canvas: HTMLCanvasElement, ov: HTMLCanvasElement,
     DPR: Math.max(1, devicePixelRatio || 1),
     meta: { terrain: "auto", genSeed: 1234, genStyle: "continent" },
     view: { lon0: 106, lat0: 38, degPerPx: 0.06 },
-    grid: null, elevField: null, R: null, builtFor: null,
+    grid: null, elevField: null, R: null, builtFor: null, repaint: null,
     lib: null, mapId: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
   };

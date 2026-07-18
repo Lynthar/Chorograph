@@ -7,6 +7,7 @@
    纯函数：不 prompt、不入库、不改 ev；库链接与打开、日期戳(today)由外壳完成。 */
 import { flatKmPerDeg, toRad } from "./geo.ts";
 import { activeAt, ownerAt, paintLayersAt } from "./time.ts";
+import { paintStep, resamplePaintCells } from "./territory.ts";
 import { calOf, fmtYear, yearSpanT } from "./calendar.ts";
 import type { Meta, PaintLayer, World, WorldNode } from "./types.ts";
 
@@ -62,9 +63,17 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   const heightOverrides = (src.heightOverrides || []).filter(o => inBB(o) && activeAt(o, yr)).map(o => {
     const c = strip(clone(o)); c.step = +(o.step as number) || 1; return c;   // 高程涂改同规则继承
   });
+  /* 涂域随图重采样：cells 是按源图 bbox/pd 存的格心，战术图 paintStep 按 bbox 派生更细步长，
+     逐字拷入会被解码成一格一点的碎点（0.5° 粗格只亮 0.05° 一格）——按目标网格重栅格化铺满、出界剔除。
+     空层保留（「有涂域」即不回退据点凸包，语义与烘焙前一致）。 */
+  const srcPd = paintStep(m), dstPd = paintStep({ mapKind: "tactical", bbox });
   const factions = src.factions.filter(f => activeAt(f, yr)).map(f => {
     const c = strip(clone(f));
-    const paint = paintLayersAt(f, yr).map(L => strip(clone(L)) as PaintLayer);
+    const paint = paintLayersAt(f, yr).map(L => {
+      const p = strip(clone(L)) as PaintLayer;
+      p.cells = resamplePaintCells(L.cells, m.bbox, srcPd, bbox, dstPd);
+      return p;
+    });
     if (paint.length) c.paint = paint; else delete c.paint;
     return c;
   });

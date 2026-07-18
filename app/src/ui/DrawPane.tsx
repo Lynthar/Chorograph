@@ -8,7 +8,7 @@ import { elevUnitM } from "../core/elev.ts";
 import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
-import { brushEraseSig, decorKindSig, editSubSig, eraNewSig, isTacSig, linkFromSig, linkTypeSig,
+import { brushEraseSig, canRedoSig, canUndoSig, decorKindSig, editSubSig, eraNewSig, isTacSig, linkFromSig, linkTypeSig,
   mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, pickEditSub, redoWorld, selSig, showToast, terrainHeightSig, undoWorld, worldSig,
   type EditSub } from "./state.ts";
 
@@ -96,6 +96,7 @@ function PaintCtx() {
                 const sv = parseWhenForm(cal, tac, (box.querySelector("#pl_since") as HTMLInputElement).value);
                 const uv = parseWhenForm(cal, tac, (box.querySelector("#pl_until") as HTMLInputElement).value);
                 mutateWorld(w => { const wf = w.factions.find(x => x.id === f.id); const wl = wf?.paint?.[li]; if (wl) setPaintLayerSpan(wl, sv == null ? "" : String(sv), uv == null ? "" : String(uv)); });
+                showToast("已保存时段层年代", { undo: true });   // 与同量级表单保存同回执（此前静默）
               }}>保存年代</button>
             </div>
           )}
@@ -237,8 +238,8 @@ export function DrawPane() {
   return (
     <>
       <div class="sec">子工具
-        <button type="button" class="mini tr" title="撤销 (Ctrl+Z)" onClick={undoWorld}>↶ 撤销</button>
-        <button type="button" class="mini tr" title="重做 (Ctrl+Y)" onClick={redoWorld}>↷ 重做</button>
+        <button type="button" class="mini tr" title="撤销 (Ctrl+Z)" disabled={!canUndoSig.value} onClick={undoWorld}>↶ 撤销</button>
+        <button type="button" class="mini tr" title="重做 (Ctrl+Y)" disabled={!canRedoSig.value} onClick={redoWorld}>↷ 重做</button>
       </div>
       <div class="stgrid" id="stgrid">
         {SUBS.map(({ s, g, n }, i) => (

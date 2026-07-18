@@ -284,3 +284,69 @@ describe("文件夹图库", () => {
     fcacheRemove(all, "没有的夹", "x.json");                 // 不炸
   });
 });
+
+/* —— 自动保存调度：flush 须等在途写完（此前在途中 pending 已复位、flush 假性早退——
+   切图前 flush 谎报「已落盘」）；慢速写（文件夹库）不并发写同一文件。 —— */
+import { createAutosave } from "../src/data/autosave.ts";
+
+describe("自动保存调度", () => {
+  const tick = (ms: number) => new Promise(r => setTimeout(r, ms));
+  it("flush 等待在途保存完成", async () => {
+    let release!: () => void;
+    let saves = 0;
+    const as = createAutosave(() => new Promise<void>(r => { saves++; release = r; }), 1);
+    as.touch();
+    await tick(10);                       // 计时器已触发，save 在途且 pending 已复位
+    assert.strictEqual(saves, 1);
+    let flushed = false;
+    const f = as.flush().then(() => { flushed = true; });
+    await tick(10);
+    assert.strictEqual(flushed, false, "在途未完，flush 不得早退");
+    release();
+    await f;
+    assert.strictEqual(flushed, true);
+    assert.strictEqual(as.pending, false);
+  });
+  it("save 期间的新 touch：flush 等完在途后再补一轮，落盘最终态", async () => {
+    let release!: () => void;
+    let saves = 0;
+    const as = createAutosave(() => new Promise<void>(r => { saves++; release = r; }), 1);
+    as.touch();
+    await tick(10);                       // save#1 在途
+    as.touch();                           // 在途期间又脏了
+    const f = as.flush();
+    release();                            // 放行 save#1 → flush 应再跑 save#2
+    await tick(5);
+    release();                            // 放行 save#2
+    await f;
+    assert.strictEqual(saves, 2);
+    assert.strictEqual(as.pending, false);
+  });
+  it("慢速写不并发（计时器与 flush 串行排队）", async () => {
+    let active = 0, maxActive = 0, total = 0;
+    const as = createAutosave(async () => {
+      active++; maxActive = Math.max(maxActive, active); total++;
+      await tick(20);
+      active--;
+    }, 1);
+    as.touch();
+    await tick(8);                        // save#1 在途
+    as.touch();                           // 新计时器将在 save#1 结束前触发 → 须排队
+    await as.flush();
+    assert.strictEqual(maxActive, 1, "同一时刻至多一个 save 在途");
+    assert.strictEqual(total, 2);
+    assert.strictEqual(as.pending, false);
+  });
+  it("写失败：pending 复位为 true、onError 上报，flush 不吞错", async () => {
+    let fail = true;
+    const errs: unknown[] = [];
+    const as = createAutosave(() => { if (fail) throw new Error("磁盘炸了"); }, 1, e => errs.push(e));
+    as.touch();
+    await as.flush();
+    assert.strictEqual(as.pending, true, "失败=仍脏");
+    assert.strictEqual(errs.length, 1);
+    fail = false;
+    await as.flush();                     // 下次 flush 自然重试成功
+    assert.strictEqual(as.pending, false);
+  });
+});

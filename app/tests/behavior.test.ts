@@ -2,7 +2,7 @@
   （历法进退位、时段区间开闭、投影可逆、地形确定性等）——平价测试防漂移，这里防"两边一起错"。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { calOf, cnDay, cnMonth, fmtShichen, fmtT, fmtYMD, fmtYear, fmtYearForm, fromT, parseYMD, parseYearForm, tacT, yearSpanT } from "../src/core/calendar.ts";
+import { calOf, cnDay, cnMonth, fmtShichen, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearForm, fromT, parseYMD, parseYearForm, tacT, yearSpanT } from "../src/core/calendar.ts";
 import { distKm, haversine, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm } from "../src/core/geometry.ts";
 import { genTerrainAt, seedTerrain } from "../src/core/terrain.ts";
@@ -16,6 +16,8 @@ import { TERRAIN, TERRAIN_ORDER, flattenTerrain } from "../src/core/constants.ts
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, countsOf, normalizeWorld } from "../src/core/world.ts";
 import { createTacticalWorld, tacDiaDeg } from "../src/core/tactical.ts";
+import { paintStep, resamplePaintCells, territoryLoops } from "../src/core/territory.ts";
+import { nodesInBox, pickNode } from "../src/render/overlay.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 import { validateWorld } from "../src/core/validate.ts";
 import { readFileSync } from "node:fs";
@@ -594,6 +596,61 @@ describe("存档校验 validateWorld", () => {
   });
 });
 
+describe("时段显示 fmtWhenRange（同刻合并/同日压缩）", () => {
+  const E = calOf({ kind: "earth" }), C = calOf();
+  it("起止同刻只写一遍；同日不同刻＝日期一遍+时刻区间", () => {
+    const d = tacT(E, -204, 10, 20);   // 公元前205年10月20日
+    assert.strictEqual(fmtWhenRange(E, true, d, d), "公元前205年10月20日");
+    assert.strictEqual(fmtWhenRange(E, true, d + 6 / 24, d + 10 / 24), "公元前205年10月20日 06:00–10:00");
+    assert.strictEqual(fmtWhenRange(E, true, d, d + 6 / 24), "公元前205年10月20日 00:00–06:00");
+    const c = tacT(C, 3107, 3, 7);
+    assert.strictEqual(fmtWhenRange(C, true, c + 0.5, c + 13 / 24), "SE3107·三月初七·午正–未初");
+  });
+  it("跨日/战略年/缺省侧＝原样区间", () => {
+    const d = tacT(E, -204, 10, 20);
+    assert.strictEqual(fmtWhenRange(E, true, d, d + 1), "公元前205年10月20日–公元前205年10月21日");
+    assert.strictEqual(fmtWhenRange(C, false, 3100, 3200), "SE3100–SE3200");
+    assert.strictEqual(fmtWhenRange(C, false, null, 3200), "…–SE3200");
+    assert.strictEqual(fmtWhenRange(E, true, d + 0.25, null), "公元前205年10月20日 06:00–…");
+  });
+});
+
+describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
+  const cam: Camera = { lon0: 100, lat0: 30, degPerPx: 0.1, w: 800, h: 600, flat: false };   // 屏幕中心=(400,300)
+  const mkWorld = (nodes: Partial<WorldNode>[]): World => ({
+    meta: {}, factions: [], edges: [], decor: [], terrainOverrides: [], units: [],
+    nodes: nodes.map((n, i) => ({ id: "n" + i, lon: 100, lat: 30, type: "city", ...n })) as WorldNode[]
+  });
+  const pick = (w: World, opts?: Parameters<typeof pickNode>[6]) => pickNode(cam, w.meta, w, 3107, 400, 300, opts);
+  it("图层门：nodes 总门/事件·标注子门关了不拾取（编辑态同样生效）", () => {
+    const w = mkWorld([{ type: "city" }]);
+    assert.strictEqual(pick(w, { editing: true })!.id, "n0");
+    assert.strictEqual(pick(w, { editing: true, layers: { nodes: false } }), null);
+    const we = mkWorld([{ type: "event", evtype: "battle", year: 3107 }]);
+    assert.strictEqual(pick(we, { editing: true, layers: { events: false } }), null);
+    const wl = mkWorld([{ type: "label", 名称: "注" }]);
+    assert.strictEqual(pick(wl, { editing: true, layers: { notes: false } }), null);
+    assert.strictEqual(pick(wl, { editing: true })!.id, "n0");
+  });
+  it("pin 屏幕角标注：画布一律不可点选（锚点隐形；经搜索/撤销管理）", () => {
+    const w = mkWorld([{ type: "label", 名称: "帧题", pin: "nw" }]);
+    assert.strictEqual(pick(w, { editing: true }), null);
+    assert.strictEqual(pick(w, {}), null);
+  });
+  it("rank 缩放门：浏览态按显隐拾取，编辑态全见（与 drawNodes 同规）", () => {
+    const w = mkWorld([{ type: "village" }]);              // rank4：degPerPx 0.1 > 0.045 = 浏览不可见
+    assert.strictEqual(pick(w, {}), null, "浏览态隐藏的乡村不可点");
+    assert.strictEqual(pick(w, { editing: true })!.id, "n0", "编辑态全部地点可见=可点");
+    assert.strictEqual(pick(mkWorld([{ type: "capital" }]), {})!.id, "n0", "都城 rank0 恒可见");
+  });
+  it("nodesInBox 同一套门：隐形对象不被框进批量删", () => {
+    const w = mkWorld([{ type: "city" }, { type: "village" }, { type: "label", 名称: "题", pin: "se" }]);
+    assert.deepStrictEqual(nodesInBox(cam, w.meta, w, 3107, 380, 280, 420, 320, { editing: true }).sort(), ["n0", "n1"]);
+    assert.deepStrictEqual(nodesInBox(cam, w.meta, w, 3107, 380, 280, 420, 320, {}), ["n0"], "浏览态 rank 隐藏的乡村不入框");
+    assert.deepStrictEqual(nodesInBox(cam, w.meta, w, 3107, 380, 280, 420, 320, { editing: true, layers: { nodes: false } }), []);
+  });
+});
+
 describe("战术图生成（快照烘焙）", () => {
   const srcWorld = (): World => ({
     meta: { 名称: "母图", worldModel: "sphere", planetRadiusKm: 10000, terrain: "sample", calendar: { months: 12, dpm: 30 }, vault: "V", kmPerDeg: 111 },
@@ -683,10 +740,42 @@ describe("战术图生成（快照烘焙）", () => {
     assert.strictEqual(w.terrainOverrides[0].step, 1, "无 step 的涂改补 1（战略粗块）");
     assert.deepStrictEqual(w.factions.map(f => f.id), ["fa", "fp"], "未存续派系(fb)剔除");
     const fp = w.factions.find(f => f.id === "fp")!;
-    assert.strictEqual(fp.paint!.length, 1, "仅当年生效涂域层");
-    assert.deepStrictEqual(fp.paint![0].cells, [[10, 10]]);
+    assert.strictEqual(fp.paint!.length, 1, "仅当年生效涂域层(空层保留=不回退据点凸包)");
+    assert.deepStrictEqual(fp.paint![0].cells, [], "出战场 bbox 的涂域格随重采样剔除");
     assert.ok(!("since" in fp.paint![0]), "涂域层时段剥离");
     assert.ok(!("paint" in w.factions.find(f => f.id === "fa")!), "无涂域者不留 paint 键");
+  });
+  it("涂域重采样：战略粗格在战术图铺满为细格块，且与渲染解码链连成单一色块", () => {
+    const src = srcWorld();
+    // [112.25,34.25]=DEFAULT_BBOX 0.5° 网格的合法格心（战场内）；[10,10]=出界格
+    src.factions.push({ id: "fq", 名称: "丁", color: "#440", paint: [{ cells: [[112.25, 34.25], [10, 10]] }] });
+    const w = createTacticalWorld(src, ev, 200, {});
+    const bb = w.meta.bbox!;
+    const cells = w.factions.find(f => f.id === "fq")!.paint![0].cells;
+    // 源格块 [112.0,112.5)×[34.0,34.5)，战术 pd=paintStep(bbox)≈0.05 → 约 (0.5/pd)² 个细格
+    const pd = paintStep(w.meta);
+    const n1 = Math.round(0.5 / pd);
+    assert.ok(cells.length >= (n1 - 1) ** 2 && cells.length <= (n1 + 1) ** 2, `粗格应铺满 ≈${n1}² 细格，得 ${cells.length}`);
+    for (const [x, y] of cells) {
+      assert.ok(x >= 112.0 && x < 112.5 && y >= 34.0 && y < 34.5, `细格心应落在源格块内：${x},${y}`);
+      assert.ok(x >= bb.lonMin && x <= bb.lonMax && y >= bb.latMin && y <= bb.latMax, `细格心应在战场 bbox 内：${x},${y}`);
+    }
+    // 与 overlay 同一条解码链：重采样后应连成单一边界环（修前=每个粗格只亮一个孤立细格的碎点）
+    assert.strictEqual(territoryLoops(cells, bb, 0, pd).length, 1, "应为单一连续色块");
+  });
+  it("resamplePaintCells：粗→细铺满、细→粗格心采样、同网格等值往返、空入空出", () => {
+    const srcBB = { lonMin: 0, lonMax: 10, latMin: 0, latMax: 10 };
+    // 粗→细：源 1° 格 [2,3)×[3,4) → 目标 0.5° 网格（bbox 2..4×3..5）内的 4 个格心
+    assert.deepStrictEqual(
+      resamplePaintCells([[2.5, 3.5]], srcBB, 1, { lonMin: 2, lonMax: 4, latMin: 3, latMax: 5 }, 0.5),
+      [[2.25, 3.25], [2.75, 3.25], [2.25, 3.75], [2.75, 3.75]]);
+    // 细→粗：目标格心 (2.5,2.5) 不在细格 [2,2.5) 内=不亮；在 [2.5,3) 内=亮（分辨率损失语义）
+    assert.deepStrictEqual(resamplePaintCells([[2.25, 2.25]], srcBB, 0.5, srcBB, 1), []);
+    assert.deepStrictEqual(resamplePaintCells([[2.75, 2.75]], srcBB, 0.5, srcBB, 1), [[2.5, 2.5]]);
+    // 同 bbox 同 pd：等值往返（格心归一）
+    assert.deepStrictEqual(resamplePaintCells([[2.5, 3.5]], srcBB, 1, srcBB, 1), [[2.5, 3.5]]);
+    assert.deepStrictEqual(resamplePaintCells([], srcBB, 1, srcBB, 1), []);
+    assert.deepStrictEqual(resamplePaintCells(undefined, srcBB, 1, srcBB, 1), []);
   });
   it("tacDiaDeg：球面按半径/纬度、平面按 kmPerDeg 均分", () => {
     const s = tacDiaDeg({ worldModel: "sphere", planetRadiusKm: 10000 }, 200, 30);

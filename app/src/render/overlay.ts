@@ -385,19 +385,25 @@ function drawNodeMark(ctx: CanvasRenderingContext2D, n: WorldNode, x: number, y:
     ctx.beginPath(); ctx.arc(x, y, 1.7, 0, 7); ctx.fillStyle = col; ctx.fill();
   }
 }
+/** 地点可见门（绘制与拾取同源，防"隐形可选"）：时限 → nodes 总门与 events/notes 类型子门 →
+    编辑全见 → rank 缩放门。pin 屏幕角标注不在此处理：绘制走 drawPinnedNotes、拾取一律排除。 */
+export interface NodeGateOpts { layers?: Record<string, boolean>; editing?: boolean }
+function nodeVisibleAt(n: WorldNode, cam: Camera, yearNow: number, opts: NodeGateOpts): boolean {
+  const L = opts.layers || {};
+  if (!activeAt(n, yearNow)) return false;
+  if (L.nodes === false) return false;
+  if (n.type === "event" && L.events === false) return false;
+  if (n.type === "label" && L.notes === false) return false;
+  if (opts.editing) return true;                       // 编辑也按当年世界编辑，但全部地点可见
+  const s = NODE_STYLE[n.type] || NODE_STYLE.city;
+  return cam.degPerPx <= RANK_ZOOM[s.rank == null ? 2 : s.rank];
+}
 function drawNodes(
   ctx: CanvasRenderingContext2D, cam: Camera, world: World, yearNow: number,
   opts: OverlayOpts, multiSet: Set<string>, fcolor: (id: string | null) => string
 ) {
   const on = (id: string) => (opts.layers || {})[id] !== false;
-  const nodeVisible = (n: WorldNode) => {
-    if (!activeAt(n, yearNow)) return false;
-    if (n.type === "event" && !on("events")) return false;
-    if (n.type === "label" && !on("notes")) return false;
-    if (opts.editing) return true;                       // 编辑也按当年世界编辑，但全部地点可见
-    const s = NODE_STYLE[n.type] || NODE_STYLE.city;
-    return cam.degPerPx <= RANK_ZOOM[s.rank == null ? 2 : s.rank];
-  };
+  const nodeVisible = (n: WorldNode) => nodeVisibleAt(n, cam, yearNow, opts);
   // 重要地点先画：标签避让时高等级优先占位
   const order = world.nodes.slice().sort((a, b) => {
     const ra = (NODE_STYLE[a.type] || NODE_STYLE.city).rank || 0, rb = (NODE_STYLE[b.type] || NODE_STYLE.city).rank || 0;
@@ -583,15 +589,19 @@ export function pickOp(
   return best;
 }
 
+/** 地点拾取：只拾画面上真的画着的（与 drawNodes 同一可见门，opts 传当前图层与编辑态）；
+    pin 屏幕角标注按锚点隐形、一律不可点选（经搜索/撤销管理，见 drawPinnedNotes）。 */
 export function pickNode(
   cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
-  x: number, y: number, rad = 12
+  x: number, y: number, opts: NodeGateOpts & { rad?: number } = {}
 ): WorldNode | null {
+  const rad = opts.rad ?? 12;
   let best: WorldNode | null = null, bd = rad * rad;
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
     for (const n of world.nodes) {
-      if (!activeAt(n, yearNow)) continue;
+      if (n.type === "label" && n.pin) continue;
+      if (!nodeVisibleAt(n, cam, yearNow, opts)) continue;
       const [px, py] = project(c2, n.lon, n.lat);
       const d = (px - x) ** 2 + (py - y) ** 2;
       if (d < bd) { bd = d; best = n; }
@@ -600,17 +610,19 @@ export function pickNode(
   return best;
 }
 
-/** 框选：返回投影后落在屏幕矩形内的地点 id（当年可见者；按世界拷贝重投影，去重） */
+/** 框选：返回投影后落在屏幕矩形内的地点 id（可见门同 pickNode——隐形对象不被框进批量删；
+    按世界拷贝重投影，去重） */
 export function nodesInBox(
   cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
-  x0: number, y0: number, x1: number, y1: number
+  x0: number, y0: number, x1: number, y1: number, opts: NodeGateOpts = {}
 ): string[] {
   const xs = Math.min(x0, x1), xe = Math.max(x0, x1), ys = Math.min(y0, y1), ye = Math.max(y0, y1);
   const ids = new Set<string>();
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
     for (const n of world.nodes) {
-      if (!activeAt(n, yearNow)) continue;
+      if (n.type === "label" && n.pin) continue;
+      if (!nodeVisibleAt(n, cam, yearNow, opts)) continue;
       const [px, py] = project(c2, n.lon, n.lat);
       if (px >= xs && px <= xe && py >= ys && py <= ye) ids.add(n.id);
     }

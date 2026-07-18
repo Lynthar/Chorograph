@@ -216,7 +216,8 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .sec:first-child{border-top:none;padding-top:0}
 .sec .cnt{margin-left:auto;font:10.5px var(--f-mono);color:var(--q-faint)}
 .sec .mini{margin-left:auto;font-weight:400;font-size:var(--fs-xs);color:var(--q-faint);cursor:pointer}
-.sec .mini:hover{color:var(--q-gold)}
+.sec .mini:hover:not(:disabled){color:var(--q-gold)}
+.sec .mini:disabled{opacity:.4}   /* 撤销/重做栈空置灰（订阅 canUndo/RedoSig） */
 .sec .mini+.mini{margin-left:8px}
 .chips{display:flex;gap:5px;flex-wrap:wrap}
 /* 自定义印章调色板（DecorCtx 常用印章缩略图 + 上传） */
@@ -335,14 +336,14 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .tg{font-size:var(--fs-xs);padding:3px 9px;border-radius:999px;color:#fff}
 .hist{border:1px solid var(--q-ln);border-radius:var(--r-sm);padding:8px 10px;font-size:var(--fs-sm);display:flex;flex-direction:column;gap:4px}
 .hist .h{color:var(--q-dim);font-weight:700;letter-spacing:.08em;font-size:var(--fs-xs)}
-.hist .seg3{display:flex;align-items:center;gap:7px;padding:2px 4px;border-radius:5px;width:100%}
+.hist .seg3{display:flex;flex-wrap:wrap;align-items:center;gap:2px 7px;padding:2px 4px;border-radius:5px;width:100%}   /* wrap：战术图长日期挤不下时落到下一行，别把名称压成一字一竖列 */
 .hist .seg3 i{width:9px;height:9px;border-radius:50%;flex:none}
-.hist .seg3 .nm{flex:1;min-width:0;text-align:left}
+.hist .seg3 .nm{flex:1;min-width:10em;text-align:left}   /* 名称保底宽（min-width:0 会被压到逐字竖排、wrap 永不触发） */
 .hist .seg3 .yr{margin-left:auto;font:11px var(--f-mono);color:var(--q-dim);white-space:nowrap}
 .hist .seg3.now{background:var(--q-goldwash)}
 .hist .seg3.now .yr{color:var(--q-gold);font-weight:700}
 .linkrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-.in-actions{margin-top:auto;display:flex;flex-direction:column;gap:6px;padding-top:6px}   /* auto=动作钮沉底 */
+.in-actions{display:flex;flex-direction:column;gap:6px;padding-top:6px}   /* 动作钮跟随内容（曾 margin-top:auto 沉底——内容少时中段一片空腔，2026-07-16 审阅②） */
 .bt{height:34px;min-height:32px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:9px;font-weight:700;font-size:var(--fs-sm);
   border:1px solid var(--q-ln2);color:var(--q-tx);padding:0 14px;cursor:pointer}
 .bt:hover{background:var(--q-in);border-color:var(--q-ln2)}
