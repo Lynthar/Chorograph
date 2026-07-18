@@ -144,7 +144,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     const par = isTacSig.value && ((worldSig.value ? worldSig.value.meta : null) || ({} as Meta)).parent;
     const bp = $("btnParent");
     bp.style.display = par ? "inline-flex" : "none";
-    if (par) bp.title = `返回上级战略地图「${par.mapName || ""}」（当前战术图自动保存）`;
+    if (par) bp.title = `返回上级战略图「${par.mapName || ""}」（当前战术图自动保存）`;
   });
   $("btnParent").onclick = () => openParentMap();
   /* 顶栏「复位」（v0.14 btnReset；快捷键 0）：回世界初始视角 */

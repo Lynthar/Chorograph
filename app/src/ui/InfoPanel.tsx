@@ -128,11 +128,11 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
           <button class="bt gold tr" onClick={() => { yearSig.value = n.year as number; }}>⇢ 跳到{tac ? "当日" : "当年"} {fmtWhen(cal, tac, n.year)}</button>
         )}
         {isEv && n.tacmap && (
-          <button class="bt tr" title="打开这场战役的战术地图（当前图自动保存）" onClick={() => { tacReqSig.value = { type: "open", evId: n.id }; }}>⚔ 打开战术图 {n.tacmap.name ? `· ${n.tacmap.name}` : ""}</button>
+          <button class="bt tr" title="打开这场战役的战术图（当前图自动保存）" onClick={() => { tacReqSig.value = { type: "open", evId: n.id }; }}>⚔ 打开战术图 {n.tacmap.name ? `· ${n.tacmap.name}` : ""}</button>
         )}
         {isBattle && !n.tacmap && !tac && (
           <button class="bt tr" title="以此事件为中心生成小范围战场图（直径可输，默认200km）" onClick={() => {
-            const d = prompt("战术地图范围（战场直径，km）：", "200");
+            const d = prompt("战术图范围（战场直径，km）：", "200");
             if (d == null) return;
             tacReqSig.value = { type: "gen", evId: n.id, dia: +d || 200 };
           }}>⚔ 生成战术图</button>
@@ -259,7 +259,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
                 <option value="" selected={!q.st}>常态</option>
                 {Object.entries(UNIT_STATUS).map(([k, d]) => <option key={k} value={k} selected={q.st === k}>{d.名}</option>)}
               </select>
-            </> : (q.st && UNIT_STATUS[q.st] ? <> <span class="tg" style={{ background: UNIT_STATUS[q.st].color, fontSize: "10px", padding: "1px 6px" }}>{UNIT_STATUS[q.st].名}</span></> : null)}
+            </> : (q.st && UNIT_STATUS[q.st] ? <> <span class="tg" style={{ background: UNIT_STATUS[q.st].color, padding: "1px 6px" }}>{UNIT_STATUS[q.st].名}</span></> : null)}
             {L && <span class="sub" style={L.ok ? undefined : { color: "var(--q-zhu)" }}> {Math.round(L.km)}km{L.route ? "" : "(直线)"}/{L.days}日·需{L.need.toFixed(1)}日{L.ok ? "" : " ⚠"}</span>}
             {editable && <button type="button" class="link" style={{ color: "var(--q-zhu)" }} title="删此航点" onClick={() => { mutateWorld(w => { deleteUnitWaypoint(w, u.id, i); }); }}> ✕</button>}
           </div>

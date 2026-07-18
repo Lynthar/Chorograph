@@ -9,7 +9,7 @@ import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
 import { brushEraseSig, canRedoSig, canUndoSig, decorKindSig, editSubSig, eraNewSig, isTacSig, linkFromSig, linkTypeSig,
-  mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, pickEditSub, redoWorld, selSig, showToast, terrainHeightSig, undoWorld, worldSig,
+  mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainHeightSig, undoWorld, worldSig,
   type EditSub } from "./state.ts";
 
 const SUBS: { s: EditSub; g: string; n: string }[] = [
@@ -45,7 +45,7 @@ function PaintCtx() {
     return (
       <div class="empty"><span class="ph">域</span><b>还没有派系</b>
         <p>建一个派系才能涂疆域。颜色属于你的世界——界面不会与它争色。</p>
-        <button class="bt zhu tr" onClick={addFac}>＋ 新建派系</button></div>
+        <button class="bt zhu tr" onClick={addFac}>＋ 新增派系</button></div>
     );
   }
   return (
@@ -72,16 +72,17 @@ function PaintCtx() {
           {layers.length > 0 ? (
             <div class="lyr-strip">
               {layers.map((Lx, i) => (
-                <button key={i} class={"lr2 tr" + (li === i ? " on" : "")} onClick={() => { paintLayerSig.value = i; }}>
-                  <span class="rangeY">{Lx.since == null ? "远古" : fmtWhen(cal, tac, Lx.since)} – {Lx.until == null || (!tac && Lx.until >= 9999) ? "至今" : fmtWhen(cal, tac, Lx.until)}</span>
-                  <span class="cells">{(Lx.cells || []).length} 格</span>
-                  <span class="del" title="删除该时段层" onClick={ev => {
-                    ev.stopPropagation();
+                <div key={i} class={"lr2 tr" + (li === i ? " on" : "")}>
+                  <button type="button" class="main" aria-pressed={li === i} onClick={() => { paintLayerSig.value = i; }}>
+                    <span class="rangeY">{Lx.since == null ? "远古" : fmtWhen(cal, tac, Lx.since)} – {Lx.until == null || (!tac && Lx.until >= 9999) ? "至今" : fmtWhen(cal, tac, Lx.until)}</span>
+                    <span class="cells">{(Lx.cells || []).length} 格</span>
+                  </button>
+                  <button type="button" class="del tr" title="删除该时段层" onClick={() => {
                     if (!confirm("删除该时段层（其全部涂域格）？")) return;
                     mutateWorld(w => { const wf = w.factions.find(x => x.id === f.id); if (wf) removePaintLayer(wf, i); });
                     paintLayerSig.value = 0;
-                  }}>✕</span>
-                </button>
+                  }}>✕</button>
+                </div>
               ))}
             </div>
           ) : <div class="hint">（{f.名称 || f.id}尚无涂域——直接开涂即自动建层；仍按据点凸包显示）</div>}
@@ -169,13 +170,15 @@ function DecorCtx() {
       <div class="sec" style={{ marginTop: "4px" }}>常用印章<span class="mini">你上传的·跨图复用</span></div>
       <div class="stamps">
         {pool.map(a => (
-          <button key={a.id} class={"stamp tr" + (!erase && kind === "img:" + a.id ? " on" : "")} title={a.name || "印章"} onClick={() => pick("img:" + a.id)}>
-            <img src={a.src} alt="" />
-            <span class="del" title="从常用移除（不删已落的章）" onClick={ev => { ev.stopPropagation(); poolRemove(a.id); }}>✕</span>
-          </button>
+          <span key={a.id} class={"stamp tr" + (!erase && kind === "img:" + a.id ? " on" : "")}>
+            <button type="button" class="main tr" title={a.name || "印章"} aria-pressed={!erase && kind === "img:" + a.id} onClick={() => pick("img:" + a.id)}>
+              <img src={a.src} alt="" />
+            </button>
+            <button type="button" class="del tr" title="从常用移除（不删已落的章）" onClick={() => poolRemove(a.id)}>✕</button>
+          </span>
         ))}
         <label class="stamp add tr" title="上传图片当印章（自动缩到 256px、随本图导出/分享）">＋
-          <input type="file" accept="image/*" style={{ display: "none" }} onChange={upload} /></label>
+          <input type="file" accept="image/*" style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer" }} onChange={upload} /></label>
       </div>
       <div class="hint">点<b>印章</b>放置、点<b>橡皮</b>通用擦除 · 点放或按住播撒成林/成岭 · <kbd>[ ]</kbd>调大小 · <kbd>Alt</kbd>+点取样 · 右键删单个 · 自定义印章存进本图、随导出/分享</div>
     </>
@@ -191,7 +194,7 @@ function LinkCtx() {
     <>
       <div class="chips">
         {(Object.keys(EDGE_STYLE) as Edge["type"][]).map(tp => (
-          <button key={tp} class="ch tr" aria-pressed={linkTypeSig.value === tp} onClick={() => { linkTypeSig.value = tp; }}>
+          <button key={tp} class="ch tr" aria-pressed={linkTypeSig.value === tp} onClick={() => pickLinkType(tp)}>
             <span class="sw" style={{ background: EDGE_STYLE[tp].color, borderRadius: "2px", height: "4px" }} />{EDGE_STYLE[tp].名}
           </button>
         ))}
@@ -252,7 +255,7 @@ export function DrawPane() {
         {sub === "select" && <><b>默认＝选择</b>：点击选中 · 空白拖＝框选（Shift+拖＝强制框选）· 按住对象拖＝移动 · 方向键微调 · <kbd>Delete</kbd> 删除 · 点作战线＝选中开悬浮框（再点子工具可切换）</>}
         {sub === "add" && <>点空白＝落新地点（名称先填，类型/归属/沿革在检查器表单里改，11 类）</>}
         {sub === "label" && <>点空白＝落自由文本标注（钟点/风向/兵力/争议注记…），检查器改 多行文本/字号/派系色/屏幕角固定，可配 ⏳时段分相位显示</>}
-        {sub === "unit" && <>兵棋部队：军面板<b>「＋新增部队」</b>新建（未入场），按住列表项<b>拖入地图放置</b>；按住图上部队<b>拖动＝记录当日位置</b>（先把时间坞拖到目标日）；同日重拖＝改写航点；<b>Shift+拖</b>＝框选；<kbd>Delete</kbd>＝删部队</>}
+        {sub === "unit" && <>兵棋部队：军面板<b>「＋ 新增部队」</b>先入列表（未入场），按住列表项<b>拖入地图放置</b>；按住图上部队<b>拖动＝记录当日位置</b>（先把时间轴拖到目标日）；同日重拖＝改写航点；<b>Shift+拖</b>＝框选；<kbd>Delete</kbd>＝删部队</>}
         {sub === "terrain" && <>生态类型 8 色画笔逐格改地形 · ⛰高程＝抬升/下切（<kbd>E</kbd> 换向）</>}
         {sub === "link" && <>选类型：河流＝自由画河道（拖动画线，不必锚地点）· 道路/商路＝地点连地点</>}
         {sub === "paint" && <>笔刷直涂派系疆域（优先于据点凸包）· 橡皮＝反涂 · 开涂自动建层</>}

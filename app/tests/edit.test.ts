@@ -7,8 +7,8 @@ import { createAutosave } from "../src/data/autosave.ts";
 import { addEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removeUnit, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { buildGridCells } from "../src/core/grid.ts";
-import { canRedoSig, canUndoSig, editVerSig, gridVerSig, mutateWorld, mutateWorldLive, pushHistoryOnce,
-  redoWorld, selSig, setWorldState, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
+import { canRedoSig, canUndoSig, editSubSig, editVerSig, gridVerSig, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
+  pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selSig, setWorldState, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES } from "../src/core/constants.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 
@@ -727,5 +727,46 @@ describe("归属沿革编辑（owners）", () => {
     assert.strictEqual(removeOwner(n, 9), false, "越界");
     assert.strictEqual(removeOwner(n, 0), true);
     assert.ok(!("owners" in n), "删空后整键移除（回退固定 faction）");
+  });
+});
+
+describe("子工具自动开图层（隐藏层上放置＝幽灵编辑，切入即亮层）", () => {
+  const snap = (): Record<string, boolean> => ({ ...layersSig.peek() });
+  it("切入布景：隐藏的 decor 层自动打开", () => {
+    const s0 = snap();
+    layersSig.value = { ...s0, decor: false };
+    editSubSig.value = "select";
+    pickEditSub("decor");
+    assert.strictEqual(editSubSig.peek(), "decor");
+    assert.strictEqual(layersSig.peek().decor, true);
+    layersSig.value = s0; editSubSig.value = "select";
+  });
+  it("标注要过 nodes 总门+notes 子门：两层都开", () => {
+    const s0 = snap();
+    layersSig.value = { ...s0, nodes: false, notes: false };
+    pickEditSub("label");
+    assert.strictEqual(layersSig.peek().nodes, true);
+    assert.strictEqual(layersSig.peek().notes, true);
+    layersSig.value = s0; editSubSig.value = "select";
+  });
+  it("退回选择态不动图层：刚藏起的层保持隐藏", () => {
+    const s0 = snap();
+    editSubSig.value = "decor";
+    layersSig.value = { ...s0, decor: false };
+    pickEditSub("decor");   // 再点当前＝退回 select
+    assert.strictEqual(editSubSig.peek(), "select");
+    assert.strictEqual(layersSig.peek().decor, false, "select 无映射＝不代开");
+    layersSig.value = s0;
+  });
+  it("线型切换亮对应线层；全已开时原引用不动（防无谓重渲）", () => {
+    const s0 = snap();
+    layersSig.value = { ...s0, river: false };
+    pickLinkType("river");
+    assert.strictEqual(linkTypeSig.peek(), "river");
+    assert.strictEqual(layersSig.peek().river, true);
+    const ref = layersSig.peek();
+    revealLayersFor("link");   // river 已开 → 无操作
+    assert.strictEqual(layersSig.peek(), ref);
+    layersSig.value = s0; linkTypeSig.value = "road";
   });
 });

@@ -1,7 +1,7 @@
 /* 设置弹层（UI 1:1 还原 v0.14 #settings）：世界参数（名称/形态/尺度/范围/地形初稿/库名）
    + 数据文件与出图（导入替换/导出 JSON/出图 PNG/重置示例）。
    两种模式（对齐旧 settingsMode）：app=改当前世界参数（应用即重算里程/重建地形）；
-   create=从地图库新建（隐藏数据区与应用钮）。卡片以 token 为 key 整体重挂=每次打开重灌表单。 */
+   create=从图库新建（隐藏数据区与应用钮）。卡片以 token 为 key 整体重挂=每次打开重灌表单。 */
 import { useRef, useState } from "preact/hooks";
 import { blankWorld, type BlankWorldSpec } from "../core/world.ts";
 import { calOf } from "../core/calendar.ts";
@@ -98,7 +98,7 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
     showToast("已应用到当前世界 · 视图出界自动回中", { undo: true });
   };
   const doNew = () => {
-    if (!create && !confirm("以当前参数新建一张空白地图？\n当前地图原样保留在地图库（顶栏 ⌂）中。")) return;
+    if (!create && !confirm("以当前参数新建一张空白地图？\n当前地图原样保留在图库（顶栏 ⌂）中。")) return;
     const w = blankWorld(readSettings(), new Date().toISOString().slice(0, 10));
     closeSettings();
     acts?.createWorld(w);

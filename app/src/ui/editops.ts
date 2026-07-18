@@ -338,7 +338,7 @@ export function setPaintLayerSpan(L: { since?: number | null; until?: number | n
    航点坐标只 toFixed(4)、不折回本初域（对齐旧实现：战术图为小范围战场，无环绕）。 */
 export const newUnitId = (): string => "u" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
 
-/** 新建未入场部队（track 空＝不在图上）：军面板「＋新增部队」用——先入列表改名设属性，再从列表拖入地图落首航点 */
+/** 新建未入场部队（track 空＝不在图上）：军面板「＋ 新增部队」用——先入列表改名设属性，再从列表拖入地图落首航点 */
 export function addUnitUnplaced(w: World, 名称: string, id = newUnitId()): Unit {
   const u: Unit = { id, 名称, faction: null, kind: "inf", arm: "land", strength: "", track: [] };
   (w.units || (w.units = [])).push(u);

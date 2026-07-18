@@ -1,7 +1,7 @@
 /* UI 挂载器：工具轨/上下文抽屉/检查器渲染进 .main 的透明挂点（.mount，
    display:contents 使组件根节点直接参与弹性布局）；抽屉重开页签在画布区 #cvTabMount；
    时间坞组件直渲 footer#dock、搜索进顶栏 #searchWrap；悬浮笔刷框/作战线框仍在画布容器；
-   开始界面（地图库）/帮助/设置弹层/开图加载舞台为全屏覆盖层挂点。 */
+   开始界面（图库）/帮助/设置弹层/开图加载舞台为全屏覆盖层挂点。 */
 import { render } from "preact";
 import { ToolRail } from "./ToolRail.tsx";
 import { Drawer, DrawerTab } from "./Drawer.tsx";

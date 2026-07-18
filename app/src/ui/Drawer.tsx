@@ -36,7 +36,7 @@ function Legend() {
       <div class="lgrow"><span class="lgs" style={{ color: "#b0202a" }}>➤</span>攻势线　<span class="lgs" style={{ color: "#b0202a" }}>⊥</span>防线(齿=正面)</div>
       <div class="sub">作战线在事件当年或选中该事件点时显示；事件点未发生=淡显。</div>
       <div class="lgrow"><span class="lgs" style={{ color: "#5c4022" }}>◌</span>等高线(示意高程)　<span class="lgs" style={{ color: "#667" }}>◯</span>地点范围(虚线圈)</div>
-      <div class="sub" style={{ marginTop: "4px" }}>派系范围三档：<b>涂绘疆域</b>(绘→涂域笔刷,最优先)＞据点凸包(实线)＞影响范围(虚线,显式指定)。记号描边色=当年归属；灰=中立。远景只显都城/州府，标签自动避让；放大自动高清重绘地形。生态点缀随地形自动配套。</div>
+      <div class="sub" style={{ marginTop: "4px" }}>派系范围三档：<b>涂绘疆域</b>(绘→涂域笔刷、最优先)＞据点凸包(实线)＞影响范围(虚线、显式指定)。记号描边色=当年归属；灰=中立。远景只显都城/州府，标签自动避让；放大自动高清重绘地形。生态点缀随地形自动配套。</div>
     </details>
   );
 }

@@ -6,7 +6,7 @@
   "description": "Chorograph app — Vite + TypeScript + WebGL2; tests via node:test (zero native deps).",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/checksize.mjs",
     "preview": "vite preview",
     "test": "node --test",
     "test:watch": "node --test --watch",

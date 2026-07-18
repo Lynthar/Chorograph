@@ -119,7 +119,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     if (times.length > 30) times.shift();
     const avg = times.reduce((a, b) => a + b, 0) / times.length;
     fps = avg < 0.01 ? "<0.01" : avg.toFixed(2);
-    const src = !ctx.lib ? "无图库(只读)" : ctx.source === "folder" ? `📁 ${ctx.folderDir!.name}` : "💾 图库";
+    const src = !ctx.lib ? "无图库(只读)" : ctx.source === "folder" ? `📁 ${ctx.folderDir!.name}` : "💾 浏览器图库";
     /* 顶栏保存态 savest（底栏退役：原 ftData 短化——保存态为主文案，来源/图名进 title；
        启动提示 ☂（文件夹重授权/旧档迁移）仍随文案可见）；仅变化时写 DOM。
        可见文案不再写图名（面包屑相邻已有、画布图幅标题第三遍——2026-07-16 审阅③双写），只报来源；图名细节留 title */

@@ -82,7 +82,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   const cs = calOf(cal);
   const meta: Meta = {
     名称: (ev.名称 || "战役") + "·战术",
-    说明: `「${ev.名称 || ""}」战术地图（${fmtYear(cs, yr)}，直径≈${d}km），自「${m.名称 || ""}」生成：地形/地点/派系为当年快照；时间轴细化到日。`,
+    说明: `「${ev.名称 || ""}」战术图（${fmtYear(cs, yr)}，直径≈${d}km），自「${m.名称 || ""}」生成：地形/地点/派系为当年快照；时间轴细化到日。`,
     mapKind: "tactical", worldModel: m.worldModel || "sphere", planetRadiusKm: m.planetRadiusKm,
     terrain: m.terrain || "sample", battleYear: yr, calendar: cal,
     tacSpan: yearSpanT(cs, yr),

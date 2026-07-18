@@ -127,7 +127,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 #app[data-theme="dark"] .canvas-wrap{background:#0e0c0a}
 /* 读数浮签（底栏退役：坐标/高程/星球尺度迁此） */
 .coords{position:absolute;right:12px;bottom:12px;display:flex;gap:8px;align-items:center;z-index:5;
-  background:var(--q-pn);border:1px solid var(--q-ln);border-radius:8px;padding:5px 11px;font:400 10.5px/1.6 var(--f-mono);color:var(--q-dim);font-variant-numeric:tabular-nums;pointer-events:none}
+  background:var(--q-pn);border:1px solid var(--q-ln);border-radius:8px;padding:5px 11px;font:400 var(--fs-xs)/1.6 var(--f-mono);color:var(--q-dim);font-variant-numeric:tabular-nums;pointer-events:none}
 .coords b{color:var(--q-tx);font-weight:600}
 
 /* ── 检查器（壳） ── */
@@ -156,23 +156,23 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .dk-step:active{background:var(--q-in2)}
 .dk-year{flex:none;min-width:118px;text-align:center;white-space:nowrap}
 .dk-year .y{font:700 17px/1.2 var(--f-mono);color:var(--q-gold);letter-spacing:.03em;font-variant-numeric:tabular-nums;display:block}
-.dk-year .s{font:400 9.5px/1.4 var(--f-mono);color:var(--q-faint);letter-spacing:.08em;display:block}
+.dk-year .s{font:400 var(--fs-xs)/1.4 var(--f-mono);color:var(--q-faint);letter-spacing:.08em;display:block}
 .dk-mid{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
-.dk-track{height:42px;position:relative;cursor:pointer;touch-action:none}   /* 42px=三带预算:标签带≤10.5 / 圆点带(含金环)11.5~30.5 / 首末带≥33——改任一行尺寸须保三带不叠 */
+.dk-track{height:46px;position:relative;cursor:pointer;touch-action:none}   /* 46px=三带预算:标签带≤12(--fs-xs 汉字地板) / 圆点带(含金环)13.5~32.5 / 首末带≥34——改任一行尺寸须保三带不叠 */
 .dk-track.dragging{cursor:grabbing}
-.dk-track .dk-rail{position:absolute;left:0;right:0;top:19.5px;height:3px;border-radius:2px;background:var(--q-in2)}   /* 勿用裸 .rail——与工具轨撞名（2026-07-12 P1） */
-.dk-track .fill{position:absolute;left:0;top:19.5px;height:3px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--q-gold));opacity:.5;pointer-events:none}
-.dk-track .tick{position:absolute;top:15.5px;width:2px;height:11px;background:var(--q-gold);opacity:.8;pointer-events:none;transform:translateX(-50%)}
+.dk-track .dk-rail{position:absolute;left:0;right:0;top:21.5px;height:3px;border-radius:2px;background:var(--q-in2)}   /* 勿用裸 .rail——与工具轨撞名（2026-07-12 P1） */
+.dk-track .fill{position:absolute;left:0;top:21.5px;height:3px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--q-gold));opacity:.5;pointer-events:none}
+.dk-track .tick{position:absolute;top:17.5px;width:2px;height:11px;background:var(--q-gold);opacity:.8;pointer-events:none;transform:translateX(-50%)}
 .dk-track .tick.fut{opacity:.32}
-.dk-track .tlab{position:absolute;top:1px;transform:translateX(-50%);font-size:9.5px;line-height:1;color:var(--q-dim);letter-spacing:.05em;white-space:nowrap;pointer-events:none}
+.dk-track .tlab{position:absolute;top:0;transform:translateX(-50%);font-size:var(--fs-xs);line-height:1;color:var(--q-dim);letter-spacing:.05em;white-space:nowrap;pointer-events:none}
 .dk-track .tlab.cur{color:var(--q-gold);font-weight:700}
 .dk-track .tlab.fut{opacity:.5}
-.dk-track .cl{position:absolute;top:21px;transform:translate(-50%,-50%);background:var(--q-in2);border:1px solid var(--q-ln2);color:var(--q-dim);font:700 9px/1 var(--f-mono);border-radius:999px;padding:3px 6px;pointer-events:none}
+.dk-track .cl{position:absolute;top:23px;transform:translate(-50%,-50%);background:var(--q-in2);border:1px solid var(--q-ln2);color:var(--q-dim);font:700 9px/1 var(--f-mono);border-radius:999px;padding:3px 6px;pointer-events:none}   /* ×N 纯数字丸，9px 属符号豁免 */
 .dk-track .cl.cur{background:var(--q-gold);border-color:var(--q-gold);color:var(--q-goldink)}
 .dk-track .cl.fut{opacity:.45}
-.dk-track .thumb{position:absolute;top:13px;width:16px;height:16px;border-radius:50%;background:var(--q-gold);border:2.5px solid var(--q-top);box-shadow:0 0 0 1.5px var(--q-gold);transform:translateX(-50%);pointer-events:none}
+.dk-track .thumb{position:absolute;top:15px;width:16px;height:16px;border-radius:50%;background:var(--q-gold);border:2.5px solid var(--q-top);box-shadow:0 0 0 1.5px var(--q-gold);transform:translateX(-50%);pointer-events:none}
 .dk-track.dragging .thumb{box-shadow:0 0 0 1.5px var(--q-gold),0 0 0 9px var(--q-goldwash)}
-.dk-track .mm{position:absolute;bottom:0;font:400 9px/1 var(--f-mono);color:var(--q-faint);pointer-events:none}
+.dk-track .mm{position:absolute;bottom:0;font:400 var(--fs-xs)/1 var(--f-mono);color:var(--q-faint);pointer-events:none}
 .dk-seg{display:flex;border:1px solid var(--q-ln);border-radius:var(--r-sm);overflow:hidden;flex:none}
 .dk-seg button{font-size:var(--fs-xs);padding:6px 12px;color:var(--q-dim);min-height:28px;cursor:pointer;text-align:center}
 .dk-seg button+button{border-left:1px solid var(--q-ln)}
@@ -188,7 +188,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .dk-sub .htk{position:absolute;top:8px;width:1.5px;height:7px;background:var(--q-faint);opacity:.75;pointer-events:none;transform:translateX(-50%)}
 .dk-sub .htk.big{top:6px;height:11px;width:2px;background:var(--q-dim)}
 .dk-sub .htk.noon{top:7px;height:9px;background:var(--q-dim)}
-.dk-sub .hlb{position:absolute;top:20px;transform:translateX(-50%);font:400 9.5px/1 var(--f-mono);color:var(--q-faint);white-space:nowrap;pointer-events:none}
+.dk-sub .hlb{position:absolute;top:20px;transform:translateX(-50%);font:400 var(--fs-xs)/1 var(--f-mono);color:var(--q-faint);white-space:nowrap;pointer-events:none}
 .dk-sub .hlb.noon{color:var(--q-dim)}
 .dk-sub .hlb.edge{transform:none}   /* 首端日名左对齐——overflow:hidden 下居中位移会裁掉左半 */
 .dk-sub .hth{position:absolute;top:5px;width:13px;height:13px;border-radius:50%;background:var(--q-gold);border:2.5px solid var(--q-top);box-shadow:0 0 0 1px var(--q-gold);transform:translateX(-50%);pointer-events:none}
@@ -203,7 +203,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .ls-name{font:700 15px/1.5 var(--f-song);letter-spacing:.14em;color:var(--q-tx)}
 .ls-bar{width:100%;height:3px;border-radius:2px;background:var(--q-in2);overflow:hidden}
 .ls-bar i{display:block;height:100%;background:var(--q-gold);border-radius:2px;transition:width .25s ease}
-.ls-steps{font:400 10.5px/1.9 var(--f-mono);color:var(--q-faint)}
+.ls-steps{font:400 var(--fs-xs)/1.9 var(--f-mono);color:var(--q-faint)}
 .ls-steps .done{color:var(--q-dim);text-decoration:line-through;text-decoration-color:var(--q-faint)}
 .ls-steps .now{color:var(--q-gold)}
 
@@ -214,7 +214,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 /* ── 抽屉通用件 ── */
 .sec{border-top:1px solid var(--q-ln);padding-top:9px;margin-top:2px;display:flex;align-items:center;gap:7px;color:var(--q-dim);font-weight:700;font-size:var(--fs-sm);letter-spacing:.08em}
 .sec:first-child{border-top:none;padding-top:0}
-.sec .cnt{margin-left:auto;font:10.5px var(--f-mono);color:var(--q-faint)}
+.sec .cnt{margin-left:auto;font:var(--fs-xs) var(--f-mono);color:var(--q-faint)}
 .sec .mini{margin-left:auto;font-weight:400;font-size:var(--fs-xs);color:var(--q-faint);cursor:pointer}
 .sec .mini:hover:not(:disabled){color:var(--q-gold)}
 .sec .mini:disabled{opacity:.4}   /* 撤销/重做栈空置灰（订阅 canUndo/RedoSig） */
@@ -222,12 +222,14 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .chips{display:flex;gap:5px;flex-wrap:wrap}
 /* 自定义印章调色板（DecorCtx 常用印章缩略图 + 上传） */
 .stamps{display:flex;flex-wrap:wrap;gap:6px}
-.stamp{position:relative;width:44px;height:44px;border:1px solid var(--q-ln);border-radius:var(--r-sm);background:var(--q-in);overflow:hidden;display:grid;place-items:center;padding:0}
+.stamp{position:relative;width:44px;height:44px;border:1px solid var(--q-ln);border-radius:var(--r-sm);background:var(--q-in);overflow:hidden;display:grid;place-items:center;padding:0}   /* 容器=span：选章/移除是兄弟按钮 */
+.stamp .main{width:100%;height:100%;display:grid;place-items:center}
 .stamp img{max-width:100%;max-height:100%;object-fit:contain;pointer-events:none}
 .stamp.on{border-color:var(--q-zhu);box-shadow:0 0 0 1px var(--q-zhu)}
 .stamp .del{position:absolute;top:0;right:0;width:15px;height:15px;display:grid;place-items:center;font-size:9px;background:var(--q-pn);color:var(--q-faint);border-bottom-left-radius:5px;opacity:0}
-.stamp:hover .del{opacity:1}
+.stamp:hover .del,.stamp:focus-within .del{opacity:1}   /* 键盘走查也能见删钮 */
 .stamp .del:hover{color:var(--q-zhu)}
+.stamp :focus-visible{outline-offset:-2px}   /* overflow:hidden 会裁掉外扩焦点框，改内缩 */
 .stamp.add{font-size:20px;color:var(--q-faint);border-style:dashed;cursor:pointer}
 .stamp.add:hover{color:var(--q-tx);border-color:var(--q-ln2);background:var(--q-in2)}
 .ch{font-size:var(--fs-xs);padding:5px 11px;border-radius:999px;border:1px solid var(--q-ln);color:var(--q-dim);min-height:24px;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
@@ -245,7 +247,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .row.off{opacity:.42}
 .row.on{background:var(--q-zhuwash);box-shadow:inset 0 0 0 1px var(--q-zhu)}
 .row.on .nm{color:var(--q-zhu);font-weight:700}
-.row .tag-tac{font-size:9.5px;color:var(--q-faint);border:1px solid var(--q-ln);border-radius:4px;padding:0 4px;flex:none}
+.row .tag-tac{font-size:var(--fs-xs);color:var(--q-faint);border:1px solid var(--q-ln);border-radius:4px;padding:0 4px;flex:none}
 .hint{font-size:var(--fs-xs);color:var(--q-faint);line-height:1.7;border:1px dashed var(--q-ln);border-radius:var(--r-sm);padding:7px 9px}
 .hint kbd{font:10px var(--f-mono);border:1px solid var(--q-ln2);border-bottom-width:2px;border-radius:4px;padding:0 4px;color:var(--q-dim);background:none}
 
@@ -258,8 +260,8 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 /* ── 事件时间线（览） ── */
 .ev{display:flex;gap:9px;padding:7px 8px;border-radius:var(--r-sm);width:100%;align-items:flex-start;cursor:pointer}
 .ev:hover{background:var(--q-in)}
-.ev .yr{font:700 10.5px/1.7 var(--f-mono);color:var(--q-dim);min-width:44px;flex:none;text-align:right}
-.ev .ic{width:16px;flex:none;text-align:center;font-size:11px;line-height:1.6}
+.ev .yr{font:700 var(--fs-xs)/1.7 var(--f-mono);color:var(--q-dim);min-width:44px;flex:none;text-align:right}
+.ev .ic{width:16px;flex:none;text-align:center;font-size:var(--fs-xs);line-height:1.6}
 .ev .tt{flex:1;min-width:0;text-align:left}
 .ev .tt b{display:block;font-weight:600;font-size:var(--fs-sm);line-height:1.45}
 .ev .tt span{display:block;font-size:var(--fs-xs);color:var(--q-faint);line-height:1.5}
@@ -293,7 +295,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .stgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
 .st{display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0 5px;border-radius:var(--r-sm);border:1px solid transparent;cursor:pointer}
 .st .g{font:700 15px/1 var(--f-song);color:var(--q-dim)}
-.st .n{font-size:9.5px;color:var(--q-faint)}
+.st .n{font-size:var(--fs-xs);color:var(--q-faint)}
 .st:hover{background:var(--q-in)}
 .st:hover .g{color:var(--q-tx)}
 .st[aria-pressed="true"]{background:var(--q-zhuwash);border-color:transparent}
@@ -311,12 +313,13 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 #app input[type="range"]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--q-gold);border:none;box-shadow:0 1px 4px rgb(0 0 0/.4)}
 #app input[type="range"]:hover::-moz-range-thumb{background:var(--q-gold2)}
 .lyr-strip{border:1px solid var(--q-ln);border-radius:var(--r-sm);overflow:hidden}
-.lyr-strip .lr2{display:flex;align-items:center;gap:8px;padding:6px 9px;font-size:var(--fs-sm);width:100%;cursor:pointer}
+.lyr-strip .lr2{display:flex;align-items:center;gap:8px;font-size:var(--fs-sm);width:100%}   /* 容器=div：选层/删层是兄弟按钮（按钮不嵌套）；内衬进按钮防死区 */
 .lyr-strip .lr2+.lr2{border-top:1px solid var(--q-ln)}
 .lyr-strip .lr2:hover{background:var(--q-in)}
+.lyr-strip .lr2 .main{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:6px 0 6px 9px}
 .lyr-strip .lr2 .rangeY{font:600 var(--fs-xs)/1.6 var(--f-mono);color:var(--q-dim)}
-.lyr-strip .lr2 .cells{margin-left:auto;font:400 10px/1.6 var(--f-mono);color:var(--q-faint)}
-.lyr-strip .lr2 .del{color:var(--q-faint);font-size:11px;cursor:pointer}
+.lyr-strip .lr2 .cells{margin-left:auto;font:400 var(--fs-xs)/1.6 var(--f-mono);color:var(--q-faint)}
+.lyr-strip .lr2 .del{color:var(--q-faint);font-size:var(--fs-xs);padding:6px 9px 6px 0;align-self:stretch;display:inline-flex;align-items:center}
 .lyr-strip .lr2 .del:hover{color:var(--q-zhu)}
 .lyr-strip .lr2.on{background:var(--q-zhuwash)}
 .lyr-strip .lr2.on .rangeY{color:var(--q-zhu)}
@@ -325,7 +328,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .unit{display:flex;gap:9px;padding:7px 8px;border-radius:var(--r-sm);align-items:center;width:100%;cursor:pointer}
 .unit:hover{background:var(--q-in)}
 .unit.sel{background:var(--q-in);box-shadow:inset 0 0 0 1px var(--q-ln2)}
-.unit .bs{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:#fff;font:700 11px/1 var(--f-song);flex:none}
+.unit .bs{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:#fff;font:700 var(--fs-xs)/1 var(--f-song);flex:none}
 .unit .un{flex:1;min-width:0;text-align:left}
 .unit .un b{display:block;font-weight:600;font-size:var(--fs-sm);line-height:1.4}
 .unit .un span{display:block;font-size:var(--fs-xs);color:var(--q-faint);font-variant-numeric:tabular-nums}
@@ -339,7 +342,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .hist .seg3{display:flex;flex-wrap:wrap;align-items:center;gap:2px 7px;padding:2px 4px;border-radius:5px;width:100%}   /* wrap：战术图长日期挤不下时落到下一行，别把名称压成一字一竖列 */
 .hist .seg3 i{width:9px;height:9px;border-radius:50%;flex:none}
 .hist .seg3 .nm{flex:1;min-width:10em;text-align:left}   /* 名称保底宽（min-width:0 会被压到逐字竖排、wrap 永不触发） */
-.hist .seg3 .yr{margin-left:auto;font:11px var(--f-mono);color:var(--q-dim);white-space:nowrap}
+.hist .seg3 .yr{margin-left:auto;font:var(--fs-xs) var(--f-mono);color:var(--q-dim);white-space:nowrap}
 .hist .seg3.now{background:var(--q-goldwash)}
 .hist .seg3.now .yr{color:var(--q-gold);font-weight:700}
 .linkrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center}

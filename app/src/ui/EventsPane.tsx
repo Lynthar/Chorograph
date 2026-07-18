@@ -15,7 +15,7 @@ export function EventsPane() {
   if (!evs.length) {
     return (
       <div class="empty"><span class="ph">史</span><b>时间线还空着</b>
-        <p>放一个事件点（绘 → 点 → 类型选「事件」），它会同时出现在这里与时间坞刻度上。</p></div>
+        <p>放一个事件点（绘 → 点 → 类型选「事件」），它会同时出现在这里与时间轴刻度上。</p></div>
     );
   }
   return (

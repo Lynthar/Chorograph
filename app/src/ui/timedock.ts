@@ -9,7 +9,7 @@ export interface ClusterMark { kind: "cluster"; pct: number; n: number; fut: boo
 export type TrackMark = TickMark | ClusterMark;
 
 const GAP_PX = 10;    // 决议阈值：相邻事件刻度像素间距 < 10px 即聚簇
-const CJK_PX = 10;    // 标签每字宽估算（9.5px 字号 + .05em 字距；避让用，无需精确）
+const CJK_PX = 13;    // 标签每字宽估算（--fs-xs 12px 字号 + .05em 字距；避让用，无需精确——改 .tlab 字号须同步）
 
 /** 主轨标记布局：范围内事件 → 刻度/「×N」聚簇 + 标签避让。
     curOf=「当前时刻命中」判定（战略=同年、战术=同日）；widthPx≤0（未测得）时不聚簇不避让。 */

@@ -166,7 +166,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
     if (id) selSig.value = { kind: "node", id };
   };
   const genTac = () => {
-    const d = prompt("战术地图范围（战场直径，km）：", "200");
+    const d = prompt("战术图范围（战场直径，km）：", "200");
     if (d == null) return;
     tacReqSig.value = { type: "gen", evId: n.id, dia: +d || 200 };
   };
@@ -214,8 +214,8 @@ export function NodeForm({ n }: { n: WorldNode }) {
       {isEv && (
         <div class="seg">
           {n.tacmap
-            ? <button type="button" class="tbtn" title="重新生成一张战术地图并改链到它（旧图保留在图库）" onClick={genTac}>⟳ 重新生成战术图</button>
-            : (tac ? null : <button type="button" class="tbtn" title="以此事件为中心生成小范围战场图（直径可输，默认200km；地形/地点/派系按当年快照继承）" onClick={genTac}>⚔ 生成战术地图</button>)}
+            ? <button type="button" class="tbtn" title="重新生成一张战术图并改链到它（旧图保留在图库）" onClick={genTac}>⟳ 重新生成战术图</button>
+            : (tac ? null : <button type="button" class="tbtn" title="以此事件为中心生成小范围战场图（直径可输，默认200km；地形/地点/派系按当年快照继承）" onClick={genTac}>⚔ 生成战术图</button>)}
         </div>
       )}
       {isBattle && <div class="frow"><label>对阵</label>
@@ -283,7 +283,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
       <div class="in-actions">
         <button class="bt zhu tr" onClick={save}>保存修改</button>
         {modeSig.value !== "edit" && <button class="bt ghost tr" onClick={() => { inspEditSig.value = false; }}>返回卡片</button>}
-        {!isEv && !isLabel && <button class="bt ghost tr" onClick={addEv}>▽ 在此地新建事件点</button>}
+        {!isEv && !isLabel && <button class="bt ghost tr" onClick={addEv}>▽ 在此地新增事件点</button>}
         <button class="bt danger-ghost tr" onClick={del}>删除此{isEv ? "事件点" : isLabel ? "标注" : "地点"}</button>
       </div>
     </div>

@@ -47,7 +47,7 @@ export interface ShellCtx {
   bootNote: string;
   savedAt: Date | null;
   saveErr: { message?: unknown } | null;
-  /** 开始界面（地图库）可见 */
+  /** 开始界面（图库）可见 */
   libOpen: boolean;
 }
 

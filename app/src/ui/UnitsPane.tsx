@@ -1,6 +1,6 @@
 /* 军面 · 部队列表：战术图列全部部队——兵种徽章（派系色）+ 名称 + 兵力·速度；
-   点击＝选中（检查器出卡）并飞到当前时刻位置。「＋新增部队」＝先入列表（未入场，track 空），
-   在右栏改名设属性，再按住列表项拖到地图放置（HTML5 DnD→画布 drop 落首航点）；画布点击恒为选择。
+   点击＝选中（检查器出卡）并飞到当前时刻位置。「＋ 新增部队」＝先入列表（未入场，track 空），
+   在检查器改名设属性，再按住列表项拖到地图放置（HTML5 DnD→画布 drop 落首航点）；画布点击恒为选择。
    ⚠超速标记只在选中部队的检查器卡里给出（可达性预算只算选中部队，见 boot 的 unitLegs effect）。 */
 import { unitKind, unitPos, unitSpeed } from "../core/units.ts";
 import { addUnitUnplaced } from "./editops.ts";
@@ -14,14 +14,14 @@ export function UnitsPane() {
   if (!tac) {
     return (
       <div class="empty"><span class="ph">军</span><b>部队为战术图专属</b>
-        <p>打开某场战役的战术地图后，部队在此列出（战役事件卡 →「⚔ 打开战术图」）。</p></div>
+        <p>打开某场战役的战术图后，部队在此列出（战役事件卡 →「⚔ 打开战术图」）。</p></div>
     );
   }
   const units = world.units || [];
   return (
     <>
       <div class="sec">部队<span class="cnt">{units.length}</span>
-        <button type="button" class="mini tr" title="新增未入场部队：先在右栏改名/设属性，再按住列表项拖到地图上放置"
+        <button type="button" class="mini tr" title="新增未入场部队：先在检查器改名/设属性，再按住列表项拖到地图上放置"
           onClick={() => {
             let uid: string | null = null;
             mutateWorld(w => { uid = addUnitUnplaced(w, `未命名部队 ${(w.units || []).length + 1}`).id; });
@@ -30,7 +30,7 @@ export function UnitsPane() {
           }}>＋ 新增部队</button></div>
       {units.length === 0 && (
         <div class="empty"><span class="ph">军</span><b>还没有部队</b>
-          <p>点上方「＋ 新增部队」新建（未入场），再按住列表项<b>拖到地图上</b>放置；按住图上部队拖动＝记录当日位置（先把时间坞拖到目标日）。</p></div>
+          <p>点上方「＋ 新增部队」先入列表（未入场），再按住列表项<b>拖到地图上</b>放置；按住图上部队拖动＝记录当日位置（先把时间轴拖到目标日）。</p></div>
       )}
       {units.length > 0 && (
         <div class="rows">

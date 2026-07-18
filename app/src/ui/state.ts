@@ -53,9 +53,9 @@ export const tacReqSig = signal<TacReq>(null);
 export interface FlyReq { lon: number; lat: number; degPerPx?: number; ifAbove?: number }
 export const flyReqSig = signal<FlyReq | null>(null);
 
-/* —— 开始界面 · 地图库（组件化：显示走 libViewSig 视图模型，操作经 libActionsSig 回外壳做 IO）——
+/* —— 开始界面 · 图库（组件化：显示走 libViewSig 视图模型，操作经 libActionsSig 回外壳做 IO）——
    库的打开/迁移/自动保存/文件夹句柄全留外壳；组件（HomePanel）只渲染视图 + dispatch 动作。
-   open=开始界面 #home 可见（v0.14：默认启动即进，深链直达地图；⌂ 地图库/Esc 切换）。 */
+   open=开始界面 #home 可见（v0.14：默认启动即进，深链直达地图；⌂ 图库/Esc 切换）。 */
 export interface LibCounts { nodes?: number; factions?: number; events?: number; tac?: number; units?: number }
 export interface LibEntry { id: string; name: string; counts?: LibCounts; updatedAt?: number; thumb?: string | null }
 export interface LibView {
@@ -277,8 +277,8 @@ export function setRailTool(t: RailTool): void {
     cancelOpDraw();
     if (t === "browse") setMode("browse");
     else if (t === "measure") setMode(analysisSubSig.peek());
-    else if (t === "draw") { setMode("edit"); if (editSubSig.peek() === "unit") { editSubSig.value = "select"; clearOpSel(); } }
-    else { setMode("edit"); if (editSubSig.peek() !== "unit") { editSubSig.value = "unit"; clearOpSel(); } }
+    else if (t === "draw") { setMode("edit"); if (editSubSig.peek() === "unit") { editSubSig.value = "select"; clearOpSel(); } revealLayersFor(editSubSig.peek()); }
+    else { setMode("edit"); if (editSubSig.peek() !== "unit") { editSubSig.value = "unit"; clearOpSel(); } revealLayersFor("unit"); }
   });
 }
 
@@ -286,10 +286,31 @@ export function setRailTool(t: RailTool): void {
     连带清理连线起点、作战线画线态与选中线（子工具语义互斥，残留即模式泄漏）。 */
 export function pickEditSub(s: EditSub): void {
   batch(() => {
-    editSubSig.value = editSubSig.peek() === s ? "select" : s;
+    const next: EditSub = editSubSig.peek() === s ? "select" : s;
+    editSubSig.value = next;
     linkFromSig.value = null;
     cancelOpDraw(); clearOpSel();
+    revealLayersFor(next);
   });
+}
+
+/** 子工具 → 产出所落图层：切入时若对应图层隐藏则自动打开——否则放置成「看不见的幽灵编辑」
+    （拾取/擦除已按层门控，此处补放置侧）。label 要过 nodes 总门+notes 子门，两层都保；
+    连线按当前线型落 road/river/trade（线型 id 与图层 id 同名）。 */
+const SUB_LAYERS: Partial<Record<EditSub, string[]>> = {
+  add: ["nodes"], paint: ["politics"], terrain: ["terrain"], decor: ["decor"],
+  label: ["nodes", "notes"], unit: ["units"],
+};
+export function revealLayersFor(s: EditSub): void {
+  const ids = s === "link" ? [linkTypeSig.peek()] : SUB_LAYERS[s];
+  const cur = layersSig.peek();
+  const off = (ids || []).filter(id => cur[id] === false);
+  if (off.length) layersSig.value = { ...cur, ...Object.fromEntries(off.map(id => [id, true])) };
+}
+
+/** 连线线型切换：换型即把该型图层亮出来（与切子工具同一契约） */
+export function pickLinkType(tp: Edge["type"]): void {
+  batch(() => { linkTypeSig.value = tp; revealLayersFor("link"); });
 }
 
 /* —— 界面偏好：主题（亮·素笺默认/暗·漆）×密度（浏览·松/兵棋·紧）两轴。
@@ -365,7 +386,7 @@ export function setMode(m: ShellMode): void {
    选中一条线时同时把其事件设为选中（selSig），线在非当年也随之可见（overlay 的 selId）；
    一次选中期间的多次改动合并为一步撤销（opDirty），与拖动同为 pushHistoryOnce + mutateWorldLive。 */
 let opDirty = false;
-/** 进入画线态（右栏「画攻势线/防线」按钮触发）：清掉当前选中 */
+/** 进入画线态（检查器「画攻势线/防线」按钮触发）：清掉当前选中 */
 export function startOpDraw(evId: string, kind: Op["kind"]): void {
   clearOpSel();
   opDrawSig.value = { evId, kind };

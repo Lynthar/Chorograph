@@ -1,4 +1,4 @@
-/* 开始界面 · 地图库（UI 1:1 还原 v0.14 #home/renderHome）：全屏墨蓝底 + 宣纸 .mapcard 网格。
+/* 开始界面 · 图库（UI 1:1 还原 v0.14 #home/renderHome）：全屏墨蓝底 + 宣纸 .mapcard 网格。
    视图走 libViewSig（来源/条目/当前图），动作经 libActionsSig 回外壳（开图/删除/导入/链接文件夹）；
    「🆕 新建地图」开设置弹层的 create 模式（对齐旧 hmNew→toggleSettings(true,"create")）。 */
 import { useRef } from "preact/hooks";
@@ -20,7 +20,7 @@ export function HomePanel() {
       <div class="hm-wrap">
         <div class="hm-head">
           <span class="hm-title">舆图</span>
-          <span class="hm-sub">分析型世界地图 · 地图库</span>
+          <span class="hm-sub">分析型世界地图 · 图库</span>
           <span class="sp"></span>
           {v.mapId && <button type="button" class="tbtn" onClick={() => acts?.toggle()}>↩ 返回当前地图 (Esc)</button>}
         </div>
@@ -42,9 +42,9 @@ export function HomePanel() {
         <div class="hm-source">
           {v.source === "folder"
             ? <>当前图库：<b>📁 {v.folderName}</b> <span class="sub">实时读写此文件夹里的 .json</span>{" "}
-              <button type="button" class="tbtn" title="切回浏览器本地存储图库" onClick={() => acts?.backToBrowser()}>💾 切回浏览器存档</button>{" "}
+              <button type="button" class="tbtn" title="切回浏览器图库（存于此浏览器的本地存储）" onClick={() => acts?.backToBrowser()}>💾 切回浏览器图库</button>{" "}
               <button type="button" class="tbtn" title="改链接到另一个文件夹" onClick={() => acts?.linkFolder()}>📁 更换文件夹</button></>
-            : <>当前图库：<b>💾 浏览器本地存储</b>{v.fsSupported
+            : <>当前图库：<b>💾 浏览器图库</b>{v.fsSupported
               ? <span class="sub"> — 也可「📁 链接文件夹」把地图存成真正的 .json 文件，随时用其它软件/网盘管理</span>
               : <span class="sub"> —「链接文件夹」需用 Edge/Chrome 经 localhost 或 https 打开（当前环境不支持）</span>}</>}
         </div>

@@ -46,7 +46,7 @@ export interface LibraryIO {
   boot(): Promise<void>;
   /** 挂图库动作桥 + 关页/切后台落盘钩子 */
   bindLib(): void;
-  /** 顶栏 ⌂：停播放、落盘当前图（含缩略图/视角/纪年），回地图库 */
+  /** 顶栏 ⌂：停播放、落盘当前图（含缩略图/视角/纪年），回图库 */
   goHome(): Promise<void>;
   hideHome(): void;
   refreshLib(): Promise<void>;
@@ -226,7 +226,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   /* ================= 战术图：生成 / 打开 / 父子导航================= */
   /* 从战役事件点烘焙一张战术图，入库、在父图事件写双向链接、打开它。dia=战场直径 km */
   async function genTactical(ev: WorldNode, dia?: number | null): Promise<boolean> {
-    if (!ctx.lib) { alert("图库不可用，无法生成战术地图。"); return false; }
+    if (!ctx.lib) { alert("图库不可用，无法生成战术图。"); return false; }
     const world = createTacticalWorld(worldSig.peek()!, ev, dia || 200,
       { parentMapId: ctx.mapId, yearNow: yearSig.peek(), today: new Date().toISOString().slice(0, 10) });
     let newId: string | null = null, link: NonNullable<WorldNode["tacmap"]> | null = null;
@@ -252,7 +252,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     else if (t.id && es.some(x => x.id === t.id)) id = t.id;
     if (!id && t.name) { const hit = es.find(x => x.name === t.name); if (hit) id = hit.id; }
     if (id) return openMapById(id);
-    if (confirm("找不到已链接的战术地图（可能已删除，或图库来源已切换）。\n以默认参数重新生成一张？")) return genTactical(ev, 200);
+    if (confirm("找不到已链接的战术图（可能已删除，或图库来源已切换）。\n以默认参数重新生成一张？")) return genTactical(ev, 200);
     return false;
   }
   /* 战术图→上级战略图（meta.parent：id/文件名→名称 双重回退） */
@@ -262,7 +262,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     let id = (p.map && es.some(x => x.id === p.map)) ? p.map : null;
     if (!id && p.mapName) { const hit = es.find(x => x.name === p.mapName); if (hit) id = hit.id; }
     if (id) return openMapById(id);
-    alert("找不到上级战略地图（可能已删除、改名或图库来源已切换）。可从图库手动打开。");
+    alert("找不到上级战略图（可能已删除、改名或图库来源已切换）。可从图库手动打开。");
     return false;
   }
   /* 图库动作桥（HomePanel 组件经 libActionsSig 调用；库 IO 全在外壳）。 */
@@ -399,7 +399,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       return off.toDataURL("image/jpeg", 0.62);
     } catch (e) { return null; }
   }
-  /* 顶栏 ⌂（v0.14 goHome）：停播放、落盘当前图（含缩略图/视角/纪年），回地图库 */
+  /* 顶栏 ⌂（v0.14 goHome）：停播放、落盘当前图（含缩略图/视角/纪年），回图库 */
   async function goHome(): Promise<void> {
     if (playingSig.peek()) togglePlay();
     await autosave.flush();

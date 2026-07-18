@@ -663,7 +663,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       } else if (mode === "edit" && editSubSig.value === "label") {
         if (hit) selSig.value = { kind: "node", id: hit.id };
         else {
-          const 文本 = prompt("标注文本（钟点/风向/兵力/争议注记…；落点后可在右栏改多行/字号/时段）：");
+          const 文本 = prompt("标注文本（钟点/风向/兵力/争议注记…；落点后可在检查器改多行/字号/时段）：");
           if (文本) {
             let nid: string | null = null;
             mutateWorld(w => { nid = applyEra(addLabel(w, 文本, ll[0], ll[1]), eraNewSig.peek()).id; });
@@ -678,7 +678,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
           linkFromSig.value = null;
         }
       } else if (mode === "edit" && editSubSig.value === "unit" && isTacSig.value) {
-        selSig.value = null;   // 军工具点击＝选择（空击清选）；新增走军面板「＋新增部队」→按住列表项拖入地图
+        selSig.value = null;   // 军工具点击＝选择（空击清选）；新增走军面板「＋ 新增部队」→按住列表项拖入地图
       } else if (mode === "edit" && editSubSig.value === "delete") {
         if (hit) {
           if (confirm(`删除地点「${hit.名称 || hit.id}」及其连线与关联引用？`)) {
@@ -722,7 +722,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (/INPUT|TEXTAREA|SELECT/.test((e.target && (e.target as HTMLElement).tagName) || "")) return;
-    /* 弹层优先（v0.14 层级：设置 50 > 帮助 50 > 地图库 45）：Esc 逐层退出 */
+    /* 弹层优先（v0.14 层级：设置 50 > 帮助 50 > 图库 45）：Esc 逐层退出 */
     if (settingsSig.peek()) { if (e.key === "Escape") closeSettings(); return; }
     if (helpOpenSig.peek()) { if (e.key === "Escape" || e.key === "?") helpOpenSig.value = false; return; }
     if (ctx.libOpen) {   // 开始界面可见：屏蔽地图快捷键；Esc=回当前图（v0.14 homeVisible 分支）
@@ -825,7 +825,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       }
     }
   });
-  /* 军面板「＋新增部队」→ 按住列表项拖入地图放置（HTML5 DnD）：落点=当前时刻首航点。
+  /* 军面板「＋ 新增部队」→ 按住列表项拖入地图放置（HTML5 DnD）：落点=当前时刻首航点。
      dragover 只对本类型放行——不碰文件拖入等其它拖放路径。 */
   canvas.addEventListener("dragover", e => {
     if (e.dataTransfer && Array.from(e.dataTransfer.types).includes("text/unit-id")) e.preventDefault();
