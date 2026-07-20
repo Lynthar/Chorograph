@@ -2,6 +2,7 @@
    标题行(✕=清选中) + 类型/归属胶囊 + kv2 读数 + 归属沿革条(当年金显) + 双链行 + 动作钮组。
    「编辑」随时开表单（inspEditSig；编辑模式恒开＝旧语义保留），表单替换卡片视图；
    数据语义与 v0.14 卡一致（对齐旧 renderInfo 系列），航点动向沿旧行内编辑（战役复原工作流）。 */
+import { useRef } from "preact/hooks";
 import { EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
 import { edgeLenKm, polylineKm } from "../core/geometry.ts";
 import { calOf, fmtT, fmtWhen, fmtWhenRange } from "../core/calendar.ts";
@@ -9,8 +10,8 @@ import { unitArm, unitFireKm, unitKind, unitPos, unitSpeed, unitStatusAt } from 
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm } from "../core/util.ts";
 import type { Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
-import { clearOpSel, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selEdge, selFaction, selMulti, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
-import { deleteUnitWaypoint, removeEdgeAt, removeFaction, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointStatus } from "./editops.ts";
+import { clearOpSel, deleteEdgeIdx, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selEdge, selFaction, selMulti, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
+import { deleteUnitWaypoint, removeFaction, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
 import { FactionForm } from "./FactionForm.tsx";
@@ -39,8 +40,11 @@ function LinkRow({ target }: { target?: string }) {
     <div class="linkrow">
       {href && <a class="ghostbt tr" href={href} title="在 Obsidian 中打开这篇笔记">🔗 打开双链</a>}
       <button class="ghostbt tr" title="复制双链文本" onClick={e => {
-        if (navigator.clipboard) navigator.clipboard.writeText(`[[${target}]]`);
-        (e.currentTarget as HTMLElement).textContent = "✓ 已复制";
+        const el = e.currentTarget as HTMLElement;
+        if (!navigator.clipboard) { showToast("此环境不支持自动复制——右侧 [[…]] 文本可手动选取", { err: true }); return; }
+        navigator.clipboard.writeText(`[[${target}]]`).then(
+          () => { el.textContent = "✓ 已复制"; },
+          () => { showToast("复制失败——剪贴板权限被拒", { err: true }); });
       }}>📋 复制</button>
       <span class="sub">[[{target}]]</span>
     </div>
@@ -58,20 +62,17 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
   const fid = ownerAt(n, y);
   const f = fid ? world.factions.find(x => x.id === fid) : null;
   const s = NODE_STYLE[n.type] || NODE_STYLE.city;
+  const diaRef = useRef<HTMLInputElement>(null);   // 生成战术图直径（内联数字框，去 prompt）
   if (editingNow()) {
     return <><CardHead title={`编辑 · ${n.名称 || n.id}`} /><NodeForm key={n.id} n={n} /></>;
   }
   const setFrom = () => { setMode("route"); routePtsSig.value = [{ lon: n.lon, lat: n.lat, node: n }]; routeResSig.value = null; };
   const setTo = () => {
     setMode("route");
-    if (routePtsSig.peek().length !== 1) { alert("请先设置起点"); return; }
+    if (routePtsSig.peek().length !== 1) { showToast("请先设置起点", { err: true }); return; }
     routePtsSig.value = [...routePtsSig.peek(), { lon: n.lon, lat: n.lat, node: n }];
   };
-  const del = () => {
-    if (!confirm(`删除${isEv ? "事件点" : isLabel ? "标注" : "地点"}「${n.名称 || n.id}」及其连线与关联引用？`)) return;
-    mutateWorld(w => removeNode(w, n.id));
-    clearOpSel(); selSig.value = null;
-  };
+  const del = () => deleteNodeAt(n.id);
   return (
     <>
       <CardHead title={n.名称 || n.id} />
@@ -131,11 +132,13 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
           <button class="bt tr" title="打开这场战役的战术图（当前图自动保存）" onClick={() => { tacReqSig.value = { type: "open", evId: n.id }; }}>⚔ 打开战术图 {n.tacmap.name ? `· ${n.tacmap.name}` : ""}</button>
         )}
         {isBattle && !n.tacmap && !tac && (
-          <button class="bt tr" title="以此事件为中心生成小范围战场图（直径可输，默认200km）" onClick={() => {
-            const d = prompt("战术图范围（战场直径，km）：", "200");
-            if (d == null) return;
-            tacReqSig.value = { type: "gen", evId: n.id, dia: +d || 200 };
-          }}>⚔ 生成战术图</button>
+          <span style={{ display: "inline-flex", gap: "5px", alignItems: "center" }}>
+            <button class="bt tr" title="以此事件为中心生成小范围战场图（地形/地点/派系按当年快照继承）" onClick={() => {
+              tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(diaRef.current?.value ?? "") || 200) };
+            }}>⚔ 生成战术图</button>
+            <input ref={diaRef} class="fld" type="number" min={1} step={10} defaultValue="200" style={{ width: "5em" }} title="战场直径（km）" />
+            <span class="sub">km</span>
+          </span>
         )}
         <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑{isEv ? "事件" : isLabel ? "标注" : "地点"}</button>
         {!isEv && !isLabel && <button class="bt ghost tr" onClick={setFrom}>⚑ 设为行军起点</button>}
@@ -199,11 +202,7 @@ function EdgeCard({ e, idx, world }: { e: Edge; idx: number; world: World }) {
   if (editingNow()) {
     return <><CardHead title={`编辑 · ${e.名称 || st.名}`} /><EdgeForm key={`${e.from}|${e.to}|${e.type}|${idx}`} e={e} idx={idx} /></>;
   }
-  const del = () => {
-    if (!confirm(`删除这条${st.名}${e.名称 ? `「${e.名称}」` : ""}？`)) return;
-    mutateWorld(w => { removeEdgeAt(w, idx); });
-    selSig.value = null;
-  };
+  const del = () => deleteEdgeIdx(idx);
   return (
     <>
       <CardHead title={e.名称 || (free ? st.名 : `${a ? a.名称 : e.from} — ${b ? b.名称 : e.to}`)} />
@@ -281,11 +280,7 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
   if (editingNow()) {
     return <><CardHead title={`编辑 · ${u.名称 || "未命名部队"}`} /><UnitForm key={u.id} u={u} /><TrackList u={u} editable={true} /></>;
   }
-  const del = () => {
-    if (!confirm(`删除部队「${u.名称 || u.id}」及其全部动向？`)) return;
-    mutateWorld(w => removeUnit(w, u.id));
-    selSig.value = null;
-  };
+  const del = () => deleteUnitAt(u.id);
   return (
     <>
       <CardHead title={u.名称 || "未命名部队"} />

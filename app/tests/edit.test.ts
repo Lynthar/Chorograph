@@ -7,8 +7,8 @@ import { createAutosave } from "../src/data/autosave.ts";
 import { addEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removeUnit, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { buildGridCells } from "../src/core/grid.ts";
-import { canRedoSig, canUndoSig, editSubSig, editVerSig, gridVerSig, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
-  pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selSig, setWorldState, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
+import { canRedoSig, canUndoSig, deleteEdgeIdx, deleteNodeAt, editSubSig, editVerSig, gridVerSig, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
+  pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selSig, setWorldState, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES } from "../src/core/constants.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 
@@ -306,6 +306,15 @@ describe("signals 变更管线", () => {
     mutateWorld(w => { w.terrainOverrides.push({ lon: 1, lat: 2, t: "water" }); }, { grid: true });
     assert.strictEqual(gridVerSig.value, gv0 + 1);
   });
+  it("mutateWorld：fn 抛异常回收快照，不留幽灵撤销步", () => {
+    setWorldState(mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }] }));
+    assert.strictEqual(canUndoSig.value, false);
+    const ref0 = worldSig.value, ev0 = editVerSig.value;
+    assert.throws(() => mutateWorld(() => { throw new Error("boom"); }));
+    assert.strictEqual(canUndoSig.value, false, "抛异常不留可撤销步（幽灵快照已回收）");
+    assert.strictEqual(worldSig.value, ref0, "未广播、不换引用");
+    assert.strictEqual(editVerSig.value, ev0, "未递增 editVer");
+  });
   it("undo/redo：世界回滚、选中清空、地形变化才动 gridVer", () => {
     setWorldState(mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }] }));
     mutateWorld(w => { w.nodes[0].lon = 77; });
@@ -364,6 +373,40 @@ describe("signals 变更管线", () => {
     setWorldState(mkWorld({ nodes: [{ id: "e", type: "event", evtype: "battle", lon: 1, lat: 2, year: 3100 }] }));
     assert.strictEqual(canUndoSig.value, false, "换世界清撤销栈");
     assert.strictEqual(yearSig.value, 3100, "出界年份回到上限");
+  });
+});
+
+describe("单对象删除 helper（即时 + 可撤销 toast + 精准清选中）", () => {
+  it("deleteNodeAt：删被选中项→清选中、出可撤销 toast、撤销可复原", () => {
+    setWorldState(mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2, 名称: "甲" }, { id: "b", type: "city", lon: 3, lat: 4 }] }));
+    selSig.value = { kind: "node", id: "a" };
+    deleteNodeAt("a");
+    assert.strictEqual(worldSig.value!.nodes.find(n => n.id === "a"), undefined, "已删除");
+    assert.strictEqual(selSig.value, null, "被删的正是选中项→清选中");
+    const t = toastSig.peek();
+    assert.ok(t && t.undo, "出可撤销 toast");
+    assert.strictEqual(canUndoSig.value, true);
+    undoWorld();
+    assert.ok(worldSig.value!.nodes.find(n => n.id === "a"), "撤销复原");
+  });
+  it("deleteNodeAt：删非选中项不动当前选中（删工具点删旁边对象）", () => {
+    setWorldState(mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }, { id: "b", type: "city", lon: 3, lat: 4 }] }));
+    selSig.value = { kind: "node", id: "b" };
+    deleteNodeAt("a");
+    assert.deepStrictEqual(selSig.value, { kind: "node", id: "b" }, "删 a 不清对 b 的选中");
+    assert.ok(worldSig.value!.nodes.find(n => n.id === "b"), "b 还在");
+  });
+  it("deleteEdgeIdx：按下标删、清对该下标的选中、撤销复原", () => {
+    setWorldState(mkWorld({
+      nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }, { id: "b", type: "city", lon: 3, lat: 4 }],
+      edges: [{ from: "a", to: "b", type: "road" }],
+    }));
+    selSig.value = { kind: "edge", idx: 0 };
+    deleteEdgeIdx(0);
+    assert.strictEqual(worldSig.value!.edges.length, 0, "已删");
+    assert.strictEqual(selSig.value, null, "清选中");
+    undoWorld();
+    assert.strictEqual(worldSig.value!.edges.length, 1, "撤销复原");
   });
 });
 

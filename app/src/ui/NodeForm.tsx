@@ -8,8 +8,8 @@ import { useLayoutEffect, useRef } from "preact/hooks";
 import { EVENT_TMPL, EVENT_TYPES, NODE_STYLE, NODE_TMPL, NODE_TYPES } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm, fmtWhenRange, parseWhenForm } from "../core/calendar.ts";
 import { formatRanges } from "./editops.ts";
-import { clearOpSel, inspEditSig, isTacSig, modeSig, mutateWorld, opDrawSig, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, worldSig, yearSig } from "./state.ts";
-import { addEventNear, addOwner, applyNodeForm, changeNodeType, moveNode, removeNode, removeOwner, updateOwner } from "./editops.ts";
+import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, opDrawSig, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, worldSig, yearSig } from "./state.ts";
+import { addEventNear, addOwner, applyNodeForm, changeNodeType, moveNode, removeOwner, updateOwner } from "./editops.ts";
 import type { WorldNode } from "../core/types.ts";
 
 /** 战役事件点的作战线列表 + 画线按钮（对齐旧 nodeEditForm 作战线段）。
@@ -129,11 +129,14 @@ export function NodeForm({ n }: { n: WorldNode }) {
   const timeVal = (id: string) => { const v = parseWhenForm(cal, tac, val(id) ?? ""); return v == null ? "" : String(v); };
 
   const save = () => {
+    /* 经纬度数字输入（战役复原按文档坐标表精确落点）：留空/非法=不动，经 moveNode 归一钳制。
+       一填一空/非法＝这次坐标没落上（其余字段照存）——回执点明，别再静默报「已保存」 */
+    const lonRaw = (val("ef_lon") ?? "").trim(), latRaw = (val("ef_lat") ?? "").trim();
+    const lon = parseFloat(lonRaw), lat = parseFloat(latRaw);
+    const coordSkipped = (lonRaw !== "" || latRaw !== "") && !(isFinite(lon) && isFinite(lat));
     mutateWorld(w => {
       const target = w.nodes.find(x => x.id === n.id);
       if (!target) return;
-      /* 经纬度数字输入（战役复原按文档坐标表精确落点）：留空/非法=不动，经 moveNode 归一钳制 */
-      const lon = parseFloat(val("ef_lon") ?? ""), lat = parseFloat(val("ef_lat") ?? "");
       if (isFinite(lon) && isFinite(lat) && (lon !== target.lon || lat !== target.lat)) moveNode(w, n.id, lon, lat);
       applyNodeForm(target, {
         名称: val("ef_name") || "", note: val("ef_note") ?? "", link: val("ef_link") ?? "",
@@ -147,28 +150,19 @@ export function NodeForm({ n }: { n: WorldNode }) {
       });
     });
     inspEditSig.value = false;
-    showToast("已保存修改", { undo: true });
+    showToast(coordSkipped ? "已保存——经纬度需成对填有效数字，坐标未改" : "已保存修改", { undo: true });
   };
-  const del = () => {
-    if (!confirm(`删除${isEv ? "事件点" : isLabel ? "标注" : "地点"}「${n.名称 || n.id}」及其连线与关联引用？`)) return;
-    mutateWorld(w => removeNode(w, n.id));
-    clearOpSel();          // 删事件点连带清作战线选中态，避免 opSel 悬空吞掉下次 Delete
-    selSig.value = null;
-  };
+  const del = () => deleteNodeAt(n.id);
   const addEv = () => {
-    const 名称 = prompt("新事件名称（战役/政事/灾异等，子类型在表单里选）：");
-    if (!名称) return;
     let id: string | null = null;
     mutateWorld(w => {
       const at = w.nodes.find(x => x.id === n.id);
-      if (at) id = addEventNear(w, at, 名称, yearSig.peek()).id;
+      if (at) id = addEventNear(w, at, "新事件", yearSig.peek()).id;
     });
-    if (id) selSig.value = { kind: "node", id };
+    if (id) selSig.value = { kind: "node", id };   // 落默认名并选中→表单改名（去 prompt）
   };
   const genTac = () => {
-    const d = prompt("战术图范围（战场直径，km）：", "200");
-    if (d == null) return;
-    tacReqSig.value = { type: "gen", evId: n.id, dia: +d || 200 };
+    tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(val("ef_tacdia") ?? "") || 200) };
   };
 
   return (
@@ -211,11 +205,11 @@ export function NodeForm({ n }: { n: WorldNode }) {
             ? (cal.kind === "earth" ? "年-月-日，可带时刻 13:30；前N=公元前" : "年-月-日，如 3107-3-7")
             : (cal.kind === "earth" ? "公元年，前N=公元前" : `${cal.era} 纪年`)}
           defaultValue={n.year != null ? fmtWhenForm(cal, tac, n.year) : ""} /></div>}
-      {isEv && (
-        <div class="seg">
-          {n.tacmap
-            ? <button type="button" class="tbtn" title="重新生成一张战术图并改链到它（旧图保留在图库）" onClick={genTac}>⟳ 重新生成战术图</button>
-            : (tac ? null : <button type="button" class="tbtn" title="以此事件为中心生成小范围战场图（直径可输，默认200km；地形/地点/派系按当年快照继承）" onClick={genTac}>⚔ 生成战术图</button>)}
+      {isEv && (n.tacmap || !tac) && (
+        <div class="seg" style={{ alignItems: "center" }}>
+          <button type="button" class="tbtn" title={n.tacmap ? "重新生成一张战术图并改链到它（旧图保留在图库）" : "以此事件为中心生成小范围战场图（地形/地点/派系按当年快照继承）"} onClick={genTac}>{n.tacmap ? "⟳ 重新生成战术图" : "⚔ 生成战术图"}</button>
+          <input class="fld" id="ef_tacdia" type="number" min={1} step={10} defaultValue="200" style={{ width: "5em" }} title="战场直径 km——生成范围（默认 200）" />
+          <span class="sub">km 直径</span>
         </div>
       )}
       {isBattle && <div class="frow"><label>对阵</label>

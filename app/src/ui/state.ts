@@ -6,10 +6,11 @@
    编辑管线：一切改动经 mutateWorld（先快照进撤销栈，改完浅拷贝换引用
    通知订阅者，editVer++ 驱动外壳自动保存与寻路上下文重发；grid 标记驱动网格重建）。 */
 import { batch, computed, effect, signal } from "@preact/signals";
-import { LAYERS, PRESETS } from "../core/constants.ts";
+import { EDGE_STYLE, LAYERS, PRESETS } from "../core/constants.ts";
 import { yearRangeOf } from "../core/time.ts";
 import { normalizeWorld } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
+import { removeEdgeAt, removeNode, removeUnit } from "./editops.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Arm, Edge, Faction, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
@@ -158,13 +159,54 @@ export function mutateWorld(fn: (w: World) => void, opts: { grid?: boolean } = {
   const w = worldSig.peek();
   if (!w) return;
   hist.push(w);
-  fn(w);
+  try {
+    fn(w);
+  } catch (e) {
+    hist.dropLast();   // fn 抛异常：回收刚压入的快照，不留一步空撤销（幽灵快照）
+    syncHistFlags();
+    throw e;
+  }
   batch(() => {
     worldSig.value = { ...w };
     if (opts.grid) gridVerSig.value++;
     syncHistFlags();
     editVerSig.value++;
   });
+}
+
+/* —— 单对象删除：即时删 + 可撤销 toast（低摩擦，替代逐次 confirm）。
+   派系（连带涂域）与框选批量仍走 confirm——见 InfoPanel/pointer。
+   清选中仅当当前选中就是被删对象（删工具点删非选中项时不误清选择）。 —— */
+export function deleteNodeAt(id: string): void {
+  const w = worldSig.peek();
+  const n = w && w.nodes.find(x => x.id === id);
+  if (!n) return;
+  const 类 = n.type === "event" ? "事件点" : n.type === "label" ? "标注" : "地点";
+  const nm = n.名称 || id;
+  mutateWorld(x => removeNode(x, id));
+  const s = selSig.peek();
+  if (s && s.kind === "node" && s.id === id) { clearOpSel(); selSig.value = null; }
+  showToast(`已删除${类}「${nm}」`, { undo: true });
+}
+export function deleteUnitAt(id: string): void {
+  const w = worldSig.peek();
+  const u = w && (w.units || []).find(x => x.id === id);
+  if (!u) return;
+  const nm = u.名称 || id;
+  mutateWorld(x => removeUnit(x, id));
+  const s = selSig.peek();
+  if (s && s.kind === "unit" && s.id === id) selSig.value = null;
+  showToast(`已删除部队「${nm}」`, { undo: true });
+}
+export function deleteEdgeIdx(idx: number): void {
+  const w = worldSig.peek();
+  const e = w && w.edges[idx];
+  if (!e) return;
+  const 名 = (EDGE_STYLE[e.type] || { 名: e.type }).名;
+  mutateWorld(x => removeEdgeAt(x, idx));
+  const s = selSig.peek();
+  if (s && s.kind === "edge" && s.idx === idx) selSig.value = null;
+  showToast(`已删除${名}${e.名称 ? `「${e.名称}」` : ""}`, { undo: true });
 }
 
 /** 拖动等连续操作：起手 pushHistoryOnce 记一步，随后每帧 mutateWorldLive（不进撤销栈） */

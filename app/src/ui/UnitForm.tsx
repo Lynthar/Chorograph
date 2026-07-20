@@ -4,8 +4,8 @@
 import { useRef } from "preact/hooks";
 import { UNIT_KINDS } from "../core/constants.ts";
 import { unitFireKm, unitKind } from "../core/units.ts";
-import { applyUnitForm, removeUnit } from "./editops.ts";
-import { inspEditSig, modeSig, mutateWorld, selSig, showToast, worldSig } from "./state.ts";
+import { applyUnitForm } from "./editops.ts";
+import { deleteUnitAt, inspEditSig, modeSig, mutateWorld, showToast, worldSig } from "./state.ts";
 import type { Unit } from "../core/types.ts";
 
 export function UnitForm({ u }: { u: Unit }) {
@@ -27,11 +27,7 @@ export function UnitForm({ u }: { u: Unit }) {
     inspEditSig.value = false;
     showToast("已保存修改", { undo: true });
   };
-  const del = () => {
-    if (!confirm(`删除部队「${u.名称 || "未命名"}」及其全部动向？`)) return;
-    mutateWorld(w => { removeUnit(w, u.id); });
-    selSig.value = null;
-  };
+  const del = () => deleteUnitAt(u.id);
 
   return (
     <div ref={box} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>

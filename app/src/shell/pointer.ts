@@ -22,9 +22,10 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUn
   paintFactionSig, paintLayerSig, paintTerrainSig, terrainHeightSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, eraNewSig,
   mutateWorld, mutateWorldLive, pushHistoryOnce, beginStroke, endStroke, undoWorld, redoWorld,
+  deleteNodeAt, deleteUnitAt, deleteEdgeIdx,
   type EditSub, type Sel }
   from "../ui/state.ts";
-import { addNode, addEdge, addRiver, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeEdgeAt, removeOp,
+import { addNode, addEdge, addRiver, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
   removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setNodeRangeKm, moveNode, dataLon, paintTerrainAt, paintHeightAt }
   from "../ui/editops.ts";
 import { poolGet } from "../ui/stamps.ts";
@@ -215,20 +216,26 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   /* 方向键微调选中地点（对齐 v0.14 nudgeSel）：每按≈2 屏幕像素；1.2s 内连续按键合并为一步撤销 */
   const nudgeSel = (k: string): void => {
     const sel = selSig.peek();
-    const ids = sel && sel.kind === "node" ? [sel.id] : sel && sel.kind === "multi" ? sel.ids : [];
-    if (!ids.length || !worldSig.peek()) return;
+    if (!worldSig.peek()) return;
+    const nodeIds = sel && sel.kind === "node" ? [sel.id] : sel && sel.kind === "multi" ? sel.ids : [];
+    const unitIds = sel && sel.kind === "multi" ? (sel.unitIds || []) : [];   // 框选含部队：与整组拖移一致，同步微调
+    if (!nodeIds.length && !unitIds.length) return;
     const now = performance.now();
     if (now - nudgeT > 1200) pushHistoryOnce();
     nudgeT = now;
     const d = ctx.view.degPerPx * 2;
+    const T = yearSig.peek();
+    const dLon = (k === "ArrowLeft" ? -d : k === "ArrowRight" ? d : 0) / cosk();
+    const dLat = k === "ArrowUp" ? d : k === "ArrowDown" ? -d : 0;
     mutateWorldLive(w => {
-      for (const id of ids) {
-        const n = w.nodes.find(x => x.id === id);
-        if (!n) continue;
-        let lon = n.lon, lat = n.lat;
-        if (k === "ArrowLeft") lon -= d / cosk(); else if (k === "ArrowRight") lon += d / cosk();
-        else if (k === "ArrowUp") lat += d; else lat -= d;
-        moveNode(w, id, lon, lat);
+      for (const id of nodeIds) {
+        const nd = w.nodes.find(x => x.id === id);
+        if (nd) moveNode(w, id, nd.lon + dLon, nd.lat + dLat);
+      }
+      for (const id of unitIds) {          // 部队＝改写当前时刻航点（同单部队拖动 / 整组拖移语义）
+        const u = (w.units || []).find(x => x.id === id);
+        const p = u ? unitPos(u, T) : null;
+        if (p) setUnitWaypoint(w, id, T, p.lon + dLon, p.lat + dLat);
       }
     });
   };
@@ -653,22 +660,16 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       } else if (mode === "edit" && editSubSig.value === "add") {
         if (hit) selSig.value = { kind: "node", id: hit.id };
         else {
-          const 名称 = prompt("新地点名称：");
-          if (名称) {
-            let nid: string | null = null;
-            mutateWorld(w => { nid = applyEra(addNode(w, 名称, ll[0], ll[1]), eraNewSig.peek()).id; });
-            if (nid) selSig.value = { kind: "node", id: nid };
-          }
+          let nid: string | null = null;
+          mutateWorld(w => { nid = applyEra(addNode(w, "新地点", ll[0], ll[1]), eraNewSig.peek()).id; });
+          if (nid) selSig.value = { kind: "node", id: nid };   // 落默认名并选中→检查器改名（去 prompt）
         }
       } else if (mode === "edit" && editSubSig.value === "label") {
         if (hit) selSig.value = { kind: "node", id: hit.id };
         else {
-          const 文本 = prompt("标注文本（钟点/风向/兵力/争议注记…；落点后可在检查器改多行/字号/时段）：");
-          if (文本) {
-            let nid: string | null = null;
-            mutateWorld(w => { nid = applyEra(addLabel(w, 文本, ll[0], ll[1]), eraNewSig.peek()).id; });
-            if (nid) selSig.value = { kind: "node", id: nid };
-          }
+          let nid: string | null = null;
+          mutateWorld(w => { nid = applyEra(addLabel(w, "新标注", ll[0], ll[1]), eraNewSig.peek()).id; });
+          if (nid) selSig.value = { kind: "node", id: nid };   // 落默认文本并选中→检查器改多行/字号（去 prompt）
         }
       } else if (mode === "edit" && editSubSig.value === "link") {
         if (!hit) linkFromSig.value = null;
@@ -680,17 +681,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       } else if (mode === "edit" && editSubSig.value === "unit" && isTacSig.value) {
         selSig.value = null;   // 军工具点击＝选择（空击清选）；新增走军面板「＋ 新增部队」→按住列表项拖入地图
       } else if (mode === "edit" && editSubSig.value === "delete") {
-        if (hit) {
-          if (confirm(`删除地点「${hit.名称 || hit.id}」及其连线与关联引用？`)) {
-            mutateWorld(w => removeNode(w, hit.id));
-            selSig.value = null;
-          }
-        } else {
+        if (hit) deleteNodeAt(hit.id);   // 删工具即时删 + 可撤销 toast（去 confirm）
+        else {
           const ed = pickEdge(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, layersSig.value);
-          if (ed && confirm(`删除这条${({road:"道路",river:"河流",trade:"商路"})[ed.edge.type] || "连线"}？`)) {
-            mutateWorld(w => { removeEdgeAt(w, ed.idx); });
-            selSig.value = null;
-          }
+          if (ed) deleteEdgeIdx(ed.idx);
         }
       }
     }
@@ -811,18 +805,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         }
         return;
       }
-      if (sel && sel.kind === "unit") {   // 选中部队=删部队
-        const u = selUnit(worldSig.value, sel);
-        if (u && confirm(`删除部队「${u.名称 || u.id}」及其全部动向？`)) { mutateWorld(w => removeUnit(w, u.id)); selSig.value = null; }
-        return;
-      }
+      if (sel && sel.kind === "unit") { deleteUnitAt(sel.id); return; }   // 选中部队=删（即时 + 可撤销 toast）
       const n = selNode(worldSig.value, sel);
-      if (n) {
-        if (confirm(`删除地点「${n.名称 || n.id}」及其连线与关联引用？`)) { mutateWorld(w => removeNode(w, n.id)); selSig.value = null; }
-      } else {
-        const ed = selEdge(worldSig.value, sel);
-        if (ed && confirm("删除选中的连线？")) { mutateWorld(w => { removeEdgeAt(w, (sel as Extract<Sel, { kind: "edge" }>).idx); }); selSig.value = null; }
-      }
+      if (n) deleteNodeAt(n.id);
+      else if (selEdge(worldSig.value, sel)) deleteEdgeIdx((sel as Extract<Sel, { kind: "edge" }>).idx);
     }
   });
   /* 军面板「＋ 新增部队」→ 按住列表项拖入地图放置（HTML5 DnD）：落点=当前时刻首航点。

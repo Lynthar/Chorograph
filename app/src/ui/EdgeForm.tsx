@@ -3,8 +3,8 @@
 import { useRef } from "preact/hooks";
 import { EDGE_STYLE, RIVER_TMPL } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
-import { inspEditSig, isTacSig, modeSig, mutateWorld, selSig, showToast, worldSig } from "./state.ts";
-import { applyEdgeForm, removeEdgeAt } from "./editops.ts";
+import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, showToast, worldSig } from "./state.ts";
+import { applyEdgeForm } from "./editops.ts";
 import type { Edge } from "../core/types.ts";
 
 export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
@@ -29,11 +29,7 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
     inspEditSig.value = false;
     showToast("已保存修改", { undo: true });
   };
-  const del = () => {
-    if (!confirm(`删除这条${st.名}${e.名称 ? `「${e.名称}」` : ""}？`)) return;
-    mutateWorld(w => { removeEdgeAt(w, idx); });
-    selSig.value = null;
-  };
+  const del = () => deleteEdgeIdx(idx);
 
   return (
     <div ref={box} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
