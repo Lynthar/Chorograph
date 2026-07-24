@@ -37,7 +37,14 @@ describe("常量与旧实现深度一致", () => {
     assert.deepStrictEqual(C.TERRAIN, g.TERRAIN);
     assert.deepStrictEqual(C.TERRAIN_ORDER, g.TERRAIN_ORDER);
     assert.deepStrictEqual(C.TERRAIN_ECO, g.TERRAIN_ECO);
-    assert.deepStrictEqual(C.ELEV, g.ELEV);
+    /* ELEV：森林/荒漠的示意高程 sanctioned 重基线到**平原值**——两轴模型下生态不带高程偏置
+       （分类器里 forest/desert 与 plain 同属「低地·中地按湿度分」的同一高度带，旧 0.28/0.22 系
+       单轴时代把二者当地类排在平原–丘陵之间的残留）。右式由 golden.plain 推出：其余键、以及
+       plain 自身漂移照红。 */
+    assert.deepStrictEqual(C.ELEV, { ...g.ELEV, forest: g.ELEV.plain, desert: g.ELEV.plain });
+    assert.strictEqual(C.ECO.forest.elevBias, 0, "森林生态不施高程偏置（新组合路径与 ELEV 同源）");
+    assert.strictEqual(C.ECO.desert.elevBias, 0, "荒漠生态不施高程偏置（新组合路径与 ELEV 同源）");
+    assert.strictEqual(C.ECO.marsh.elevBias, g.ELEV.marsh - g.ELEV.plain, "沼泽低洼保留（两路径同幅）");
     assert.deepStrictEqual(C.TINT, g.TINT);
     assert.strictEqual(C.PD, g.PD);
   });

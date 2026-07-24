@@ -163,10 +163,14 @@ export const UNIT_KINDS: Record<string, { 名: string; glyph: string; v: number;
   scout: { 名: "斥候", glyph: "◇", v: 75, arm: "land" }
 };
 
-/* 地形 → 示意高程 / 自然色阶（渲染层） */
+/* 地形 → 示意高程 / 自然色阶（渲染层）。
+   ⚠ forest/desert 取平原值＝两轴模型下**生态不带高程**（同见 ECO.elevBias）：分类器里森林/荒漠
+   与平原同属「低地·中地按湿度分」的同一高度带（terrain.ts），旧值 0.28/0.22 是单轴时代把二者
+   当地类排在平原–丘陵之间的残留，涂一笔森林即凭空隆起一片台地。沼泽 0.03 仍保留低洼（真低地，
+   亦是高程钳制的设计低地）。此为对黄金基准的 sanctioned 偏离，parity.test「TERRAIN 系列」立白名单。 */
 export const ELEV: Record<TerrainId, number> = {
   water: -0.35, marsh: 0.03, coast: 0.06, plain: 0.16,
-  desert: 0.22, forest: 0.28, hill: 0.5, mountain: 0.9
+  desert: 0.16, forest: 0.16, hill: 0.5, mountain: 0.9
 };
 export const TINT: Partial<Record<TerrainId, [number, number, number]>> = {
   coast: [214, 203, 150], plain: [176, 196, 120], desert: [224, 206, 150],
@@ -189,13 +193,14 @@ export const LANDFORM: Record<Landform, { 名: string; land: number; color: stri
   mountain: { 名: "山地", land: 3.2, color: "#c2b199", tint: [168, 150, 128], elev: 0.9,  relief: 0.30 },
   water:    { 名: "水域", land: 9.0, color: "#a9c7de", tint: null,            elev: -0.35, relief: 0 }
 };
-/** 生态（eco≠none 覆盖 color/tint/scatter 并施 costMul/elevBias；none 时全回退地貌） */
+/** 生态（eco≠none 覆盖 color/tint/scatter 并施 costMul/elevBias；none 时全回退地貌）。
+    高程只由地貌轴给，生态不抬不降——唯沼泽例外（低洼是其地貌含义）；森林/荒漠 elevBias=0 与上面 ELEV 同源。 */
 export const ECO: Record<Ecotype, { 名: string; color: string | null; tint: [number, number, number] | null; costMul: number; elevBias: number; scatter: EcoScatter[] }> = {
   none:      { 名: "无",   color: null,      tint: null,            costMul: 1.0,  elevBias: 0,     scatter: [] },
-  forest:    { 名: "森林", color: "#9fbf8e", tint: [110, 150, 96],  costMul: 1.8,  elevBias: 0.12,  scatter: [{ k: "tree", p: 0.85, s: 4.6 }, { k: "tree", p: 0.55, s: 3.8, dx: 0.3, dy: -0.22 }, { k: "pine", p: 0.4, s: 5, dx: -0.32, dy: 0.18 }] },
+  forest:    { 名: "森林", color: "#9fbf8e", tint: [110, 150, 96],  costMul: 1.8,  elevBias: 0,     scatter: [{ k: "tree", p: 0.85, s: 4.6 }, { k: "tree", p: 0.55, s: 3.8, dx: 0.3, dy: -0.22 }, { k: "pine", p: 0.4, s: 5, dx: -0.32, dy: 0.18 }] },
   grassland: { 名: "草原", color: "#d2d69a", tint: [190, 190, 118], costMul: 1.05, elevBias: 0,     scatter: [{ k: "shrub", p: 0.14, s: 2.4 }, { k: "shrub", p: 0.07, s: 2.0, dx: 0.3, dy: -0.2 }] },
   marsh:     { 名: "沼泽", color: "#a9ccc4", tint: [150, 186, 170], costMul: 2.4,  elevBias: -0.13, scatter: [{ k: "reed", p: 0.5, s: 4.5 }, { k: "reed", p: 0.28, s: 3.6, dx: 0.35, dy: 0.2 }] },
-  desert:    { 名: "荒漠", color: "#e6d9ad", tint: [224, 206, 150], costMul: 1.4,  elevBias: 0.06,  scatter: [{ k: "dune", p: 0.34, s: 6 }, { k: "rock", p: 0.08, s: 3.5, dx: 0.3, dy: 0.3 }] }
+  desert:    { 名: "荒漠", color: "#e6d9ad", tint: [224, 206, 150], costMul: 1.4,  elevBias: 0,     scatter: [{ k: "dune", p: 0.34, s: 6 }, { k: "rock", p: 0.08, s: 3.5, dx: 0.3, dy: 0.3 }] }
 };
 /** 旧 TerrainId → canonical 复合串（分类器重贴标签 + 旧档迁移用） */
 export const LEGACY_TO_COMPOSITE: Record<TerrainId, string> = {
