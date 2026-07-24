@@ -42,16 +42,18 @@ describe("常量与旧实现深度一致", () => {
     assert.strictEqual(C.PD, g.PD);
   });
   it("图层/预设/布景", () => {
-    // LAYERS：剔除新增 "notes"/"vision" 后与旧版逐位一致；新增各恰好一条
-    assert.deepStrictEqual(C.LAYERS.filter(l => l.id !== "notes" && l.id !== "vision"), g.LAYERS);
+    // LAYERS：新增 "notes"/"vision"、移除 "eco"（自动生态点缀改为生态笔刷落真实印章）后与旧版逐位一致
+    assert.deepStrictEqual(C.LAYERS.filter(l => l.id !== "notes" && l.id !== "vision"), g.LAYERS.filter((l: { id: string }) => l.id !== "eco"));
     assert.strictEqual(C.LAYERS.filter(l => l.id === "notes").length, 1);
     assert.strictEqual(C.LAYERS.filter(l => l.id === "vision").length, 1);
+    assert.strictEqual(C.LAYERS.find(l => l.id === "eco"), undefined, "eco 自动点缀层已移除（生态改由笔刷落真实印章）");
     assert.strictEqual(C.LAYERS.find(l => l.id === "vision")!.tacOnly, true, "vision 应为战术图专属");
-    // PRESETS：每个预设剔除 notes/vision 键后与旧版一致；标注全预设开、视野仅军事/战术/全部
+    // PRESETS：每个预设剔除新增 notes/vision、移除 eco 后与旧版一致；标注全预设开、视野仅军事/战术/全部
     assert.deepStrictEqual(Object.keys(C.PRESETS), Object.keys(g.PRESETS));
     for (const k of Object.keys(C.PRESETS)) {
-      assert.deepStrictEqual(stripKeys(C.PRESETS[k], ["notes", "vision"]), g.PRESETS[k], `预设「${k}」旧键漂移`);
+      assert.deepStrictEqual(stripKeys(C.PRESETS[k], ["notes", "vision"]), stripKeys(g.PRESETS[k], ["eco"]), `预设「${k}」旧键漂移`);
       assert.strictEqual(C.PRESETS[k].notes, 1, `预设「${k}」应含标注层`);
+      assert.strictEqual(C.PRESETS[k].eco, undefined, `预设「${k}」eco 已移除`);
       assert.strictEqual(C.PRESETS[k].vision, ["军事", "战术", "全部"].includes(k) ? 1 : undefined, `预设「${k}」vision 白名单`);
     }
     assert.deepStrictEqual(C.DECOR, g.DECOR);

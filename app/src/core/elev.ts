@@ -12,7 +12,10 @@ import { activeAt } from "./time.ts";
 import type { Grid } from "./grid.ts";
 import type { HeightOverride, Meta } from "./types.ts";
 
-/* 起伏/涂改后的钳制：陆地不跌成海滩之下、水面不浮出海（类型才是真源，观感须与类型自洽） */
+/* 起伏/涂改后的钳制：陆地不跌成海滩之下、水面不浮出海（类型才是真源，观感须与类型自洽）。
+   地板/天花随类型收敛（2026-07 裁决）：地板=min(0.10, 类型基础)、天花=max(-0.06, 类型基础)——
+   基础值天然合规 ⇒ 未涂改格永不因开起伏/涂高程而被钳动；否则沿海(0.06)/沼泽复合(0.03/-0.07)
+   这些设计低地会在特性开启瞬间被全图统一抬到 0.10（局部动一笔、远处海岸线等高线堆聚）。 */
 const LAND_FLOOR = 0.10, WATER_CEIL = -0.06;
 
 /** 程序化起伏（约 -0.5..0.5）：种子移相 + 三倍频跨尺度 */
@@ -78,7 +81,8 @@ export function buildElevField(meta: Meta | undefined, hov: HeightOverride[] | u
   if (amp > 0 || (hov && hov.length)) {           // 钳制只在特性生效时跑（全关路径零改动）
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
       const i = r * cols + c;
-      f[i] = terrainProps(cells[r][c]).lf === "water" ? Math.min(WATER_CEIL, f[i]) : Math.max(LAND_FLOOR, f[i]);
+      const p = terrainProps(cells[r][c]);
+      f[i] = p.lf === "water" ? Math.min(Math.max(WATER_CEIL, p.elev), f[i]) : Math.max(Math.min(LAND_FLOOR, p.elev), f[i]);
     }
   }
   return f;

@@ -591,6 +591,23 @@ describe("地形涂改", () => {
 
     assert.strictEqual(paintTerrainAt(mkWorld({ meta }), g0, 3000, lon, lat, other, 1, true), false, "橡皮擦空格无变化");
   });
+  it("paintTerrainAt 单轴：生态轴改生态留地貌、地貌轴改地貌留生态、生态 none 清生态", async () => {
+    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    const { buildGridCells } = await import("../src/core/grid.ts");
+    const meta = { terrain: "plain" as const, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } };   // 初稿全 plain
+    const lon = 101.5, lat = 31.5, r = 1, c = 1;
+    const w = mkWorld({ meta });
+    const cell = () => buildGridCells(meta, w.terrainOverrides, 3000).cells[r][c];   // 每步按最新涂改重建取该格
+    // 生态轴：plain 上叠 forest（地貌 plain 保留）
+    paintTerrainAt(w, buildGridCells(meta, w.terrainOverrides, 3000), 3000, lon, lat, "plain/forest", 1, false, null, "eco");
+    assert.strictEqual(cell(), "plain/forest", "生态轴：plain 上叠 forest");
+    // 地貌轴：改 hill 留 forest（笔刷生态分量被忽略，只取地貌）
+    paintTerrainAt(w, buildGridCells(meta, w.terrainOverrides, 3000), 3000, lon, lat, "hill/desert", 1, false, null, "lf");
+    assert.strictEqual(cell(), "hill/forest", "地貌轴：改 hill 留 forest");
+    // 生态轴 none：清生态回纯地貌 hill
+    paintTerrainAt(w, buildGridCells(meta, w.terrainOverrides, 3000), 3000, lon, lat, "hill", 1, false, null, "eco");
+    assert.strictEqual(cell(), "hill", "生态轴 none：清生态回纯地貌");
+  });
 });
 
 describe("布景 + 框选", () => {
@@ -610,6 +627,36 @@ describe("布景 + 框选", () => {
     assert.strictEqual(removeDecor(w, "没有"), false);
     assert.strictEqual(removeDecor(w, d1.id), true);
     assert.strictEqual(w.decor.length, 0, "删空后留空数组（decor 为必备字段）");
+  });
+  it("moveDecor：改经纬（经度折回、三位小数）、缺失 id 无操作", async () => {
+    const { addDecor, moveDecor } = await import("../src/ui/editops.ts");
+    const w = mkWorld();
+    const d = addDecor(w, 100, 30, "tree", 1);
+    moveDecor(w, d.id, 105.98765, 31.12345);
+    assert.strictEqual(d.lon, 105.988);
+    assert.strictEqual(d.lat, 31.123);
+    moveDecor(w, "没有", 0, 0);   // 不抛
+    assert.strictEqual(w.decor.length, 1);
+  });
+  it("selDecor / selMultiDecor：按 id 取回布景、缺失跳过、类型不符返回空", async () => {
+    const { selDecor, selMultiDecor } = await import("../src/ui/state.ts");
+    const w = mkWorld();
+    w.decor = [{ id: "a", kind: "tree", lon: 1, lat: 2 }, { id: "b", kind: "pine", lon: 3, lat: 4 }] as never;
+    assert.strictEqual(selDecor(w, { kind: "decor", id: "b" })?.id, "b");
+    assert.strictEqual(selDecor(w, { kind: "node", id: "a" }), null, "非 decor 返回 null");
+    assert.deepStrictEqual(selMultiDecor(w, { kind: "multi", ids: [], decorIds: ["b", "没有", "a"] }).map(d => d.id), ["b", "a"]);
+    assert.deepStrictEqual(selMultiDecor(w, { kind: "multi", ids: [] }), [], "无 decorIds 返回空");
+  });
+  it("decorsInBox：锚点落框内即选中（跨拷贝重投影；隐藏时段不入框）", async () => {
+    const { decorsInBox } = await import("../src/render/decor.ts");
+    const cam = { lon0: 100, lat0: 30, degPerPx: 0.01, w: 800, h: 600, flat: true };
+    const meta = { worldModel: "flat" as const };
+    const w = mkWorld({ meta: meta as never });
+    w.decor = [{ id: "a", kind: "tree", lon: 100, lat: 30 }, { id: "b", kind: "pine", lon: 101, lat: 30 },
+      { id: "c", kind: "reed", lon: 100, lat: 31 }, { id: "z", kind: "tree", lon: 100, lat: 30, since: 5000 }] as never;   // z 时段外
+    // 平面 cos=1：a 锚(400,300)、b(500,300)、c(400,200)
+    assert.deepStrictEqual(decorsInBox(cam as never, meta, w, 3107, 380, 280, 420, 320).sort(), ["a"], "小框只圈 a（z 未到时段被排除）");
+    assert.deepStrictEqual(decorsInBox(cam as never, meta, w, 3107, 380, 180, 520, 320).sort(), ["a", "b", "c"], "大框圈 a/b/c");
   });
   it("selMulti：按 id 顺序取回地点、缺失跳过", async () => {
     const { selMulti } = await import("../src/ui/state.ts");

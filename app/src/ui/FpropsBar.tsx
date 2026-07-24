@@ -3,7 +3,7 @@
    数值与抽屉/快捷键（[ ] E Alt+滚轮）同信号联动；军属性条随 再议。 */
 import { measureLegs } from "../core/route.ts";
 import { fmtKm } from "../core/util.ts";
-import { brushEraseSig, brushSizeSig, brushSmoothSig, decorSizeSig, editSubSig, modeSig, routePtsSig, routeResSig, terrainHeightSig, worldSig } from "./state.ts";
+import { brushEraseSig, brushSizeSig, brushSmoothSig, decorSizeSig, editSubSig, modeSig, routePtsSig, routeResSig, terrainAxisSig, worldSig } from "./state.ts";
 
 export function FpropsBar() {
   const mode = modeSig.value, sub = editSubSig.value;
@@ -26,7 +26,7 @@ export function FpropsBar() {
   const erase = brushEraseSig.value, size = brushSizeSig.value, smooth = brushSmoothSig.value, scale = decorSizeSig.value;
   return (
     <div class="fprops" id="fprops">
-      <span class="fl">{({ paint: "涂域", terrain: "地形", decor: "布景" } as Record<string, string>)[sub]}</span>
+      <span class="fl">{sub === "terrain" ? ({ lf: "地貌", eco: "生态", height: "高程" } as Record<string, string>)[terrainAxisSig.value] : ({ paint: "涂域", decor: "布景" } as Record<string, string>)[sub]}</span>
       {sub === "decor" ? (
         /* 布景：单一大小滑杆随模式切换（橡皮=通用擦除，模式钮在抽屉印章 chips 旁）；不再放独立扫除滑杆与橡皮钮 */
         erase ? (
@@ -59,7 +59,7 @@ export function FpropsBar() {
             </>
           )}
           <span class="fsep" />
-          <button class="ftg tr" aria-pressed={erase} onClick={() => { brushEraseSig.value = !brushEraseSig.peek(); }}>{sub === "terrain" && terrainHeightSig.value ? "下切 (E)" : "橡皮 (E)"}</button>
+          <button class="ftg tr" aria-pressed={erase} onClick={() => { brushEraseSig.value = !brushEraseSig.peek(); }}>{sub === "terrain" && terrainAxisSig.value === "height" ? "下切 (E)" : "橡皮 (E)"}</button>
         </>
       )}
       <span class="fl"><kbd style={{ font: "10px var(--f-mono)" }}>Alt</kbd>+滚轮调大小</span>

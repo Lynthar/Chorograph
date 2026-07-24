@@ -5,17 +5,17 @@ import { effect } from "@preact/signals-core";
 import { roadCellSet } from "../core/grid.ts";
 import { clampView } from "../core/projection.ts";
 import { flatKmPerDeg } from "../core/geo.ts";
-import { unitLegs } from "../core/units.ts";
 import { createTerrainRenderer } from "../render/renderer.ts";
 import { mountUI } from "../ui/mount.tsx";
 import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
   modeSig, armSig, routePtsSig, routeResSig, routeBusySig, setMode,
-  editSubSig, editVerSig, gridVerSig, isTacSig, unitLegsSig, tacReqSig,
+  editSubSig, editVerSig, isTacSig, tacReqSig,
   paintFactionSig, flyReqSig, helpOpenSig, openSettings, selectOp,
   analysisSubSig, uiPrefsSig, subDaySig,
   type EditSub }
   from "../ui/state.ts";
 import { wireInteractions } from "./pointer.ts";
+import { wireOrchestration } from "./orchestrate.ts";
 import { startFrameLoop } from "./frame.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -27,7 +27,7 @@ import type { RoutePoint } from "../core/route.ts";
 
 export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: LibraryIO): Promise<void> {
   const { canvas } = ctx;
-  const { resize, rebuild, rebuildIfNeeded } = host;
+  const { resize, rebuild } = host;
   const { autosave, boot, bindLib, goHome, refreshLib, openParentMap, openTacmap, genTactical } = libio;
   /* 界面偏好：主题（亮·素笺默认/暗·漆）×密度，本机 localStorage（yutu2.ui）持久化、
      不入存档；先于首帧应用到 #app 的 data-theme/data-den，避免主题闪变。 */
@@ -39,6 +39,9 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     const p = uiPrefsSig.value;
     const app = $("app");
     app.dataset.theme = p.theme; app.dataset.den = p.den;
+    // 浏览器 chrome（PWA 标题栏/移动地址栏）随主题：与 --q-top 顶栏色同源，暗主题不再衬亮纸边
+    const tc = document.querySelector('meta[name="theme-color"]');
+    if (tc) tc.setAttribute("content", p.theme === "dark" ? "#1b1815" : "#f7f4ec");
     try {
       const cur = JSON.parse(localStorage.getItem("yutu2.ui") || "{}") || {};
       localStorage.setItem("yutu2.ui", JSON.stringify({ ...cur, theme: p.theme, den: p.den }));
@@ -72,25 +75,9 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     if (ids.length) selSig.value = { kind: "multi", ids };
   }
 
-  /* 编排 effect：世界/年份/地形版本/选中/编辑改动 → 依序【同步 ctx.meta → 按需重建网格 → 部队可达性预算】。
-     合为一个 effect 是有意为之——多信号赋值段已 batch()，而 batch 冲刷按「后通知者先跑」，
-     拆开的兄弟 effect 之间没有可依赖的次序；meta 同步（mutateWorld 原地改不换 meta 对象，
-     世界整体更换时须重挂引用）、重建、legs 的先后只能靠 effect 内部语句顺序保证。 */
-  effect(() => {
-    const w = worldSig.value;
-    if (w) ctx.meta = w.meta || {};
-    yearSig.value; gridVerSig.value;
-    rebuildIfNeeded();
-    /* 战术图·可达性预算：为【选中部队】算行军 legs 填 unitLegsSig（对齐旧 renderUnitInfo：只算当前查看的部队）；
-       必须在重建之后（ctx.grid 新鲜）。缓存**只保留当前选中部队**（换成 new Map，不累积）——否则换年/涂改地形后，
-       之前选中过的部队仍以旧地形的 legs 画超速⚠/可达性表（审计：非选中部队陈旧、换年不重算、replaceCurrent 不清缓存）。 */
-    const sel = selSig.value;
-    editVerSig.value;                                       // 依赖：编辑改动（拖航点实时重算）
-    const u = (w && ctx.grid && isTacSig.peek() && sel && sel.kind === "unit") ? (w.units || []).find(x => x.id === sel.id) : null;
-    if (!u) { if (unitLegsSig.peek().size) unitLegsSig.value = new Map(); return; }
-    const roads = roadCellSet(w!.nodes, w!.edges, yearSig.peek(), ctx.grid!);
-    unitLegsSig.value = new Map([[u.id, unitLegs(ctx.meta, ctx.grid!, roads, u)]]);
-  });
+  /* 编排 effect（本体在 shell/orchestrate.ts，orchestrate.test.ts 锁「开图批末恰建一次」）：
+     世界/年份/地形版本/选中/编辑改动 → 依序【同步 ctx.meta → 按需重建网格 → 部队可达性预算】。 */
+  wireOrchestration(ctx, host);
   /* 编辑改动 → 自动保存 + 寻路上下文重发（官道格随连线增删重算）。
      meta 直取 w.meta（不靠 ctx.meta 由编排 effect 先同步——batch 冲刷顺序不保证谁先跑）；
      ctx.grid 若同批在重建，编排 effect 的 rebuild 会再发一次最终上下文，此处发的旧网格版本被覆盖。 */

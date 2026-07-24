@@ -22,12 +22,14 @@ export function drawPaintCells(ctx: CanvasRenderingContext2D, cam: Camera, layer
 /** 笔刷光圈：半径=((size-1)+0.5)×每格像素（对齐旧 drawBrushCursor；cellDeg=格边度数，涂域=PD、地形=grid.step） */
 export function drawBrushRing(ctx: CanvasRenderingContext2D, cam: Camera, x: number, y: number,
   size: number, erase: boolean, dpr: number, cellDeg = PD): void {
+  /* 作用区=度空间正圆（brushCells 按格计圆），投影纵横比差 1/cos——环画椭圆如实标示：
+     横=r·cos、纵=r（旧正圆取横向半径，高纬纵向低估 cos 倍，lat38° 约差 21%）。 */
   const cosK = cam.flat ? 1 : Math.cos(cam.lat0 * Math.PI / 180);
-  const rPx = ((size - 1) + 0.5) * (1 / cam.degPerPx) * cellDeg * cosK;
+  const rDeg = ((size - 1) + 0.5) * cellDeg;
   ctx.save();
   ctx.scale(dpr, dpr);
   ctx.beginPath();
-  ctx.arc(x, y, Math.max(3, rPx), 0, 7);
+  ctx.ellipse(x, y, Math.max(3, rDeg / cam.degPerPx * cosK), Math.max(3, rDeg / cam.degPerPx), 0, 0, 7);
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = erase ? "rgba(192,57,43,.9)" : "rgba(220,230,240,.8)";
   ctx.setLineDash([4, 3]);

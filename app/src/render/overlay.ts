@@ -6,7 +6,7 @@ import { project, unproject, visibleWorldCopies, type Camera } from "../core/pro
 import { distKm, wrapLon } from "../core/geo.ts";
 import { calOf, fmtT, fmtYear } from "../core/calendar.ts";
 import { fmtKm } from "../core/util.ts";
-import { drawDecor, drawEco } from "./decor.ts";
+import { drawDecor } from "./decor.ts";
 import { drawRanges, drawUnits } from "./units.ts";
 import { drawFactions } from "./factions.ts";
 import { drawEdges, drawOps } from "./edges.ts";
@@ -25,11 +25,12 @@ export interface OverlayOpts {
   layers?: Record<string, boolean>;   // 图层开关（缺省=开；键同 LAYERS.id）
   selId?: string | null;              // 选中地点 id（金圈高亮；战役任意年显示作战线）
   opSel?: { evId: string; i: number } | null;   // 选中的作战线（泥金光晕）
-  grid?: Grid;                        // 生态点缀散布 + 布景印章尺度源（应恒传；缺则 eco 不画、印章尺度回退 1°）
-  eco?: boolean;                      // 生态点缀开关（缺省开）——独立于 grid：地形涂改只关此项，印章尺度仍用 grid.step
+  grid?: Grid;                        // 布景印章尺度源（应恒传；缺则印章尺度回退 1°）
   multiIds?: string[] | null;         // 框选的地点 id（金圈高亮全部）
   unitSelId?: string | null;          // 选中部队 id（泥金光晕框；战术图）
   multiUnitIds?: string[] | null;     // 框选的部队 id（同款光晕；战术图）
+  decorSelId?: string | null;         // 选中布景 id（虚线金框）
+  decorMultiIds?: string[] | null;    // 框选的布景 id（同款金框）
   unitLegs?: Map<string, Leg[]>;      // 部队可达性预算（外壳缓存；供尾迹标超速）
   smooth?: number;                    // 涂域边界平滑档（Chaikin 轮数 0–3；缺省 2，笔刷框调）
   edgeSelIdx?: number | null;         // 选中连线下标（红晕高亮，对齐旧 isSelEdge）
@@ -44,32 +45,38 @@ export function drawOverlay(
   const on = (id: string) => L[id] !== false;
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   ctx.save(); ctx.scale(dpr, dpr);
-  const byId = new Map<string, WorldNode>(world.nodes.map(n => [n.id, n]));
-  const fcolor = (id: string | null) => (id && world.factions.find(f => f.id === id)?.color) || "#6b6b6b";
-  const multiSet = new Set(opts.multiIds || []);
-  for (const shift of visibleWorldCopies(cam, meta)) {
-    const c2: Camera = { ...cam, lonShift: shift };
-    if (on("eco") && opts.eco !== false && opts.grid) drawEco(ctx, c2, opts.grid);   // 生态点缀（垫底，地形之上）
-    if (on("decor")) drawDecor(ctx, c2, world, yearNow, opts.grid ? opts.grid.step : 1);   // 手绘布景（印章尺度随格距 step）
-    if (on("politics")) drawFactions(ctx, c2, meta, world, yearNow, opts.smooth ?? 2);
-    if (on("range")) drawNodeRanges(ctx, c2, meta, world, yearNow, opts.selId);   // 地点范围虚线圈
-    if (on("ranges") || on("vision")) drawRanges(ctx, c2, meta, world, yearNow, {   // 火力射程/视野圈：垫在连线/地点之下
-      fire: on("ranges"), vision: on("vision"),
-      handleUnit: opts.editing ? (opts.unitSelId || null) : null,     // 编辑态选中对象的圈带半径拖动手柄
-      handleNode: opts.editing ? (opts.selId || null) : null
-    });
-    drawEdges(ctx, c2, meta, world, yearNow, byId, L, opts.edgeSelIdx);   // 连线（道路/河流/商路）
-    const field = createLabelField();   // 标签避让场（每拷贝一场）：线注记/标注 claim → 当日事件→地名→部队 先占先得
-    if (on("arrows")) drawOps(ctx, c2, world, yearNow, opts.selId, opts.opSel, field);
-    if (on("nodes")) drawNodes(ctx, c2, world, yearNow, opts, multiSet, fcolor, field);   // 地点记号 + 楷体标签（避让）
-    if (on("units")) drawUnits(ctx, c2, world, yearNow,   // 部队【记号】压在地点之上（战场主角）；标签让地名
-      { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field });
+  /* try/finally：任一绘制域抛异常也须归位画布状态——否则下帧 save+scale 在残留变换上复利，
+     叠加层永久失控放大；末尾 setTransform 兜底「内层 save 未配对」时单次 restore 不够的情形。 */
+  try {
+    const byId = new Map<string, WorldNode>(world.nodes.map(n => [n.id, n]));
+    const fcolor = (id: string | null) => (id && world.factions.find(f => f.id === id)?.color) || "#6b6b6b";
+    const multiSet = new Set(opts.multiIds || []);
+    const decorSel = { id: opts.decorSelId, ids: opts.decorMultiIds ? new Set(opts.decorMultiIds) : null };
+    for (const shift of visibleWorldCopies(cam, meta)) {
+      const c2: Camera = { ...cam, lonShift: shift };
+      if (on("decor")) drawDecor(ctx, c2, world, yearNow, opts.grid ? opts.grid.step : 1, decorSel);   // 手绘布景（印章尺度随格距 step；生态笔刷落的真实印章同此层）
+      if (on("politics")) drawFactions(ctx, c2, meta, world, yearNow, opts.smooth ?? 2);
+      if (on("range")) drawNodeRanges(ctx, c2, meta, world, yearNow, opts.selId);   // 地点范围虚线圈
+      if (on("ranges") || on("vision")) drawRanges(ctx, c2, meta, world, yearNow, {   // 火力射程/视野圈：垫在连线/地点之下
+        fire: on("ranges"), vision: on("vision"),
+        handleUnit: opts.editing ? (opts.unitSelId || null) : null,     // 编辑态选中对象的圈带半径拖动手柄
+        handleNode: opts.editing ? (opts.selId || null) : null
+      });
+      drawEdges(ctx, c2, meta, world, yearNow, byId, L, opts.edgeSelIdx);   // 连线（道路/河流/商路）
+      const field = createLabelField();   // 标签避让场（每拷贝一场）：线注记/标注 claim → 当日事件→地名→部队 先占先得
+      if (on("arrows")) drawOps(ctx, c2, world, yearNow, opts.selId, opts.opSel, field);
+      if (on("nodes")) drawNodes(ctx, c2, world, yearNow, opts, multiSet, fcolor, field);   // 地点记号 + 楷体标签（避让）
+      if (on("units")) drawUnits(ctx, c2, world, yearNow,   // 部队【记号】压在地点之上（战场主角）；标签让地名
+        { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field });
+    }
+    if (on("graticule")) drawGraticule(ctx, cam, meta);   // 经纬网：拷贝循环外，屏幕空间一次绘制
+    if (on("notes")) drawPinnedNotes(ctx, cam, world, yearNow, opts, fcolor);   // 屏幕角标注（帧标题/图注块）
+    drawScaleBar(ctx, cam, meta);                          // 图形比例尺（左下，随 PNG 导出）
+    drawTitle(ctx, meta, yearNow);                         // 图名 + 纪年（左上，随 PNG 导出）
+  } finally {
+    ctx.restore();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
-  if (on("graticule")) drawGraticule(ctx, cam, meta);   // 经纬网：拷贝循环外，屏幕空间一次绘制
-  if (on("notes")) drawPinnedNotes(ctx, cam, world, yearNow, opts, fcolor);   // 屏幕角标注（帧标题/图注块）
-  drawScaleBar(ctx, cam, meta);                          // 图形比例尺（左下，随 PNG 导出）
-  drawTitle(ctx, meta, yearNow);                         // 图名 + 纪年（左上，随 PNG 导出）
-  ctx.restore();
 }
 
 /* 经纬网（graticule，faithful port 自旧 drawGraticule）：屏幕空间一次绘制（不入世界拷贝循环），

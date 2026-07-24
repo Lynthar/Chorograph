@@ -3,15 +3,15 @@
    「编辑」随时开表单（inspEditSig；编辑模式恒开＝旧语义保留），表单替换卡片视图；
    数据语义与 v0.14 卡一致（对齐旧 renderInfo 系列），航点动向沿旧行内编辑（战役复原工作流）。 */
 import { useRef } from "preact/hooks";
-import { EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
+import { DECOR, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
 import { edgeLenKm, polylineKm } from "../core/geometry.ts";
 import { calOf, fmtT, fmtWhen, fmtWhenRange } from "../core/calendar.ts";
 import { unitArm, unitFireKm, unitKind, unitPos, unitSpeed, unitStatusAt } from "../core/units.ts";
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm } from "../core/util.ts";
-import type { Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
-import { clearOpSel, deleteEdgeIdx, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selEdge, selFaction, selMulti, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
-import { deleteUnitWaypoint, removeFaction, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointStatus } from "./editops.ts";
+import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
+import { clearOpSel, deleteDecorAt, deleteEdgeIdx, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
+import { deleteUnitWaypoint, removeDecor, removeFaction, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
 import { FactionForm } from "./FactionForm.tsx";
@@ -309,16 +309,56 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
   );
 }
 
-/** 框选多地点（对齐旧 renderMultiInfo） */
-function MultiCard({ nodes, units, world }: { nodes: WorldNode[]; units: Unit[]; world: World }) {
+/** 布景卡（生态笔刷落下的与单独落下的完全一致）：内联改种类/大小、删除；图上按住可拖移 */
+function DecorCard({ d, world }: { d: Decor; world: World }) {
+  const tac = isTacSig.value;
+  const cal = calOf((world.meta || {}).calendar);
+  const isImg = typeof d.kind === "string" && d.kind.startsWith("img:");
+  const size = d.size ?? 1;
+  const kindName = isImg ? "自定义印章" : (DECOR[d.kind]?.名 || d.kind);
+  const patch = (p: Partial<Decor>) => mutateWorld(w => { const x = (w.decor || []).find(y => y.id === d.id); if (x) Object.assign(x, p); });
+  return (
+    <>
+      <CardHead title={`布景 · ${kindName}`} />
+      <div class="tags"><span class="tg" style={{ background: "#5a6a3a" }}>{kindName}</span></div>
+      <div class="kv2">
+        <b>坐标</b><span class="num">{d.lon}° · {d.lat}°</span>
+        {(d.since != null || d.until != null) && <><b>存在</b><span class="num">{d.since != null ? fmtWhen(cal, tac, d.since) : "远古"} – {d.until != null ? fmtWhen(cal, tac, d.until) : "至今"}</span></>}
+      </div>
+      {!isImg && (
+        <>
+          <div class="sec" style={{ marginTop: "4px" }}>种类</div>
+          <div class="chips">
+            {Object.keys(DECOR).map(k => (
+              <button key={k} class="ch tr" aria-pressed={d.kind === k} onClick={() => patch({ kind: k })}>{DECOR[k].名}</button>
+            ))}
+          </div>
+        </>
+      )}
+      <div class="setrow" style={{ marginTop: "6px" }}>
+        <label>大小</label>
+        <input type="range" min={0.5} max={2.5} step={0.1} value={String(size)}
+          onChange={e => patch({ size: +(e.currentTarget as HTMLInputElement).value })} />
+        <span class="num">×{size.toFixed(1)}</span>
+      </div>
+      <div class="hint">图上按住可拖移 · <kbd>Delete</kbd> 删除 · 与生态笔刷落下的印章完全一致</div>
+      <div class="in-actions">
+        <button class="bt danger-ghost tr" onClick={() => deleteDecorAt(d.id)}>删除布景</button>
+      </div>
+    </>
+  );
+}
+
+/** 框选多对象（地点/部队/布景，对齐旧 renderMultiInfo） */
+function MultiCard({ nodes, units, decors, world }: { nodes: WorldNode[]; units: Unit[]; decors: Decor[]; world: World }) {
   const y = yearSig.value;
-  const what = [nodes.length ? `${nodes.length} 个地点` : "", units.length ? `${units.length} 支部队` : ""].filter(Boolean).join(" + ");
+  const what = [nodes.length ? `${nodes.length} 个地点` : "", units.length ? `${units.length} 支部队` : "", decors.length ? `${decors.length} 枚布景` : ""].filter(Boolean).join(" + ");
   const del = () => {
     const detail = [nodes.length ? `${nodes.length} 个地点及其连线与关联引用` : "",
-      units.length ? `${units.length} 支部队及其全部动向` : ""].filter(Boolean).join("与");
+      units.length ? `${units.length} 支部队及其全部动向` : "", decors.length ? `${decors.length} 枚布景` : ""].filter(Boolean).join("与");
     if (!confirm(`删除框选的 ${detail}？`)) return;
-    const ids = nodes.map(n => n.id), uids = units.map(u => u.id);
-    mutateWorld(w => { for (const id of ids) removeNode(w, id); for (const id of uids) removeUnit(w, id); });
+    const ids = nodes.map(n => n.id), uids = units.map(u => u.id), dids = decors.map(d => d.id);
+    mutateWorld(w => { for (const id of ids) removeNode(w, id); for (const id of uids) removeUnit(w, id); for (const id of dids) removeDecor(w, id); });
     selSig.value = null;
   };
   return (
@@ -348,6 +388,16 @@ function MultiCard({ nodes, units, world }: { nodes: WorldNode[]; units: Unit[];
             </button>
           );
         })}
+        {decors.map(d => {
+          const isImg = typeof d.kind === "string" && d.kind.startsWith("img:");
+          return (
+            <button key={d.id} class="row tr" onClick={() => { selSig.value = { kind: "decor", id: d.id }; }}>
+              <span class="dot" style={{ background: "#5a6a3a" }} />
+              <span class="nm">{isImg ? "自定义印章" : (DECOR[d.kind]?.名 || d.kind)}</span>
+              <span class="eye">布景</span>
+            </button>
+          );
+        })}
       </div>
       <div class="hint">点名称查看单个对象 · <kbd>Delete</kbd> 批量删除 · 按住框选成员可整体拖移（部队＝改写当前时刻航点）</div>
       <div class="in-actions">
@@ -365,13 +415,16 @@ export function InfoPanel() {
   const e = world ? selEdge(world, sel) : null;
   const f = world ? selFaction(world, sel) : null;
   const u = world ? selUnit(world, sel) : null;
+  const d = world ? selDecor(world, sel) : null;
   const multi = world ? selMulti(world, sel) : [];
   const multiUnits = (world && sel && sel.kind === "multi" ? sel.unitIds || [] : [])
     .map(id => (world!.units || []).find(x => x.id === id)).filter((x): x is Unit => !!x);
-  if (!world || (!n && !e && !f && !u && !multi.length && !multiUnits.length)) return null;   // 无选中＝检查器收起（Inspector 壳控制）
+  const multiDecors = world ? selMultiDecor(world, sel) : [];
+  if (!world || (!n && !e && !f && !u && !d && !multi.length && !multiUnits.length && !multiDecors.length)) return null;   // 无选中＝检查器收起（Inspector 壳控制）
   return n ? <NodeCard n={n} world={world} />
     : e ? <EdgeCard e={e} idx={(sel as { idx: number }).idx} world={world} />
     : f ? <FactionCard f={f} world={world} />
     : u ? <UnitCard u={u} world={world} />
-    : <MultiCard nodes={multi} units={multiUnits} world={world} />;
+    : d ? <DecorCard d={d} world={world} />
+    : <MultiCard nodes={multi} units={multiUnits} decors={multiDecors} world={world} />;
 }

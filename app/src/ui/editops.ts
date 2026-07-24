@@ -5,7 +5,7 @@ import { wrapLon } from "../core/geo.ts";
 import { parseKV } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
 import { setUnitPoint, unitKind } from "../core/units.ts";
-import { UNIT_KINDS } from "../core/constants.ts";
+import { UNIT_KINDS, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Asset, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
 
@@ -197,11 +197,13 @@ export function removeOp(w: World, evId: string, i: number): boolean {
    再写入新涂改；橡皮=只移除（靠 buildGridCells 回退种子初稿/继承的粗块）。lon/lat=笔刷中心（数据经度，已折回）。
    新壳不再直改 grid.cells（改完由外壳 rebuild 重建）；era=「⏳新对象时间段」（勾选则涂改带 since/until）。 */
 export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: number, lat: number,
-  t: string, size: number, erase: boolean, era?: EraNew | null): boolean {   // t=复合串（两轴）；建格时 canonComposite 归一
+  t: string, size: number, erase: boolean, era?: EraNew | null,
+  axis: "both" | "lf" | "eco" = "both"): boolean {   // t=复合串（两轴）；axis=单轴笔刷时只并入该轴、另一轴留旧格值
   const { bb, step, cells } = grid;
   const tac = ((w.meta || {}) as { mapKind?: string }).mapKind === "tactical";   // 旧 isTac() 语义
   const c0 = Math.floor((lon - bb.lonMin) / step), r0 = Math.floor((lat - bb.latMin) / step);
   const R = size - 1, prec = step >= 0.05 ? 2 : 4, tol = step * 0.4;
+  const [brLf, brEco] = parseComposite(t);   // 笔刷复合的两轴分量（单轴模式各取其一并入现格）
   let ovs = w.terrainOverrides || [];
   let changed = false;
   for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
@@ -214,7 +216,14 @@ export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: numbe
       && (+(o.step as number) || step) <= step * 1.001 && activeAt(o, yearNow)));
     if (ovs.length !== n) changed = true;
     if (!erase) {
-      const ov: TerrainOverride = { lon: +clon.toFixed(prec), lat: +clat.toFixed(prec), t };
+      // 单轴笔刷：并入现格值的对应轴（地貌笔改地貌留生态、生态笔改生态留地貌）——现格=cells 已含旧涂改+初稿
+      let cellT = t;
+      if (axis !== "both") {
+        const [cLf, cEco] = parseComposite(cells[r][c]);
+        cellT = axis === "lf" ? canonComposite(brLf + (cEco === "none" ? "" : "/" + cEco))
+                              : canonComposite(cLf + (brEco === "none" ? "" : "/" + brEco));
+      }
+      const ov: TerrainOverride = { lon: +clon.toFixed(prec), lat: +clat.toFixed(prec), t: cellT };
       if (tac) ov.step = +step.toFixed(4);   // 战术细格涂改记录自身块尺寸（与继承的 1° 粗块区分）——对齐旧 paintAt（index.html:2739），存档格式兼容硬约束
       ovs.push(applyEra(ov, era)); changed = true;
     }
@@ -265,6 +274,13 @@ export function addDecor(w: World, lon: number, lat: number, kind: string, size:
     lon: +dataLon(w.meta, lon).toFixed(3), lat: +lat.toFixed(3), kind, size };
   (w.decor || (w.decor = [])).push(d);
   return d;
+}
+/** 移一枚布景到新经纬（经度折回、三位小数；单枚拖移与框选整组拖移共用） */
+export function moveDecor(w: World, id: string, lon: number, lat: number): void {
+  const d = (w.decor || []).find(x => x.id === id);
+  if (!d) return;
+  d.lon = +dataLon(w.meta, lon).toFixed(3);
+  d.lat = +lat.toFixed(3);
 }
 /** 删一枚布景（按 id）。World.decor 恒为数组（normalizeWorld 保证），空了留空数组不删键 */
 export function removeDecor(w: World, id: string): boolean {

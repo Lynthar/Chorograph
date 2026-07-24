@@ -44,7 +44,6 @@ export const TERRAIN_ECO: Partial<Record<TerrainId, { k: string; p: number; s: n
 export interface LayerDef { id: string; 名: string; on: boolean; tacOnly?: boolean }
 export const LAYERS: LayerDef[] = [
   { id: "terrain", 名: "地形底图", on: true },
-  { id: "eco", 名: "生态点缀(自动)", on: true },
   { id: "contour", 名: "等高线", on: false },
   { id: "decor", 名: "布景(手绘点缀)", on: true },
   { id: "graticule", 名: "经纬网", on: false },
@@ -65,12 +64,12 @@ export const LAYERS: LayerDef[] = [
   { id: "vision", 名: "军事·视野范围", on: true, tacOnly: true }
 ];
 export const PRESETS: Record<string, Record<string, 1>> = {
-  "政治": { terrain: 1, eco: 1, politics: 1, range: 1, road: 1, nodes: 1, labels: 1, notes: 1 },
-  "军事": { terrain: 1, eco: 1, politics: 1, range: 1, road: 1, river: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },
-  "经济": { terrain: 1, eco: 1, road: 1, river: 1, trade: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
-  "地理": { terrain: 1, eco: 1, contour: 1, decor: 1, graticule: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
-  "战术": { terrain: 1, eco: 1, decor: 1, road: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },
-  "全部": { terrain: 1, eco: 1, contour: 1, decor: 1, graticule: 1, politics: 1, range: 1, road: 1, river: 1, trade: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 }
+  "政治": { terrain: 1, politics: 1, range: 1, road: 1, nodes: 1, labels: 1, notes: 1 },
+  "军事": { terrain: 1, politics: 1, range: 1, road: 1, river: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },
+  "经济": { terrain: 1, road: 1, river: 1, trade: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
+  "地理": { terrain: 1, contour: 1, decor: 1, graticule: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
+  "战术": { terrain: 1, decor: 1, road: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },
+  "全部": { terrain: 1, contour: 1, decor: 1, graticule: 1, politics: 1, range: 1, road: 1, river: 1, trade: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 }
 };
 
 /* 地点类型（11 类）→ 记号。rank 控制随缩放显隐：0=永远可见…4=贴近才见 */

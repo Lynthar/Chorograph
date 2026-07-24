@@ -1,12 +1,10 @@
-/* 手绘布景 + 自动生态点缀（自 v0.14 drawPrim/scatterEco 迁移；纯视觉，不入寻路网格）。
-   印章基元 drawPrim（8 种手绘符号）decor 与 eco 共用；坐标经相机 project 投影，
-   尺度随缩放 (1/degPerPx)/14——高清不糊、深放大退场。调用方（drawOverlay）已按 dpr 缩放并按世界拷贝重投影。 */
-import { DECOR_BASE, DECOR_BASE_IMG, terrainProps } from "../core/constants.ts";
-import { hash2 } from "../core/noise.ts";
+/* 手绘布景（自 v0.14 drawPrim/placeDecor 迁移；纯视觉，不入寻路网格）。生态笔刷落下的印章
+   与手绘印章共用同一 decor[] 与本层——完全同质，可单独拾取/选中/调整/删除。
+   印章基元 drawPrim（8 种手绘符号）；坐标经相机 project 投影，尺度随缩放 (step/degPerPx)/14——
+   高清不糊、深放大退场。调用方（drawOverlay）已按 dpr 缩放并按世界拷贝重投影。 */
+import { DECOR_BASE, DECOR_BASE_IMG } from "../core/constants.ts";
 import { activeAt } from "../core/time.ts";
-import { cellCenter } from "../core/route.ts";
-import { project, unproject, viewCosK, visibleWorldCopies, type Camera } from "../core/projection.ts";
-import type { Grid } from "../core/grid.ts";
+import { project, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import type { Asset, Decor, Meta, World } from "../core/types.ts";
 
 type C = CanvasRenderingContext2D;
@@ -53,6 +51,16 @@ function drawRock(g: C, x: number, y: number, r: number): void {
   g.beginPath(); g.moveTo(x - r, y + r * 0.6); g.lineTo(x - r * 0.55, y - r * 0.5); g.lineTo(x + r * 0.15, y - r * 0.75);
   g.lineTo(x + r, y + r * 0.1); g.lineTo(x + r * 0.6, y + r * 0.6); g.closePath(); g.fill(); g.stroke();
 }
+/* 各基元的体包络 [半宽, 上伸, 下伸]（×s，逐条对应上面 draw* 的坐标，含描边半宽）：印章都「站」在
+   锚点上、体主要在锚点【上方】，故拾取不能用以锚点为心的正圆——大印章点得中底座却点不中顶尖。
+   改 draw* 的形状须同步改此表（拾取绘制同源；表就近放在基元旁即为此）。 */
+const PRIM_BOX: Record<string, [number, number, number]> = {
+  peak: [0.82, 1, 0.5], mount: [0.82, 1, 0.5], hillock: [0.82, 1, 0.5],
+  tree: [0.58, 1, 0.8], pine: [0.68, 1, 0.5], shrub: [1.2, 0.75, 0.8],
+  reed: [0.62, 0.62, 0.47], dune: [1.08, 0.63, 0.33], rock: [1, 0.75, 0.6]
+};
+const PRIM_BOX_DEF: [number, number, number] = [1, 1, 0.6];   // 未知种类（旧档/未来基元）：取包络上界
+
 /** 按种类画一枚印章（手绘布景 + 自动生态共用） */
 export function drawPrim(g: C, kind: string, x: number, y: number, s: number): void {
   switch (kind) {
@@ -79,12 +87,14 @@ function assetImg(a: Asset): HTMLImageElement {
 /** 手绘布景层：遍历 world.decor[]（纪年过滤），投影后按 DECOR_BASE×size×缩放 落印章。
     尺度按格距 step 标定（同 drawEco）：战略 1° 格观感不变，细网格战术图印章随格缩小——
     旧固定按 1° 标定，0.006° 格上每枚印章巨大（自动生态 drawEco 已修，此为手绘层同款修正）。 */
-export function drawDecor(ctx: C, cam: Camera, world: World, yearNow: number, step = 1): void {
+export function drawDecor(ctx: C, cam: Camera, world: World, yearNow: number, step = 1,
+  sel?: { id?: string | null; ids?: Set<string> | null }): void {
   const decor = world.decor || [];
   if (!decor.length) return;
   const scale = (step / cam.degPerPx) / 14;
   const assets = world.assets;
   const byAsset = assets && assets.length ? new Map(assets.map(a => [a.id, a])) : null;
+  const isSel = (id: string) => !!sel && (sel.id === id || (sel.ids ? sel.ids.has(id) : false));
   ctx.save();
   for (const d of decor) {
     if (!activeAt(d, yearNow)) continue;
@@ -98,6 +108,7 @@ export function drawDecor(ctx: C, cam: Camera, world: World, yearNow: number, st
       const [x, y] = project(cam, d.lon, d.lat);
       if (x < -50 - dw || y < -50 - dh || x > cam.w + 50 + dw || y > cam.h + 50) continue;
       ctx.drawImage(im, x - dw / 2, y - dh, dw, dh);         // 底中锚定：印章"站"在点上
+      if (isSel(d.id)) selBox(ctx, x - dw / 2, y - dh, x + dw / 2, y);
       continue;
     }
     const s = (DECOR_BASE[d.kind] || 5) * (d.size || 1) * scale;
@@ -105,24 +116,77 @@ export function drawDecor(ctx: C, cam: Camera, world: World, yearNow: number, st
     const [x, y] = project(cam, d.lon, d.lat);
     if (x < -50 - s || y < -50 - s || x > cam.w + 50 + s || y > cam.h + 50 + s) continue;
     drawPrim(ctx, d.kind, x, y, s);
+    if (isSel(d.id)) { const [hw, up, dn] = PRIM_BOX[d.kind] || PRIM_BOX_DEF; selBox(ctx, x - hw * s, y - up * s, x + hw * s, y + dn * s); }
   }
   ctx.restore();
 }
 
-/** 拾取最近的布景（取样/单击用）：投影后距 < rad 像素，按世界拷贝重投影。对齐旧 pickDecorD。 */
-export function pickDecor(cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
-  x: number, y: number, rad = 13): Decor | null {
-  let best: Decor | null = null, bd = rad;
+/** 选中布景高亮框（虚线金环，紧贴体外扩 3px；拾取绘制同源的体几何） */
+function selBox(ctx: C, x0: number, y0: number, x1: number, y1: number): void {
+  ctx.save();
+  ctx.strokeStyle = "rgba(198,140,44,.95)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+  ctx.strokeRect(x0 - 3, y0 - 3, (x1 - x0) + 6, (y1 - y0) + 6);
+  ctx.restore();
+}
+
+/** 框选命中的全部布景 id（锚点落框内即选中；对齐 nodesInBox 的锚点判定） */
+export function decorsInBox(cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
+  x0: number, y0: number, x1: number, y1: number): string[] {
+  const xs = Math.min(x0, x1), xe = Math.max(x0, x1), ys = Math.min(y0, y1), ye = Math.max(y0, y1);
+  const ids = new Set<string>();
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
     for (const d of world.decor || []) {
       if (!activeAt(d, yearNow)) continue;
       const [px, py] = project(c2, d.lon, d.lat);
-      const dd = Math.hypot(px - x, py - y);
-      if (dd < bd) { bd = dd; best = d; }
+      if (px >= xs && px <= xe && py >= ys && py <= ye) ids.add(d.id);
+    }
+  }
+  return [...ids];
+}
+
+/** 拾取最近的布景（取样/拖移/右键删共用）：命中＝点落在【所画的体】外扩 13px 余量内——两类印章
+    同一套语义（体在锚点上方，点体即中），几何与 drawDecor 逐条同源：矢量印取 PRIM_BOX×s 包络、
+    自定义 img 印取底中锚定的 dw×dh 矩形；资产悬空/深放大退场时回退锚点 13px（没画出来的只按锚点拾取）。
+    step 须与 drawDecor 同源传 grid.step（缺省 1）。
+    多枚命中：先比到体的距离，体内并列（同为 0，密林/成岭常见）再比锚点距离取最近者。 */
+export function pickDecor(cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
+  x: number, y: number, step = 1): Decor | null {
+  const scale = (step / cam.degPerPx) / 14;
+  const assets = world.assets;
+  const byAsset = assets && assets.length ? new Map(assets.map(a => [a.id, a])) : null;
+  let best: Decor | null = null, bd = Infinity, ba = Infinity;
+  for (const shift of visibleWorldCopies(cam, meta)) {
+    const c2: Camera = { ...cam, lonShift: shift };
+    for (const d of world.decor || []) {
+      if (!activeAt(d, yearNow)) continue;
+      const [px, py] = project(c2, d.lon, d.lat);
+      const ad = Math.hypot(px - x, py - y);   // 锚点距离：体内并列时的次序键，也是无体可算时的回退
+      let dd = ad;
+      if (typeof d.kind === "string" && d.kind.startsWith("img:")) {
+        const a = byAsset && byAsset.get(d.kind.slice(4));
+        const base = DECOR_BASE_IMG * (d.size || 1) * scale;
+        if (a && base >= 1 && base <= 420) {
+          const ar = (a.w && a.h) ? a.w / a.h : 1;
+          const dw = ar >= 1 ? base : base * ar, dh = ar >= 1 ? base / ar : base;
+          dd = boxDist(x, y, px - dw / 2, py - dh, px + dw / 2, py);
+        }
+      } else {
+        const s = (DECOR_BASE[d.kind] || 5) * (d.size || 1) * scale;
+        if (s <= 420) {                        // 深放大退场者不给体（与绘制同门）
+          const [hw, up, dn] = PRIM_BOX[d.kind] || PRIM_BOX_DEF;
+          dd = boxDist(x, y, px - hw * s, py - up * s, px + hw * s, py + dn * s);
+        }
+      }
+      if (dd < 13 && (dd < bd || (dd === bd && ad < ba))) { bd = dd; ba = ad; best = d; }
     }
   }
   return best;
+}
+
+/** 点到轴对齐矩形的距离（体内=0） */
+function boxDist(x: number, y: number, x0: number, y0: number, x1: number, y1: number): number {
+  return Math.hypot(Math.max(x0, Math.min(x, x1)) - x, Math.max(y0, Math.min(y, y1)) - y);
 }
 
 /** 橡皮笔刷扫除：返回投影后距 ≤ r 像素的全部布景 id（对齐旧 decorEraseAt 的半径判定）。 */
@@ -138,43 +202,4 @@ export function decorIdsInRadius(cam: Camera, meta: Meta | undefined, world: Wor
     }
   }
   return ids;
-}
-
-/** 自动生态点缀层：按 TERRAIN_ECO 在每个地形格内做确定性散布（哈希定位，任何分辨率同位）。
-    尺寸与格内散布**按格距标定**：战略 1° 格（grid.step=1）与旧 scatterEco 逐位一致；
-    细网格战术图印章随格缩放——旧公式固定按 1° 标定，0.006° 格上每棵树 100–200px、
-    且散布 ±0.31° 漂出所在格 50 格远，把战术图糊成巨物（鄱阳湖成图时暴露）。 */
-export function drawEco(ctx: C, cam: Camera, grid: Grid): void {
-  const scale = (grid.step / cam.degPerPx) / 14;
-  /* 视口裁剪（审计：原先全网格逐格付哈希代价、离屏格命中后才剔除——大网格深放大时白算）：
-     由屏幕角反投影出本拷贝可见经纬窗口（unproject 不含 lonShift，需自行减去），只扫窗口内的格；
-     余量=格内散布外溢(≤0.7格) + 最大印章半径 + 原 50px 屏幕余量。逐格绘制参数不变（无跨格状态），可见输出逐位一致。 */
-  const shift = (cam.lonShift || 0);
-  const [lonA, latTop] = unproject(cam, 0, 0);
-  const [lonB, latBot] = unproject(cam, cam.w, cam.h);
-  const szMax = Math.min(340, 10 * scale * 1.25);                       // TERRAIN_ECO 最大 s=10 × 抖动上限 1.25
-  const pxDeg = cam.degPerPx / Math.max(0.05, viewCosK(cam));
-  const margin = 0.7 * grid.step + (szMax + 50) * pxDeg;
-  const c0 = Math.max(0, Math.floor((lonA - shift - margin - grid.bb.lonMin) / grid.step));
-  const c1 = Math.min(grid.cols - 1, Math.ceil((lonB - shift + margin - grid.bb.lonMin) / grid.step));
-  const r0 = Math.max(0, Math.floor((latBot - margin - grid.bb.latMin) / grid.step));
-  const r1 = Math.min(grid.rows - 1, Math.ceil((latTop + margin - grid.bb.latMin) / grid.step));
-  ctx.save();
-  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
-    const spec = terrainProps(grid.cells[r][c]).scatter;
-    if (!spec.length) continue;
-    const [clon, clat] = cellCenter(grid, r, c);
-    for (let i = 0; i < spec.length; i++) {
-      const it = spec[i];
-      if (hash2(r * 13.1 + i * 7.31, c * 7.7 + i * 3.17) > it.p) continue;
-      const jx = ((hash2(r * 3.7 + i, c * 5.3 + i) - 0.5) * 0.62 + (it.dx || 0)) * grid.step;
-      const jy = ((hash2(r * 5.9 + i, c * 2.9 + i) - 0.5) * 0.5 + (it.dy || 0)) * grid.step;
-      const sz = it.s * scale * (0.85 + hash2(r * 1.3 + i, c * 9.1 + i) * 0.4);   // ±20% 尺寸抖动
-      if (sz > 340 || sz < 1.1) continue;                      // 深放大退场；亚像素细网格远景不画
-      const [x, y] = project(cam, clon + jx, clat + jy);
-      if (x < -50 - sz || y < -50 - sz || x > cam.w + 50 + sz || y > cam.h + 50 + sz) continue;
-      drawPrim(ctx, it.k, x, y, sz);
-    }
-  }
-  ctx.restore();
 }

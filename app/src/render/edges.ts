@@ -10,8 +10,9 @@ import type { LabelField } from "./labels.ts";
 import type { Edge, Meta, Op, World, WorldNode } from "../core/types.ts";
 
 /* —— 河流描边（经典曲流河 + 自由画河共用）：三层描边（选中红晕/白衬底/河蓝） ——
-   riverWpx：widthM 米→像素（放大自然变宽、缩小退回样式底宽 2.6px；无 widthM 时三层宽度与旧值 9/5/2.6 逐位一致）。 */
-function riverWpx(meta: Meta | undefined, cam: Camera, e: Edge): number {
+   riverWpx：widthM 米→像素（放大自然变宽、缩小退回样式底宽 2.6px；无 widthM 时三层宽度与旧值 9/5/2.6 逐位一致）；
+   导出供 pickEdge 拾取走廊同源（宽河点在河面即可选中）。 */
+export function riverWpx(meta: Meta | undefined, cam: Camera, e: Edge): number {
   const wm = +(e.widthM as number) || 0;
   return wm > 0 ? Math.max(2.6, (wm / 1000) / kmPerDegLat(meta) / cam.degPerPx) : 2.6;
 }

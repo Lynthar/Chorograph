@@ -13,6 +13,7 @@ import { validateWorld, formatIssues } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import { contourStepFor } from "../core/elev.ts";
 import { pickBootEntry, planOpen, wantsDeepStart, type OpenSnap } from "./openplan.ts";
+import { landWorld } from "./orchestrate.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewSig, libActionsSig,
   playingSig, togglePlay, stopPlay, closeSettings, mutateWorld, pushHistoryOnce, clearOpSel, cancelOpDraw,
@@ -96,16 +97,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   }
   function setWorld(w: unknown, id: string | null, snap: OpenSnap | null | undefined): void {
     const p = planOpen(w, snap, dl);   // 年份/视角决策全在纯函数（openplan.test.ts 锁语义），此处只落地
-    ctx.meta = p.world.meta || {};
-    ctx.mapId = id;
-    // 清 builtFor＝强制按新档重建：同 id 重开时键（mapId@year@gridVer）可能相同而内容已变（如上次保存失败）。
-    // 批内编排 effect 冲刷时即按【最终】世界+年份重建一次——旧「先设年份、effect 拿旧世界白建全平原」的时序病根已由 batch 杜绝。
-    ctx.builtFor = null;
-    batch(() => {
-      selSig.value = null; hoverSig.value = null;
-      if (p.year != null) yearSig.value = p.year;
-      setWorldState(p.world);   // worldSig 赋值 + 年份按世界范围钳制
-    });
+    landWorld(ctx, p.world, id, p.year);   // 批落地（orchestrate.ts；重建计数护栏与此共用同一函数）
     if (p.view) {
       ctx.view.lon0 = p.view.lon0; ctx.view.lat0 = p.view.lat0;
       if (p.view.degPerPx != null) ctx.view.degPerPx = p.view.degPerPx;
@@ -298,18 +290,22 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       });
       showToast(`已导入「${srcName}」替换当前图`, { undo: true });
     },
-    /* 设置弹层「📷 出图 PNG」：地形+叠加层合成一张全分辨率 PNG 下载 */
+    /* 设置弹层「📷 出图 PNG」：地形+叠加层合成一张全分辨率 PNG 下载。
+       地形层开＝先渲后同任务内读回（preserveDrawingBuffer:false 下跨任务读 GL 画布属规范未定义）；
+       地形层关＝不读被隐藏的 GL 画布（内容未定义），垫恒定纸色底（亮主题画布底色，产物不随主题变）。 */
     exportPng() {
       if (!worldSig.peek()) return;
       closeSettings();
-      if (layersSig.peek().terrain && ctx.R) {
+      const R = layersSig.peek().terrain ? ctx.R : null;
+      if (R) {
         const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
-        ctx.R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat" });
+        R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat" });
       }
       const off = document.createElement("canvas");
       off.width = canvas.width; off.height = canvas.height;
       const g2 = off.getContext("2d")!;
-      g2.drawImage(canvas, 0, 0);
+      if (R) g2.drawImage(canvas, 0, 0);
+      else { g2.fillStyle = "#d9d2c0"; g2.fillRect(0, 0, off.width, off.height); }
       g2.drawImage(ov, 0, 0);
       off.toBlob(b => {
         if (!b) return;

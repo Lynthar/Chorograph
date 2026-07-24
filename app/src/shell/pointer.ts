@@ -3,7 +3,7 @@
    按住地点/布景/部队=拖移；连线可点点或拖拽成线；其余工具空白按下只作点击。
    模块内闭持全部拖拽/笔迹瞬态；frame 经 PointerView 只读画线笔迹/框选/光标位。 */
 import { unproject, clampView, zoomAtView, panByView } from "../core/projection.ts";
-import { EDGE_STYLE, EVENT_TYPES, NODE_STYLE, canonComposite } from "../core/constants.ts";
+import { EDGE_STYLE, EVENT_TYPES, NODE_STYLE, DECOR_BASE, ECO, canonComposite, parseComposite } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
 import { ownerAt } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
@@ -14,19 +14,19 @@ import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
 import { pickEdge, pickNode, pickOp, nodesInBox } from "../render/overlay.ts";
 import { pickUnit, pickRangeHandle, unitsInBox, type RingHit } from "../render/units.ts";
 import { unitPos } from "../core/units.ts";
-import { pickDecor, decorIdsInRadius } from "../render/decor.ts";
+import { pickDecor, decorIdsInRadius, decorsInBox } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
   inspEditSig, settingsSig, closeSettings, helpOpenSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
-  paintFactionSig, paintLayerSig, paintTerrainSig, terrainHeightSig, decorKindSig, decorSizeSig,
+  paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, eraNewSig,
   mutateWorld, mutateWorldLive, pushHistoryOnce, beginStroke, endStroke, undoWorld, redoWorld,
-  deleteNodeAt, deleteUnitAt, deleteEdgeIdx,
+  deleteNodeAt, deleteUnitAt, deleteEdgeIdx, deleteDecorAt,
   type EditSub, type Sel }
   from "../ui/state.ts";
 import { addNode, addEdge, addRiver, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
-  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setNodeRangeKm, moveNode, dataLon, paintTerrainAt, paintHeightAt }
+  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setNodeRangeKm, moveNode, moveDecor, dataLon, paintTerrainAt, paintHeightAt }
   from "../ui/editops.ts";
 import { poolGet } from "../ui/stamps.ts";
 import { paintDims, cellsToSet, setToCells, brushCells, ensurePaintLayer, type PaintDims } from "../ui/paint.ts";
@@ -39,12 +39,13 @@ import type { WorldNode } from "../core/types.ts";
 /* —— 拖拽/笔迹瞬态（每帧读写，不进 signals）—— */
 interface PanDrag { x: number; y: number; lon0: number; lat0: number; click: boolean }
 interface OpStroke { pts: [number, number][]; lastX: number; lastY: number; river?: boolean }   // river=自由画河笔迹（收笔入 river 边），否则作战线
-interface BoxSel { x0: number; y0: number; x1: number; y1: number; moved: boolean }
+interface BoxSel { x0: number; y0: number; x1: number; y1: number; moved: boolean; decorOnly?: boolean }   // decorOnly=布景子工具的框选（只圈布景）
 interface PaintStroke { set: Set<string>; dims: PaintDims; fid: string; idx: number }
 interface DecorStroke { erase: boolean; lastX: number; lastY: number }
 interface MultiDrag { sx: number; sy: number; t: number; pushed: boolean;
   orig: { id: string; lon0: number; lat0: number }[];        // 框选中的地点原位（moveNode 按位移整组平移）
-  uorig: { id: string; lon0: number; lat0: number }[] }      // 框选中的部队在起手时刻的原位（拖动改写该时刻航点）
+  uorig: { id: string; lon0: number; lat0: number }[];       // 框选中的部队在起手时刻的原位（拖动改写该时刻航点）
+  dorig: { id: string; lon0: number; lat0: number }[] }      // 框选中的布景原位（moveDecor 按位移整组平移）
 type RangeDrag = RingHit & { pushed: boolean };
 
 /** frame 每帧只读的交互视图（画线预览/框选矩形/笔刷环定位共用） */
@@ -123,7 +124,8 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     mxy: [number, number] | null = null;
   let spaceHeld = false, linkDrag: { fromId: string; x: number; y: number; moved: boolean } | null = null,
     decorDrag: { id: string; pushed: boolean } | null = null,
-    clickTrack: { x: number; y: number; moved: boolean } | null = null, nudgeT = 0;
+    clickTrack: { x: number; y: number; moved: boolean } | null = null, nudgeT = 0,
+    ecoSprayLast: { x: number; y: number } | null = null;   // 生态笔播撒印章的上次落点（按间距节流，避免每帧堆章）
   /* 拾取门（点选/悬停/框选与绘制同一套可见性）：图层显隐 + 编辑态全见/浏览态 rank 缩放门——
      关掉的层不再"隐形可选"；部队/布景拾取同规则在各调用点看 units/decor 层。 */
   const pickGate = () => ({ layers: layersSig.peek(), editing: modeSig.peek() === "edit" });
@@ -147,13 +149,17 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const ll = unproject(cam(), x, y);
     let changed = false;
     // 返回 changed 给 mutateWorldLive：空笔（涂同地形/无变化）不广播、不 editVer++（不留空撤销、不空触发自动保存）
+    const axis = terrainAxisSig.peek();   // 三轴：lf 地貌 / eco 生态(改地面) / height 高程
     mutateWorldLive(w => {
-      changed = terrainHeightSig.peek()
+      changed = axis === "height"
         ? paintHeightAt(w, grid, dataLon(ctx.meta, ll[0]), ll[1], brushEraseSig.peek() ? -0.02 : 0.02, brushSizeSig.value, eraNewSig.peek())
-        : paintTerrainAt(w, grid, yearSig.peek(), dataLon(ctx.meta, ll[0]), ll[1], paintTerrainSig.value, brushSizeSig.value, brushEraseSig.value, eraNewSig.peek());
+        : paintTerrainAt(w, grid, yearSig.peek(), dataLon(ctx.meta, ll[0]), ll[1], paintTerrainSig.value, brushSizeSig.value, brushEraseSig.value, eraNewSig.peek(), axis);
       return changed;
     });
     if (changed) rebuild();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）
+    if (axis === "eco") {     // 生态轴：改地面之外随笔落/擦真实印章（橡皮＝抹地面同时擦附近印章）
+      if (brushEraseSig.peek()) decorEraseSweep(x, y); else ecoStamp(x, y);
+    }
   };
   const decorPlace = (x: number, y: number): void => {
     const ll = unproject(cam(), x, y);
@@ -170,6 +176,30 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const ids = decorIdsInRadius(cam(), ctx.meta, w0, yearSig.peek(), x, y, decorEraseRadius());
     if (ids.length) mutateWorldLive(w => { for (const id of ids) removeDecor(w, id); });
   };
+  /* 生态笔播撒：随笔在笔刷半径内随机落下当前生态的真实布景印章（与手绘印章完全同质——可单独拾取/选中/
+     调整/删除，走同一 decor[] 层）。按间距节流（每约一笔刷宽落一簇）；尺寸由 ECO 散布规格 s 换算到
+     decor.size（视觉与旧自动点缀相当）。生态=无 → 不落章（该笔只改/清地面色调与代价）。 */
+  const ecoStamp = (x: number, y: number): void => {
+    if (!decorPickable()) return;                                   // 布景层隐藏＝不盲落
+    const spec = (ECO[parseComposite(paintTerrainSig.peek())[1]] || ECO.none).scatter;
+    if (!spec.length) return;
+    const spacing = Math.max(10, 9 * brushSizeSig.peek());
+    if (ecoSprayLast && Math.hypot(x - ecoSprayLast.x, y - ecoSprayLast.y) < spacing) return;   // 未到间距不重落
+    ecoSprayLast = { x, y };
+    const rPx = 5 + 6 * brushSizeSig.peek();
+    let any = false;
+    mutateWorldLive(w => {
+      for (const it of spec) {
+        if (Math.random() > Math.min(1, it.p * 1.15)) continue;     // 概率门（略提，画得密实些）
+        const a = Math.random() * 6.2832, rr = Math.sqrt(Math.random()) * rPx;   // 盘内均匀散布
+        const l2 = unproject(cam(), x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+        const size = +(it.s / (DECOR_BASE[it.k] || 5) * (0.85 + Math.random() * 0.4)).toFixed(2);   // ±20% 尺寸抖动
+        applyEra(addDecor(w, l2[0], l2[1], it.k, size), eraNewSig.peek());
+        any = true;
+      }
+      return any;
+    });
+  };
   /* Alt+点=取样（吸管，对齐 v0.14 sampleAt）：地形取该格 / 布景取印章种类+大小 / 涂域取该格所属派系与层 */
   const sampleAt = (x: number, y: number): void => {
     const world = worldSig.peek();
@@ -183,7 +213,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (sub === "decor" && world) {
-      const d = decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.peek(), x, y) : null;
+      const d = decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.peek(), x, y, ctx.grid ? ctx.grid.step : 1) : null;
       if (d) { decorKindSig.value = d.kind; decorSizeSig.value = d.size || 1; brushEraseSig.value = false; }
       return;
     }
@@ -252,7 +282,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       uorig: (sv.unitIds || []).map(id => {
         const un = (world.units || []).find(x => x.id === id), p = un && unitPos(un, T);
         return p ? { id, lon0: p.lon, lat0: p.lat } : null;
-      }).filter((o): o is { id: string; lon0: number; lat0: number } => !!o) };
+      }).filter((o): o is { id: string; lon0: number; lat0: number } => !!o),
+      dorig: (sv.decorIds || []).map(id => { const d = (world.decor || []).find(x => x.id === id); return d ? { id, lon0: d.lon, lat0: d.lat } : null; })
+        .filter((o): o is { id: string; lon0: number; lat0: number } => !!o) };
     canvas.style.cursor = "move";
     canvas.setPointerCapture(e.pointerId);
   };
@@ -321,11 +353,21 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (world && modeSig.value === "edit" && editSubSig.value === "terrain") {
       beginStroke();                              // 一笔=一步撤销（undo 按 terrKey 重建网格；收笔回收空笔）
       terrainStroke = true;
+      ecoSprayLast = null;                        // 新笔重置播撒节流，首落即撒
       canvas.setPointerCapture(e.pointerId);
       terrainDab(e.offsetX, e.offsetY);
       return;
     }
     if (world && modeSig.value === "edit" && editSubSig.value === "decor") {
+      if (e.shiftKey) {   // Shift+拖=框选布景（只圈布景，与选择工具的全选框区分）
+        boxSel = { x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, moved: false, decorOnly: true };
+        canvas.setPointerCapture(e.pointerId); return;
+      }
+      const s = selSig.value;   // 按住框选中的布景成员=整组拖移
+      if (s && s.kind === "multi" && s.decorIds && s.decorIds.length && decorPickable()) {
+        const dd = pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, ctx.grid ? ctx.grid.step : 1);
+        if (dd && s.decorIds.includes(dd.id)) { startMultiDrag(s, e); return; }
+      }
       beginStroke();                              // 一笔=一步撤销（收笔回收空笔，如橡皮扫空白）
       const erase = brushEraseSig.value;
       decorStroke = { erase, lastX: e.offsetX, lastY: e.offsetY };
@@ -396,9 +438,11 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         }
         return;
       }
-      const dd = decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY) : null;   // 按住布景=拖移（v0.14）；层隐藏不可选
+      const dd = decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, ctx.grid ? ctx.grid.step : 1) : null;   // 点选/按住布景=选中并拖移；层隐藏不可选
       if (dd) {
-        decorDrag = { id: dd.id, pushed: false };
+        const s = selSig.value;
+        if (s && s.kind === "multi" && s.decorIds && s.decorIds.includes(dd.id)) { startMultiDrag(s, e); return; }   // 按住框选中的布景=整组拖移
+        decorDrag = { id: dd.id, pushed: false }; selSig.value = { kind: "decor", id: dd.id };   // 点选→检查器改种类/大小
         canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
       }
       // 空白处拖动=框选（v0.14 编辑·选择默认；平移走 空格/中键/WASD）
@@ -484,6 +528,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       mutateWorldLive(w => {
         for (const o of md.orig) moveNode(w, o.id, o.lon0 + dLon, o.lat0 + dLat);
         for (const o of md.uorig) setUnitWaypoint(w, o.id, md.t, o.lon0 + dLon, o.lat0 + dLat);   // 整组改写起手时刻航点
+        for (const o of md.dorig) moveDecor(w, o.id, o.lon0 + dLon, o.lat0 + dLat);   // 整组平移布景
       });
       return;
     }
@@ -598,11 +643,16 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (world) clickAt(e);
         return;
       }
+      const decorIds = world && decorPickable() ? decorsInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1) : [];
+      if (b.decorOnly) {   // 布景工具的框选：只圈布景
+        selSig.value = decorIds.length ? { kind: "multi", ids: [], decorIds } : null;
+        return;
+      }
       const ids = world ? nodesInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1, pickGate()) : [];
       const unitIds = world && isTacSig.peek() && layersSig.peek().units !== false   // 部队层隐藏时不隔空捕获
         ? unitsInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1) : [];
-      selSig.value = (ids.length || unitIds.length)
-        ? { kind: "multi", ids, ...(unitIds.length ? { unitIds } : {}) } : null;
+      selSig.value = (ids.length || unitIds.length || decorIds.length)
+        ? { kind: "multi", ids, ...(unitIds.length ? { unitIds } : {}), ...(decorIds.length ? { decorIds } : {}) } : null;
       return;
     }
     if (nodeDrag) { nodeDrag = null; canvas.style.cursor = ""; return; }
@@ -699,7 +749,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (mode === "measure") { routePtsSig.value = routePtsSig.value.slice(0, -1); return; }   // 右键撤上一点
     if (mode === "edit" && editSubSig.value === "decor") {   // 右键=删单个布景（层隐藏不许盲删）
       const world = worldSig.value;
-      const d = world && decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY) : null;
+      const d = world && decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, ctx.grid ? ctx.grid.step : 1) : null;
       if (d) mutateWorld(w => { removeDecor(w, d.id); });
       return;
     }
@@ -790,22 +840,26 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     }
     if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) { e.preventDefault(); if (e.shiftKey) redoWorld(); else undoWorld(); return; }
     if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) { e.preventDefault(); redoWorld(); return; }
-    if ((e.key === "Delete" || e.key === "Backspace") && worldSig.value) {
+    /* 删除键仅编辑态生效（览/测=只读）：单对象删除已无 confirm 兜底（即时删+可撤销 toast），
+       浏览时查看对象误触 Delete/Backspace 不应删图——门禁与方向键微调同规（军=edit+unit 不受影响） */
+    if ((e.key === "Delete" || e.key === "Backspace") && worldSig.value && modeSig.value === "edit") {
       const os = opSelSig.value;
       if (os) { mutateWorld(w => { removeOp(w, os.evId, os.i); }); clearOpSel(); return; }   // 选中作战线=删线
       const sel = selSig.value;
-      if (sel && sel.kind === "multi") {   // 框选=批量删除（地点+部队）
-        const uids = sel.unitIds || [];
+      if (sel && sel.kind === "multi") {   // 框选=批量删除（地点+部队+布景）
+        const uids = sel.unitIds || [], dids = sel.decorIds || [];
         const what = [sel.ids.length ? `${sel.ids.length} 个地点及其连线与关联引用` : "",
-          uids.length ? `${uids.length} 支部队及其全部动向` : ""].filter(Boolean).join("与");
+          uids.length ? `${uids.length} 支部队及其全部动向` : "",
+          dids.length ? `${dids.length} 枚布景` : ""].filter(Boolean).join("与");
         if (confirm(`删除框选的 ${what}？`)) {
-          const ids = sel.ids.slice(), us = uids.slice();
-          mutateWorld(w => { for (const id of ids) removeNode(w, id); for (const id of us) removeUnit(w, id); });
+          const ids = sel.ids.slice(), us = uids.slice(), ds = dids.slice();
+          mutateWorld(w => { for (const id of ids) removeNode(w, id); for (const id of us) removeUnit(w, id); for (const id of ds) removeDecor(w, id); });
           selSig.value = null;
         }
         return;
       }
       if (sel && sel.kind === "unit") { deleteUnitAt(sel.id); return; }   // 选中部队=删（即时 + 可撤销 toast）
+      if (sel && sel.kind === "decor") { deleteDecorAt(sel.id); return; }   // 选中布景=删（即时 + 可撤销 toast）
       const n = selNode(worldSig.value, sel);
       if (n) deleteNodeAt(n.id);
       else if (selEdge(worldSig.value, sel)) deleteEdgeIdx((sel as Extract<Sel, { kind: "edge" }>).idx);

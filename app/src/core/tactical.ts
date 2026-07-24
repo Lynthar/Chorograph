@@ -38,6 +38,9 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
     lonMin: +(ev.lon - lonSpan / 2).toFixed(4), lonMax: +(ev.lon + lonSpan / 2).toFixed(4),
     latMin: +Math.max(-85, ev.lat - latSpan / 2).toFixed(4), latMax: +Math.min(85, ev.lat + latSpan / 2).toFixed(4)
   };
+  /* 已知边界（2026-07 审阅裁定不改）：inBB 纯数值比较、不做 ±180 经度环绕——全球图上贴反经线
+     （半径 1° 内）的战役烘焙会漏采另一侧；寻路网格同样不绕缝（平价锁定域）。实际用图（区域
+     大陆/历史战场）触不到该缝，环绕改造涉及重采样/视角/寻路多处，收益不抵风险。 */
   const inBB = (o: { lon: number; lat: number }) => o.lon >= bbox.lonMin && o.lon <= bbox.lonMax && o.lat >= bbox.latMin && o.lat <= bbox.latMax;
   const strip = <T extends object>(o: T): T => { delete (o as { since?: unknown }).since; delete (o as { until?: unknown }).until; return o; };
 

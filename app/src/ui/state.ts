@@ -10,13 +10,13 @@ import { EDGE_STYLE, LAYERS, PRESETS } from "../core/constants.ts";
 import { yearRangeOf } from "../core/time.ts";
 import { normalizeWorld } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
-import { removeEdgeAt, removeNode, removeUnit } from "./editops.ts";
+import { removeDecor, removeEdgeAt, removeNode, removeUnit } from "./editops.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
-import type { Arm, Edge, Faction, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
+import type { Arm, Decor, Edge, Faction, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
 
 /** 新壳已实现的图层子集（未实现的不出现在面板上）。units/trails/ranges/vision 为战术图专属（tacOnly） */
-export const IMPL_LAYERS = ["terrain", "eco", "contour", "decor", "graticule", "politics", "range", "road", "river", "trade", "nodes", "labels", "notes", "events", "arrows", "units", "trails", "ranges", "vision"];
+export const IMPL_LAYERS = ["terrain", "contour", "decor", "graticule", "politics", "range", "road", "river", "trade", "nodes", "labels", "notes", "events", "arrows", "units", "trails", "ranges", "vision"];
 
 export const worldSig = signal<World | null>(null);
 export const yearSig = signal(3107);
@@ -24,9 +24,10 @@ export const hoverSig = signal<WorldNode | null>(null);
 export const layersSig = signal<Record<string, boolean>>(
   Object.fromEntries(LAYERS.filter(l => IMPL_LAYERS.includes(l.id)).map(l => [l.id, l.on])));
 
-/* —— 选中：地点按 id（稳健）、连线按下标（删除后由清空兜底）、框选=地点 id 列表、部队按 id —— */
+/* —— 选中：地点按 id（稳健）、连线按下标（删除后由清空兜底）、框选=地点/部队/布景 id 列表、部队/布景按 id —— */
 export type Sel = { kind: "node"; id: string } | { kind: "edge"; idx: number }
-  | { kind: "faction"; id: string } | { kind: "multi"; ids: string[]; unitIds?: string[] } | { kind: "unit"; id: string } | null;
+  | { kind: "faction"; id: string } | { kind: "multi"; ids: string[]; unitIds?: string[]; decorIds?: string[] }
+  | { kind: "unit"; id: string } | { kind: "decor"; id: string } | null;
 export const selSig = signal<Sel>(null);
 export const selNode = (w: World | null, s: Sel): WorldNode | null =>
   (w && s && s.kind === "node" && w.nodes.find(n => n.id === s.id)) || null;
@@ -38,6 +39,10 @@ export const selMulti = (w: World | null, s: Sel): WorldNode[] =>
   (w && s && s.kind === "multi") ? s.ids.map(id => w.nodes.find(n => n.id === id)).filter((n): n is WorldNode => !!n) : [];
 export const selUnit = (w: World | null, s: Sel): Unit | null =>
   (w && s && s.kind === "unit" && (w.units || []).find(u => u.id === s.id)) || null;
+export const selDecor = (w: World | null, s: Sel): Decor | null =>
+  (w && s && s.kind === "decor" && (w.decor || []).find(d => d.id === s.id)) || null;
+export const selMultiDecor = (w: World | null, s: Sel): Decor[] =>
+  (w && s && s.kind === "multi" && s.decorIds) ? s.decorIds.map(id => (w.decor || []).find(d => d.id === id)).filter((d): d is Decor => !!d) : [];
 
 /** 是否战术图（日戳时间轴 + 部队/射程层）——组件据此切换时间轴刻度、图层子集、编辑子工具 */
 export const isTacSig = computed(() => (worldSig.value?.meta || {}).mapKind === "tactical");
@@ -198,6 +203,15 @@ export function deleteUnitAt(id: string): void {
   if (s && s.kind === "unit" && s.id === id) selSig.value = null;
   showToast(`已删除部队「${nm}」`, { undo: true });
 }
+export function deleteDecorAt(id: string): void {
+  const w = worldSig.peek();
+  const d = w && (w.decor || []).find(x => x.id === id);
+  if (!d) return;
+  mutateWorld(x => removeDecor(x, id));
+  const s = selSig.peek();
+  if (s && s.kind === "decor" && s.id === id) selSig.value = null;
+  showToast("已删除布景", { undo: true });
+}
 export function deleteEdgeIdx(idx: number): void {
   const w = worldSig.peek();
   const e = w && w.edges[idx];
@@ -340,7 +354,7 @@ export function pickEditSub(s: EditSub): void {
     （拾取/擦除已按层门控，此处补放置侧）。label 要过 nodes 总门+notes 子门，两层都保；
     连线按当前线型落 road/river/trade（线型 id 与图层 id 同名）。 */
 const SUB_LAYERS: Partial<Record<EditSub, string[]>> = {
-  add: ["nodes"], paint: ["politics"], terrain: ["terrain"], decor: ["decor"],
+  add: ["nodes"], paint: ["politics"], terrain: ["terrain", "decor"], decor: ["decor"],   // 地形含生态轴：落下的真实印章在 decor 层，须亮出
   label: ["nodes", "notes"], unit: ["units"],
 };
 export function revealLayersFor(s: EditSub): void {
@@ -381,7 +395,7 @@ export const inspEditSig = signal(false);
 /** 「选中变化即回卡片」的「变化」按语义比较：同目标重赋值（点同一地点、selectOp 保持事件选中）
     不打断进行中的表单编辑——否则浏览态表单里点作战线行会静默丢弃未保存输入（2026-07-12 P2）。 */
 const selKeyOf = (s: Sel): string =>
-  !s ? "" : s.kind === "edge" ? "edge:" + s.idx : s.kind === "multi" ? "multi:" + s.ids.join("|") + (s.unitIds && s.unitIds.length ? "|u:" + s.unitIds.join("|") : "") : s.kind + ":" + s.id;
+  !s ? "" : s.kind === "edge" ? "edge:" + s.idx : s.kind === "multi" ? "multi:" + s.ids.join("|") + (s.unitIds && s.unitIds.length ? "|u:" + s.unitIds.join("|") : "") + (s.decorIds && s.decorIds.length ? "|d:" + s.decorIds.join("|") : "") : s.kind + ":" + s.id;
 let lastSelKey = "";
 effect(() => {
   const k = selKeyOf(selSig.value);
@@ -402,7 +416,7 @@ export const brushSmoothSig = signal(2);                      // 涂域边界平
 /** 「⏳ 新对象时间段」（编辑左栏）：勾选后新画的地点/连线/布景/地形涂改带 since/until（对齐旧 eraNew） */
 export const eraNewSig = signal<{ on: boolean; since: number | null; until: number | null }>({ on: false, since: null, until: null });
 export const paintTerrainSig = signal<string>("water");       // 地形涂改：当前笔刷复合串（"地貌"/"地貌/生态"；两轴）
-export const terrainHeightSig = signal(false);                // 地形子工具：false=生态类型 / true=高程起伏画笔
+export const terrainAxisSig = signal<"lf" | "eco" | "height">("lf");   // 地形子工具三轴：地貌 / 生态(改地面+落真实印章) / 高程起伏
 export const decorKindSig = signal<string>("tree");           // 布景：当前印章种类
 export const decorSizeSig = signal(1);                        // 布景印章尺寸（0.5–2.5）
 export const routePtsSig = signal<RoutePoint[]>([]);

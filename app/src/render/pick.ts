@@ -4,6 +4,7 @@ import { activeAt, opVisibleAt } from "../core/time.ts";
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { chaikinOpen } from "../core/geometry.ts";
 import { nodeVisibleAt, type NodeGateOpts } from "./nodes.ts";
+import { riverWpx } from "./edges.ts";
 import type { Edge, Meta, World, WorldNode } from "../core/types.ts";
 
 /** 点到线段距离（拾取共用） */
@@ -14,23 +15,26 @@ function segDist(px: number, py: number, ax: number, ay: number, bx: number, by:
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
-/** 连线拾取：距任一线段 < 6px（按拷贝重投影；河流曲流按端点弦近似）。返回下标供选中模型引用 */
+/** 连线拾取：道路/商路距线段 < 6px；河流走廊随渲染河宽（半宽+4px，下限 6——宽河点在河面即可选中，
+    与 riverWpx 绘制同源，同 pickOp 容差随线宽之例）。多条命中取距中轴最近者。
+    按拷贝重投影；河流曲流按端点弦近似。返回下标供选中模型引用 */
 export function pickEdge(
   cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
   x: number, y: number, layers?: Record<string, boolean>
 ): { edge: Edge; idx: number } | null {
   const byId = new Map(world.nodes.map(n => [n.id, n]));
-  let best: { edge: Edge; idx: number } | null = null, bd = 6;
+  let best: { edge: Edge; idx: number } | null = null, bd = Infinity;
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
     world.edges.forEach((e, idx) => {
       if (layers && layers[e.type] === false) return;   // 图层关了不拾取
       if (!activeAt(e, yearNow)) return;
+      const tol = e.type === "river" ? Math.max(6, riverWpx(meta, cam, e) / 2 + 4) : 6;
       if (e.type === "river" && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由画河：逐段到自身折线拾取（同 pickOp）
         const pp = projectSeq(c2, chaikinOpen(e.pts, 2));
         for (let k = 1; k < pp.length; k++) {
           const d = segDist(x, y, pp[k - 1][0], pp[k - 1][1], pp[k][0], pp[k][1]);
-          if (d < bd) { bd = d; best = { edge: e, idx }; }
+          if (d < tol && d < bd) { bd = d; best = { edge: e, idx }; }
         }
         return;
       }
@@ -39,7 +43,7 @@ export function pickEdge(
       if (!a || !b) return;
       const sp = projectSeq(c2, [{ lon: a.lon, lat: a.lat }, { lon: b.lon, lat: b.lat }]);
       const d = segDist(x, y, sp[0][0], sp[0][1], sp[1][0], sp[1][1]);
-      if (d < bd) { bd = d; best = { edge: e, idx }; }
+      if (d < tol && d < bd) { bd = d; best = { edge: e, idx }; }
     });
   }
   return best;

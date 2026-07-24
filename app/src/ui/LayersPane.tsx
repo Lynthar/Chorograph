@@ -6,19 +6,19 @@ import { applyPreset, isTacSig, layersSig, toggleLayer } from "./state.ts";
 
 /** UI 层改名 */
 const RENAME: Record<string, string> = {
-  eco: "生态点缀（自动）", decor: "布景（手绘点缀）", politics: "政治 · 派系范围", range: "地点范围圈",
+  decor: "布景（点缀 · 手绘/生态笔刷）", politics: "政治 · 派系范围", range: "地点范围圈",
   trade: "商路 · 经济", notes: "标注（自由文本）", events: "事件点", arrows: "作战线（攻/防）",
   units: "部队", trails: "航迹", ranges: "火力圈", vision: "视野圈"
 };
 /** 行首色块 */
 const SW: Record<string, string> = {
-  terrain: "#c9b183", eco: "#6f7d92", contour: "#8b8b7a", decor: "#7a8a5a", graticule: "#9aa4ad",
+  terrain: "#c9b183", contour: "#8b8b7a", decor: "#7a8a5a", graticule: "#9aa4ad",
   politics: "#8a5aa8", range: "#caa45a", road: "#8a6a4a", river: "#5f89b4", trade: "#a86ab8",
   nodes: "#6a5326", labels: "#7a6a48", notes: "#5a6a7a",
   events: "#8a2f22", arrows: "#c0453a", units: "#7a3e2e", trails: "#6b5a3a", ranges: "#b0202a", vision: "#5f89b4"
 };
 const GROUPS: { t: string; ids: string[] }[] = [
-  { t: "地文", ids: ["terrain", "eco", "contour", "decor", "graticule"] },
+  { t: "地文", ids: ["terrain", "contour", "decor", "graticule"] },
   { t: "人文", ids: ["politics", "range", "road", "river", "trade", "nodes", "labels", "notes"] },
   { t: "军事", ids: ["events", "arrows", "units", "trails", "ranges", "vision"] },
 ];

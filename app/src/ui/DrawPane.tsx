@@ -9,7 +9,7 @@ import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
 import { brushEraseSig, canRedoSig, canUndoSig, decorKindSig, editSubSig, eraNewSig, isTacSig, linkFromSig, linkTypeSig,
-  mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainHeightSig, undoWorld, worldSig,
+  mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisSig, undoWorld, worldSig,
   type EditSub } from "./state.ts";
 
 const SUBS: { s: EditSub; g: string; n: string }[] = [
@@ -108,22 +108,23 @@ function PaintCtx() {
   );
 }
 
-/** 地形（形）：地貌 chips × 生态 chips 两轴叠加涂改 / ⛰高程抬升下切（A 两轴重构） */
+/** 地形（形）：三轴独立笔刷——地貌 / 生态(改地面+落真实印章) / ⛰高程抬升下切 */
 function TerrainCtx() {
   const [lf, eco] = parseComposite(paintTerrainSig.value);   // 当前笔刷复合串 → 地貌/生态
-  const hMode = terrainHeightSig.value;
+  const axis = terrainAxisSig.value;
   const unit = elevUnitM((worldSig.value?.meta || {}));
   const setLf = (id: Landform) => { paintTerrainSig.value = eco === "none" ? id : id + "/" + eco; };
   const setEco = (id: Ecotype) => { paintTerrainSig.value = id === "none" ? lf : lf + "/" + id; };
   return (
     <>
       <div class="seg2">
-        <button aria-pressed={!hMode} onClick={() => { terrainHeightSig.value = false; }}>地貌 · 生态</button>
-        <button aria-pressed={hMode} title="抬升/下切地势（只改高程观感与等高线，不改类型/寻路）" onClick={() => { terrainHeightSig.value = true; }}>⛰ 高程</button>
+        <button aria-pressed={axis === "lf"} title="只改地貌（平原/丘陵/山地…），生态保留" onClick={() => { terrainAxisSig.value = "lf"; }}>地貌</button>
+        <button aria-pressed={axis === "eco"} title="只改生态：地面色调/寻路代价 + 随笔落下真实布景印章（可单独选中调整）" onClick={() => { terrainAxisSig.value = "eco"; }}>生态</button>
+        <button aria-pressed={axis === "height"} title="抬升/下切地势（只改高程观感与等高线，不改类型/寻路）" onClick={() => { terrainAxisSig.value = "height"; }}>⛰ 高程</button>
       </div>
-      {!hMode ? (
+      {axis === "lf" ? (
         <>
-          <div class="sec" style={{ marginTop: "4px" }}>地貌<span class="mini">定高程/寻路</span></div>
+          <div class="sec" style={{ marginTop: "4px" }}>地貌<span class="mini">定高程/寻路 · 保留生态</span></div>
           <div class="chips">
             {LANDFORM_ORDER.map(id => (
               <button key={id} class="ch tr" aria-pressed={lf === id} onClick={() => setLf(id)}>
@@ -131,7 +132,11 @@ function TerrainCtx() {
               </button>
             ))}
           </div>
-          <div class="sec">生态<span class="mini">叠加·点缀/代价</span></div>
+          <div class="hint">只涂地貌基底（平原/丘陵/山地/水域/沿海），格内生态保留——如给森林格换地貌＝<b>森林覆盖的丘陵</b>。<kbd>E</kbd>切橡皮＝恢复初稿 · <kbd>Alt</kbd>+点取样该格</div>
+        </>
+      ) : axis === "eco" ? (
+        <>
+          <div class="sec" style={{ marginTop: "4px" }}>生态<span class="mini">改地面 + 落真实印章</span></div>
           <div class="chips">
             {ECO_ORDER.map(id => (
               <button key={id} class="ch tr" aria-pressed={eco === id} onClick={() => setEco(id)}>
@@ -139,7 +144,7 @@ function TerrainCtx() {
               </button>
             ))}
           </div>
-          <div class="hint">地貌定基（高程/寻路），生态叠加（点缀/色调/代价）——如 丘陵×森林＝<b>森林覆盖的丘陵</b>、平原×草原＝草甸；生态选「无」＝纯地貌。涂上自动配套点缀；<kbd>E</kbd>切橡皮＝恢复初稿 · <kbd>Alt</kbd>+点取样该格</div>
+          <div class="hint">涂生态＝改地面色调/寻路代价（保留地貌）+ 随笔<b>随机落下相应真实布景印章</b>（乔木/沼草/沙丘…，落后可在「选择」里单独点选、调整、删除）；选「无」＝清生态回纯地貌。<kbd>E</kbd>切橡皮＝抹地面并擦附近印章 · <kbd>[ ]</kbd>调笔刷</div>
         </>
       ) : (
         <div class="hint">高程画笔：按住拖动{brushEraseSig.value ? <b>▼ 下切</b> : <b>▲ 抬升</b>}地势（每笔约 {Math.round(0.02 * unit)}m，可反复叠加；<kbd>E</kbd> 换向、<kbd>[ ]</kbd> 调大小）。山峰/棱线/凹路皆可雕；开「等高线」图层看效果。水域恒平、陆地不跌成滩涂。</div>

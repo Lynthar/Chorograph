@@ -41,12 +41,13 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     if (world) {
       const octx = ov.getContext("2d")!;
       const selIdForOps = (selSig.value && selSig.value.kind === "node") ? selSig.value.id : null;
-      const ecoOn = !(modeSig.value === "edit" && editSubSig.value === "terrain");   // 地形涂改时不散布生态，见原始格；grid 恒传——印章尺度要真实 step（缺省 1° 会让战术图印章巨大化）
       const multiIds = (selSig.value && selSig.value.kind === "multi") ? selSig.value.ids : null;
       const multiUnitIds = (selSig.value && selSig.value.kind === "multi") ? selSig.value.unitIds || null : null;
       const unitSelId = (selSig.value && selSig.value.kind === "unit") ? selSig.value.id : null;
       const edgeSelIdx = (selSig.value && selSig.value.kind === "edge") ? selSig.value.idx : null;
-      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, eco: ecoOn, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, smooth: brushSmoothSig.value, edgeSelIdx, editing: modeSig.value === "edit" });
+      const decorSelId = (selSig.value && selSig.value.kind === "decor") ? selSig.value.id : null;
+      const decorMultiIds = (selSig.value && selSig.value.kind === "multi") ? selSig.value.decorIds || null : null;
+      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, smooth: brushSmoothSig.value, edgeSelIdx, editing: modeSig.value === "edit", decorSelId, decorMultiIds });
       const m = modeSig.value;
       if (m === "measure" || m === "route") drawAnalysis(octx, cam(), ctx.meta, m, routePtsSig.value, routeResSig.value, ctx.DPR);
       if (m === "edit" && editSubSig.value === "paint") {

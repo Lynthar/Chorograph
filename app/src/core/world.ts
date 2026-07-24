@@ -20,6 +20,11 @@ export function normalizeWorld(w: unknown): World {
   ["factions", "nodes", "edges", "decor", "terrainOverrides", "units"].forEach(k => {
     o[k] = Array.isArray(o[k]) ? o[k].filter(isRec) : [];
   });
+  // meta.bbox 防御：形状/序无效（非对象、含非有限数、min≥max）则剔键——消费方一律 `bbox || 默认`，
+  // 键在而值坏会 NaN 网格；剔键才真正「按默认范围处理」（validate 的 warning 文案以此为实）。
+  const bb = o.meta.bbox, num = (x: any) => typeof x === "number" && isFinite(x);
+  if (bb != null && !(isRec(bb) && num(bb.lonMin) && num(bb.lonMax) && num(bb.latMin) && num(bb.latMax)
+    && bb.lonMin < bb.lonMax && bb.latMin < bb.latMax)) delete o.meta.bbox;
   // heightOverrides 保持「缺键不落盘」（旧档形状不变）：仅当存在时清理，非数组则删键
   if (o.heightOverrides != null) {
     if (Array.isArray(o.heightOverrides)) o.heightOverrides = o.heightOverrides.filter(isRec);

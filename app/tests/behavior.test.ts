@@ -12,12 +12,13 @@ import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
-import { TERRAIN, TERRAIN_ORDER, flattenTerrain } from "../src/core/constants.ts";
+import { TERRAIN, TERRAIN_ORDER, flattenTerrain, terrainProps } from "../src/core/constants.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, countsOf, normalizeWorld } from "../src/core/world.ts";
 import { createTacticalWorld, tacDiaDeg } from "../src/core/tactical.ts";
 import { paintStep, resamplePaintCells, territoryLoops } from "../src/core/territory.ts";
-import { nodesInBox, pickNode } from "../src/render/overlay.ts";
+import { nodesInBox, pickEdge, pickNode } from "../src/render/overlay.ts";
+import { pickDecor } from "../src/render/decor.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 import { validateWorld } from "../src/core/validate.ts";
 import { readFileSync } from "node:fs";
@@ -158,7 +159,7 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++)
       assert.strictEqual(f[r * g.cols + c], Math.fround(ELEV[flattenTerrain(g.cells[r][c])]));   // cells 存复合、flatten 回旧类查 ELEV；Float32 存储精度
   });
-  it("relief：确定性、同类型格间起伏、水域恒平、陆地不破下限", () => {
+  it("relief：确定性、同类型格间起伏、水域恒平、陆地不破类型地板", () => {
     const M = { worldModel: "sphere" as const, terrain: "sample" as const, genSeed: 7, relief: 1,
       bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } };
     const g = buildGridCells(M, [], 3107);
@@ -168,7 +169,11 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {
       const i = r * g.cols + c;
       if (g.cells[r][c] === "water") assert.strictEqual(f1[i], Math.fround(ELEV.water), "水域恒平");
-      else { assert.ok(f1[i] >= 0.1 - 1e-9, "陆地不破下限"); if (g.cells[r][c] === "mountain") mts.push(f1[i]); }
+      else {   // 地板随类型收敛：min(0.10, 自身基础)——沿海/沼泽的低地设计不被起伏钳抬。
+        // 场存 Float32：地板同过 fround 再比（fround 单调 ⇒ 数学严格，无需容差；0.06 恰向下舍）
+        assert.ok(f1[i] >= Math.fround(Math.min(0.1, terrainProps(g.cells[r][c]).elev)), "陆地不破类型地板");
+        if (g.cells[r][c] === "mountain") mts.push(f1[i]);
+      }
     }
     assert.ok(new Set(mts.map(v => v.toFixed(4))).size > 5, "山与山高度不同");
   });
@@ -186,6 +191,18 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     close(at(103.5, 33.5), 0.16 + 0.2, 6);
     close(at(100.5, 30.5), 0.16, 6);   // 时段外涂改不生效（Float32 容差）
     close(at(100.5, 33.5), 0.1, 6);
+  });
+  it("钳制地板随类型收敛：开特性不动未涂改的沿海/沼泽低地；涂改格钳在 min(0.1, 自身基础)", () => {
+    const tov = [{ lon: 100.5, lat: 30.5, t: "coast" }, { lon: 101.5, lat: 31.5, t: "plain/marsh" }];
+    const g = buildGridCells(MP, tov, 3107);
+    const at = (f: Float32Array, lon: number, lat: number) => f[Math.floor((lat - 30) / g.step) * g.cols + Math.floor((lon - 100) / g.step)];
+    // 别处涂一笔高程 → 钳制通道启动：未涂改的沿海/沼泽保持基础值（原 bug：被全图统一抬到 0.10）
+    const f = buildElevField(MP, [{ lon: 103.5, lat: 33.5, dh: 0.2 }], g, 3107);
+    assert.strictEqual(at(f, 100.5, 30.5), Math.fround(ELEV.coast), "沿海 0.06 不动");
+    assert.strictEqual(at(f, 101.5, 31.5), Math.fround(ELEV.marsh), "沼泽 0.03 不动");
+    // 沿海下切 0.5：护栏仍在，钳在自身基础 0.06（而非通用地板 0.10）
+    const f2 = buildElevField(MP, [{ lon: 100.5, lat: 30.5, dh: -0.5 }], g, 3107);
+    close(at(f2, 100.5, 30.5), ELEV.coast, 6);
   });
   it("标定：elevUnitM 缺省 2000；contourStepFor＝×2 阶梯、contourM 下限、跨档连续、随缩小单调", () => {
     assert.strictEqual(elevUnitM({}), 2000);
@@ -485,6 +502,15 @@ describe("世界规范化（语义）", () => {
     assert.ok(!("heightOverrides" in normalizeWorld({ meta: {}, heightOverrides: "x" })));
     assert.ok(!("heightOverrides" in normalizeWorld({ meta: {} })), "本无此键者规范化后仍无");
   });
+  it("防御过滤：无效 meta.bbox 剔键（消费方回退默认范围——validate 提示以此为实），合法者保留", () => {
+    for (const bad of [42, "x", [], { lonMin: 1, lonMax: 0, latMin: 0, latMax: 1 },   // 序反
+      { lonMin: 0, lonMax: 10, latMin: 5, latMax: 5 },                                 // 退化（min=max）
+      { lonMin: NaN, lonMax: 10, latMin: 0, latMax: 5 }, { lonMin: "a", lonMax: 10, latMin: 0, latMax: 5 }])
+      assert.ok(!("bbox" in normalizeWorld({ meta: { bbox: bad } }).meta), `无效 bbox 应剔键：${JSON.stringify(bad)}`);
+    const ok = { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 };
+    assert.deepStrictEqual(normalizeWorld({ meta: { bbox: { ...ok } } }).meta.bbox, ok, "合法 bbox 原样保留");
+    assert.ok(!("bbox" in normalizeWorld({ meta: {} }).meta), "本无此键者规范化后仍无");
+  });
   it("自由画河 pts：合法折线保留、非法坐标剔除、不足 2 点删键；旧 from/to 边不受影响", () => {
     const w = normalizeWorld({ meta: {}, edges: [
       { type: "river", pts: [[100, 30], [105, 31], [110, 33]] },
@@ -648,6 +674,52 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     assert.deepStrictEqual(nodesInBox(cam, w.meta, w, 3107, 380, 280, 420, 320, { editing: true }).sort(), ["n0", "n1"]);
     assert.deepStrictEqual(nodesInBox(cam, w.meta, w, 3107, 380, 280, 420, 320, {}), ["n0"], "浏览态 rank 隐藏的乡村不入框");
     assert.deepStrictEqual(nodesInBox(cam, w.meta, w, 3107, 380, 280, 420, 320, { editing: true, layers: { nodes: false } }), []);
+  });
+  it("pickEdge 宽河走廊随渲染河宽（点在河面即可选中）；无 widthM／道路仍 6px", () => {
+    const zoom: Camera = { lon0: 100, lat0: 30, degPerPx: 0.001, w: 800, h: 600, flat: false };   // 战术级缩放
+    const mkw = (widthM?: number): World => ({
+      meta: { worldModel: "sphere", planetRadiusKm: 10000 }, factions: [], decor: [], terrainOverrides: [], units: [], nodes: [],
+      edges: [{ type: "river", pts: [[99.9, 30], [100.1, 30]], ...(widthM ? { widthM } : {}) }]
+    });
+    // widthM=3000m → 渲染宽 ≈17.2px → 走廊 ≈12.6px：距中轴 10px 可选中（旧固定 6px 选不中）
+    const wide = mkw(3000);
+    assert.ok(pickEdge(zoom, wide.meta, wide, 3107, 400, 310), "宽河 10px 偏移命中");
+    // 无 widthM（底宽 2.6px）：走廊仍 6px——10px 不中、5px 中（旧行为逐位保留）
+    const thin = mkw();
+    assert.strictEqual(pickEdge(zoom, thin.meta, thin, 3107, 400, 310), null, "窄河 10px 不中");
+    assert.ok(pickEdge(zoom, thin.meta, thin, 3107, 400, 305), "窄河 5px 命中");
+    // 多条命中取距中轴最近者：宽河河面上叠一条更近的道路 → 道路胜
+    const both = mkw(3000);
+    both.nodes = [{ id: "a", type: "city", lon: 99.9, lat: 30.008 }, { id: "b", type: "city", lon: 100.1, lat: 30.008 }] as WorldNode[];
+    both.edges.push({ type: "road", from: "a", to: "b" });   // 道路在 y≈292，点击 (400,294)：距路 2px、距河 6px
+    const hit = pickEdge(zoom, both.meta, both, 3107, 400, 294);
+    assert.strictEqual(hit && hit.edge.type, "road", "重叠处取距中轴最近者");
+  });
+  it("pickDecor 命中所画的体（印章站在锚点上、体在其上方）：顶尖可点、体外 13px 余量、并列取锚点最近", () => {
+    const cam: Camera = { lon0: 100, lat0: 30, degPerPx: 0.001, w: 800, h: 600, flat: true };
+    const meta = { worldModel: "flat" as const };
+    const mk = (...lons: number[]): World => ({
+      meta, factions: [], nodes: [], edges: [], units: [], terrainOverrides: [],
+      decor: lons.map((lon, i) => ({ id: "d" + i, kind: "peak", lon, lat: 30 }))
+    });
+    // step .14／degPerPx .001 → scale 10 → 雪峰 s=110px：锚点(400,300)、体 x±90.2 / 上伸 110 / 下伸 55
+    const w = mk(100);
+    const hit = (x: number, y: number) => pickDecor(cam, meta, w, 3107, x, y, 0.14);
+    assert.ok(hit(400, 300 - 105), "顶尖在体内＝可点（旧对称圆 r=max(13,.55s+4)=64.5 在此落空）");
+    assert.ok(hit(310, 300), "左缘在体内");
+    assert.ok(hit(400, 367), "体下缘外 12px 仍在余量内");
+    assert.ok(!hit(400, 369), "体下缘外 14px 出余量");
+    assert.ok(!hit(296, 300), "体左缘外 13.8px 出余量");
+    assert.ok(!hit(400, 300 - 124), "顶尖外 14px 出余量");
+    // 并列（两枚体重叠、点落在公共部分）：比锚点距离取最近者，不按数组序先到先得
+    const two = mk(100, 100.05);   // 锚点 400 与 450
+    const near = (x: number) => pickDecor(cam, meta, two, 3107, x, 300, 0.14);
+    assert.strictEqual(near(460)?.id, "d1", "点在两体内、离 d1 锚点近");
+    assert.strictEqual(near(400)?.id, "d0", "点在两体内、离 d0 锚点近");
+    // 深放大退场（s>420 不画）＝回退锚点 13px：没画出来的不该按体拾取
+    const gone = (x: number, y: number) => pickDecor(cam, meta, w, 3107, x, y, 0.6);   // scale 42.9 → s=471
+    assert.ok(gone(408, 300), "退场后锚点 8px 内仍可点（取样/删得掉）");
+    assert.ok(!gone(400, 280), "退场后不按体拾取");
   });
 });
 
