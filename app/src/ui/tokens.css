@@ -22,7 +22,12 @@
 /* ── 令牌：亮 · 素笺（默认） ── 2026-07 对比度校准：dim/faint 提级（小字 WCAG AA 达/近标）；--fs-xs 12px＝汉字字号地板 ── */
 #app{
   --q-bg:#efece3; --q-top:#f7f4ec; --q-pn:#fcfaf4; --q-in:#eae5d8; --q-in2:#e0d9c8;
-  --q-ln:#ded6c5; --q-ln2:#c8bda6;
+  /* 发丝两档（--q-ln 分隔线 / --q-ln2 器件边框）＝素笺的低对比气质，不动；
+     --q-lnf 单给**输入类**（.fld / #searchBox / 设置弹层的 input·select·textarea）——
+     「哪里能打字」得自身可辨：原 --q-ln 对输入框底只 1.15:1（暗 1.18:1），远不足
+     WCAG 1.4.11 的 3:1；此档亮 3.24:1 / 暗 3.15:1。⚠ 只给输入类：.bt 有文字标签、
+     .sec 分隔线属装饰、滑杆位置由金色钮指示（4.28:1），三者不在 1.4.11 约束内，保持原样。 */
+  --q-ln:#ded6c5; --q-ln2:#c8bda6; --q-lnf:#8a7c64;
   --q-tx:#2b2620; --q-dim:#6b6254; --q-faint:#7d7464;
   --q-gold:#8f6f24; --q-gold2:#6f5518; --q-goldink:#fdf6e3; --q-goldwash:#8f6f2414;
   --q-zhu:#b73527; --q-zhu2:#992b1f; --q-zhuink:#fdf3ef; --q-zhuwash:#b7352712;
@@ -34,11 +39,16 @@
   --fs:13px; --fs-sm:12px; --fs-xs:12px;
   --h-top:52px; --h-dock:66px; --h-sub:34px; --w-rail:56px; --w-dw:264px; --w-in:292px;
   --pad:14px; --gap:10px; --r:10px; --r-sm:8px; --r-xs:6px; --ctl:32px;
+  /* 列表行的纵向内衬与最小高——「兵棋·紧」要换来同屏更多行,靠的就是这两个。
+     ⚠ 字号早已随档(--fs-sm 12→11.5),行高卡住的是硬编码内衬:压字号 0.5px 对
+     「名称＋副行」两行结构几乎无影响,压内衬才管用。松档取 7px＝.unit/.ev 原值逐位不变
+     (.row 自 6px 并档,+1px 无感),紧档三者齐压。 */
+  --pad-row:7px; --h-row:30px;
 }
 /* ── 暗 · 漆 ──（faint 提级；朱改「浅朱深墨」镜像金按钮——错误文案与按钮字对比双达标） */
 #app[data-theme="dark"]{
   --q-bg:#131110; --q-top:#1b1815; --q-pn:#201c18; --q-in:#292420; --q-in2:#332d26;
-  --q-ln:#363028; --q-ln2:#4a4136;
+  --q-ln:#363028; --q-ln2:#4a4136; --q-lnf:#7a705e;   /* 对暗输入底 3.15:1 / 对暗面板 3.47:1 */
   --q-tx:#eae4d8; --q-dim:#9c9284; --q-faint:#877e72;
   --q-gold:#d9b36b; --q-gold2:#e6c98d; --q-goldink:#241b09; --q-goldwash:#d9b36b1a;
   --q-zhu:#dd6047; --q-zhu2:#e56b52; --q-zhuink:#2b1009; --q-zhuwash:#dd60471f;
@@ -50,6 +60,7 @@
   --fs:12px; --fs-sm:11.5px; --fs-xs:11px;
   --h-top:46px; --h-dock:56px; --h-sub:30px; --w-rail:48px; --w-dw:232px; --w-in:264px;
   --pad:10px; --gap:7px; --r:8px; --r-sm:6px; --r-xs:5px; --ctl:28px;
+  --pad-row:4px; --h-row:26px;
 }
 /* --r-xs＝24~28px 小控件与浮签的圆角档（原先散作 6px/7px 两值随机混用，且都不随密度收缩）。
    ⚠ 只收「档位」：圆形 50%／丸形 999px／发丝条 2px 是语义形状，色板小方块与模态 14px 各有其理，一律不并入。 */
@@ -224,7 +235,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .sec:first-child{border-top:none;padding-top:0}
 .sec .cnt{margin-left:auto;font:var(--fs-xs) var(--f-mono);color:var(--q-faint)}
 .sec .mini{margin-left:auto;font-weight:400;font-size:var(--fs-xs);color:var(--q-faint);cursor:pointer}
-.sec .mini:hover:not(:disabled){color:var(--q-gold)}
+.sec .mini:hover:not(:disabled){color:var(--q-tx)}   /* 撤销/重做 hover＝墨色分级,不用金 */
 .sec .mini:disabled{opacity:.4}   /* 撤销/重做栈空置灰（订阅 canUndo/RedoSig） */
 .sec .mini+.mini{margin-left:8px}
 .chips{display:flex;gap:5px;flex-wrap:wrap}
@@ -245,7 +256,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .ch[aria-pressed="true"]{background:var(--q-in2);color:var(--q-tx);border-color:var(--q-ln2);font-weight:700}
 .ch .sw{width:10px;height:10px;border-radius:3px;flex:none;border:1px solid rgb(0 0 0/.25)}
 .rows{display:flex;flex-direction:column;gap:1px}
-.row{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:var(--r-sm);width:100%;min-height:30px;cursor:pointer}
+.row{display:flex;align-items:center;gap:9px;padding:var(--pad-row) 8px;border-radius:var(--r-sm);width:100%;min-height:var(--h-row);cursor:pointer}
 .row:hover{background:var(--q-in)}
 .row:active{background:var(--q-in2)}
 .row .sw{width:13px;height:13px;border-radius:4px;flex:none;border:1px solid rgb(0 0 0/.25)}
@@ -266,7 +277,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .empty p{margin:0;font-size:var(--fs-xs);color:var(--q-dim);line-height:1.7;max-width:22em}
 
 /* ── 事件时间线（览） ── */
-.ev{display:flex;gap:9px;padding:7px 8px;border-radius:var(--r-sm);width:100%;align-items:flex-start;cursor:pointer}
+.ev{display:flex;gap:9px;padding:var(--pad-row) 8px;border-radius:var(--r-sm);width:100%;align-items:flex-start;cursor:pointer}
 .ev:hover{background:var(--q-in)}
 .ev .yr{font:700 var(--fs-xs)/1.7 var(--f-mono);color:var(--q-dim);min-width:44px;flex:none;text-align:right}
 .ev .ic{width:16px;flex:none;text-align:center;font-size:var(--fs-xs);line-height:1.6}
@@ -333,7 +344,7 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .lyr-strip .lr2.on .rangeY{color:var(--q-zhu)}
 
 /* ── 军：部队列表 ── */
-.unit{display:flex;gap:9px;padding:7px 8px;border-radius:var(--r-sm);align-items:center;width:100%;cursor:pointer}
+.unit{display:flex;gap:9px;padding:var(--pad-row) 8px;border-radius:var(--r-sm);align-items:center;width:100%;cursor:pointer}
 .unit:hover{background:var(--q-in)}
 .unit.sel{background:var(--q-in);box-shadow:inset 0 0 0 1px var(--q-ln2)}
 .unit .bs{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:#fff;font:700 var(--fs-xs)/1 var(--f-song);flex:none}
@@ -384,9 +395,9 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .frow{display:flex;flex-direction:column;gap:3px}
 .frow label{font-size:var(--fs-xs);color:var(--q-dim);font-weight:600}
 .frow .fx2{display:flex;gap:6px}
-.fld{min-height:28px;padding:3px 9px;background:var(--q-in);border:1px solid var(--q-ln);border-radius:var(--r-sm);   /* 与 #searchBox 同档：同为文本输入 */ font-size:var(--fs-sm);color:var(--q-tx);width:100%;margin:2px 0;font-family:inherit}
+.fld{min-height:28px;padding:3px 9px;background:var(--q-in);border:1px solid var(--q-lnf);border-radius:var(--r-sm);   /* 与 #searchBox 同档：同为文本输入 */ font-size:var(--fs-sm);color:var(--q-tx);width:100%;margin:2px 0;font-family:inherit}
 .fld::placeholder{color:var(--q-faint)}
-.fld:hover{border-color:var(--q-ln2)}
+.fld:hover{border-color:var(--q-dim)}   /* 常态已是 --q-lnf，hover 须再深一档（原 --q-ln2 现在反而更浅＝悬停变淡） */
 .fld:focus{outline:none;border-color:var(--q-zhu);background:var(--q-pn);box-shadow:0 0 0 2.5px var(--q-zhuwash)}
 textarea.fld{height:auto;min-height:52px;padding:7px 9px;resize:vertical;line-height:1.6;font-family:var(--f-hei)}
 select.fld,button.fld{cursor:pointer}
@@ -396,7 +407,7 @@ select.fld,button.fld{cursor:pointer}
   background:var(--q-pn);border:1px solid var(--q-ln);box-shadow:var(--q-shadow);border-radius:var(--r);padding:7px 14px;color:var(--q-tx);white-space:nowrap;font-size:var(--fs-sm);z-index:5;max-width:calc(100% - 48px)}
 .fprops .fl{color:var(--q-dim)}
 .fprops .fsep{width:1px;height:16px;background:var(--q-ln)}
-.fprops .fk{font:600 var(--fs-xs)/1 var(--f-mono);color:var(--q-gold)}
+.fprops .fk{font:600 var(--fs-xs)/1 var(--f-mono);color:var(--q-tx)}   /* 里程/笔刷大小/缩放的**读数值**（非快捷键）＝满墨,与 .slider output、.mtable .mr .v、.coords b 同规 */
 .fprops input[type="range"]{width:90px;flex:none}
 .fprops .ftg{padding:3px 9px;border-radius:var(--r-xs);border:1px solid var(--q-ln);color:var(--q-dim);font-size:var(--fs-xs);min-height:22px;cursor:pointer}
 .fprops .ftg:hover{color:var(--q-tx);border-color:var(--q-ln2)}
@@ -411,6 +422,9 @@ select.fld,button.fld{cursor:pointer}
    故在弹层内把字号与控件尺寸恢复宽松档。 */
 #app[data-den="tight"] .scrim{--fs:13px;--fs-sm:12px;--fs-xs:12px;--pad:14px;--gap:10px;--r:10px;--r-sm:8px;--r-xs:6px;--ctl:32px}
 .modal{width:640px;max-width:94vw;max-height:88vh;background:var(--q-pn);border:1px solid var(--q-ln2);border-radius:14px;box-shadow:0 24px 70px rgb(0 0 0/.55);display:flex;flex-direction:column;overflow:hidden;color:var(--q-tx)}
+/* 进场焦点落在 .modal[tabindex=-1] 上（读屏先读标题正文）——容器不是可操作控件，别画焦点环，
+   否则按 ? 呼出帮助时基底的 [tabindex]:focus-visible 会给整个弹层套一圈金框 */
+.modal:focus,.modal:focus-visible{outline:none}
 .mo-head{display:flex;align-items:center;gap:10px;padding:16px 20px 12px;flex:none}
 .mo-head .t{font:800 17px/1 var(--f-song);letter-spacing:.1em}
 .mo-head .s{font-size:var(--fs-xs);color:var(--q-faint)}
@@ -423,15 +437,15 @@ select.fld,button.fld{cursor:pointer}
 /* 弹层内沿用的 v0.14 行/段（设置表单行、帮助表）过渡适配 */
 .mo-body .setrow{display:flex;align-items:center;gap:8px;margin:2px 0;font-size:var(--fs-sm);flex-wrap:wrap}
 .mo-body .setrow>label:first-child{width:120px;color:var(--q-dim);font-weight:600;flex:none}
-.mo-body .setrow input[type="text"],.mo-body .setrow input[type="number"]{font-family:inherit;font-size:var(--fs-sm);padding:4px 8px;border:1px solid var(--q-ln);border-radius:var(--r-sm);background:var(--q-in);color:var(--q-tx);width:110px}
+.mo-body .setrow input[type="text"],.mo-body .setrow input[type="number"]{font-family:inherit;font-size:var(--fs-sm);padding:4px 8px;border:1px solid var(--q-lnf);border-radius:var(--r-sm);background:var(--q-in);color:var(--q-tx);width:110px}
 .mo-body .setrow input.wide{width:230px}
 .mo-body .setrow input:focus{outline:none;border-color:var(--q-zhu);background:var(--q-pn);box-shadow:0 0 0 2.5px var(--q-zhuwash)}
-.mo-body .setrow select{font-family:inherit;font-size:var(--fs-sm);padding:4px 8px;border:1px solid var(--q-ln);border-radius:var(--r-sm);background:var(--q-in);color:var(--q-tx)}
+.mo-body .setrow select{font-family:inherit;font-size:var(--fs-sm);padding:4px 8px;border:1px solid var(--q-lnf);border-radius:var(--r-sm);background:var(--q-in);color:var(--q-tx)}
 .mo-body .seg{display:flex;flex-wrap:wrap;gap:4px}
 .mo-body .tbtn{cursor:pointer;padding:4px 10px;font-size:var(--fs-sm);border:1px solid var(--q-ln);border-radius:var(--r-xs);background:none;color:var(--q-dim);white-space:nowrap}
 .mo-body .tbtn:hover{color:var(--q-tx);background:var(--q-in);filter:none}
 .mo-body .tbtn.on{background:var(--q-in2);color:var(--q-tx);border-color:var(--q-ln2);font-weight:700;box-shadow:inset 0 -2px 0 var(--q-gold)}
-.mo-body h4{margin:10px 0 4px;color:var(--q-gold2);font:800 13px/1.4 var(--f-song);letter-spacing:.08em}
+.mo-body h4{margin:10px 0 4px;color:var(--q-dim);font:800 13px/1.4 var(--f-song);letter-spacing:.08em}   /* 弹层小标题与同层 .mo-sec 对齐（层级靠宋体+800字重,不靠金） */
 .mo-body table{border-collapse:collapse}
 .mo-body td{padding:3px 10px 3px 0;font-size:var(--fs-sm);vertical-align:top;color:var(--q-tx)}
 .mo-body td:first-child{color:var(--q-dim);white-space:nowrap;font-weight:600}
@@ -445,5 +459,5 @@ select.fld,button.fld{cursor:pointer}
 @media (prefers-reduced-motion:no-preference){.toast{transition:opacity .2s,transform .2s}}
 .toast .okdot{width:7px;height:7px;border-radius:50%;background:var(--q-ok);flex:none}
 .toast.err .okdot{background:var(--q-zhu)}
-.toast .und{color:var(--q-gold);font-weight:700;margin-left:4px;cursor:pointer}
-.toast .und:hover{color:var(--q-gold2)}
+.toast .und{color:var(--q-zhu);font-weight:700;margin-left:4px;cursor:pointer}   /* 撤销＝动作,朱（亮 5.66:1 / 暗 4.71:1）；金只留时间 */
+.toast .und:hover{color:var(--q-zhu2)}

@@ -29,7 +29,7 @@
 
   /* —— 顶栏搜索（SearchBox markup 不变，token 观感） —— */
   #searchWrap{ margin-left:auto; position:relative; }
-  #searchBox{ width:270px; height:var(--ctl); padding:0 11px; background:var(--q-in); border:1px solid var(--q-ln);
+  #searchBox{ width:270px; height:var(--ctl); padding:0 11px; background:var(--q-in); border:1px solid var(--q-lnf);
     border-radius:var(--r-sm); color:var(--q-tx); font-size:var(--fs-sm); font-family:inherit; outline:none; }
   #searchBox::placeholder{ color:var(--q-faint); }
   #searchBox:focus{ border-color:var(--q-gold); }
@@ -38,6 +38,9 @@
     max-height:330px; overflow-y:auto; }
   .sd-item{ padding:5px 9px; font-size:13px; cursor:pointer; color:var(--q-tx); }
   .sd-item:hover{ background:var(--q-in); }
+  /* 键盘高亮（↑↓ 导航的当前项）——比 hover 再深一档并加朱色起手条，与鼠标悬停分得开；
+     朱＝落笔，此处语义为「回车就走这条」。 */
+  .sd-item.on{ background:var(--q-in2); box-shadow:inset 2px 0 0 var(--q-zhu); }
   .sd-k{ display:inline-block; width:18px; color:var(--q-dim); }
   /* ⌘K 入口占位 */
   #searchWrap .sk-hint{ position:absolute; right:9px; top:50%; transform:translateY(-50%); pointer-events:none;
@@ -56,7 +59,11 @@
   .kv{ font-size:13px; margin:3px 0; line-height:1.5; }
   .kv b{ color:var(--q-dim); }
   .sub{ font-size:12px; color:var(--q-faint,#8a754c); }
-  .link{ color:var(--q-gold,#2f6fb0); cursor:pointer; text-decoration:underline dotted; }
+  /* 行内可点文本：可点性由虚下划线表达,不占金——金只留给时间语义。
+     ⚠ 原兜底值 #2f6fb0 是 v0.14 的蓝,令牌一缺就跳成与整套配色无关的蓝,已去掉。
+     .link.time＝确实跳时间轴的那种（航点时刻）,才配金。 */
+  .link{ color:var(--q-tx); cursor:pointer; text-decoration:underline dotted; }
+  .link.time{ color:var(--q-gold); }
   .tag{ display:inline-block; font-size:11px; padding:1px 7px; border-radius:9px; color:#fff; }
   kbd{ font-family:Consolas,monospace; font-size:12px; background:var(--q-in,#efe6c8); border:1px solid var(--q-ln,#c9b888);
     border-bottom-width:2px; border-radius:4px; padding:0 5px; }
@@ -77,7 +84,7 @@
   #opBox .bb-row{ display:flex; align-items:center; gap:6px; padding:4px 10px; }
   #opBox .bb-row>label{ width:30px; color:var(--q-dim); flex:none; }
   #opBox input[type=range]{ flex:1; }
-  #opBox .bb-v{ width:26px; text-align:right; color:var(--q-gold); flex:none; font-family:var(--f-mono); }
+  #opBox .bb-v{ width:26px; text-align:right; color:var(--q-tx); flex:none; font-family:var(--f-mono); }   /* 线宽读数＝满墨,与 .slider output / .coords b 同规 */
   #opBox .fld{ margin:0; }
   #obClose{ cursor:pointer; color:var(--q-faint); padding:0 3px; }
   #obClose:hover{ color:var(--q-zhu); }

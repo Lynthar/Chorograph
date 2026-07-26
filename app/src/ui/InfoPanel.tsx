@@ -240,7 +240,8 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
         const setPt = (lon: number, lat: number) => { mutateWorld(w => { setUnitWaypoint(w, u.id, q.t, lon, lat); }); };
         return (
           <div key={i} class="kv">
-            <button type="button" class="link" onClick={() => { yearSig.value = q.t; }}>{fmtT(cal, q.t)}</button>
+            {/* .time＝这一条 .link 确实把时间轴拨到该时刻,是金的正当用处（其余 .link 已退回墨色） */}
+            <button type="button" class="link time" onClick={() => { yearSig.value = q.t; }}>{fmtT(cal, q.t)}</button>
             {editable ? <>{" "}
               <input class="fld" type="number" step={0.0001} title="经度°" key={i + ":lon" + q.lon}
                 style={{ width: "5.4em", display: "inline-block", padding: "1px 3px", margin: 0 }}

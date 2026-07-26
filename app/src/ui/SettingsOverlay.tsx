@@ -7,6 +7,7 @@ import { blankWorld, type BlankWorldSpec } from "../core/world.ts";
 import { calOf } from "../core/calendar.ts";
 import type { CalendarCfg, GenStyle, TerrainMode, WorldModel } from "../core/types.ts";
 import { closeSettings, flyReqSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, uiPrefsSig, worldSig, type SettingsMode } from "./state.ts";
+import { useModalFocus } from "./modal.ts";
 
 const randSeed = () => Math.floor(Math.random() * 99999) + 1;
 
@@ -16,6 +17,7 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
   const m = (!create && world && world.meta) || {};
   const acts = libActionsSig.value;
   const box = useRef<HTMLDivElement>(null);
+  useModalFocus(box);   // 卡片按 key={token} 每次打开重挂＝进场收焦点、关闭时还原（父件 st 为 null 时整件卸载）
   const fileRef = useRef<HTMLInputElement>(null);
   /* 地形初稿联动（对齐旧 syncTerrDraftUI）：仅 auto 显示生成参数行；旧初稿只有正用时显形 */
   const [terr, setTerr] = useState<string>(create ? "auto" : (m.terrain || "sample"));
@@ -116,9 +118,9 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
   };
 
   return (
-    <div class="modal" ref={box}>
+    <div class="modal" ref={box} role="dialog" aria-modal="true" aria-labelledby="setTitle" tabIndex={-1}>
       <div class="mo-head">
-        <span class="t">{create ? "🆕 新建地图" : "⚙ 设置"}</span>
+        <span class="t" id="setTitle">{create ? "🆕 新建地图" : "⚙ 设置"}</span>
         <span class="s">{create ? "先定世界形态与尺度" : "界面偏好 · 世界参数 · 数据与出图"}</span>
         <button class="x tr" aria-label="关闭" onClick={closeSettings}>✕</button>
       </div>

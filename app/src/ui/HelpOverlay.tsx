@@ -1,7 +1,9 @@
 /* 帮助弹层：.ovl 遮罩 + 宣纸 .card。
    正文以实测快捷键/工具轨为真源重写（2026-07；帮助是交互契约，错的比没有更糟）——
    改快捷键或子工具时**此处必须同步**。关闭：按钮 / Esc（外壳 keydown）/ 点遮罩空白。 */
+import { useRef } from "preact/hooks";
 import { helpOpenSig } from "./state.ts";
+import { useModalFocus } from "./modal.ts";
 
 const HELP_HTML = `
   <div class="sub">政治/军事/经济<b>分析与标记</b>地图：<b>时间为基底</b>、球面/平面双世界观、A*地形寻路、双链回 Obsidian。</div>
@@ -58,20 +60,30 @@ const HELP_HTML = `
   <h4>尺度校准</h4>
   <div class="kv">里程 = 世界形态参数(半径/每度里程) + 坐标密度共同决定。觉得某国该更大/更小，改 ⚙ 设置或拖动城池即可，天数随之更新。</div>`;
 
+/* 卡片单独成件：弹层关就整件卸载，useModalFocus 的清理（摘监听 / 还原焦点）才跑得到 */
+function HelpCard() {
+  const box = useRef<HTMLDivElement>(null);
+  useModalFocus(box);
+  return (
+    <div class="modal" style={{ width: "780px" }} ref={box}
+      role="dialog" aria-modal="true" aria-labelledby="helpTitle" tabIndex={-1}>
+      <div class="mo-head">
+        <span class="t" id="helpTitle">舆图 · 帮助</span><span class="s">? 随时呼出 · Esc 关闭</span>
+        <button class="x tr" aria-label="关闭" onClick={() => { helpOpenSig.value = false; }}>✕</button>
+      </div>
+      <div class="mo-body">
+        <div dangerouslySetInnerHTML={{ __html: HELP_HTML }} />
+      </div>
+    </div>
+  );
+}
+
 export function HelpOverlay() {
   if (!helpOpenSig.value) return null;
   return (
     <div id="help" class="scrim open"
       onClick={e => { if (e.target === e.currentTarget) helpOpenSig.value = false; }}>
-      <div class="modal" style={{ width: "780px" }}>
-        <div class="mo-head">
-          <span class="t">舆图 · 帮助</span><span class="s">? 随时呼出 · Esc 关闭</span>
-          <button class="x tr" aria-label="关闭" onClick={() => { helpOpenSig.value = false; }}>✕</button>
-        </div>
-        <div class="mo-body">
-          <div dangerouslySetInnerHTML={{ __html: HELP_HTML }} />
-        </div>
-      </div>
+      <HelpCard />
     </div>
   );
 }
