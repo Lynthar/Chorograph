@@ -54,7 +54,7 @@ export function UnitsPane() {
                   const p = unitPos(u, T);
                   if (p) flyReqSig.value = { lon: p.lon, lat: p.lat };
                 }}>
-                <span class="bs" style={{ background: (f && f.color) || "#6a5326" }}>{k ? k.glyph : "旅"}</span>
+                <span class="bs" style={{ background: (f && f.color) || "var(--tg-kind)" }}>{k ? k.glyph : "旅"}</span>
                 <span class="un"><b>{u.名称 || "未命名部队"}</b>
                   <span>{strength ? strength + " · " : ""}{unitSpeed(u)} km/日{unplaced ? " · 未入场·拖入地图放置" : ` · ${u.track.length} 航点`}</span></span>
               </button>

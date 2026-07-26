@@ -164,7 +164,10 @@ export function TimeDock() {
         )}
       </div>
       <div class="dk-seg">
-        <button disabled={tac} aria-pressed={!tac} title={tac ? "战术图为日/时粒度" : "步进 1 年"}>年</button>
+        {/* 「年」从不可操作——战略图上它本就是唯一粒度、战术图上不可用（无 onClick）。恒 disabled
+            去掉「战略图下可聚焦可回车却什么都不发生」的死 Tab 位；aria-pressed 继续表达当前粒度，
+            .dk-seg 有 disabled 不淡化已选的规则兜住选中态观感。 */}
+        <button disabled aria-pressed={!tac} title={tac ? "战术图为日/时粒度" : "战略图粒度：按年步进"}>年</button>
         <button disabled={!tac} aria-pressed={tac && !subDaySig.value} title={tac ? "时间步进：按日" : "战术图可用"}
           onClick={() => { if (subDaySig.peek()) toggleSubDay(); }}>日</button>
         <button disabled={!tac} aria-pressed={sub} title={tac ? "时间步进：半时辰（1/24 日）——小时级战役分帧" : "战术图可用"}

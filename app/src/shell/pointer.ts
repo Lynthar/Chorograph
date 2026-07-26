@@ -42,11 +42,15 @@ interface OpStroke { pts: [number, number][]; lastX: number; lastY: number; rive
 interface BoxSel { x0: number; y0: number; x1: number; y1: number; moved: boolean; decorOnly?: boolean }   // decorOnly=布景子工具的框选（只圈布景）
 interface PaintStroke { set: Set<string>; dims: PaintDims; fid: string; idx: number }
 interface DecorStroke { erase: boolean; lastX: number; lastY: number }
-interface MultiDrag { sx: number; sy: number; t: number; pushed: boolean;
+/* 对象拖动的共同瞬态：x0/y0=按下点（画布 CSS px）、pushed=已越死区并记过一步撤销。
+   死区见 ARM_PX / armDrag——点选带手抖不该算一次编辑。 */
+interface ObjDrag { x0: number; y0: number; pushed: boolean }
+interface MultiDrag extends ObjDrag { sx: number; sy: number; t: number;
   orig: { id: string; lon0: number; lat0: number }[];        // 框选中的地点原位（moveNode 按位移整组平移）
   uorig: { id: string; lon0: number; lat0: number }[];       // 框选中的部队在起手时刻的原位（拖动改写该时刻航点）
   dorig: { id: string; lon0: number; lat0: number }[] }      // 框选中的布景原位（moveDecor 按位移整组平移）
-type RangeDrag = RingHit & { pushed: boolean };
+type RangeDrag = RingHit & ObjDrag;
+type IdDrag = { id: string } & ObjDrag;
 
 /** frame 每帧只读的交互视图（画线预览/框选矩形/笔刷环定位共用） */
 export interface PointerView {
@@ -116,16 +120,28 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   };
   canvas.addEventListener("mouseleave", () => { tip.style.display = "none"; });
 
-  let drag: PanDrag | null = null, nodeDrag: { id: string; pushed: boolean } | null = null,
+  let drag: PanDrag | null = null, nodeDrag: IdDrag | null = null,
     paintStroke: PaintStroke | null = null, opStroke: OpStroke | null = null,
     terrainStroke: boolean | null = null, decorStroke: DecorStroke | null = null,
     boxSel: BoxSel | null = null, multiDrag: MultiDrag | null = null,
-    unitDrag: { id: string; pushed: boolean } | null = null, rangeDrag: RangeDrag | null = null,
+    unitDrag: IdDrag | null = null, rangeDrag: RangeDrag | null = null,
     mxy: [number, number] | null = null;
   let spaceHeld = false, linkDrag: { fromId: string; x: number; y: number; moved: boolean } | null = null,
-    decorDrag: { id: string; pushed: boolean } | null = null,
+    decorDrag: IdDrag | null = null,
     clickTrack: { x: number; y: number; moved: boolean } | null = null, nudgeT = 0,
     ecoSprayLast: { x: number; y: number } | null = null;   // 生态笔播撒印章的上次落点（按间距节流，避免每帧堆章）
+  /* 起拖死区门（对象拖动共用）：位移不足 ARM_PX 就返回 false——不记撤销、不改数据，
+     这一按下退化为纯点选。越过后 pushed 记忆，本次拖动不再判（否则拖回起点附近会二次入栈）。
+     4px 与浏览态「左键位移<4=点击」同阈值；笔刷类（涂域/地形/布景印章）不设死区——
+     单击落一笔正是笔刷语义。缺这道门时：点选部队的 1px 手抖会凭空插入一个当日航点。 */
+  const ARM_PX = 4;
+  const armDrag = (st: ObjDrag, e: PointerEvent): boolean => {
+    if (st.pushed) return true;
+    if (Math.hypot(e.offsetX - st.x0, e.offsetY - st.y0) < ARM_PX) return false;
+    pushHistoryOnce();
+    st.pushed = true;
+    return true;
+  };
   /* 拾取门（点选/悬停/框选与绘制同一套可见性）：图层显隐 + 编辑态全见/浏览态 rank 缩放门——
      关掉的层不再"隐形可选"；部队/布景拾取同规则在各调用点看 units/decor 层。 */
   const pickGate = () => ({ layers: layersSig.peek(), editing: modeSig.peek() === "edit" });
@@ -276,7 +292,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const world = worldSig.value!;
     const ll0 = unproject(cam(), e.offsetX, e.offsetY);
     const T = yearSig.peek();
-    multiDrag = { sx: ll0[0], sy: ll0[1], t: T, pushed: false,
+    multiDrag = { sx: ll0[0], sy: ll0[1], t: T, pushed: false, x0: e.offsetX, y0: e.offsetY,
       orig: sv.ids.map(id => { const nd = world.nodes.find(n => n.id === id); return nd ? { id, lon0: nd.lon, lat0: nd.lat } : null; })
         .filter((o): o is { id: string; lon0: number; lat0: number } => !!o),
       uorig: (sv.unitIds || []).map(id => {
@@ -385,7 +401,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
           { fire: Lyr.ranges !== false, vision: Lyr.vision !== false });
         if (rh) {
           stopPlay();   // 播放中拖半径：冻结时刻，圈心不随播放漂移
-          rangeDrag = { ...rh, pushed: false };
+          rangeDrag = { ...rh, pushed: false, x0: e.offsetX, y0: e.offsetY };
           canvas.style.cursor = "ew-resize"; canvas.setPointerCapture(e.pointerId);
           return;
         }
@@ -404,7 +420,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         const s = selSig.value;
         if (s && s.kind === "multi" && s.unitIds && s.unitIds.includes(un.id)) { startMultiDrag(s, e); return; }
         stopPlay();   // 播放中拖部队：冻结时刻，航点只落起手当日（否则逐 move 散作一串、toast 报错日）
-        unitDrag = { id: un.id, pushed: false }; selSig.value = { kind: "unit", id: un.id };
+        unitDrag = { id: un.id, pushed: false, x0: e.offsetX, y0: e.offsetY }; selSig.value = { kind: "unit", id: un.id };
         canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
       }
     }
@@ -421,7 +437,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
           const s = selSig.value;
           if (s && s.kind === "multi" && s.unitIds && s.unitIds.includes(un.id)) { startMultiDrag(s, e); return; }   // 按住框选中的部队=整体拖移
           stopPlay();   // 同军工具：播放中拖部队冻结时刻
-          unitDrag = { id: un.id, pushed: false }; selSig.value = { kind: "unit", id: un.id };
+          unitDrag = { id: un.id, pushed: false, x0: e.offsetX, y0: e.offsetY }; selSig.value = { kind: "unit", id: un.id };
           canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
         }
       }
@@ -431,7 +447,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (s && s.kind === "multi" && s.ids.includes(hit.id)) {   // 按住框选中的地点=整体拖移（地点+部队）
           startMultiDrag(s, e);
         } else {
-          nodeDrag = { id: hit.id, pushed: false };
+          nodeDrag = { id: hit.id, pushed: false, x0: e.offsetX, y0: e.offsetY };
           selSig.value = { kind: "node", id: hit.id };
           canvas.style.cursor = "move";
           canvas.setPointerCapture(e.pointerId);
@@ -442,7 +458,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (dd) {
         const s = selSig.value;
         if (s && s.kind === "multi" && s.decorIds && s.decorIds.includes(dd.id)) { startMultiDrag(s, e); return; }   // 按住框选中的布景=整组拖移
-        decorDrag = { id: dd.id, pushed: false }; selSig.value = { kind: "decor", id: dd.id };   // 点选→检查器改种类/大小
+        decorDrag = { id: dd.id, pushed: false, x0: e.offsetX, y0: e.offsetY }; selSig.value = { kind: "decor", id: dd.id };   // 点选→检查器改种类/大小
         canvas.style.cursor = "move"; canvas.setPointerCapture(e.pointerId); return;
       }
       // 空白处拖动=框选（v0.14 编辑·选择默认；平移走 空格/中键/WASD）
@@ -521,7 +537,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (multiDrag) {
-      if (!multiDrag.pushed) { pushHistoryOnce(); multiDrag.pushed = true; }
+      if (!armDrag(multiDrag, e)) return;   // 未越死区：这一按下退化为纯点选（选中态不变）
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const dLon = ll[0] - multiDrag.sx, dLat = ll[1] - multiDrag.sy;
       const md = multiDrag;
@@ -533,7 +549,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (rangeDrag) {
-      if (!rangeDrag.pushed) { pushHistoryOnce(); rangeDrag.pushed = true; }   // 一次拖动=一步撤销
+      if (!armDrag(rangeDrag, e)) return;   // 一次拖动=一步撤销（越死区才算拖动）
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const km = distKm(ctx.meta, rangeDrag.lon, rangeDrag.lat, dataLon(ctx.meta, ll[0]), ll[1]);   // 半径=圈心到光标的地理距离（球面周期化，跨拷贝安全）
       const rd = rangeDrag;
@@ -543,21 +559,21 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (unitDrag) {
-      if (!unitDrag.pushed) { pushHistoryOnce(); unitDrag.pushed = true; }   // 一次拖动=一步撤销
+      if (!armDrag(unitDrag, e)) return;   // 一次拖动=一步撤销；未越死区不落航点（点选部队不该改行军路线）
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const ud = unitDrag;
       mutateWorldLive(w => setUnitWaypoint(w, ud.id, yearSig.peek(), ll[0], ll[1]));   // 落/改当日航点
       return;
     }
     if (nodeDrag) {
-      if (!nodeDrag.pushed) { pushHistoryOnce(); nodeDrag.pushed = true; }   // 一次拖动=一步撤销
+      if (!armDrag(nodeDrag, e)) return;   // 一次拖动=一步撤销
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const nd = nodeDrag;
       mutateWorldLive(w => moveNode(w, nd.id, ll[0], ll[1]));
       return;
     }
     if (decorDrag) {   // 拖移布景（v0.14 movingDecor）
-      if (!decorDrag.pushed) { pushHistoryOnce(); decorDrag.pushed = true; }
+      if (!armDrag(decorDrag, e)) return;
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const dd = decorDrag;
       mutateWorldLive(w => {

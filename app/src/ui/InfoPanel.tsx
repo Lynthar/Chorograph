@@ -77,10 +77,10 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
     <>
       <CardHead title={n.名称 || n.id} />
       <div class="tags">
-        <span class="tg" style={{ background: isEv ? "#8a2f22" : "#6a5326" }}>{isEv ? `${et.sym} ${et.名}` : s.名}</span>
+        <span class="tg" style={{ background: isEv ? "var(--tg-ev)" : "var(--tg-kind)" }}>{isEv ? `${et.sym} ${et.名}` : s.名}</span>
         {!isEv && (f
           ? <span class="tg" style={{ background: f.color || "#888" }}>{f.名称 || f.id}</span>
-          : <span class="tg" style={{ background: "#8a8272" }}>中立</span>)}
+          : <span class="tg" style={{ background: "var(--tg-neutral)" }}>中立</span>)}
       </div>
       <div class="kv2">
         {isEv && n.year != null && <><b>发生</b><span class="num">{fmtWhen(cal, tac, n.year, true)}</span></>}
@@ -102,7 +102,7 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
             const uo = (o.until == null || (!tac && o.until >= 9999)) ? "至今" : fmtWhen(cal, tac, o.until);
             return (
               <div key={i} class={"seg3" + (now ? " now" : "")}>
-                <i style={{ background: (of && of.color) || "#8a8272" }} />
+                <i style={{ background: (of && of.color) || "var(--tg-neutral)" }} />
                 <span class="nm">{of ? (of.名称 || of.id) : "中立/自由"}</span>
                 <span class="yr">{so} – {uo}</span>
               </div>
@@ -286,7 +286,7 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
       <CardHead title={u.名称 || "未命名部队"} />
       <div class="tags">
         {f && <span class="tg" style={{ background: f.color || "#888" }}>{f.名称 || f.id}</span>}
-        <span class="tg" style={{ background: "#6a5326" }}>{k ? `${k.glyph} ${k.名}` : (u.kind || "部队")}</span>
+        <span class="tg" style={{ background: "var(--tg-kind)" }}>{k ? `${k.glyph} ${k.名}` : (u.kind || "部队")}</span>
         {(() => { const st = p ? unitStatusAt(u, T) : null; const sd = st ? UNIT_STATUS[st] : null;
           return sd ? <span class="tg" style={{ background: sd.color }}>{sd.名}</span> : null; })()}
       </div>
@@ -320,7 +320,7 @@ function DecorCard({ d, world }: { d: Decor; world: World }) {
   return (
     <>
       <CardHead title={`布景 · ${kindName}`} />
-      <div class="tags"><span class="tg" style={{ background: "#5a6a3a" }}>{kindName}</span></div>
+      <div class="tags"><span class="tg" style={{ background: "var(--tg-decor)" }}>{kindName}</span></div>
       <div class="kv2">
         <b>坐标</b><span class="num">{d.lon}° · {d.lat}°</span>
         {(d.since != null || d.until != null) && <><b>存在</b><span class="num">{d.since != null ? fmtWhen(cal, tac, d.since) : "远古"} – {d.until != null ? fmtWhen(cal, tac, d.until) : "至今"}</span></>}
@@ -371,7 +371,7 @@ function MultiCard({ nodes, units, decors, world }: { nodes: WorldNode[]; units:
           const s = NODE_STYLE[n.type] || NODE_STYLE.city;
           return (
             <button key={n.id} class="row tr" onClick={() => { selSig.value = { kind: "node", id: n.id }; }}>
-              <span class="dot" style={{ background: (f && f.color) || "#8a8272" }} />
+              <span class="dot" style={{ background: (f && f.color) || "var(--tg-neutral)" }} />
               <span class="nm">{n.名称 || n.id}</span>
               <span class="eye">{s.名}</span>
             </button>
@@ -392,7 +392,7 @@ function MultiCard({ nodes, units, decors, world }: { nodes: WorldNode[]; units:
           const isImg = typeof d.kind === "string" && d.kind.startsWith("img:");
           return (
             <button key={d.id} class="row tr" onClick={() => { selSig.value = { kind: "decor", id: d.id }; }}>
-              <span class="dot" style={{ background: "#5a6a3a" }} />
+              <span class="dot" style={{ background: "var(--tg-decor)" }} />
               <span class="nm">{isImg ? "自定义印章" : (DECOR[d.kind]?.名 || d.kind)}</span>
               <span class="eye">布景</span>
             </button>
