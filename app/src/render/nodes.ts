@@ -2,7 +2,8 @@
    记号形状按类型（★都城/◉主要/●○·聚落/▲要塞/═渡口/▽事件/◆资源/✦特殊），描边色=当年归属；
    楷体标签四方位避让（重要地点先占位），撞满则不画（选中除外）；
    事件点未发生=淡显、当年=红圈；编辑模式全部地点可见（旧 nodeVisible 语义）。
-   ⚠ nodeVisibleAt 是绘制与拾取（render/pick.ts）同源的可见门——改门先想两边。 */
+   ⚠ nodeVisibleAt 是绘制与拾取（render/pick.ts）同源的可见门——改门先想两边；
+   noteBox 同理是标注文本体的同源几何（画与点都由它出）。 */
 import { NODE_STYLE, RANK_ZOOM } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { project, type Camera } from "../core/projection.ts";
@@ -17,32 +18,74 @@ import type { OverlayOpts } from "./overlay.ts";
    地图锚定的注册进避让格局（placed：地名让标注、标注本身不让位——作者摆哪是哪）；
    选中=红虚线框。align：center=锚点居中（地图标注）；left/right=屏幕角堆叠（pin）。 */
 const NOTE_FS = (n: WorldNode) => Math.max(9, Math.min(28, +(n.fs as number) || 13));
+/** 标注字体串——度量与绘制必须同一串，故只此一处产生 */
+export const noteFont = (n: WorldNode): string => (NOTE_FS(n) >= 16 ? "bold " : "") + NOTE_FS(n) + "px KaiTi,楷体,serif";
+export type NoteAlign = "center" | "left" | "right";
+/** 文本度量（drawNoteText 用画布 ctx、pickNode 用共享离屏 ctx；带 font 参数是为了防两侧字体串走样） */
+export type NoteMeasure = (text: string, font: string) => number;
+export interface NoteBox {
+  /** 整块外框（左上角＋尺寸）：避让登记与选中虚线框 */
+  x: number; y: number; w: number; h: number;
+  /** 逐行左上角 x 与行宽（拾取按行判中，见 pickNode） */
+  lines: { text: string; x: number; w: number }[];
+  /** 行高（第 i 行占 y ∈ [box.y + lh*i, box.y + lh*(i+1))，字在带中） */
+  lh: number;
+}
+/** 标注文本体的屏幕几何：drawNoteText 与 pick.ts 的文本体拾取**同源于此**——
+    字号/行距/对齐改一处两边同步，不会再出现「画得下、点不中」。 */
+export function noteBox(m: NoteMeasure, n: WorldNode, x: number, y: number, align: NoteAlign): NoteBox {
+  const font = noteFont(n), lh = NOTE_FS(n) + 3;
+  const texts = String(n.名称 || "").split("\n");
+  const ws = texts.map(t => m(t, font));
+  const w = ws.reduce((a, b) => Math.max(a, b), 0), h = texts.length * lh;
+  const left = (lw: number) => align === "center" ? x - lw / 2 : align === "right" ? x - lw : x;
+  return {
+    x: left(w), y: align === "center" ? y - h / 2 : y, w, h, lh,
+    lines: texts.map((t, i) => ({ text: t, x: left(ws[i]), w: ws[i] }))
+  };
+}
+/** 选中虚线框的外扩，兼作拾取余量——「点在你看到的那个框里就选得中」 */
+export const NOTE_PAD_X = 4, NOTE_PAD_Y = 3;
+/** 点是否落在地图锚定标注（align=center）的文本体上——pick.ts 的文本体拾取判据，与上面画的逐位同框。
+    ⚠ 逐行判中而非整块外框：多行参差时外框会把行尾留白也算成标注，连带遮住底下的布景/连线。
+    纵向带（行数×行高）不必度量即可算，先用它早退——满图标注时省掉绝大多数 measureText。 */
+export function noteHit(m: NoteMeasure, n: WorldNode, ax: number, ay: number, x: number, y: number): boolean {
+  const lh = NOTE_FS(n) + 3, rows = String(n.名称 || "").split("\n").length;
+  const top = ay - rows * lh / 2;
+  if (y < top - NOTE_PAD_Y || y > top + rows * lh + NOTE_PAD_Y) return false;
+  const b = noteBox(m, n, ax, ay, "center");
+  for (let i = 0; i < b.lines.length; i++) {
+    const L = b.lines[i], ly = b.y + b.lh * i;
+    if (x >= L.x - NOTE_PAD_X && x <= L.x + L.w + NOTE_PAD_X && y >= ly - NOTE_PAD_Y && y <= ly + b.lh + NOTE_PAD_Y) return true;
+  }
+  return false;
+}
+/* 拾取侧没有画布，共用一块离屏 ctx 度量（同一文档、同一字体串 → 与画布度量逐位一致；
+   measureText 不受画布 CTM/DPR 影响）。node:test 无 document → null，调用方退回锚点判定。 */
+let noteMC: CanvasRenderingContext2D | null | undefined;
+export function noteMeasure(): NoteMeasure | null {
+  if (noteMC === undefined) noteMC = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
+  const c = noteMC;
+  return c ? (t, f) => { c.font = f; return c.measureText(t).width; } : null;
+}
 export function drawNoteText(
   ctx: CanvasRenderingContext2D, n: WorldNode, x: number, y: number,
   col: string, selected: boolean, field: LabelField | null,
-  align: "center" | "left" | "right"
+  align: NoteAlign
 ): void {
-  const fs = NOTE_FS(n);
-  const lines = String(n.名称 || "").split("\n");
   ctx.save();
-  ctx.font = (fs >= 16 ? "bold " : "") + fs + "px KaiTi,楷体,serif";
+  ctx.font = noteFont(n);
   ctx.textBaseline = "middle";
-  const lh = fs + 3;
-  const w = lines.reduce((m, L) => Math.max(m, ctx.measureText(L).width), 0);
-  const h = lines.length * lh;
-  const x0 = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
-  const y0 = align === "center" ? y - h / 2 : y;
-  if (field) field.claim({ x: x0, y: y0, w, h });   // 标注不让位（作者摆哪是哪），只登记让后来者绕开
-  for (let i = 0; i < lines.length; i++) {
-    const lw = ctx.measureText(lines[i]).width;
-    const lx = align === "center" ? x - lw / 2 : align === "right" ? x - lw : x;
-    const ly = y0 + lh * i + lh / 2;
-    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.strokeText(lines[i], lx, ly);
-    ctx.fillStyle = col; ctx.fillText(lines[i], lx, ly);
+  const b = noteBox((t, f) => { ctx.font = f; return ctx.measureText(t).width; }, n, x, y, align);
+  if (field) field.claim({ x: b.x, y: b.y, w: b.w, h: b.h });   // 标注不让位（作者摆哪是哪），只登记让后来者绕开
+  for (let i = 0; i < b.lines.length; i++) {
+    const L = b.lines[i], ly = b.y + b.lh * i + b.lh / 2;
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.strokeText(L.text, L.x, ly);
+    ctx.fillStyle = col; ctx.fillText(L.text, L.x, ly);
   }
   if (selected) {
     ctx.setLineDash([4, 3]); ctx.lineWidth = 1.5; ctx.strokeStyle = "#c0392b";
-    ctx.strokeRect(x0 - 4, y0 - 3, w + 8, h + 6); ctx.setLineDash([]);
+    ctx.strokeRect(b.x - NOTE_PAD_X, b.y - NOTE_PAD_Y, b.w + NOTE_PAD_X * 2, b.h + NOTE_PAD_Y * 2); ctx.setLineDash([]);
   }
   ctx.restore();
 }

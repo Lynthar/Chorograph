@@ -2,8 +2,8 @@
    一次「保存修改」提交；删除连带（归属中立化/沿革剔除/作战线 side 清空）。字段带持久小标签（.frow>label）。 */
 import { useRef } from "preact/hooks";
 import { applyFactionForm, removeFaction } from "./editops.ts";
-import { calOf, eraPh, eraTy, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
-import { inspEditSig, isTacSig, modeSig, mutateWorld, paintFactionSig, paintLayerSig, selSig, showToast, worldSig } from "./state.ts";
+import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
+import { inspEditSig, isTacSig, modeSig, mutateWorld, paintFactionSig, paintLayerSig, parseWhenInput, selSig, showToast, worldSig } from "./state.ts";
 import type { Faction } from "../core/types.ts";
 
 export function FactionForm({ f }: { f: Faction }) {
@@ -12,7 +12,7 @@ export function FactionForm({ f }: { f: Faction }) {
   const cal = calOf((worldSig.value?.meta || {}).calendar);
   const val = (id: string) => (box.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>("#" + id))?.value ?? "";
   /* 时间输入经历法解析折成数字串（applyFactionForm parseFloat 空删语义；custom 战略=原样） */
-  const timeVal = (id: string) => { const v = parseWhenForm(cal, tac, val(id)); return v == null ? "" : String(v); };
+  const timeVal = (id: string) => { const v = parseWhenInput(cal, tac, val(id)); return v == null ? "" : String(v); };
   const save = () => {
     mutateWorld(w => {
       const target = w.factions.find(x => x.id === f.id);

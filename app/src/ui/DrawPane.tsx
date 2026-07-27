@@ -9,7 +9,7 @@ import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
 import { brushEraseSig, canRedoSig, canUndoSig, decorKindSig, editSubSig, eraNewSig, isTacSig, linkFromSig, linkTypeSig,
-  mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisSig, undoWorld, worldSig,
+  mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, parseWhenInput, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisSig, undoWorld, worldSig,
   type EditSub } from "./state.ts";
 
 const SUBS: { s: EditSub; g: string; n: string }[] = [
@@ -94,8 +94,8 @@ function PaintCtx() {
                 defaultValue={L.until != null && (tac || L.until < 9999) ? fmtWhenForm(cal, tac, L.until) : ""} key={pf + ":" + li + ":u:" + (L.until ?? "")} />
               <button class="ghostbt tr" id="plYear" onClick={e => {
                 const box = (e.currentTarget as HTMLElement).parentElement!;
-                const sv = parseWhenForm(cal, tac, (box.querySelector("#pl_since") as HTMLInputElement).value);
-                const uv = parseWhenForm(cal, tac, (box.querySelector("#pl_until") as HTMLInputElement).value);
+                const sv = parseWhenInput(cal, tac, (box.querySelector("#pl_since") as HTMLInputElement).value);
+                const uv = parseWhenInput(cal, tac, (box.querySelector("#pl_until") as HTMLInputElement).value);
                 mutateWorld(w => { const wf = w.factions.find(x => x.id === f.id); const wl = wf?.paint?.[li]; if (wl) setPaintLayerSpan(wl, sv == null ? "" : String(sv), uv == null ? "" : String(uv)); });
                 showToast("已保存时段层年代", { undo: true });   // 与同量级表单保存同回执（此前静默）
               }}>保存年代</button>

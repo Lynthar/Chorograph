@@ -7,6 +7,7 @@
    通知订阅者，editVer++ 驱动外壳自动保存与寻路上下文重发；grid 标记驱动网格重建）。 */
 import { batch, computed, effect, signal } from "@preact/signals";
 import { EDGE_STYLE, LAYERS, PRESETS } from "../core/constants.ts";
+import { parseWhenForm, ymdOverflow, type CalendarSpec } from "../core/calendar.ts";
 import { yearRangeOf } from "../core/time.ts";
 import { normalizeWorld } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
@@ -381,7 +382,41 @@ export interface ToastMsg { text: string; err?: boolean; undo?: boolean; action?
 export const toastSig = signal<ToastMsg | null>(null);
 let toastToken = 0;
 export function showToast(text: string, opts: { err?: boolean; undo?: boolean; action?: { label: string; run(): void } } = {}): void {
-  toastSig.value = { text, ...opts, token: ++toastToken };
+  const n = takeWhenNotes();   // 表单时刻回执搭车（见 parseWhenInput）：同一次提交里的警告并进这条回执
+  toastSig.value = { text: n ? `${text}　${n.text}` : text, ...opts, err: opts.err || (n ? n.err : false), token: ++toastToken };
+}
+
+/* —— 表单时刻输入的回执缓冲 ——
+   toastSig 是**单条**信号，后一条顶掉前一条：`save()` 里先弹的警告会被末尾的「已保存修改」抹掉
+   （CDP 实证过，警告根本看不见）。故警告先入缓冲，由同一次提交末尾的那条回执捎走；
+   若这次提交本就没有回执（如 OpBox 的 onChange），微任务后自己单独弹。 */
+let whenNotes: { text: string; err: boolean }[] = [];
+let whenTimer: ReturnType<typeof setTimeout> | null = null;
+function takeWhenNotes(): { text: string; err: boolean } | null {
+  if (!whenNotes.length) return null;
+  const text = whenNotes.map(n => n.text).join("　"), err = whenNotes.some(n => n.err);
+  whenNotes = [];
+  return { text, err };
+}
+function noteWhen(text: string, err: boolean): void {
+  whenNotes.push({ text, err });
+  if (whenTimer) clearTimeout(whenTimer);
+  whenTimer = setTimeout(() => { whenTimer = null; const n = takeWhenNotes(); if (n) showToast(n.text, { err: n.err }); }, 0);
+}
+
+/* —— 表单时刻输入：解析 + 把两类**静默变形**说出来（各表单的提交点用它替 parseWhenForm）——
+   ① 越界进位：`3107-99-99` 会静默变成 SE3115·六月初九（差 8 年）。core 不能拒——进位是 v0.14
+      既有语义且被黄金基准逐位锁定（见 calendar.ymdOverflow 注释），只能在这一层回执。
+   ② 非空却解析不出：各 apply*Form 的空删语义会把**原有的时段直接删掉**（`else delete n.since`），
+      一个手误就静音抹掉已填的年代。这里同样只报不改——空删语义本身是有意的。
+   ⚠ 只用在「提交」处（保存钮/onChange），别挂到逐键 onInput 上——那会边打字边弹。 */
+export function parseWhenInput(cal: CalendarSpec, tac: boolean, raw: unknown): number | null {
+  const str = String(raw == null ? "" : raw).trim();
+  const v = parseWhenForm(cal, tac, str);
+  if (!str) return v;                                   // 主动清空＝合法操作，不打扰
+  if (v == null) { noteWhen(`日期无法识别：${str}　该项已清空`, true); return v; }
+  if (tac) { const norm = ymdOverflow(cal, str); if (norm) noteWhen(`日期越界，已归一为 ${norm}`, false); }
+  return v;
 }
 
 /* —— 图库开图加载舞台：朱印+图名+金进度+步骤行。library 开图流程步进

@@ -3,8 +3,8 @@
    标题栏可拖动改位置；渲染进 #canvasWrap 的 #opMount。
    部队/标注用非受控输入 + key=选中标识：切换选中即重置，实时输入不被重渲打断（IME 友好）。 */
 import { useRef, useState } from "preact/hooks";
-import { calOf, eraPh, eraTy, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
-import { clearOpSel, isTacSig, mutateWorld, opEdit, opSelSig, worldSig } from "./state.ts";
+import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
+import { clearOpSel, isTacSig, mutateWorld, opEdit, opSelSig, parseWhenInput, worldSig } from "./state.ts";
 import { removeOp } from "./editops.ts";
 
 export function OpBox() {
@@ -20,7 +20,7 @@ export function OpBox() {
   const cal = calOf((world.meta || {}).calendar);
   /* 存在·起/止（分相位）：日期/「前N」经历法解析；空/非法=删键（对齐各表单空删语义） */
   const setSpan = (key: "since" | "until") => (e: Event) => {
-    const v = parseWhenForm(cal, tac, (e.currentTarget as HTMLInputElement).value);
+    const v = parseWhenInput(cal, tac, (e.currentTarget as HTMLInputElement).value);
     opEdit(o => { if (v == null) delete o[key]; else o[key] = v; });
   };
 

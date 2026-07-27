@@ -6,9 +6,9 @@
    输入用非受控 + key=节点id：换选中即重置，重渲不丢输入。 */
 import { useLayoutEffect, useRef } from "preact/hooks";
 import { EVENT_TMPL, EVENT_TYPES, NODE_STYLE, NODE_TMPL, NODE_TYPES } from "../core/constants.ts";
-import { calOf, eraPh, eraTy, fmtWhenForm, fmtWhenRange, parseWhenForm } from "../core/calendar.ts";
+import { calOf, eraPh, eraTy, fmtWhenForm, fmtWhenRange } from "../core/calendar.ts";
 import { formatRanges } from "./editops.ts";
-import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, opDrawSig, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, worldSig, yearSig } from "./state.ts";
+import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, opDrawSig, parseWhenInput, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, worldSig, yearSig } from "./state.ts";
 import { addEventNear, addOwner, applyNodeForm, changeNodeType, moveNode, removeOwner, updateOwner } from "./editops.ts";
 import type { WorldNode } from "../core/types.ts";
 
@@ -52,7 +52,7 @@ function OwnersEditor({ n }: { n: WorldNode }) {
   const owners = n.owners || [];
   const mut = (fn: (x: WorldNode) => void) => mutateWorld(w => { const x = w.nodes.find(y => y.id === n.id); if (x) fn(x); });
   /* 输入→updateOwner 数字串（parseFloat 空删语义）：日期/「前N」经历法解析折成数字 */
-  const tv = (raw: string) => { const v = parseWhenForm(cal, tac, raw); return v == null ? "" : String(v); };
+  const tv = (raw: string) => { const v = parseWhenInput(cal, tac, raw); return v == null ? "" : String(v); };
   return (
     <>
       <div class="sub" style={{ marginTop: "4px" }}>归属沿革（分时段归属，覆盖上方固定归属；留空起/止=远古/至今）</div>
@@ -126,7 +126,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
   const val = (id: string) => (box.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>("#" + id))?.value;
   /* 时间输入：战术图「年-月-日（可带时刻）」/ earth 战略「前N」经历法解析折成日戳/年份数字串
      （applyNodeForm 按 parseFloat 语义消费；空/非法=删键）；custom 战略=原样数字串（旧语义） */
-  const timeVal = (id: string) => { const v = parseWhenForm(cal, tac, val(id) ?? ""); return v == null ? "" : String(v); };
+  const timeVal = (id: string) => { const v = parseWhenInput(cal, tac, val(id) ?? ""); return v == null ? "" : String(v); };
 
   const save = () => {
     /* 经纬度数字输入（战役复原按文档坐标表精确落点）：留空/非法=不动，经 moveNode 归一钳制。

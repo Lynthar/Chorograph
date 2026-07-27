@@ -2,8 +2,8 @@
    删除带确认。类型在创建时定死（与旧版一致，改类型=删了重连）。字段带持久小标签（.frow>label）。 */
 import { useRef } from "preact/hooks";
 import { EDGE_STYLE, RIVER_TMPL } from "../core/constants.ts";
-import { calOf, eraPh, eraTy, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
-import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, showToast, worldSig } from "./state.ts";
+import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
+import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "./state.ts";
 import { applyEdgeForm } from "./editops.ts";
 import type { Edge } from "../core/types.ts";
 
@@ -17,7 +17,7 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
     : (e.type === "river" ? RIVER_TMPL : "");
   const val = (id: string) => (box.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>("#" + id))?.value ?? "";
   /* 时间输入经历法解析折成数字串（applyEdgeForm parseFloat 空删语义；custom 战略=原样） */
-  const timeVal = (id: string) => { const v = parseWhenForm(cal, tac, val(id)); return v == null ? "" : String(v); };
+  const timeVal = (id: string) => { const v = parseWhenInput(cal, tac, val(id)); return v == null ? "" : String(v); };
 
   const save = () => {
     mutateWorld(w => {

@@ -1,9 +1,10 @@
 /* 拾取（自 overlay.ts 原样拆出，行为不变）：线性扫描——数百要素足够；空间索引 后段定案。
-   x/y 为 CSS 像素。⚠ 可见规则与绘制同源：地点走 nodes.nodeVisibleAt、作战线与 drawOps 同规。 */
+   x/y 为 CSS 像素。⚠ 可见规则与绘制同源：地点走 nodes.nodeVisibleAt、作战线与 drawOps 同规；
+   标注的**文本体判中**同源于 nodes.noteBox/noteHit（drawNoteText 画的就是那个框）。 */
 import { activeAt, opVisibleAt } from "../core/time.ts";
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { chaikinOpen } from "../core/geometry.ts";
-import { nodeVisibleAt, type NodeGateOpts } from "./nodes.ts";
+import { nodeVisibleAt, noteHit, noteMeasure, type NodeGateOpts, type NoteMeasure } from "./nodes.ts";
 import { riverWpx } from "./edges.ts";
 import type { Edge, Meta, World, WorldNode } from "../core/types.ts";
 
@@ -76,13 +77,17 @@ export function pickOp(
 }
 
 /** 地点拾取：只拾画面上真的画着的（与 drawNodes 同一可见门，opts 传当前图层与编辑态）；
-    pin 屏幕角标注按锚点隐形、一律不可点选（经搜索/撤销管理，见 drawPinnedNotes）。 */
+    pin 屏幕角标注按锚点隐形、一律不可点选（经搜索/撤销管理，见 drawPinnedNotes）。
+    两趟：先按锚点半径（旧行为逐位保留），全空再判标注的文本体——标注无记号、文本即本体，
+    只判锚点等于「一行大字只有正中 12px 可点」。measure 缺省取 nodes.noteMeasure()（离屏度量），
+    node:test 无 document 时为 null＝退回纯锚点判定，测试可注入假度量。 */
 export function pickNode(
   cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
-  x: number, y: number, opts: NodeGateOpts & { rad?: number } = {}
+  x: number, y: number, opts: NodeGateOpts & { rad?: number; measure?: NoteMeasure | null } = {}
 ): WorldNode | null {
   const rad = opts.rad ?? 12;
   let best: WorldNode | null = null, bd = rad * rad;
+  const notes: [WorldNode, number, number][] = [];   // 锚点全空时再判文本体（按拷贝各记一份投影位）
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
     for (const n of world.nodes) {
@@ -91,13 +96,26 @@ export function pickNode(
       const [px, py] = project(c2, n.lon, n.lat);
       const d = (px - x) ** 2 + (py - y) ** 2;
       if (d < bd) { bd = d; best = n; }
+      if (n.type === "label") notes.push([n, px, py]);
     }
   }
-  return best;
+  if (best) return best;   // 记号画在标注之上：压着记号的大标注不该抢走记号的点击
+  if (!notes.length) return null;   // 无标注的世界不必建离屏度量画布，也不必走第二趟
+  const m = opts.measure === undefined ? noteMeasure() : opts.measure;
+  if (!m) return null;
+  let note: WorldNode | null = null, nd = Infinity;
+  for (const [n, px, py] of notes) {
+    if (!noteHit(m, n, px, py, x, y)) continue;   // 判据在 nodes.noteHit＝画的那一处旁边（逐行判中）
+    const d = (px - x) ** 2 + (py - y) ** 2;      // 并列（两块文本重叠）取锚点近者，同 pickDecor
+    if (d < nd) { nd = d; note = n; }
+  }
+  return note;
 }
 
 /** 框选：返回投影后落在屏幕矩形内的地点 id（可见门同 pickNode——隐形对象不被框进批量删；
-    按世界拷贝重投影，去重） */
+    按世界拷贝重投影，去重）。⚠ 一律**按锚点**判定（含标注——它的锚点在文本正中，圈住整块文字
+    自然圈住锚点），与 decorsInBox/unitsInBox 同规；点选那边的文本体判定是「点不中」的补救，
+    框选不需要，混进来反而让半盖住一块标注的框把它捞进批量删。 */
 export function nodesInBox(
   cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
   x0: number, y0: number, x1: number, y1: number, opts: NodeGateOpts = {}

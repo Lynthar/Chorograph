@@ -115,12 +115,11 @@ export function fmtYMD(cal: CalendarSpec, T: number): string {
 
 /** 解析日期输入："3107-3-7 / 3107.3.7 / 3107年3月7日 / 3107"(仅年=正月初一)；
     「前216-8-2」/「-215-8-2」=公元前（天文纪年 1-N / -N）；可带时刻「 13:30」或「午正二刻」；空/非法→null */
+const YMD_RE = /^(前|-)?(\d{1,6})(?:[-./年]\s*(\d{1,2}))?(?:[-./月]\s*(\d{1,2}))?\s*日?(?:\s*(?:(\d{1,2})[:：](\d{1,2})|([子丑寅卯辰巳午未申酉戌亥])\s*([初正])\s*(?:([一二三])\s*刻|初刻)?))?\s*$/;
 export function parseYMD(cal: CalendarSpec, s: unknown): number | null {
   const str = String(s == null ? "" : s).trim();
   if (!str) return null;
-  const m = str.match(
-    /^(前|-)?(\d{1,6})(?:[-./年]\s*(\d{1,2}))?(?:[-./月]\s*(\d{1,2}))?\s*日?(?:\s*(?:(\d{1,2})[:：](\d{1,2})|([子丑寅卯辰巳午未申酉戌亥])\s*([初正])\s*(?:([一二三])\s*刻|初刻)?))?\s*$/
-  );
+  const m = str.match(YMD_RE);
   if (!m) return null;
   const y = m[1] === "前" ? 1 - +m[2] : (m[1] === "-" ? -+m[2] : +m[2]);
   let frac = 0;
@@ -135,6 +134,25 @@ export function parseYMD(cal: CalendarSpec, s: unknown): number | null {
   // 注：月/日越界（13月/32日）经 tacT 静默进位到相邻年月，是 v0.14 既有语义、黄金基准逐位锁定——
   // core 层不改（改则破坏平价）；越界录入的防护若要做，应放 UI 表单层，不动此编解码函数。
   return tacT(cal, y, m[3] ? +m[3] : 1, m[4] ? +m[4] : 1) + frac;
+}
+
+/** 越界回执（表单层用）：录入串里**显式给出**的月/日经日戳编解码取不回原值＝越界，
+    返回归一后的显示串；未越界/未给月日/解析不出→null。
+    ⚠ 只做「说出来」，不改 parseYMD 的进位语义——那是 v0.14 既有行为且被黄金基准逐位锁定
+    （fixtures 里 10 月历的 `3107-12-30`、dpm 归一为 1 的 `3107-3-7` 都是越界进位样本），
+    core 层拒绝越界＝破平价，防护只能放在这一层。
+    「只给年」(`3107`＝正月初一) 是简写不是错，不报；公历 1582-10-05~14 这段历史空档
+    也会走到这里，回执正是它该有的说明（那几天在现实中不存在）。 */
+export function ymdOverflow(cal: CalendarSpec, s: unknown): string | null {
+  const str = String(s == null ? "" : s).trim();
+  const m = str.match(YMD_RE);
+  if (!m || (m[3] == null && m[4] == null)) return null;
+  const y = m[1] === "前" ? 1 - +m[2] : (m[1] === "-" ? -+m[2] : +m[2]);
+  const mo = m[3] ? +m[3] : 1, d = m[4] ? +m[4] : 1;
+  const back = fromT(cal, tacT(cal, y, mo, d));
+  if (back.y === y && back.m === mo && back.d === d) return null;
+  const T = parseYMD(cal, str);
+  return T == null ? null : fmtYMD(cal, T);
 }
 
 /* —— 纪年显示/表单助手（战略图年份与信息卡共用；custom 正年份输出与旧字符串逐字一致）—— */

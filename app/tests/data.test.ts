@@ -9,6 +9,7 @@ import { migrateFromLocalStorage, migrateFolderHandle, type LSLike } from "../sr
 import { fcachePatch, fcacheRemove, folderCreate, folderList, folderReadWorld, folderRemove,
   folderUniqueFilename, folderWriteWorld, type DirHandleLike, type FolderCache, type FolderCacheEntry } from "../src/data/folder.ts";
 import { openDB, reqP, txDone } from "../src/data/idb.ts";
+import { createTabSync, tabMapKey, TAB_WARN_OPEN, TAB_WARN_SAVED, type TabMsg } from "../src/data/tabsync.ts";
 
 let seq = 0;
 const freshLib = () => openLibrary("test-db-" + (++seq));
@@ -348,5 +349,66 @@ describe("自动保存调度", () => {
     fail = false;
     await as.flush();                     // 下次 flush 自然重试成功
     assert.strictEqual(as.pending, false);
+  });
+});
+
+describe("多标签提醒（tabsync 协议）", () => {
+  const mk = (tab: string) => {
+    const posts: TabMsg[] = [], warns: string[] = [];
+    const s = createTabSync(tab, m => posts.push(m), t => warns.push(t));
+    return { s, posts, warns };
+  };
+  it("开图即打招呼；换图重置「已提醒」，回图库(null)不打招呼", () => {
+    const a = mk("A");
+    a.s.setMap("browser:m1");
+    assert.deepStrictEqual(a.posts, [{ t: "open", map: "browser:m1", tab: "A" }]);
+    a.s.setMap("browser:m1");                     // 同图重复设置＝不重复广播
+    assert.strictEqual(a.posts.length, 1);
+    a.s.setMap(null);                             // 回图库：不广播
+    assert.strictEqual(a.posts.length, 1);
+    a.s.setMap("browser:m2");
+    assert.deepStrictEqual(a.posts[1], { t: "open", map: "browser:m2", tab: "A" });
+  });
+  it("同图互认：open 得到 here 回应，两边各提醒一次", () => {
+    const a = mk("A"), b = mk("B");
+    a.s.setMap("browser:m1"); b.s.setMap("browser:m1");
+    b.s.receive(a.posts[0]);                      // B 收到 A 的 open
+    assert.deepStrictEqual(b.warns, [TAB_WARN_OPEN]);
+    assert.deepStrictEqual(b.posts[1], { t: "here", map: "browser:m1", tab: "B" });
+    a.s.receive(b.posts[1]);                      // A 收到 B 的 here
+    assert.deepStrictEqual(a.warns, [TAB_WARN_OPEN]);
+    a.s.receive(b.posts[1]);                      // 重复不再提醒
+    assert.strictEqual(a.warns.length, 1);
+  });
+  it("对方保存＝本地显示已过期，提醒一次即止（自动保存每笔都广播，不去重会刷屏）", () => {
+    const a = mk("A"), b = mk("B");
+    a.s.setMap("browser:m1"); b.s.setMap("browser:m1");
+    a.s.saved(); a.s.saved(); a.s.saved();
+    const saves = a.posts.filter(m => m.t === "saved");
+    assert.strictEqual(saves.length, 3, "本端每次落盘都广播");
+    for (const m of saves) b.s.receive(m);
+    assert.deepStrictEqual(b.warns, [TAB_WARN_SAVED], "对端只提醒一次");
+  });
+  it("他图/自己/畸形消息一律忽略", () => {
+    const a = mk("A");
+    a.s.setMap("browser:m1");
+    a.s.receive({ t: "open", map: "browser:m9", tab: "B" });        // 另一张图
+    a.s.receive({ t: "saved", map: "folder:m1", tab: "B" });        // 同名不同来源
+    a.s.receive({ t: "open", map: "browser:m1", tab: "A" });        // 自己（BroadcastChannel 本不回送，防万一）
+    for (const bad of [null, 1, "x", {}, { t: "open" }, { t: "zz", map: "browser:m1", tab: "B" }]) a.s.receive(bad);
+    assert.deepStrictEqual(a.warns, []);
+    assert.strictEqual(a.posts.length, 1, "只有最初那条 open");
+  });
+  it("未开图时收到任何广播都不提醒", () => {
+    const a = mk("A");
+    a.s.receive({ t: "open", map: "browser:m1", tab: "B" });
+    a.s.receive({ t: "saved", map: "browser:m1", tab: "B" });
+    assert.deepStrictEqual(a.warns, []);
+    assert.deepStrictEqual(a.posts, []);
+  });
+  it("tabMapKey：来源前缀区分两套图库；无图＝null", () => {
+    assert.strictEqual(tabMapKey("browser", "m1"), "browser:m1");
+    assert.strictEqual(tabMapKey("folder", "m1"), "folder:m1");
+    assert.strictEqual(tabMapKey("browser", null), null);
   });
 });

@@ -2,7 +2,7 @@
   （历法进退位、时段区间开闭、投影可逆、地形确定性等）——平价测试防漂移，这里防"两边一起错"。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { calOf, cnDay, cnMonth, fmtShichen, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearForm, fromT, parseYMD, parseYearForm, tacT, yearSpanT } from "../src/core/calendar.ts";
+import { calOf, cnDay, cnMonth, fmtShichen, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearForm, fromT, parseYMD, parseYearForm, tacT, yearSpanT, ymdOverflow } from "../src/core/calendar.ts";
 import { distKm, haversine, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm } from "../src/core/geometry.ts";
 import { genTerrainAt, seedTerrain } from "../src/core/terrain.ts";
@@ -53,6 +53,32 @@ describe("历法", () => {
     assert.strictEqual(parseYMD(cal, ""), null);
     assert.strictEqual(parseYMD(cal, "abc"), null);
     assert.strictEqual(parseYMD(cal, null), null);
+  });
+  it("ymdOverflow：月/日越界只回执不拦截（parseYMD 的进位语义被黄金基准锁定，不能动）", () => {
+    // 未越界/未显式给月日 → 不报（「3107」＝正月初一是简写不是错）
+    for (const s of ["3107-3-7", "3107", "3107-3", "3107.3.7", "3107年3月7日", "3-7", "99-1-1日", "abc", ""])
+      assert.strictEqual(ymdOverflow(cal, s), null, `不该报越界：${JSON.stringify(s)}`);
+    // 越界 → 回执归一后的显示串（正是 parseYMD 静默进位到的那个值）
+    assert.strictEqual(ymdOverflow(cal, "3107-13-1"), "3108-1-1");
+    assert.strictEqual(ymdOverflow(cal, "3107-3-31"), "3107-4-1");
+    assert.strictEqual(ymdOverflow(cal, "3107-99-99"), "3115-6-9", "差出 8 年，正是要说出来的那种");
+    assert.strictEqual(ymdOverflow(cal, "3107-0-0"), "3107-1-1", "0 月 0 日按 tacT 的 max(1,·) 归一");
+    assert.strictEqual(ymdOverflow(cal, "3107-13-1 午正"), "3108-1-1 午正", "时刻随回执带出");
+    // 回执与 parseYMD 同源：报什么就真存什么
+    for (const s of ["3107-13-1", "3107-99-99", "3107-0-0"])
+      assert.strictEqual(ymdOverflow(cal, s), fmtYMD(cal, parseYMD(cal, s)!));
+    // 公历按真实月长（闰年规则生效），1582 儒略/格里空档同样回执
+    const E = calOf({ kind: "earth" });
+    assert.strictEqual(ymdOverflow(E, "1815-6-18"), null);
+    assert.strictEqual(ymdOverflow(E, "1815-2-30"), "1815-3-2");
+    assert.strictEqual(ymdOverflow(E, "2000-2-29"), null, "闰年 2/29 合法");
+    assert.strictEqual(ymdOverflow(E, "1900-2-29"), "1900-3-1", "1900 非闰年");
+    assert.strictEqual(ymdOverflow(E, "1582-10-10"), "1582-10-20", "历史空档：那几天现实中不存在");
+    assert.strictEqual(ymdOverflow(E, "1815-6-18 25:00"), null, "时刻越界已由 parseYMD 判 null，不重复报");
+    // ⚠ 这一条锁的是「为什么不能在 core 拒绝越界」：golden 第 1 组就是 10 月历且样本含 3107-12-30
+    const T10 = calOf({ months: 10, dpm: 36 });
+    assert.strictEqual(ymdOverflow(T10, "3107-12-30"), "3108-2-30");
+    assert.strictEqual(ymdOverflow(T10, "3107-10-36"), null, "该历法下 10 月 36 日是合法的");
   });
   it("自定义历法：10 月 × 36 日", () => {
     const c = calOf({ months: 10, dpm: 36 });
@@ -674,6 +700,32 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     assert.deepStrictEqual(nodesInBox(cam, w.meta, w, 3107, 380, 280, 420, 320, { editing: true }).sort(), ["n0", "n1"]);
     assert.deepStrictEqual(nodesInBox(cam, w.meta, w, 3107, 380, 280, 420, 320, {}), ["n0"], "浏览态 rank 隐藏的乡村不入框");
     assert.deepStrictEqual(nodesInBox(cam, w.meta, w, 3107, 380, 280, 420, 320, { editing: true, layers: { nodes: false } }), []);
+  });
+  it("标注按文本体拾取（逐行判中）：大字远离锚点可点、参差留白不算、记号优先、无度量退回锚点", () => {
+    const M = (t: string) => t.length * 10;             // 假度量：每字 10px（真实走离屏 ctx.measureText）
+    const at = (x: number, y: number) => unproject(cam, x, y);
+    // 两行 24px 标注锚在屏幕中心：lh=27、块高 54 → 行0 y∈[273,300) x∈[370,430]；行1 y∈[300,327) x∈[390,410]
+    const mkNote = (extra: Partial<WorldNode>[] = []): World =>
+      mkWorld([{ type: "label", 名称: "北疆巡狩总图\n附记", fs: 24 }, ...extra]);
+    const hit = (w: World, x: number, y: number, o: Parameters<typeof pickNode>[6] = {}) =>
+      pickNode(cam, w.meta, w, 3107, x, y, { editing: true, measure: M, ...o });
+    const w = mkNote();
+    assert.strictEqual(hit(w, 425, 285)!.id, "n0", "行0 右端（离锚点 25px，旧版 12px 锚点判中落空）");
+    assert.strictEqual(hit(w, 400, 320)!.id, "n0", "行1 上（离锚点 20px）");
+    assert.strictEqual(hit(w, 375, 315), null, "行1 参差留白：在整块外框内、不在行框内＝不命中（免遮住底下的布景）");
+    assert.strictEqual(hit(w, 400, 340), null, "块下缘外出余量");
+    assert.strictEqual(hit(w, 440, 285), null, "行0 右缘外出余量");
+    // 记号优先：标注文本压着一个城市记号，点在记号锚点 12px 内 → 取记号（记号画在标注之上）
+    const [clon, clat] = at(428, 283);
+    const wc = mkNote([{ type: "city", lon: clon, lat: clat }]);
+    assert.strictEqual(hit(wc, 425, 285)!.id, "n1", "锚点先判＝压在标注上的记号不被抢走");
+    assert.strictEqual(hit(wc, 400, 320)!.id, "n0", "离记号远处仍按文本体取标注");
+    // 退化路径：无度量（node 无 document）＝旧的纯锚点判定；层门/pin 门对文本体同样生效
+    assert.strictEqual(hit(w, 425, 285, { measure: null }), null, "无度量→退回锚点判定（旧行为）");
+    assert.strictEqual(hit(w, 400, 300, { measure: null })!.id, "n0", "退回后锚点仍可点");
+    assert.strictEqual(hit(w, 425, 285, { layers: { notes: false } }), null, "标注层关＝文本体也不可点");
+    const wp = mkWorld([{ type: "label", 名称: "北疆巡狩总图\n附记", fs: 24, pin: "nw" }]);
+    assert.strictEqual(hit(wp, 425, 285), null, "pin 屏幕角标注：文本体同样不可点");
   });
   it("pickEdge 宽河走廊随渲染河宽（点在河面即可选中）；无 widthM／道路仍 6px", () => {
     const zoom: Camera = { lon0: 100, lat0: 30, degPerPx: 0.001, w: 800, h: 600, flat: false };   // 战术级缩放

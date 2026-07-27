@@ -3,6 +3,7 @@
    图库动作桥（HomePanel/SettingsOverlay 组件经 libActionsSig 调用；库 IO 全在外壳）。 */
 import { batch } from "@preact/signals-core";
 import { createAutosave, type Autosave } from "../data/autosave.ts";
+import { createTabSync, tabMapKey } from "../data/tabsync.ts";
 import { openLibrary } from "../data/library.ts";
 import { migrateFromLocalStorage, migrateFolderHandle } from "../data/migrate.ts";
 import { fsSupported, folderList, folderReadWorld, folderWriteWorld, folderCreate, folderRemove, fcachePatch, fcacheRemove }
@@ -52,6 +53,15 @@ export interface LibraryIO {
 
 export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): LibraryIO {
   const { canvas, ov } = ctx;
+  /* 多标签提醒：同一张图被两个标签开着时互相告知（协议在 data/tabsync.ts）。
+     只提醒不拦截——图库写入仍是整份覆盖，两边各自保存依旧会互相吃掉改动。 */
+  const bc = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("yutu-tabs");
+  const tabs = createTabSync(
+    "t" + Date.now().toString(36) + Math.floor(Math.random() * 46656).toString(36),
+    m => { if (bc) bc.postMessage(m); },
+    t => showToast(t, { err: true })
+  );
+  if (bc) bc.onmessage = e => tabs.receive(e.data);
   const autosave = createAutosave(async () => {
     const w = worldSig.peek();
     if (!ctx.lib || !ctx.mapId || !w) return;
@@ -66,6 +76,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       await ctx.lib.save(ctx.mapId, w, snapV);
       ctx.savedAt = new Date(); ctx.saveErr = null;
     }
+    tabs.saved();   // 落盘成功才广播（失败路径在上面就抛了）
   }, 600, e => {
     /* 首次失败给 toast 逃生门（导出 JSON）；持续失败只保持顶栏 savest 朱点，不刷屏 */
     const first = !ctx.saveErr;
@@ -98,6 +109,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   function setWorld(w: unknown, id: string | null, snap: OpenSnap | null | undefined): void {
     const p = planOpen(w, snap, dl);   // 年份/视角决策全在纯函数（openplan.test.ts 锁语义），此处只落地
     landWorld(ctx, p.world, id, p.year);   // 批落地（orchestrate.ts；重建计数护栏与此共用同一函数）
+    tabs.setMap(tabMapKey(ctx.source, ctx.mapId));   // 向别的标签打招呼（同图即互相提醒）
     if (p.view) {
       ctx.view.lon0 = p.view.lon0; ctx.view.lat0 = p.view.lat0;
       if (p.view.degPerPx != null) ctx.view.degPerPx = p.view.degPerPx;
