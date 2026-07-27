@@ -14,7 +14,7 @@ import { dataLon } from "../ui/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig,
-  routePtsSig, routeResSig, unitLegsSig }
+  routePtsSig, routeResSig, unitLegsSig, editVerSig, gridVerSig }
   from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -111,9 +111,47 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     }
   };
   ctx.repaint = paint;
+
+  /* 空闲降频（2026-07-26）：帧循环照旧每帧醒来，但先比一份便宜的状态指纹——没变就整帧跳过。
+     变化后 IDLE_MS 内保持满帧（覆盖 CSS 过渡、飞行动画、播放这类连续变化的尾巴）；
+     再往后落到 IDLE_PAINT_MS 一帧的**保底频率**——兜住指纹没盯住的变化
+     （布景图片资产 onload、字体度量就位等都不经 signal），代价只是最多晚一拍上屏。
+     ⚠ 这正是不做全量脏标记的理由：ctx.view 是普通对象、ptr 瞬态与资产加载都不是 signal，
+     漏一个就成「画面静止不更新」的静默 bug；保底频率把漏判从"永不"降级成"晚 250ms"。
+     ⚠ 新增任何进 paint()／hud 文本的读取源，记得同步进 stamp()。 */
+  const IDLE_MS = 1000, IDLE_PAINT_MS = 250;
+  let sig: unknown[] = [], lastChange = 0, lastPaint = 0;
+  const stamp = (): unknown[] => {
+    const v = ctx.view, os = ptr.opStroke, bs = ptr.boxSel, m = ptr.mxy;
+    return [
+      // 数据与图层（worldSig 换引用广播；原地改由 editVer 兜、网格重建由 gridVer 兜）
+      worldSig.value, editVerSig.value, gridVerSig.value, yearSig.value, layersSig.value,
+      // 选中/悬停/工具态
+      selSig.value, hoverSig.value, modeSig.value, editSubSig.value, opSelSig.value,
+      opDrawSig.value, linkTypeSig.value, linkFromSig.value,
+      paintFactionSig.value, paintLayerSig.value,
+      brushSizeSig.value, brushEraseSig.value, brushSmoothSig.value,
+      routePtsSig.value, routeResSig.value, unitLegsSig.value,
+      // 外壳可变态（非 signal，只能逐帧比）
+      ctx.grid, ctx.R, ctx.DPR, ctx.canvas.width, ctx.canvas.height,
+      v.lon0, v.lat0, v.degPerPx,
+      // 指针瞬态（画线笔迹/框选/光标位）
+      m ? m[0] : -1, m ? m[1] : -1,
+      os ? os.pts.length : -1, os ? os.river : false,
+      bs ? bs.x1 : -1, bs ? bs.y1 : -1, bs ? bs.moved : false,
+      // 顶栏保存态文案的来源（同样不是 signal，漏了就会「已保存」迟迟不上屏）
+      autosave.pending, ctx.savedAt, ctx.saveErr, ctx.bootNote, ctx.mapId, ctx.source, ctx.lib
+    ];
+  };
+  const changed = (a: unknown[], b: unknown[]): boolean => a.length !== b.length || a.some((x, i) => x !== b[i]);
+
   (function frame() {
     try {   // 帧内异常：上报 #err、放弃本帧——续排在 finally，一帧出错不冻死画布（2026-07-12 P2）
     const t0 = performance.now();
+    const now = stamp();
+    if (changed(now, sig)) { sig = now; lastChange = t0; }
+    if (t0 - lastChange > IDLE_MS && t0 - lastPaint < IDLE_PAINT_MS) return;   // 空闲且未到保底节拍：整帧跳过
+    lastPaint = t0;
     paint();
     const world = worldSig.value, yearNow = yearSig.value;
     times.push(performance.now() - t0);

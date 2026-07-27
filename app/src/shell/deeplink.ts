@@ -1,11 +1,10 @@
 /* URL 直达（深链）解析：#map=&preset=&sel=&year=&lon=&lat=&z=&seed=&style=&force=cpu&lib=1&hold=ms
    分析/编辑：#mode=measure|route|edit&sub=select|add|link|paint|terrain|decor|delete&pts=lon,lat,…&arm=&op=作战线序号&multi=名称1,名称2
-   解析时立即落地的副作用：yearSig/armSig 赋值、相机 ctx.view、程序化种子（ctx.meta+表单）、
+   解析时立即落地的副作用：yearSig/armSig 赋值、相机 ctx.view、程序化种子（ctx.meta 唯一真源）、
    /__hold__ 占位图（把 load 压后到异步启动完成，供自动化截图）。
    其余存为 want* 延迟量，由 boot 启动后按 v0.14 语义消费；urlView/urlYear 供 setWorld
    压制首次打开的快照视角/纪年（用后即清）。 */
 import { armSig, yearSig } from "../ui/state.ts";
-import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
 import type { Arm, GenStyle } from "../core/types.ts";
 
@@ -44,8 +43,11 @@ export function parseDeepLink(ctx: ShellCtx): DeepLink {
   const num = (v: string): number | null => { const n = +v; return isFinite(n) ? n : null; };   // 坏数值（#year=abc）→null 视同未提供，不污染年份/相机为 NaN（全图消失/白屏）
   (location.hash.slice(1) || "").split("&").forEach(kv => {
     const [k, v = ""] = kv.split("=");   // 无值参数（#pts 等裸键）不致启动崩溃
-    if (k === "seed") { ctx.meta.genSeed = +v || 1; ($("seed") as HTMLInputElement).value = v; }
-    if (k === "style") { ctx.meta.genStyle = v as GenStyle; ($("style") as HTMLSelectElement).value = v; }
+    /* 程序化地形参数直落 ctx.meta（唯一真源）。原先同时写一份进 #devbar 的隐藏 input，
+       再由 host.rebuild 从 DOM 读回覆盖 ctx.meta——那两个元素恒 display:none、用户够不着，
+       纯属让 DOM 当中间人转一道手。 */
+    if (k === "seed") ctx.meta.genSeed = +v || 1;
+    if (k === "style") ctx.meta.genStyle = v as GenStyle;
     if (k === "force") dl.force = v as DeepLink["force"];
     if (k === "year" && v !== "") { const n = num(v); if (n != null) { yearSig.value = n; dl.urlYear = true; } }
     if (k === "preset") dl.wantPreset = dec(v);

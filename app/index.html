@@ -132,8 +132,8 @@
     border-top:1px dashed #47506a; padding-top:12px; }
   .hm-foot b{ color:#c8b070; }
 
-  /* —— 隐藏 dev 挂点与错误条 —— */
-  #hud, #devbar{ display:none !important; }
+  /* —— 隐藏调试文本与错误条 —— */
+  #hud{ display:none !important; }
   #err{ position:fixed; top:0; left:0; right:0; z-index:9999; display:none;
         background:#b0202a; color:#fff; padding:8px 14px; font:13px/1.5 system-ui,sans-serif; box-shadow:0 1px 6px rgba(0,0,0,.3); }
   #err:not(:empty){ display:block; }
@@ -182,12 +182,8 @@
   <div id="toastMount"></div>
 </div>
 
-<!-- 隐藏 dev 挂点（程序化种子/风格；无世界数据时 rebuild 读取） -->
+<!-- 隐藏调试文本：frame 每帧写状态行,host.rebuild 写 data-grid（CDP 走查的网格重建探针,勿删） -->
 <div id="hud">启动中…</div>
-<div id="devbar">
-  <input id="seed" type="number" value="1234"><button id="reroll">⟳</button>
-  <select id="style"><option value="continent">大陆</option><option value="archipelago">群岛</option></select>
-</div>
 <div id="err"></div>
 <script type="module" src="/src/main.ts"></script>
 </body>

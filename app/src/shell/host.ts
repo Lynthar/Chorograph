@@ -6,7 +6,7 @@ import { worldSig, yearSig, gridVerSig } from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
 import type { Camera } from "../core/projection.ts";
-import type { BBox, GenStyle } from "../core/types.ts";
+import type { BBox } from "../core/types.ts";
 
 export interface Host {
   /** 画布物理像素跟随 CSS 尺寸与 DPR（缩放/换屏后重读 devicePixelRatio） */
@@ -48,7 +48,8 @@ export function createHost(ctx: ShellCtx): Host {
 
   function rebuild(): void {
     const w = worldSig.value;
-    if (!w) { ctx.meta.genSeed = +($("seed") as HTMLInputElement).value | 0 || 1; ctx.meta.genStyle = ($("style") as HTMLSelectElement).value as GenStyle; }
+    /* 无世界（程序化预览）时的 genSeed/genStyle 直接用 ctx.meta——它有出厂默认
+       （createShellCtx: auto/1234/continent），深链 #seed=/#style= 也已落在同一处。 */
     const t0 = performance.now();
     ctx.grid = buildGridCells(ctx.meta, w ? w.terrainOverrides : [], yearSig.value);
     ctx.elevField = buildElevField(ctx.meta, w ? w.heightOverrides : undefined, ctx.grid, yearSig.value);

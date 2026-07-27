@@ -195,8 +195,6 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   /* 指针/键盘/滚轮交互接线；frame 经 ptr 读画线笔迹/框选/光标位 */
   const ptr = wireInteractions(ctx, host, libio, { resetView });
   addEventListener("resize", resize);
-  $("reroll").onclick = () => { ($("seed") as HTMLInputElement).value = String((Math.random() * 99999) | 0); rebuild(); };
-  ["seed", "style"].forEach(id => $(id).onchange = () => rebuild());
 
   /* 画布物理尺寸跟随（B2：分隔条退役——抽屉/检查器为定宽可收，收展动画与窗口变化经
      ResizeObserver 连续触发 resize()，对齐旧分隔条拖拽期间的实时重设） */
