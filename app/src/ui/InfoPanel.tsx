@@ -10,8 +10,8 @@ import { unitArm, unitFireKm, unitKind, unitPos, unitSpeed, unitStatusAt } from 
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
-import { clearOpSel, deleteDecorAt, deleteEdgeIdx, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
-import { deleteUnitWaypoint, removeDecor, removeFaction, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointStatus } from "./editops.ts";
+import { clearOpSel, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
+import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
 import { FactionForm } from "./FactionForm.tsx";
@@ -162,11 +162,7 @@ function FactionCard({ f, world }: { f: Faction; world: World }) {
     : world.nodes.filter(n => n.type !== "event" && ownerAt(n, y) === f.id)
   ).filter(n => activeAt(n, y));
   const nb = paintLayersAt(f, y).length;
-  const del = () => {
-    if (!confirm(`删除派系「${f.名称 || f.id}」？其地点归属将变为中立，涂域随之删除。`)) return;
-    mutateWorld(w => { removeFaction(w, f.id); });
-    selSig.value = null;
-  };
+  const del = () => deleteFactionAt(f.id);
   return (
     <>
       <CardHead title={f.名称 || f.id} />

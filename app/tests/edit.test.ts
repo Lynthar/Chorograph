@@ -7,8 +7,8 @@ import { createAutosave } from "../src/data/autosave.ts";
 import { addEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removeUnit, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { buildGridCells } from "../src/core/grid.ts";
-import { canRedoSig, canUndoSig, deleteEdgeIdx, deleteNodeAt, editSubSig, editVerSig, gridVerSig, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
-  pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selSig, setWorldState, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
+import { canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
+  paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selSig, setWorldState, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES } from "../src/core/constants.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 
@@ -376,7 +376,7 @@ describe("signals 变更管线", () => {
   });
 });
 
-describe("单对象删除 helper（即时 + 可撤销 toast + 精准清选中）", () => {
+describe("单对象删除 helper（即时删 + 精准清选中；三门面带可撤销 toast，派系带 confirm）", () => {
   it("deleteNodeAt：删被选中项→清选中、出可撤销 toast、撤销可复原", () => {
     setWorldState(mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2, 名称: "甲" }, { id: "b", type: "city", lon: 3, lat: 4 }] }));
     selSig.value = { kind: "node", id: "a" };
@@ -407,6 +407,50 @@ describe("单对象删除 helper（即时 + 可撤销 toast + 精准清选中）
     assert.strictEqual(selSig.value, null, "清选中");
     undoWorld();
     assert.strictEqual(worldSig.value!.edges.length, 1, "撤销复原");
+  });
+  /* 派系删除单列一门面（爆炸半径大→保留 confirm、不发 toast）：卡片与表单两处调用点曾各写一份且已漂移
+     （卡片那份漏清涂域目标，靠 DrawPane 的自愈守卫兜住）——下面三测锁住收口后的完整语义。 */
+  it("deleteFactionAt：确认后连带中立化 + 清涂域目标 + 清选中 + 撤销复原", () => {
+    setWorldState(mkWorld({
+      factions: [{ id: "f1", 名称: "甲派", color: "#c00" }],
+      nodes: [{ id: "a", type: "city", lon: 1, lat: 2, faction: "f1", owners: [{ faction: "f1", since: 3000 }] }],
+    }));
+    selSig.value = { kind: "faction", id: "f1" };
+    paintFactionSig.value = "f1";
+    paintLayerSig.value = 2;
+    deleteFactionAt("f1", () => true);
+    assert.strictEqual(worldSig.value!.factions.length, 0, "派系已删");
+    assert.strictEqual(worldSig.value!.nodes[0].faction, null, "地点归属中立化");
+    assert.strictEqual(worldSig.value!.nodes[0].owners, undefined, "沿革条目剔除（空则删键）");
+    assert.strictEqual(paintFactionSig.value, null, "涂域目标同步清空");
+    assert.strictEqual(paintLayerSig.value, 0, "涂域层归零");
+    assert.strictEqual(selSig.value, null, "被删的正是选中项→清选中");
+    undoWorld();
+    assert.strictEqual(worldSig.value!.factions.length, 1, "撤销复原");
+  });
+  it("deleteFactionAt：取消＝一字不改（confirm 必须先于 mutateWorld）", () => {
+    setWorldState(mkWorld({
+      factions: [{ id: "f1", 名称: "甲派" }],
+      nodes: [{ id: "a", type: "city", lon: 1, lat: 2, faction: "f1" }],
+    }));
+    selSig.value = { kind: "faction", id: "f1" };
+    paintFactionSig.value = "f1";
+    const before = worldSig.value;
+    deleteFactionAt("f1", () => false);
+    assert.strictEqual(worldSig.value, before, "世界引用未换＝根本没进 mutateWorld");
+    assert.strictEqual(worldSig.value!.nodes[0].faction, "f1", "归属不动");
+    assert.deepStrictEqual(selSig.value, { kind: "faction", id: "f1" }, "选中不动");
+    assert.strictEqual(paintFactionSig.value, "f1", "涂域目标不动");
+    assert.strictEqual(canUndoSig.value, false, "不留撤销步");
+  });
+  it("deleteFactionAt：删非选中派系不动当前选中与涂域目标（与三门面同规）", () => {
+    setWorldState(mkWorld({ factions: [{ id: "f1", 名称: "甲" }, { id: "f2", 名称: "乙" }] }));
+    selSig.value = { kind: "faction", id: "f2" };
+    paintFactionSig.value = "f2";
+    deleteFactionAt("f1", () => true);
+    assert.strictEqual(worldSig.value!.factions.length, 1, "只删了 f1");
+    assert.deepStrictEqual(selSig.value, { kind: "faction", id: "f2" }, "删 f1 不清对 f2 的选中");
+    assert.strictEqual(paintFactionSig.value, "f2", "涂域目标是 f2 → 不动");
   });
 });
 

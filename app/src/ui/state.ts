@@ -11,7 +11,7 @@ import { parseWhenForm, ymdOverflow, type CalendarSpec } from "../core/calendar.
 import { yearRangeOf } from "../core/time.ts";
 import { normalizeWorld } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
-import { removeDecor, removeEdgeAt, removeNode, removeUnit } from "./editops.ts";
+import { removeDecor, removeEdgeAt, removeFaction, removeNode, removeUnit } from "./editops.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Arm, Decor, Edge, Faction, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
@@ -181,7 +181,7 @@ export function mutateWorld(fn: (w: World) => void, opts: { grid?: boolean } = {
 }
 
 /* —— 单对象删除：即时删 + 可撤销 toast（低摩擦，替代逐次 confirm）。
-   派系（连带涂域）与框选批量仍走 confirm——见 InfoPanel/pointer。
+   派系（连带涂域）与框选批量仍走 confirm——派系见下方 deleteFactionAt，框选见 pointer。
    清选中仅当当前选中就是被删对象（删工具点删非选中项时不误清选择）。 —— */
 export function deleteNodeAt(id: string): void {
   const w = worldSig.peek();
@@ -222,6 +222,23 @@ export function deleteEdgeIdx(idx: number): void {
   const s = selSig.peek();
   if (s && s.kind === "edge" && s.idx === idx) selSig.value = null;
   showToast(`已删除${名}${e.名称 ? `「${e.名称}」` : ""}`, { undo: true });
+}
+
+/* 派系删除单独一门面：爆炸半径大（地点归属中立化、沿革剔除、作战线 side 清空、涂域连带没）
+   故保留 confirm、且不发可撤销 toast——确认框本身即回执（既有语义逐位保留）。
+   ask 可注入：node:test 无 confirm（缺省即视为确认），注入 () => false 可锁「取消＝一字不改」。 */
+const askConfirm = (msg: string) => typeof confirm !== "function" || confirm(msg);
+export function deleteFactionAt(id: string, ask: (msg: string) => boolean = askConfirm): void {
+  const w = worldSig.peek();
+  const f = w && w.factions.find(x => x.id === id);
+  if (!f) return;
+  if (!ask(`删除派系「${f.名称 || id}」？其地点归属将变为中立，涂域随之删除。`)) return;
+  mutateWorld(x => { removeFaction(x, id); });
+  batch(() => {
+    if (paintFactionSig.peek() === id) { paintFactionSig.value = null; paintLayerSig.value = 0; }
+    const s = selSig.peek();
+    if (s && s.kind === "faction" && s.id === id) selSig.value = null;
+  });
 }
 
 /** 拖动等连续操作：起手 pushHistoryOnce 记一步，随后每帧 mutateWorldLive（不进撤销栈） */

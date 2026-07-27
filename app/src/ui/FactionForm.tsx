@@ -1,9 +1,10 @@
 /* 派系编辑表单（UI 1:1 还原 v0.14 factionEditForm/ff_save）：名称/颜色/阵营/存续/说明/双链，
-   一次「保存修改」提交；删除连带（归属中立化/沿革剔除/作战线 side 清空）。字段带持久小标签（.frow>label）。 */
+   一次「保存修改」提交；删除走 state 的 deleteFactionAt 门面（与检查器卡片同一条路径，含 confirm 与涂域目标清理）。
+   字段带持久小标签（.frow>label）。 */
 import { useRef } from "preact/hooks";
-import { applyFactionForm, removeFaction } from "./editops.ts";
+import { applyFactionForm } from "./editops.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
-import { inspEditSig, isTacSig, modeSig, mutateWorld, paintFactionSig, paintLayerSig, parseWhenInput, selSig, showToast, worldSig } from "./state.ts";
+import { deleteFactionAt, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "./state.ts";
 import type { Faction } from "../core/types.ts";
 
 export function FactionForm({ f }: { f: Faction }) {
@@ -23,12 +24,7 @@ export function FactionForm({ f }: { f: Faction }) {
     inspEditSig.value = false;
     showToast("已保存修改", { undo: true });
   };
-  const del = () => {
-    if (!confirm(`删除派系「${f.名称 || f.id}」？其地点归属将变为中立，涂域随之删除。`)) return;
-    mutateWorld(w => removeFaction(w, f.id));
-    if (paintFactionSig.peek() === f.id) { paintFactionSig.value = null; paintLayerSig.value = 0; }
-    selSig.value = null;
-  };
+  const del = () => deleteFactionAt(f.id);
   return (
     <div ref={box} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
       <div class="frow"><label>名称</label>
