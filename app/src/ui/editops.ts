@@ -7,7 +7,7 @@ import { activeAt } from "../core/time.ts";
 import { setUnitPoint, unitKind } from "../core/units.ts";
 import { UNIT_KINDS, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
-import type { Arm, Asset, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
+import type { Arm, Asset, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
 
 export const newNodeId = (): string => "n" + Date.now().toString(36);
 export const newEventId = (): string => "ev" + Date.now().toString(36);
@@ -462,3 +462,37 @@ export function changeUnitKind(u: Unit, kind: string): void {
 
 /** 兵种默认速度（表单占位/展示用；unitKind 已导出于 core） */
 export function unitKindDefaultSpeed(u: Unit): number { return (unitKind(u) || UNIT_KINDS.inf).v; }
+
+/* —— 相位（战术图分帧命名时刻;meta.phases 纯书签,时间为基底）—— */
+
+/** 记 T 时刻为相位（默认名「相位 N」,检查器/览面改名）；同刻已有（1e-9）不改档返回 null */
+export function addPhaseAt(w: World, T: number): Phase | null {
+  const m = w.meta || (w.meta = {});
+  const list = Array.isArray(m.phases) ? m.phases : (m.phases = []);
+  if (list.some(p => p && isFinite(+p.t) && Math.abs(+p.t - T) < 1e-9)) return null;
+  const p: Phase = { t: +T, 名称: `相位 ${list.length + 1}` };
+  list.push(p);
+  list.sort((a, b) => (+a.t || 0) - (+b.t || 0));
+  return p;
+}
+
+/** 删指定时刻的相位；无匹配=false（一字不改）。删空后整键不落盘（同 heightOverrides 之例） */
+export function removePhaseAt(w: World, t: number): boolean {
+  const list = (w.meta || {}).phases;
+  if (!Array.isArray(list)) return false;
+  const i = list.findIndex(p => p && Math.abs(+p.t - t) < 1e-9);
+  if (i < 0) return false;
+  list.splice(i, 1);
+  if (!list.length) delete w.meta.phases;
+  return true;
+}
+
+/** 改相位名；空名=回落无名（删 名称 键,显示端给缺省） */
+export function renamePhase(w: World, t: number, name: string): boolean {
+  const list = (w.meta || {}).phases;
+  const p = Array.isArray(list) ? list.find(q => q && Math.abs(+q.t - t) < 1e-9) : null;
+  if (!p) return false;
+  const nm = String(name || "").trim();
+  if (nm) p.名称 = nm; else delete p.名称;
+  return true;
+}

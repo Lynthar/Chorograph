@@ -26,6 +26,10 @@ export interface CalendarCfg {
 /** 战术图 ↔ 战略图 双向链接（meta.parent / ev.tacmap） */
 export interface TacParent { map?: string; mapName?: string; event?: string; eventName?: string }
 
+/** 相位（战术图分帧的命名时刻,2026-07 特化）：t=日戳。旧版打开忽略此键=零迁移；
+    读取一律走 core/time.phasesOf（过滤坏项+排序,旧档/手编档防御在消费端） */
+export interface Phase { t: number; 名称?: string; note?: string }
+
 export interface Meta {
   名称?: string;
   说明?: string;
@@ -44,6 +48,7 @@ export interface Meta {
   parent?: TacParent;
   battleYear?: number;        // 战术图对应的战役年份
   tacSpan?: [number, number]; // 战术图时间轴默认范围（日戳）
+  phases?: Phase[];           // 战术图相位（分帧命名时刻;导航与批量出图锚点）
   relief?: number;            // 程序化地势起伏幅度 0..1（缺省=无——旧图高程场逐位不变）
   elevUnitM?: number;         // 1 抽象高程单位 = 多少米（缺省 2000；等高距/光标高程换算用）
   contourM?: number;          // 最细等高距（米）：缩放自适应 ×2 阶梯的锚/下限；缺省 10m

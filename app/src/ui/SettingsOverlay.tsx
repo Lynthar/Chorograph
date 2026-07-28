@@ -6,7 +6,7 @@ import { useRef, useState } from "preact/hooks";
 import { blankWorld, type BlankWorldSpec } from "../core/world.ts";
 import { calOf } from "../core/calendar.ts";
 import type { CalendarCfg, GenStyle, TerrainMode, WorldModel } from "../core/types.ts";
-import { closeSettings, flyReqSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, uiPrefsSig, worldSig, type SettingsMode } from "./state.ts";
+import { closeSettings, flyReqSig, isTacSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, uiPrefsSig, worldSig, type SettingsMode } from "./state.ts";
 import { useModalFocus } from "./modal.ts";
 
 const randSeed = () => Math.floor(Math.random() * 99999) + 1;
@@ -140,6 +140,10 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
               <button type="button" class={"tbtn" + (p.den === "tight" ? " on" : "")} aria-pressed={p.den === "tight"} onClick={() => setUiPrefs({ den: "tight" })}>兵棋 · 紧</button>
             </div>
           </div>
+          <div class="setrow"><label>出图图例</label>
+            <label><input type="checkbox" checked={p.legend !== false}
+              onChange={e => setUiPrefs({ legend: (e.currentTarget as HTMLInputElement).checked })} /> 战术图导出附图例块（派系·兵种·状态，右下角）</label>
+          </div>
           <h4 style={{ margin: "12px 0 4px" }}>世界参数</h4>
         </>
       ); })()}
@@ -208,6 +212,7 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
             <button type="button" class="tbtn" title="导入 JSON 数据文件，替换当前地图内容（可撤销）" onClick={() => fileRef.current?.click()}>📂 导入 JSON</button>
             <button type="button" class="tbtn" title="导出当前数据为 JSON" onClick={() => acts?.exportCurrent()}>💾 导出 JSON</button>
             <button type="button" class="tbtn" title="把当前视图导出为 PNG 图片" onClick={() => acts?.exportPng()}>📷 出图 PNG</button>
+            {isTacSig.value && <button type="button" class="tbtn" title="按「览 → 相位」清单逐相位各出一张 PNG（当前视角与图层；浏览器会请求一次连续下载授权）" onClick={() => acts?.exportFrames()}>🎞 分帧出图</button>}
             <button type="button" class="tbtn" title="把当前地图内容重置为内置示例数据（可撤销）" onClick={() => acts?.resetToSample()}>↺ 重置为内置示例</button>
             <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }}
               onChange={async e => {

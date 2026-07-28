@@ -17,8 +17,9 @@ function boxColor(world: World, u: Unit): string {
   return (f && f.color) || "#a03030";
 }
 
-/** 状态徽章（框右上角）：交战=交叉双剑 / 对峙=对峙双杠 / 溃退=折线溃箭——手绘线条（不走 emoji 字形，跨平台一致） */
-function drawStatusBadge(ctx: CanvasRenderingContext2D, bx: number, by: number, st: string, color: string): void {
+/** 状态徽章（框右上角）：交战=交叉双剑 / 对峙=对峙双杠 / 溃退=折线溃箭——手绘线条（不走 emoji 字形，跨平台一致）。
+    导出供图例块复用（render/legend）——徽章字形单一真源。 */
+export function drawStatusBadge(ctx: CanvasRenderingContext2D, bx: number, by: number, st: string, color: string): void {
   ctx.save();
   ctx.beginPath(); ctx.arc(bx, by, 6.5, 0, 7);
   ctx.fillStyle = "rgba(251,247,234,.94)"; ctx.fill();

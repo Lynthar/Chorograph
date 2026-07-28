@@ -4,8 +4,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { addEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removeUnit, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { addEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitFireKm, unitStatusAt } from "../src/core/units.ts";
+import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells } from "../src/core/grid.ts";
 import { canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
   paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selSig, setWorldState, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
@@ -921,5 +922,37 @@ describe("子工具自动开图层（隐藏层上放置＝幽灵编辑，切入�
     revealLayersFor("link");   // river 已开 → 无操作
     assert.strictEqual(layersSig.peek(), ref);
     layersSig.value = s0; linkTypeSig.value = "road";
+  });
+});
+
+describe("相位（战术分帧命名时刻）", () => {
+  it("增删改名：同刻去重、按时刻排序、删空整键不落盘、空名回落", () => {
+    const w = mkWorld();
+    const p1 = addPhaseAt(w, 100.25)!;
+    assert.strictEqual(p1.名称, "相位 1");
+    assert.strictEqual(addPhaseAt(w, 100.25), null, "同刻不重复");
+    addPhaseAt(w, 100.5); addPhaseAt(w, 100.125);
+    assert.deepStrictEqual(w.meta.phases!.map(p => p.t), [100.125, 100.25, 100.5], "按时刻升序");
+    assert.ok(renamePhase(w, 100.25, "  渡河列阵 "));
+    assert.strictEqual(w.meta.phases![1].名称, "渡河列阵");
+    renamePhase(w, 100.25, "  ");
+    assert.strictEqual(w.meta.phases![1].名称, undefined, "空名回落＝删 名称 键");
+    assert.strictEqual(removePhaseAt(w, 999), false, "无匹配一字不改");
+    removePhaseAt(w, 100.125); removePhaseAt(w, 100.25); removePhaseAt(w, 100.5);
+    assert.strictEqual("phases" in w.meta, false, "删空整键不落盘");
+  });
+  it("phasesOf 防御过滤+排序；phaseIndexAt 段语义；adjacentPhaseT 严格相邻", () => {
+    const meta = { phases: [{ t: 3 }, null, { t: 1, 名称: "一" }, { t: "坏" }, { t: 2 }] } as never;
+    const ph = phasesOf(meta);
+    assert.deepStrictEqual(ph.map(p => p.t), [1, 2, 3], "滤坏项+升序（原数组不动）");
+    assert.strictEqual(phaseIndexAt(ph, 0.5), -1, "早于首相位");
+    assert.strictEqual(phaseIndexAt(ph, 2.5), 1, "段语义 [t, 下一)");
+    assert.strictEqual(phaseIndexAt(ph, 3), 2, "恰在相位上＝该相位");
+    assert.strictEqual(adjacentPhaseT(ph, 2, -1), 1, "站在相位上：上一＝严格更早");
+    assert.strictEqual(adjacentPhaseT(ph, 2, 1), 3);
+    assert.strictEqual(adjacentPhaseT(ph, 1, -1), null, "首相位无上一");
+    assert.strictEqual(adjacentPhaseT(ph, 3, 1), null, "末相位无下一");
+    assert.strictEqual(phasesOf(undefined).length, 0);
+    assert.strictEqual(phasesOf({ phases: "垃圾" } as never).length, 0, "非数组防御");
   });
 });

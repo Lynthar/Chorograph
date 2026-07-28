@@ -9,16 +9,18 @@ import { migrateFromLocalStorage, migrateFolderHandle } from "../data/migrate.ts
 import { fsSupported, folderList, folderReadWorld, folderWriteWorld, folderCreate, folderRemove, fcachePatch, fcacheRemove }
   from "../data/folder.ts";
 import { countsOf, normalizeWorld } from "../core/world.ts";
-import { yearRangeOf } from "../core/time.ts";
+import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import { contourStepFor } from "../core/elev.ts";
+import { safeName } from "../core/util.ts";
+import { drawLegend } from "../render/legend.ts";
 import { pickBootEntry, planOpen, wantsDeepStart, type OpenSnap } from "./openplan.ts";
 import { landWorld } from "./orchestrate.ts";
-import { calOf, fmtWhen } from "../core/calendar.ts";
+import { calOf, fmtT, fmtWhen } from "../core/calendar.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewSig, libActionsSig,
   playingSig, togglePlay, stopPlay, closeSettings, mutateWorld, pushHistoryOnce, clearOpSel, cancelOpDraw,
-  routePtsSig, routeResSig, linkFromSig, unitLegsSig,
+  routePtsSig, routeResSig, linkFromSig, unitLegsSig, uiPrefsSig,
   gridVerSig, editVerSig, showToast, loadStageSig, type LibActions }
   from "../ui/state.ts";
 import type { ShellCtx, FolderHandle } from "./ctx.ts";
@@ -269,6 +271,33 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     alert("找不到上级战略图（可能已删除、改名或图库来源已切换）。可从图库手动打开。");
     return false;
   }
+  /* 合成当前时刻一帧（地形+叠加层;战术图按偏好附图例）——「出图 PNG」与「分帧出图」共用。
+     地形层开＝先渲后同任务内读回;关＝垫恒定纸色底（产物不随主题变,既定裁决）。 */
+  function composeFrame(): Promise<Blob | null> {
+    const R = layersSig.peek().terrain ? ctx.R : null;
+    if (R) {
+      const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
+      R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat" });
+    }
+    const off = document.createElement("canvas");
+    off.width = canvas.width; off.height = canvas.height;
+    const g2 = off.getContext("2d")!;
+    if (R) g2.drawImage(canvas, 0, 0);
+    else { g2.fillStyle = "#d9d2c0"; g2.fillRect(0, 0, off.width, off.height); }
+    g2.drawImage(ov, 0, 0);
+    /* 图例块（战术·本机偏好可关）：内容自动取图内实际出现的;按 DPR 折回 CSS 像素画右下角 */
+    if (ctx.meta.mapKind === "tactical" && uiPrefsSig.peek().legend !== false) {
+      const w = worldSig.peek();
+      if (w) { g2.save(); g2.scale(ctx.DPR, ctx.DPR); drawLegend(g2, w, yearSig.peek(), off.width / ctx.DPR, off.height / ctx.DPR); g2.restore(); }
+    }
+    return new Promise(res => off.toBlob(b => res(b), "image/png"));
+  }
+  function downloadBlob(name: string, b: Blob): void {
+    const url = URL.createObjectURL(b);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+  }
   /* 图库动作桥（HomePanel 组件经 libActionsSig 调用；库 IO 全在外壳）。 */
   const libActions: LibActions = {
     toggle() { ctx.libOpen = !ctx.libOpen; refreshLib(); },
@@ -311,30 +340,35 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       });
       showToast(`已导入「${srcName}」替换当前图`, { undo: true });
     },
-    /* 设置弹层「📷 出图 PNG」：地形+叠加层合成一张全分辨率 PNG 下载。
-       地形层开＝先渲后同任务内读回（preserveDrawingBuffer:false 下跨任务读 GL 画布属规范未定义）；
-       地形层关＝不读被隐藏的 GL 画布（内容未定义），垫恒定纸色底（亮主题画布底色，产物不随主题变）。 */
-    exportPng() {
+    /* 设置弹层「📷 出图 PNG」：地形+叠加层合成一张全分辨率 PNG 下载（合成细节见 composeFrame）。 */
+    async exportPng() {
       if (!worldSig.peek()) return;
       closeSettings();
-      const R = layersSig.peek().terrain ? ctx.R : null;
-      if (R) {
-        const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
-        R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat" });
+      const b = await composeFrame();
+      if (b) downloadBlob(`${ctx.meta.名称 || "舆图"}_${fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", yearSig.peek())}.png`, b);
+    },
+    /* 「🎞 分帧出图」（2026-07 特化·相位批）：逐相位拨时间轴→信号同步冲刷（编排 effect 重建网格/腿账）→
+       ctx.repaint 同步重画→同任务合成下载一张;末了拨回原时刻。产物=每相位一个 PNG
+       （用户拍板;浏览器对连续多文件下载会请求一次授权）。 */
+    async exportFrames() {
+      const w = worldSig.peek();
+      if (!w || ctx.meta.mapKind !== "tactical") return;
+      const ph = phasesOf(w.meta);
+      if (!ph.length) { showToast("还没有相位——先在「览 → 相位」记几个时刻", { err: true }); return; }
+      closeSettings();
+      stopPlay();
+      const T0 = yearSig.peek();
+      const nm = ctx.meta.名称 || "舆图";
+      const cal = calOf(ctx.meta.calendar);
+      for (let i = 0; i < ph.length; i++) {
+        yearSig.value = ph[i].t;
+        if (ctx.repaint) ctx.repaint();
+        const b = await composeFrame();
+        if (b) downloadBlob(`${nm}_帧${i + 1}_${safeName(ph[i].名称 || `相位${i + 1}`)}_${safeName(fmtT(cal, ph[i].t))}.png`, b);
       }
-      const off = document.createElement("canvas");
-      off.width = canvas.width; off.height = canvas.height;
-      const g2 = off.getContext("2d")!;
-      if (R) g2.drawImage(canvas, 0, 0);
-      else { g2.fillStyle = "#d9d2c0"; g2.fillRect(0, 0, off.width, off.height); }
-      g2.drawImage(ov, 0, 0);
-      off.toBlob(b => {
-        if (!b) return;
-        const url = URL.createObjectURL(b);
-        const a = document.createElement("a");
-        a.href = url; a.download = `${ctx.meta.名称 || "舆图"}_${fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", yearSig.peek())}.png`; a.click();
-        URL.revokeObjectURL(url);
-      }, "image/png");
+      yearSig.value = T0;
+      if (ctx.repaint) ctx.repaint();
+      showToast(`已导出 ${ph.length} 帧`);
     },
     /* 设置弹层「↺ 重置为内置示例」：重置为内置程序化示例大陆 */
     async resetToSample() {

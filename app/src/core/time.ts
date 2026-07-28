@@ -1,7 +1,7 @@
 /* 时间为基底：任意对象（地点/连线/布景/地形涂改/派系/涂域层）的存在时段判定。
    无 since/until = 全期存在（旧数据零迁移）。战略图 yr=年份，战术图 yr=日戳 T——同一套逻辑。 */
 import { calOf, fromT, yearSpanT } from "./calendar.ts";
-import type { Owner, PaintLayer, Timed, World, WorldNode } from "./types.ts";
+import type { Meta, Owner, PaintLayer, Phase, Timed, World, WorldNode } from "./types.ts";
 
 /** 对象在某时刻是否存在：[since, until) 区间，缺省 ±∞ */
 export function activeAt(o: Timed, yr: number): boolean {
@@ -33,6 +33,31 @@ export function paintLayersAt(f: { paint?: PaintLayer[] }, yr: number): PaintLay
     const s = (L.since == null ? -Infinity : L.since), u = (L.until == null ? Infinity : L.until);
     return yr >= s && yr < u;
   });
+}
+
+/* —— 相位（战术图分帧命名时刻,2026-07 特化）—— */
+
+/** 相位表：过滤坏项（非对象/t 非数）+ 按时刻升序。旧档/手编档 phases 可为任意垃圾——防御在此,
+    消费端（时间坞标记/览面列表/分帧出图/PgUp·PgDn）一律经此读取。 */
+export function phasesOf(meta: Meta | undefined): Phase[] {
+  const raw = meta && Array.isArray(meta.phases) ? meta.phases : [];
+  return raw.filter((p): p is Phase => !!p && typeof p === "object" && isFinite(+(p as Phase).t))
+    .slice().sort((a, b) => a.t - b.t);
+}
+
+/** 当前所在相位下标：最后一个 t ≤ T 的（段语义 [t, 下一相位)——同 owners）；早于首相位=-1 */
+export function phaseIndexAt(ph: Phase[], T: number): number {
+  let idx = -1;
+  for (let i = 0; i < ph.length; i++) { if (ph[i].t <= T + 1e-9) idx = i; else break; }
+  return idx;
+}
+
+/** 相邻相位时刻：dir=-1 上一（严格早于 T）/ +1 下一（严格晚于 T）；无=null。
+    1e-9 容差防「正站在相位上」被浮点当作可再跳。 */
+export function adjacentPhaseT(ph: Phase[], T: number, dir: -1 | 1): number | null {
+  if (dir < 0) { for (let i = ph.length - 1; i >= 0; i--) { if (ph[i].t < T - 1e-9) return ph[i].t; } return null; }
+  for (const p of ph) { if (p.t > T + 1e-9) return p.t; }
+  return null;
 }
 
 export interface YearRange { min: number; max: number; year: number }

@@ -5,7 +5,7 @@
 import { unproject, clampView, zoomAtView, panByView } from "../core/projection.ts";
 import { EDGE_STYLE, EVENT_TYPES, NODE_STYLE, DECOR_BASE, ECO, canonComposite, parseComposite } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
-import { ownerAt } from "../core/time.ts";
+import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { elevUnitM, elevSmooth } from "../core/elev.ts";
 import { distKm } from "../core/geo.ts";
@@ -813,6 +813,14 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (e.key === "3") { setRailTool("draw"); return; }
       if (e.key === "4") { if (isTacSig.peek()) setRailTool("units"); return; }
       if (e.key === "0") { deps.resetView(); return; }
+    }
+    /* PgUp/PgDn＝上/下相位（战术图分帧导航；无相位或到头＝不动。战略图不拦默认行为） */
+    if ((e.key === "PageUp" || e.key === "PageDown") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (!isTacSig.peek()) return;
+      e.preventDefault();
+      const t = adjacentPhaseT(phasesOf(worldSig.peek()?.meta), yearSig.peek(), e.key === "PageUp" ? -1 : 1);
+      if (t != null) { stopPlay(); yearSig.value = t; }
+      return;
     }
     /* ＋/－=以画布中心缩放；方向键=编辑模式选中地点微调（否则平移）；WASD=平移（v0.14） */
     const zoomCenter = (f: number): void => {

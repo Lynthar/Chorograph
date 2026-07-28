@@ -191,6 +191,11 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .dk-track .thumb{position:absolute;top:15px;width:16px;height:16px;border-radius:50%;background:var(--q-gold);border:2.5px solid var(--q-top);box-shadow:0 0 0 1.5px var(--q-gold);transform:translateX(-50%);pointer-events:none}
 .dk-track.dragging .thumb{box-shadow:0 0 0 1.5px var(--q-gold),0 0 0 9px var(--q-goldwash)}
 .dk-track .mm{position:absolute;bottom:0;font:400 var(--fs-xs)/1 var(--f-mono);color:var(--q-faint);pointer-events:none}
+/* 相位金菱（战术分帧命名时刻;金＝时间语义）：轨下带,当前段实心、其余空心;13px 命中区包 7px 菱 */
+.dk-track .phm{position:absolute;top:28.5px;width:13px;height:13px;padding:0;border:0;background:none;transform:translateX(-50%);cursor:pointer}
+.dk-track .phm::before{content:"";position:absolute;left:2.5px;top:2.5px;width:6px;height:6px;transform:rotate(45deg);background:var(--q-pn);border:1.5px solid var(--q-gold)}
+.dk-track .phm.cur::before{background:var(--q-gold)}
+.dk-track .phm:hover::before{box-shadow:0 0 0 3px var(--q-goldwash)}
 .dk-seg{display:flex;border:1px solid var(--q-ln);border-radius:var(--r-sm);overflow:hidden;flex:none}
 .dk-seg button{font-size:var(--fs-xs);padding:6px 12px;color:var(--q-dim);min-height:28px;cursor:pointer;text-align:center}
 .dk-seg button+button{border-left:1px solid var(--q-ln)}
@@ -284,6 +289,13 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .ev .tt{flex:1;min-width:0;text-align:left}
 .ev .tt b{display:block;font-weight:600;font-size:var(--fs-sm);line-height:1.45}
 .ev .tt span{display:block;font-size:var(--fs-xs);color:var(--q-faint);line-height:1.5}
+/* 相位行（览面·战术）：金菱＝当前相位段（与坞标记同形）+ 时刻金链 + 行内改名框 + 朱✕ */
+.phrow{display:flex;gap:6px;align-items:center;padding:2px 8px}
+.phrow .phdot{width:6px;height:6px;flex:none;transform:rotate(45deg);background:transparent;border:1.5px solid var(--q-ln2)}
+.phrow .phdot.cur{background:var(--q-gold);border-color:var(--q-gold)}
+.phrow .link.time{flex:none}
+.phrow .fld{flex:1;min-width:0;margin:0;padding:2px 6px}
+.phrow .del{color:var(--q-zhu);flex:none}
 .ev.cur{background:var(--q-goldwash)}
 .ev.cur .yr{color:var(--q-gold)}
 .ev.cur .tt b{color:var(--q-gold2)}

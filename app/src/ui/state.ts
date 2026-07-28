@@ -81,6 +81,7 @@ export interface LibActions {
   createWorld(w: World): void;                          // 设置弹层「创建此地图」→ 入库并打开
   replaceCurrent(json: unknown, srcName: string): void; // 设置弹层「导入 JSON」→ 替换当前图内容（可撤销）
   exportPng(): void;                                    // 设置弹层「出图 PNG」
+  exportFrames(): void;                                 // 设置弹层「分帧出图」：逐相位各一张 PNG（战术图）
   resetToSample(): void;                                // 设置弹层「重置为内置示例」
   linkFolder(): void; backToBrowser(): void;
 }
@@ -387,10 +388,10 @@ export function pickLinkType(tp: Edge["type"]): void {
   batch(() => { linkTypeSig.value = tp; revealLayersFor("link"); });
 }
 
-/* —— 界面偏好：主题（亮·素笺默认/暗·漆）×密度（浏览·松/兵棋·紧）两轴。
+/* —— 界面偏好：主题（亮·素笺默认/暗·漆）×密度（浏览·松/兵棋·紧）两轴 + 出图图例开关。
    本机 localStorage 持久化、不入存档；boot 读写存储并把 data-theme/data-den 落到 #app。 —— */
-export interface UiPrefs { theme: "light" | "dark"; den: "loose" | "tight" }
-export const uiPrefsSig = signal<UiPrefs>({ theme: "light", den: "loose" });
+export interface UiPrefs { theme: "light" | "dark"; den: "loose" | "tight"; legend: boolean }
+export const uiPrefsSig = signal<UiPrefs>({ theme: "light", den: "loose", legend: true });
 export function setUiPrefs(p: Partial<UiPrefs>): void { uiPrefsSig.value = { ...uiPrefsSig.peek(), ...p }; }
 
 /* —— toast：一次提交＝一步撤销的确认回执。错误一律朱、撤销键金（时间倒回语义）；

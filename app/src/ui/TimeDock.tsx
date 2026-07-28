@@ -8,7 +8,8 @@ import { Fragment } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { signal } from "@preact/signals";
 import type { JSX } from "preact";
-import { calOf, cnDay, cnMonth, fmtHM, fmtShichen, fmtYear, fromT, type CalendarSpec } from "../core/calendar.ts";
+import { calOf, cnDay, cnMonth, fmtHM, fmtShichen, fmtT, fmtYear, fromT, type CalendarSpec } from "../core/calendar.ts";
+import { phaseIndexAt, phasesOf } from "../core/time.ts";
 import { isTacSig, playingSig, rangeSig, stopPlay, subDaySig, timeStep, togglePlay, toggleSubDay, worldSig, yearSig } from "./state.ts";
 import { buildMarks, hourWindow, quantTime, subTicks, type EvMark } from "./timedock.ts";
 
@@ -51,6 +52,10 @@ export function TimeDock() {
     .filter(n => n.type === "event" && n.year != null)
     .map(n => ({ t: n.year as number, label: n.名称 || n.id }));
   const marks = buildMarks(evs, min, max, y, trackW.value, sameSlot);
+  /* 相位金标记（战术分帧命名时刻）：轨下带小金菱,点击即跳（金＝时间语义正当用途）。
+     须 stopPropagation 否则按下会落进主轨 scrub。 */
+  const phasesL = tac ? phasesOf(worldSig.value?.meta) : [];
+  const curPh = phaseIndexAt(phasesL, y);
 
   let mainLab: string, subLab: string;
   if (tac) {
@@ -135,6 +140,14 @@ export function TimeDock() {
                 <span class={"tick" + (m.fut ? " fut" : "")} style={{ left: m.pct + "%" }}></span>
                 {m.label != null && <span class={"tlab" + (m.cur ? " cur" : "") + (m.fut ? " fut" : "")} style={{ left: m.pct + "%" }}>{m.label}</span>}
               </Fragment>)}
+          {span > 0 && phasesL.map((p, i) => (p.t >= min && p.t <= max) && (
+            <button key={"ph" + i} type="button" class={"phm tr" + (i === curPh ? " cur" : "")}
+              style={{ left: ((p.t - min) / span) * 100 + "%" }}
+              title={`${p.名称 || `相位 ${i + 1}`} · ${fmtT(cal, p.t)}（点击跳转；PgUp/PgDn 上下相位）`}
+              aria-label={`跳到相位：${p.名称 || i + 1}`}
+              onPointerDown={e => e.stopPropagation()}
+              onClick={() => { stopPlay(); yearSig.value = p.t; }} />
+          ))}
           <span class="thumb" style={{ left: pct + "%" }}></span>
           <span class="mm" style={{ left: "0" }}>{mmMin}</span>
           <span class="mm" style={{ right: "0" }}>{mmMax}</span>
