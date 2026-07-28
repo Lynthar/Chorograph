@@ -39,9 +39,13 @@ export function astar(meta: Meta | undefined, grid: Grid, roads: Set<string> | u
   const [gr, gc] = lonlatToCell(grid, goalLL[0], goalLL[1]);
   const key = (r: number, c: number) => r * grid.cols + c;
   const open = new Map<number, { r: number; c: number; f: number }>(), came = new Map<number, number>(), gScore = new Map<number, number>();
+  /* 启发式：裸大圆距离在官道 0.5× 之下会高估剩余代价（不可采纳）→ 可能绕过官道给出次优路径。
+     战术细网格（step<1，道路是战场主角）×0.5 恢复可采纳；战略 1° 网格保持旧式——
+     平手保留先入者=遍历顺序即语义，动了启发式即动平手路径（黄金基准锁定）。 */
+  const hK = grid.step < 1 ? 0.5 : 1;
   const h = (r: number, c: number) => {
     const [lo, la] = cellCenter(grid, r, c), [glo, gla] = cellCenter(grid, gr, gc);
-    return distKm(meta, lo, la, glo, gla);
+    return distKm(meta, lo, la, glo, gla) * hK;
   };
   gScore.set(key(sr, sc), 0); open.set(key(sr, sc), { r: sr, c: sc, f: h(sr, sc) });
   const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]];
@@ -92,11 +96,14 @@ export function routeReport(meta: Meta | undefined, grid: Grid, nodes: WorldNode
     if (t) { const ft = flattenTerrain(t); terr[ft] = (terr[ft] || 0) + km; }   // 沿途报告按旧 8 类归并（P6 可改 terrainProps.名 显示）
   }
   const via: { n: WorldNode; idx: number }[] = [];
+  /* 途经半径随格距：旧值 0.55 是 1° 战略格的「半格多一点」——战术细网格（井陉全宽 0.24°）
+     照抄 0.55° 会把全图地点都判成途经；0.55×step 在战略 step=1 逐位等于旧值（平价锁定）。 */
+  const near = 0.55 * grid.step;
   nodes.forEach(n => {
     if (endIds && endIds.has(n.id)) return;
     if (!activeAt(n, yearNow)) return;   // 途经报告只列当年存在的地点
     for (let i = 0; i < p.length; i++) {
-      if (Math.abs(n.lon - p[i][0]) <= 0.55 && Math.abs(n.lat - p[i][1]) <= 0.55) { via.push({ n, idx: i }); break; }
+      if (Math.abs(n.lon - p[i][0]) <= near && Math.abs(n.lat - p[i][1]) <= near) { via.push({ n, idx: i }); break; }
     }
   });
   via.sort((a, b) => a.idx - b.idx);

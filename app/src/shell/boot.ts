@@ -9,7 +9,7 @@ import { createTerrainRenderer } from "../render/renderer.ts";
 import { mountUI } from "../ui/mount.tsx";
 import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
   modeSig, armSig, routePtsSig, routeResSig, routeBusySig, setMode,
-  editSubSig, editVerSig, isTacSig, tacReqSig,
+  editSubSig, editVerSig, isTacSig, linkTypeSig, tacReqSig,
   paintFactionSig, flyReqSig, helpOpenSig, openSettings, selectOp,
   analysisSubSig, uiPrefsSig, subDaySig,
   type EditSub }
@@ -114,6 +114,8 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   });
   /* 部队子工具仅战术图：换到非战术图时退回选择工具 */
   effect(() => { if (!isTacSig.value && editSubSig.peek() === "unit") editSubSig.value = "select"; });
+  /* 商路线型仅战略图：战术图上是战略语汇噪音（chips 已藏）,残留选中态回落道路 */
+  effect(() => { if (isTacSig.value && linkTypeSig.peek() === "trade") linkTypeSig.value = "road"; });
   /* 战术图请求桥：InfoPanel 战役卡按钮设 tacReqSig → 外壳做库链接/生成/导航（组件不碰库 IO） */
   effect(() => {
     const req = tacReqSig.value;

@@ -68,7 +68,7 @@ export const PRESETS: Record<string, Record<string, 1>> = {
   "军事": { terrain: 1, politics: 1, range: 1, road: 1, river: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },
   "经济": { terrain: 1, road: 1, river: 1, trade: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
   "地理": { terrain: 1, contour: 1, decor: 1, graticule: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
-  "战术": { terrain: 1, decor: 1, road: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },
+  "战术": { terrain: 1, contour: 1, decor: 1, road: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },   // contour: 战场地文=棱线/凹路,等高线即战术图的骨架（2026-07 特化 P0 白名单）
   "全部": { terrain: 1, contour: 1, decor: 1, graticule: 1, politics: 1, range: 1, road: 1, river: 1, trade: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 }
 };
 

@@ -36,6 +36,15 @@ declare global {
 /** 仓库根样例世界的未校验 JSON（入库/normalizeWorld 前的原料） */
 type SampleWorld = { meta?: Meta } & Record<string, unknown>;
 
+/** 内置示例大陆原料（「从内置示例新建」与「↺ 重置为内置示例」共用）。
+    ⚠ 空数组必须带齐（与 blankWorld 同形）——validateWorld 要求档形完整,此前两处各写一份
+    meta-only 字面量,被 2026-07-10 加的导入校验整体拦死（「缺少 nodes 数组」）,按钮点了只弹错。 */
+const sampleWorld = (): SampleWorld => ({
+  meta: { 名称: "示例大陆", worldModel: "sphere", planetRadiusKm: 10000, kmPerDeg: 111,
+    terrain: "sample", bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } },
+  factions: [], nodes: [], edges: [], decor: [], terrainOverrides: []
+});
+
 export interface LibraryIO {
   autosave: Autosave;
   /** 启动：开库→迁移→文件夹重连→（#sample 夹具｜dev 播种）→深链直达或开始界面 */
@@ -330,10 +339,8 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     /* 设置弹层「↺ 重置为内置示例」：重置为内置程序化示例大陆 */
     async resetToSample() {
       if (!confirm("把当前地图的内容重置为内置示例数据？\n可用 Ctrl+Z 撤销；其他地图不受影响。")) return;
-      const s: SampleWorld = { meta: { 名称: "示例大陆", worldModel: "sphere", planetRadiusKm: 10000, kmPerDeg: 111,
-        terrain: "sample", bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } } };
       closeSettings();
-      libActions.replaceCurrent(s, "内置示例数据");
+      libActions.replaceCurrent(sampleWorld(), "内置示例数据");
     },
     async importFiles(files) {
       for (const f of files) {
@@ -352,9 +359,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       URL.revokeObjectURL(url);
     },
     async newFromSample() {
-      const w: SampleWorld = { meta: { 名称: "示例大陆", worldModel: "sphere", planetRadiusKm: 10000, kmPerDeg: 111,
-        terrain: "sample", bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } } };
-      await importWorld(w, "内置示例");
+      await importWorld(sampleWorld(), "内置示例");
     },
     async linkFolder() {
       if (!fsSupported()) return;

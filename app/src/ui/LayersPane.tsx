@@ -44,10 +44,12 @@ export function LayersPane() {
               {ids.map(id => {
                 const d = defs.get(id)!;
                 const on = !!layers[id];
+                // 战术图 graticule 画的是公里网（overlay.drawKmGrid 分流）,显示名随之——图层 id/存档键不动
+                const nm = id === "graticule" && tac ? "公里网（方里格）" : (RENAME[id] || d.名);
                 return (
                   <button key={id} class={"row tr" + (on ? "" : " off")} onClick={() => toggleLayer(id, !on)}>
                     <span class="sw" style={{ background: SW[id] || "#888" }} />
-                    <span class="nm">{RENAME[id] || d.名}</span>
+                    <span class="nm">{nm}</span>
                     {d.tacOnly && <span class="tag-tac">战术</span>}
                     <span class="eye">{on ? "显" : "隐"}</span>
                   </button>

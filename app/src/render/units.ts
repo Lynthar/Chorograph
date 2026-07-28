@@ -4,7 +4,7 @@
    世界拷贝循环逐拷贝调用（同 drawEco/drawDecor）；pickUnit 独立，自带拷贝循环（同 pickNode）。 */
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { kmPerDegLat, toRad } from "../core/geo.ts";
-import { unitFireKm, unitKind, unitPos, unitStatusAt, type Leg } from "../core/units.ts";
+import { unitFireKm, unitKind, unitPos, unitStatusAt, type Leg, type UnitPos } from "../core/units.ts";
 import { UNIT_STATUS } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { hexA } from "../core/util.ts";
@@ -111,15 +111,31 @@ export interface UnitDrawOpts {
   labelField?: LabelField;          // 帧内标签避让场（与地名/标注共用）；缺省=旧行为无条件画
 }
 
+export interface UnitSpot { u: Unit; p: UnitPos; x: number; y: number }
+
+/** 各在场部队的屏幕位（含同点堆叠偏移，2026-07 特化 P0）：真实位置屏幕距 <10px 的部队
+    按数组序向右上阶梯错开（每级 +7,-6px——在框高内,记号不全遮又看得出「叠着」）。
+    绘制与拾取共用此一源（pickUnit 拾偏移后的位置=点你看见的那个框）;
+    尾迹端点与火力/视野圈仍锚真实经纬（地理事实）,框选 unitsInBox 亦按真实位置（框选按锚点之规）。 */
+export function unitSpots(cam: Camera, world: World, T: number): UnitSpot[] {
+  const spots: UnitSpot[] = [], base: [number, number][] = [];
+  for (const u of world.units || []) {
+    const p = unitPos(u, T); if (!p) continue;
+    const [bx, by] = project(cam, p.lon, p.lat);
+    let n = 0;
+    for (const [qx, qy] of base) if (Math.hypot(bx - qx, by - qy) < 10) n++;
+    base.push([bx, by]);
+    spots.push({ u, p, x: bx + n * 7, y: by - n * 6 });
+  }
+  return spots;
+}
+
 /** 画所有在场部队（单相机；overlay 拷贝循环内调用）。部队压在地点之上——战场主角；
     但部队【标签】让地名（用户拍板：地点语义上固定不动，标签该稳；部队是移动体）——
     框下→框上两候选位试进共用避让场，全撞不画（选中部队恒显并登记占位）。 */
 export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, world: World, T: number, opts: UnitDrawOpts = {}): void {
-  const units = world.units || [];
-  if (!units.length) return;
-  for (const u of units) {
-    const p = unitPos(u, T); if (!p) continue;
-    const [x, y] = project(cam, p.lon, p.lat);
+  if (!(world.units || []).length) return;
+  for (const { u, p, x, y } of unitSpots(cam, world, T)) {   // 含同点堆叠偏移（与 pickUnit 同源）
     const selMe = opts.selId === u.id || !!(opts.multiIds && opts.multiIds.includes(u.id));
     if (opts.trails) drawTrail(ctx, cam, world, u, T, p, opts.legs && opts.legs.get(u.id));
     drawUnitSymbol(ctx, x, y, world, u, selMe, unitStatusAt(u, T));
@@ -269,16 +285,15 @@ export function pickRangeHandle(cam: Camera, meta: Meta | undefined, world: Worl
   return null;
 }
 
-/** 拾取部队（矩形容差；优先级最高——战场主角）。x/y 为 CSS 像素，自带世界拷贝循环 */
+/** 拾取部队（矩形容差；优先级最高——战场主角）。x/y 为 CSS 像素，自带世界拷贝循环。
+    位置经 unitSpots＝含堆叠偏移,与绘制同源——点你看见的那个框。 */
 export function pickUnit(cam: Camera, meta: Meta | undefined, world: World, T: number, x: number, y: number): Unit | null {
   let best: Unit | null = null, bd = Infinity;
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
-    for (const u of world.units || []) {
-      const p = unitPos(u, T); if (!p) continue;
-      const [ux, uy] = project(c2, p.lon, p.lat);
-      const d = Math.max(Math.abs(x - ux) / 1.5, Math.abs(y - uy));
-      if (d < 12 && d < bd) { bd = d; best = u; }
+    for (const sp of unitSpots(c2, world, T)) {
+      const d = Math.max(Math.abs(x - sp.x) / 1.5, Math.abs(y - sp.y));
+      if (d < 12 && d < bd) { bd = d; best = sp.u; }
     }
   }
   return best;

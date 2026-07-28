@@ -46,12 +46,34 @@ export function roadCellSet(nodes: WorldNode[], edges: Edge[], yearNow: number, 
   edges.filter(e => e.type === "road" && activeAt(e, yearNow)).forEach(e => {
     if (!e.from || !e.to) return;   // 道路必有两端；自由画河（pts、无 from/to）不入官道格
     const a = byId(e.from), b = byId(e.to); if (!a || !b) return;
-    const N = 40;
-    for (let i = 0; i <= N; i++) {
-      const lon = a.lon + (b.lon - a.lon) * i / N, lat = a.lat + (b.lat - a.lat) * i / N;
-      const c = Math.floor((lon - grid.bb.lonMin) / grid.step), r = Math.floor((lat - grid.bb.latMin) / grid.step);
-      s.add(r + "," + c);
+    if (grid.step >= 1) {
+      /* 战略 1° 网格：40 段定数采样（黄金基准逐位不变） */
+      const N = 40;
+      for (let i = 0; i <= N; i++) {
+        const lon = a.lon + (b.lon - a.lon) * i / N, lat = a.lat + (b.lat - a.lat) * i / N;
+        const c = Math.floor((lon - grid.bb.lonMin) / grid.step), r = Math.floor((lat - grid.bb.latMin) / grid.step);
+        s.add(r + "," + c);
+      }
+      return;
     }
+    /* 战术细网格（2026-07 特化 P0）：定数采样步距达 3 格/段＝官道减速带断续、A* 不认路,
+       且对角线在格内的弦可任意短（近角掠过）,加密倍率关不死漏格——改精确走格
+       （Amanatides-Woo：按与格线的交点次序逐格推进,含起讫格;角上取整偏向恒定,无漏无飞格）。 */
+    const ux0 = (a.lon - grid.bb.lonMin) / grid.step, uy0 = (a.lat - grid.bb.latMin) / grid.step;
+    const ux1 = (b.lon - grid.bb.lonMin) / grid.step, uy1 = (b.lat - grid.bb.latMin) / grid.step;
+    let cx = Math.floor(ux0), cy = Math.floor(uy0);
+    const gx = Math.floor(ux1), gy = Math.floor(uy1);
+    const dx = ux1 - ux0, dy = uy1 - uy0;
+    const sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1;
+    const tdx = dx === 0 ? Infinity : Math.abs(1 / dx), tdy = dy === 0 ? Infinity : Math.abs(1 / dy);
+    let tmx = dx === 0 ? Infinity : (dx > 0 ? cx + 1 - ux0 : ux0 - cx) * tdx;
+    let tmy = dy === 0 ? Infinity : (dy > 0 ? cy + 1 - uy0 : uy0 - cy) * tdy;
+    s.add(cy + "," + cx);
+    for (let i = Math.abs(gx - cx) + Math.abs(gy - cy); i > 0 && (cx !== gx || cy !== gy); i--) {
+      if (tmx < tmy) { cx += sx; tmx += tdx; } else { cy += sy; tmy += tdy; }
+      s.add(cy + "," + cx);
+    }
+    s.add(gy + "," + gx);   // 端点恰落格线时浮点可致提前收尾——终点格（乙地所在格）恒补
   });
   return s;
 }

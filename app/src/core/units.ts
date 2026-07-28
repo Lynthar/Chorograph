@@ -59,7 +59,15 @@ export interface Leg {
   km: number; days: number; need: number; ok: boolean; route: boolean;
 }
 
-/** 行军可达性：逐腿校验 A*里程(按兵种) vs 速度×间隔天数；飞行=直线。工具当账房，胜负由你。 */
+/* 一日行军约几小时：速度 v(km/日)是「含宿营休整的整日配额」,不是 24 小时匀速——
+   亚日航段(时辰级战役分帧)按 v/MARCH_H 的小时行军速率折算,否则 2 小时突击 5km
+   在 30km/日 之下会被 24 小时摊薄算成超速(井陉成图实测误报)。 */
+const MARCH_H = 8;
+
+/** 行军可达性：逐腿校验 A*里程(按兵种) vs 速度×间隔天数；飞行=直线。工具当账房，胜负由你。
+    耗时 need(日)分两域：km>一日配额 v ＝ km/v(跨日,旧语义逐位——黄金腿全为整日间隔);
+    km≤v ＝ km/(v×24/MARCH_H)(纯行军时数,一日配额内的短途冲刺不吃宿营摊薄)。
+    两域与容量模型自洽:一日内至多行军 MARCH_H 小时、至多走完配额 v。 */
 export function unitLegs(meta: Meta | undefined, grid: Grid, roads: Set<string> | undefined, u: Unit): Leg[] {
   const tr = u.track || [];
   const arm = unitArm(u), v = unitSpeed(u), legs: Leg[] = [];
@@ -70,7 +78,7 @@ export function unitLegs(meta: Meta | undefined, grid: Grid, roads: Set<string> 
       const r = astar(meta, grid, roads, [a.lon, a.lat], [b.lon, b.lat], arm);
       if (r && isFinite(r.dist)) { km = r.dist; route = true; }
     }
-    const need = km / v;
+    const need = km > v ? km / v : km / (v * 24 / MARCH_H);
     legs.push({ i, a, b, km, days, need, ok: days > 0 && need <= days + 1e-9, route });
   }
   return legs;

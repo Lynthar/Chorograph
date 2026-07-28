@@ -221,6 +221,9 @@ function EdgeCard({ e, idx, world }: { e: Edge; idx: number; world: World }) {
 
 const ARM_NAME: Record<string, string> = { land: "陆行", water: "水行", air: "飞行" };
 
+/** 航段时长读数：≥1 日按日、不足 1 日按小时(时辰级航点的 days 是 1/24 浮点,裸显是一串小数) */
+const fmtDur = (d: number): string => d >= 1 - 1e-9 ? `${+d.toFixed(1)}日` : `${+(d * 24).toFixed(1)}时`;
+
 /** 航点动向（沿旧行内编辑语义：坐标数字栏/状态选择/删航点；editable=编辑态） */
 function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
   const world = worldSig.value!;
@@ -256,7 +259,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
                 {Object.entries(UNIT_STATUS).map(([k, d]) => <option key={k} value={k} selected={q.st === k}>{d.名}</option>)}
               </select>
             </> : (q.st && UNIT_STATUS[q.st] ? <> <span class="tg" style={{ background: UNIT_STATUS[q.st].color, padding: "1px 6px" }}>{UNIT_STATUS[q.st].名}</span></> : null)}
-            {L && <span class="sub" style={L.ok ? undefined : { color: "var(--q-zhu)" }}> {Math.round(L.km)}km{L.route ? "" : "(直线)"}/{L.days}日·需{L.need.toFixed(1)}日{L.ok ? "" : " ⚠"}</span>}
+            {L && <span class="sub" style={L.ok ? undefined : { color: "var(--q-zhu)" }}> {Math.round(L.km)}km{L.route ? "" : "(直线)"}/{fmtDur(L.days)}·需{fmtDur(L.need)}{L.ok ? "" : " ⚠"}</span>}
             {editable && <button type="button" class="link" style={{ color: "var(--q-zhu)" }} title="删此航点" onClick={() => { mutateWorld(w => { deleteUnitWaypoint(w, u.id, i); }); }}> ✕</button>}
           </div>
         );

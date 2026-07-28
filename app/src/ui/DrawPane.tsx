@@ -190,15 +190,17 @@ function DecorCtx() {
   );
 }
 
-/** 连线（线）：类型选择 + 起点状态（对齐旧 link 面板） */
+/** 连线（线）：类型选择 + 起点状态（对齐旧 link 面板）。战术图不供商路（战场图上是战略语汇噪音;
+    残留选中态由 boot 的守卫 effect 回落 road,与军工具非战术回落同规） */
 function LinkCtx() {
   const world = worldSig.value!;
+  const tac = isTacSig.value;
   const linkFrom = linkFromSig.value;
   const fromNode = linkFrom ? world.nodes.find(n => n.id === linkFrom) : null;
   return (
     <>
       <div class="chips">
-        {(Object.keys(EDGE_STYLE) as Edge["type"][]).map(tp => (
+        {(Object.keys(EDGE_STYLE) as Edge["type"][]).filter(tp => tp !== "trade" || !tac).map(tp => (
           <button key={tp} class="ch tr" aria-pressed={linkTypeSig.value === tp} onClick={() => pickLinkType(tp)}>
             <span class="sw" style={{ background: EDGE_STYLE[tp].color, borderRadius: "2px", height: "4px" }} />{EDGE_STYLE[tp].名}
           </button>

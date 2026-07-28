@@ -4,8 +4,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildGridCells, roadCellSet } from "../src/core/grid.ts";
-import { astar, cellCost, computeRoute, measureLegs, routeReport } from "../src/core/route.ts";
+import { astar, cellCenter, cellCost, computeRoute, lonlatToCell, measureLegs, routeReport } from "../src/core/route.ts";
 import { setUnitPoint, unitLegs, unitPos } from "../src/core/units.ts";
+import { pickUnit, unitSpots } from "../src/render/units.ts";
+import { project, type Camera } from "../src/core/projection.ts";
 import { yearRangeOf } from "../src/core/time.ts";
 import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
@@ -88,6 +90,86 @@ describe("寻路（语义）", () => {
   });
 });
 
+describe("寻路（战术尺度）", () => {
+  /* 战术细网格三处尺度修正的判别测试（战略 1° 路径由 golden 平价锁定,此处专锁细网格域） */
+  it("roadCellSet：战术细网格采样加密,官道格不断续", () => {
+    const meta: Meta = { mapKind: "tactical", terrain: "plain", bbox: { lonMin: 0, lonMax: 0.28, latMin: 0, latMax: 0.2 } };
+    const world = plainWorld({ meta,
+      nodes: [{ id: "a", type: "city", lon: 0.011, lat: 0.101 }, { id: "b", type: "city", lon: 0.271, lat: 0.101 }],
+      edges: [{ from: "a", to: "b", type: "road" }] });
+    const grid = buildGridCells(meta, [], 3100);
+    assert.ok(Math.abs(grid.step - 0.002) < 1e-12, "战术步长=跨度/140");
+    const roads = roadCellSet(world.nodes, world.edges, 3100, grid);
+    const row = Math.floor(0.101 / grid.step);
+    for (let c = Math.floor(0.011 / grid.step); c <= Math.floor(0.271 / grid.step); c++) {
+      assert.ok(roads.has(row + "," + c), `沿线格 ${row},${c} 应为官道格（定数 40 段漏约 2/3）`);
+    }
+  });
+  it("astar：战术网格启发式可采纳,官道绕行取真最优（Dijkstra 神谕比对）", () => {
+    /* 手搭 30×30 细网格（step 0.01<1 触发战术分支）,官道走「凵」字绕行:
+       直线全平原代价 25、绕行官道 ≈22.5——旧启发式高估剩余代价,判直线先到即返回次优 */
+    const meta: Meta = { worldModel: "flat", kmPerDeg: 100 };
+    const cells: string[][] = [];
+    for (let r = 0; r < 30; r++) cells.push(new Array(30).fill("plain"));
+    const grid = { bb: { lonMin: 0, lonMax: 0.3, latMin: 0, latMax: 0.3 }, step: 0.01, cols: 30, rows: 30, cells };
+    const roads = new Set<string>();
+    for (let r = 2; r <= 12; r++) { roads.add(r + ",2"); roads.add(r + ",27"); }
+    for (let c = 2; c <= 27; c++) roads.add("12," + c);
+    const S: [number, number] = [0.025, 0.025], G: [number, number] = [0.275, 0.025];
+    // 神谕：无启发式 Dijkstra,代价公式与 astar 完全同式（两格均值×里程）
+    const dij = (): number => {
+      const key = (r: number, c: number) => r * 30 + c;
+      const dist = new Map<number, number>([[key(2, 2), 0]]);
+      const open = new Map<number, [number, number]>([[key(2, 2), [2, 2]]]);
+      const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]];
+      while (open.size) {
+        let bk = -1, bd = Infinity;
+        for (const [k] of open) { const d = dist.get(k)!; if (d < bd) { bd = d; bk = k; } }
+        const [r, c] = open.get(bk)!; open.delete(bk);
+        if (r === 2 && c === 27) return bd;
+        for (const [dr, dc] of dirs) {
+          const nr = r + dr, nc = c + dc;
+          if (nr < 0 || nc < 0 || nr >= 30 || nc >= 30) continue;
+          const [lo1, la1] = cellCenter(grid, r, c), [lo2, la2] = cellCenter(grid, nr, nc);
+          const w = distKm(meta, lo1, la1, lo2, la2) * ((cellCost(grid, roads, r, c, "land") + cellCost(grid, roads, nr, nc, "land")) / 2);
+          const nk = key(nr, nc), nd = bd + w;
+          if (!dist.has(nk) || nd < dist.get(nk)!) { dist.set(nk, nd); open.set(nk, [nr, nc]); }
+        }
+      }
+      return Infinity;
+    };
+    const best = dij();
+    const r = astar(meta, grid, roads, S, G, "land")!;
+    assert.ok(r, "应可达");
+    /* astar.dist 是路径的真实公里数（耗时=km/速度用）,择路最优性要按「加权代价」比:
+       把返回路径逐点折回格、按同一代价公式求加权代价,与神谕比对 */
+    let cost = 0;
+    for (let i = 1; i < r.path.length; i++) {
+      const [r1, c1] = lonlatToCell(grid, r.path[i - 1][0], r.path[i - 1][1]);
+      const [r2, c2] = lonlatToCell(grid, r.path[i][0], r.path[i][1]);
+      cost += distKm(meta, r.path[i - 1][0], r.path[i - 1][1], r.path[i][0], r.path[i][1])
+        * ((cellCost(grid, roads, r1, c1, "land") + cellCost(grid, roads, r2, c2, "land")) / 2);
+    }
+    assert.ok(Math.abs(cost - best) < 1e-9, `astar 应取真最优代价 ${best},实得 ${cost}（旧启发式走直线=25）`);
+    const onRoad = r.path.filter(([lon, lat]) => { const [rr, cc] = lonlatToCell(grid, lon, lat); return roads.has(rr + "," + cc); }).length;
+    assert.ok(onRoad > 15, `最优路应确实借道官道（路径 ${r.path.length} 点中 ${onRoad} 点在官道格）`);
+  });
+  it("routeReport：途经半径随格距（战术不再全图皆途经）", () => {
+    const cells: string[][] = [];
+    for (let r = 0; r < 30; r++) cells.push(new Array(30).fill("plain"));
+    const grid = { bb: { lonMin: 0, lonMax: 0.3, latMin: 0, latMax: 0.3 }, step: 0.01, cols: 30, rows: 30, cells };
+    const meta: Meta = { worldModel: "flat", kmPerDeg: 100 };
+    const path: [number, number][] = [];
+    for (let c = 2; c <= 27; c++) path.push([(c + 0.5) * 0.01, 0.025]);
+    const nodes = [
+      { id: "n1", 名称: "近驿", type: "town", lon: 0.155, lat: 0.0295 },   // 距路 0.45 格 → 途经
+      { id: "n2", 名称: "远村", type: "village", lon: 0.155, lat: 0.06 }   // 距路 3.5 格 → 不途经（旧 0.55° 全图皆中）
+    ];
+    const rep = routeReport(meta, grid, nodes, 3100, { path, dist: 25 })!;
+    assert.deepStrictEqual(rep.via.map(n => n.名称), ["近驿"]);
+  });
+});
+
 describe("部队（语义）", () => {
   it("unitPos：入场前 null / 航点间插值 / 末点停驻 / until 后离场", () => {
     const u: Unit = { id: "u", kind: "inf", until: 200, track: [{ t: 100, lon: 100, lat: 30 }, { t: 110, lon: 101, lat: 31 }] };
@@ -103,17 +185,65 @@ describe("部队（语义）", () => {
     setUnitPoint(u, 90, 99, 29);
     assert.deepStrictEqual(u.track.map(p => p.t), [90, 100]);
   });
-  it("unitLegs：速度×天数容 1e-9 齿隙；同日两点=不可达", () => {
+  it("unitLegs：跨日=日配额旧语义；亚日按一日行军 8 小时折算（时辰级不再摊薄误报）", () => {
     const world = plainWorld();
     const { grid, roads } = mkGrid(world);
     const kmPerDay = distKm(META, 100.5, 30.5, 101.5, 30.5);   // 走 1 格的里程
     const u: Unit = { id: "u", kind: "inf", speed: kmPerDay, track: [
-      { t: 0, lon: 100.5, lat: 30.5 }, { t: 1, lon: 101.5, lat: 30.5 }, { t: 1.5, lon: 102.5, lat: 30.5 }] };
+      { t: 0, lon: 100.5, lat: 30.5 }, { t: 1, lon: 101.5, lat: 30.5 },
+      { t: 1.5, lon: 102.5, lat: 30.5 }, { t: 1.7, lon: 103.5, lat: 30.5 }] };
     const legs = unitLegs(META, grid, roads, u);
-    assert.strictEqual(legs[0].ok, true, "恰好等于速度上限应可达");
-    assert.strictEqual(legs[1].ok, false, "半天走一格不可达");
+    assert.strictEqual(legs[0].ok, true, "恰好等于一日配额应可达（旧语义逐位）");
+    /* ⚠ 语义翻转（2026-07 战术特化 P0）：原断言「半天走一格不可达」是 24 小时摊薄的产物——
+       半日窗里装得下 8 小时行军＝走完一日配额，militarily 合法；真正的不可达该由更短的窗口触发 */
+    assert.strictEqual(legs[1].ok, true, "半日窗内走完一日配额（8 小时行军装得进 12 小时）");
+    assert.ok(Math.abs(legs[1].need - 1 / 3) < 1e-9, "配额内耗时=纯行军时数 km/(3v)");
+    assert.strictEqual(legs[2].ok, false, "0.2 日（4.8 小时）装不下 8 小时行军");
     const dup: Unit = { id: "d", kind: "inf", track: [{ t: 5, lon: 100.5, lat: 30.5 }, { t: 5, lon: 100.5, lat: 30.5 }] };
     assert.strictEqual(unitLegs(META, grid, roads, dup)[0].ok, false, "days=0 恒不可达");
+  });
+  it("unitLegs：时辰级航段的可达按小时速率（v/8 km/时）记账", () => {
+    const world = plainWorld();
+    const { grid, roads } = mkGrid(world);
+    const kmCell = distKm(META, 100.5, 30.5, 101.5, 30.5);
+    const u: Unit = { id: "u2", kind: "inf", speed: 4 * kmCell, track: [   // 配额=4 格/日 → 1 格=2 小时行军
+      { t: 0, lon: 100.5, lat: 30.5 }, { t: 0.125, lon: 101.5, lat: 30.5 }, { t: 0.1875, lon: 102.5, lat: 30.5 }] };
+    const legs = unitLegs(META, grid, roads, u);
+    assert.ok(Math.abs(legs[0].need - 1 / 12) < 1e-9, "1 格=四分之一配额=2 小时行军");
+    assert.strictEqual(legs[0].ok, true, "3 小时窗装 2 小时行军");
+    assert.strictEqual(legs[1].ok, false, "1.5 小时窗装不下 2 小时行军");
+    /* 跨日超配额仍走旧公式：需日数=km/v（黄金基准 cav/navy/air 腿全在此域，平价锁定） */
+    const far: Unit = { id: "far", kind: "inf", speed: kmCell, track: [
+      { t: 0, lon: 100.5, lat: 30.5 }, { t: 1, lon: 102.5, lat: 30.5 }] };
+    const fl = unitLegs(META, grid, roads, far);
+    assert.ok(fl[0].need > 1.9 && !fl[0].ok, "两格/日于一格配额=旧公式超速");
+  });
+});
+
+describe("部队堆叠偏移（绘制拾取同源）", () => {
+  const cam: Camera = { lon0: 100, lat0: 30, degPerPx: 0.01, w: 800, h: 600, flat: false, lonShift: 0 };
+  const units: Unit[] = [
+    { id: "u1", kind: "inf", track: [{ t: 0, lon: 100, lat: 30 }] },
+    { id: "u2", kind: "cav", track: [{ t: 0, lon: 100, lat: 30 }] },
+    { id: "u3", kind: "bow", track: [{ t: 0, lon: 100.5, lat: 30 }] }
+  ];
+  const world = plainWorld({ units });
+  it("同点第二支按数组序错开 (+7,-6)、异点不动、未入场不占位", () => {
+    const sp = unitSpots(cam, world, 0);
+    assert.strictEqual(sp.length, 3);
+    const [bx, by] = project(cam, 100, 30);
+    assert.deepStrictEqual([sp[0].x, sp[0].y], [bx, by], "首支在真实位置");
+    assert.deepStrictEqual([sp[1].x - bx, sp[1].y - by], [7, -6], "同点第二支阶梯错开");
+    const [cx2, cy2] = project(cam, 100.5, 30);
+    assert.deepStrictEqual([sp[2].x, sp[2].y], [cx2, cy2], "异点不受牵连");
+    const w2 = plainWorld({ units: [units[0], { id: "gone", kind: "inf", track: [] }, units[1]] });
+    assert.strictEqual(unitSpots(cam, w2, 0).length, 2, "未入场（track 空）不入位");
+  });
+  it("pickUnit 拾偏移后的位置＝点你看见的那个框", () => {
+    const [bx, by] = project(cam, 100, 30);
+    assert.strictEqual(pickUnit(cam, META, world, 0, bx, by)!.id, "u1", "真实位＝首支");
+    assert.strictEqual(pickUnit(cam, META, world, 0, bx + 7, by - 6)!.id, "u2", "偏移位＝第二支");
+    assert.strictEqual(pickUnit(cam, META, world, 0, bx + 200, by), null, "远处空拾");
   });
 });
 

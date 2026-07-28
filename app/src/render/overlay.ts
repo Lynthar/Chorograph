@@ -3,7 +3,7 @@
    （经纬网/比例尺/图名）；拆出的域文件与拾取（pick.ts）经此门面再导出——外部 import 面不变。
    数百要素直绘足够；万级批量与空间索引在 后段定案。 */
 import { project, unproject, visibleWorldCopies, type Camera } from "../core/projection.ts";
-import { distKm, wrapLon } from "../core/geo.ts";
+import { distKm, kmPerDegLat, toRad, wrapLon } from "../core/geo.ts";
 import { calOf, fmtT, fmtYear } from "../core/calendar.ts";
 import { fmtKm } from "../core/util.ts";
 import { drawDecor } from "./decor.ts";
@@ -80,8 +80,10 @@ export function drawOverlay(
 }
 
 /* 经纬网（graticule，faithful port 自旧 drawGraticule）：屏幕空间一次绘制（不入世界拷贝循环），
-   自适应步长（10/5/1°随缩放），经线标注折回本初域经度。ctx 已按 dpr 缩放、CSS 像素坐标系。 */
+   自适应步长（10/5/1°随缩放），经线标注折回本初域经度。ctx 已按 dpr 缩放、CSS 像素坐标系。
+   战术图分流为公里网（2026-07 特化 P0）：1° 最小步长在 0.24° 宽的战场图上恒 0~1 条线＝失效。 */
 function drawGraticule(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined): void {
+  if ((meta || {}).mapKind === "tactical" && (meta || {}).bbox) { drawKmGrid(ctx, cam, meta!); return; }
   const tl = unproject(cam, 0, 0), br = unproject(cam, cam.w, cam.h);
   const step = cam.degPerPx > 0.12 ? 10 : (cam.degPerPx > 0.045 ? 5 : 1);
   const flat = (meta || {}).worldModel === "flat";
@@ -97,6 +99,40 @@ function drawGraticule(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | 
     const y = project(cam, cam.lon0, lat)[1];
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cam.w, y); ctx.stroke();
     ctx.fillText(Math.round(lat) + "°", 3, y - 3);
+  }
+  ctx.restore();
+}
+
+/* 战术公里网（方里格）：战场测绘的参考系是公里格不是经纬度。原点锚 meta.bbox 西南角
+   ＝图幅原点（不随镜头漂）；步长 1-2-5 档取格宽 ≥64px 的最细档；经向按图幅中央纬度
+   折算（战场尺度曲率可忽略,折算式同火力圈 ringPx）。标注=距图幅原点的东距/北距,
+   图幅外(k<0)只画线不标数。样式与经纬网同（淡青细线,同一图层开关）。 */
+function drawKmGrid(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta): void {
+  const bb = meta.bbox!;
+  const flat = meta.worldModel === "flat";
+  const dLat = 1 / kmPerDegLat(meta);                     // 1km 的纬度跨度
+  const dLon = dLat / (flat ? 1 : Math.max(0.05, Math.cos(toRad((bb.latMin + bb.latMax) / 2))));
+  const kmPerPx = cam.degPerPx / dLon;
+  if (!isFinite(kmPerPx) || kmPerPx <= 0) return;
+  let stepKm = 5000;
+  outer: for (let p = 0.001; p <= 1000; p *= 10) for (const m5 of [1, 2, 5]) {
+    if (m5 * p / kmPerPx >= 64) { stepKm = m5 * p; break outer; }
+  }
+  const lonStep = stepKm * dLon, latStep = stepKm * dLat;
+  const tl = unproject(cam, 0, 0), br = unproject(cam, cam.w, cam.h);
+  ctx.save();
+  ctx.strokeStyle = "rgba(40,60,80,.16)"; ctx.fillStyle = "rgba(40,60,80,.6)";
+  ctx.lineWidth = 1; ctx.font = "10px sans-serif";
+  const lab = (k: number) => k === 0 ? "0" : fmtKm(k * stepKm);
+  for (let k = Math.ceil((tl[0] - bb.lonMin) / lonStep); k <= Math.floor((br[0] - bb.lonMin) / lonStep); k++) {
+    const x = project(cam, bb.lonMin + k * lonStep, cam.lat0)[0];
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, cam.h); ctx.stroke();
+    if (k >= 0) ctx.fillText(lab(k), x + 2, cam.h - 6);
+  }
+  for (let k = Math.ceil((br[1] - bb.latMin) / latStep); k <= Math.floor((tl[1] - bb.latMin) / latStep); k++) {
+    const y = project(cam, cam.lon0, bb.latMin + k * latStep)[1];
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cam.w, y); ctx.stroke();
+    if (k >= 0) ctx.fillText(lab(k), 3, y - 3);
   }
   ctx.restore();
 }

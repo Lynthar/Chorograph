@@ -58,11 +58,13 @@ describe("常量与旧实现深度一致", () => {
     // PRESETS：每个预设剔除新增 notes/vision、移除 eco 后与旧版一致；标注全预设开、视野仅军事/战术/全部
     assert.deepStrictEqual(Object.keys(C.PRESETS), Object.keys(g.PRESETS));
     for (const k of Object.keys(C.PRESETS)) {
-      assert.deepStrictEqual(stripKeys(C.PRESETS[k], ["notes", "vision"]), stripKeys(g.PRESETS[k], ["eco"]), `预设「${k}」旧键漂移`);
+      // 战术预设另剔 contour（2026-07 特化 P0 白名单：战场地文=棱线/凹路,等高线默认开）——只豁免战术,地理/全部的 contour 漂移照红
+      assert.deepStrictEqual(stripKeys(C.PRESETS[k], k === "战术" ? ["notes", "vision", "contour"] : ["notes", "vision"]), stripKeys(g.PRESETS[k], ["eco"]), `预设「${k}」旧键漂移`);
       assert.strictEqual(C.PRESETS[k].notes, 1, `预设「${k}」应含标注层`);
       assert.strictEqual(C.PRESETS[k].eco, undefined, `预设「${k}」eco 已移除`);
       assert.strictEqual(C.PRESETS[k].vision, ["军事", "战术", "全部"].includes(k) ? 1 : undefined, `预设「${k}」vision 白名单`);
     }
+    assert.strictEqual(C.PRESETS.战术.contour, 1, "战术预设应含等高线（白名单成员须真在,防豁免空转）");
     assert.deepStrictEqual(C.DECOR, g.DECOR);
   });
   it("地点/事件类型与模板", () => {
@@ -164,7 +166,50 @@ describe("地形网格构建一致", () => {
       const g = buildGridCells(gc.meta, gc.overrides, gc.yearNow);
       assert.deepStrictEqual({ cols: g.cols, rows: g.rows, step: g.step, bb: g.bb }, gc.grid);
       assert.deepStrictEqual(g.cells.map(r => r.map(C.flattenTerrain).join(",")), gc.cells);   // cells 存复合串、flatten 回旧类比对
-      assert.deepStrictEqual([...roadCellSet(gc.nodes, gc.edges, gc.yearNow, g)].sort(), gc.roadCells);
+      const rc = [...roadCellSet(gc.nodes, gc.edges, gc.yearNow, g)].sort();
+      if (g.step >= 1) {
+        assert.deepStrictEqual(rc, gc.roadCells);   // 战略 1° 网格：官道格与黄金逐位一致（N=40 不变）
+      } else {
+        /* sanctioned（2026-07 战术特化 P0）：战术细网格官道采样由定数 40 段改为按跨格数加密——
+           黄金冻结的是**漏格**输出（对角官道 13,14→15,16 跳过线经的 14,14/14,15/15,15，
+           约 2/3 沿线格未标记，官道减速带断续、A* 不认路）。⚠ 本用例道路恰穿 15 个精确格角
+           （中点 (101,30.7) 即格点），采样落在角上的取整是浮点伪影（黄金的 48,70 属此类）——
+           故守卫按几何而非逐位：线段∩格矩形（Liang-Barsky），收缩 ε＝「实穿」、外扩 ε＝「沿线」。
+           ① 黄金里被实穿的格必须全保（只准丢角擦伪影）；② 新集不得含线外格；
+           ③ 4× 过采样发现的实穿格必须全在（防仍漏格）。 */
+        const byId = (id: string) => gc.nodes.find((n: { id: string }) => n.id === id);
+        const segs = gc.edges.filter((e: { type: string; since?: number; until?: number }) => e.type === "road" && activeAt(e, gc.yearNow))
+          .map((e: { from: string; to: string }) => [byId(e.from), byId(e.to)]).filter((p: unknown[]) => p[0] && p[1]);
+        const hits = (r: number, c: number, e: number): boolean => segs.some(([a, b]: { lon: number; lat: number }[]) => {
+          const x0 = g.bb.lonMin + c * g.step - e, x1 = g.bb.lonMin + (c + 1) * g.step + e;
+          const y0 = g.bb.latMin + r * g.step - e, y1 = g.bb.latMin + (r + 1) * g.step + e;
+          let t0 = 0, t1 = 1;
+          const dx = b.lon - a.lon, dy = b.lat - a.lat;
+          const clip = (p: number, q: number): boolean => {
+            if (p === 0) return q >= 0;
+            const t = q / p;
+            if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+            else { if (t < t0) return false; if (t < t1) t1 = t; }
+            return true;
+          };
+          return clip(-dx, a.lon - x0) && clip(dx, x1 - a.lon) && clip(-dy, a.lat - y0) && clip(dy, y1 - a.lat) && t0 <= t1;
+        });
+        const EPS = g.step * 1e-6;
+        const cell = (k: string): [number, number] => { const [r, c] = k.split(",").map(Number); return [r, c]; };
+        for (const k of gc.roadCells) {
+          const [r, c] = cell(k);
+          if (hits(r, c, -EPS)) assert.ok(rc.includes(k), `黄金实穿格 ${k} 不得丢失`);
+        }
+        for (const k of rc) { const [r, c] = cell(k); assert.ok(hits(r, c, EPS), `官道格 ${k} 不在线上`); }
+        for (const [a, b] of segs) {
+          const M = Math.ceil((Math.abs(b.lon - a.lon) + Math.abs(b.lat - a.lat)) / (g.step / 4)) || 1;
+          for (let i = 0; i <= M; i++) {
+            const lon = a.lon + (b.lon - a.lon) * i / M, lat = a.lat + (b.lat - a.lat) * i / M;
+            const r = Math.floor((lat - g.bb.latMin) / g.step), c = Math.floor((lon - g.bb.lonMin) / g.step);
+            if (hits(r, c, -EPS)) assert.ok(rc.includes(r + "," + c), `实穿格 ${r},${c} 漏标`);
+          }
+        }
+      }
     });
   }
 });
