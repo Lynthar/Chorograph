@@ -9,7 +9,7 @@ import { flatKmPerDeg, toRad } from "./geo.ts";
 import { activeAt, ownerAt, paintLayersAt } from "./time.ts";
 import { paintStep, resamplePaintCells } from "./territory.ts";
 import { calOf, fmtYear, yearSpanT } from "./calendar.ts";
-import type { Meta, PaintLayer, World, WorldNode } from "./types.ts";
+import type { CalendarCfg, GenStyle, Meta, PaintLayer, TerrainMode, World, WorldModel, WorldNode } from "./types.ts";
 
 const clone = <T>(o: T): T => JSON.parse(JSON.stringify(o));
 
@@ -20,6 +20,54 @@ export function tacDiaDeg(meta: Meta | undefined, diaKm: number, lat: number): D
   if (m.worldModel === "flat") { const k = flatKmPerDeg(m); return { lonSpan: diaKm / k, latSpan: diaKm / k }; }
   const latSpan = diaKm / (2 * Math.PI * ((+(m.planetRadiusKm as number)) || 10000) / 360);
   return { lonSpan: latSpan / Math.max(0.087, Math.cos(toRad(lat))), latSpan };
+}
+
+/* ── 直接新建战术战场（2026-07 特化柱B）：真史战役没有母图可烘——此前只能写脚本手搓 JSON。
+   与烘焙共用 tacDiaDeg 与 meta 构造，只是内容全空（parent 亦无）。给校验喂的档形必须完整
+   （空数组齐备，同 blankWorld 与 sampleWorld 之规）——meta-only 字面量会被导入校验拦死。 ── */
+export interface BlankTacSpec {
+  名称?: string;
+  worldModel?: WorldModel;
+  planetRadiusKm?: number;
+  kmPerDeg?: number | null;
+  lon: number; lat: number;      // 战场中心
+  diaKm: number;                 // 战场直径 km（同烘焙钳 [20,2000]）
+  battleYear: number;            // 战役年份（时间轴锚在这一年的日戳区间）
+  calendar?: CalendarCfg;        // 缺省不落盘（=custom SE 12×30）；真史战役用 {kind:"earth"}
+  terrain?: TerrainMode;
+  genSeed?: number; genStyle?: GenStyle;
+  relief?: number;
+  contourM?: number;             // 最细等高距 米（战场常用 10~100；缺省不落盘=10m）
+  vault?: string;
+}
+
+/** 新建一张空白战术战场。today=YYYY-MM-DD（外部传入以保持纯函数，同 blankWorld） */
+export function blankTacticalWorld(s: BlankTacSpec, today: string): World {
+  const d = Math.max(20, Math.min(2000, s.diaKm || 200));
+  const lat = Math.max(-85, Math.min(85, s.lat));
+  const base: Meta = { worldModel: s.worldModel || "sphere", planetRadiusKm: s.planetRadiusKm };
+  const { lonSpan, latSpan } = tacDiaDeg(base, d, lat);
+  const bbox = {
+    lonMin: +(s.lon - lonSpan / 2).toFixed(4), lonMax: +(s.lon + lonSpan / 2).toFixed(4),
+    latMin: +Math.max(-85, lat - latSpan / 2).toFixed(4), latMax: +Math.min(85, lat + latSpan / 2).toFixed(4)
+  };
+  const cs = calOf(s.calendar);
+  const meta: Meta = {
+    名称: s.名称 || "新战场",
+    说明: `战术战场（${fmtYear(cs, s.battleYear)}，直径≈${d}km）：时间轴细化到日与时辰。`,
+    mapKind: "tactical", worldModel: base.worldModel, planetRadiusKm: s.planetRadiusKm,
+    terrain: s.terrain || "plain", battleYear: s.battleYear,
+    tacSpan: yearSpanT(cs, s.battleYear),
+    view: { lon0: s.lon, lat0: lat, degPerPx0: Math.max(0.0004, (bbox.lonMax - bbox.lonMin) / 900) },
+    bbox, 版本: "0.6", 更新: today
+  };
+  if (s.kmPerDeg != null) meta.kmPerDeg = s.kmPerDeg;
+  if (s.calendar) meta.calendar = s.calendar;             // 历法创建时定死（改 kind 会重释一切已存日戳）
+  if (s.terrain === "auto") { meta.genSeed = s.genSeed; meta.genStyle = s.genStyle; }
+  if (s.relief != null && s.relief > 0) meta.relief = s.relief;
+  if (s.contourM != null && s.contourM > 0) meta.contourM = s.contourM;
+  if (s.vault) meta.vault = s.vault;
+  return { meta, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] };
 }
 
 export interface TacBakeOpts {

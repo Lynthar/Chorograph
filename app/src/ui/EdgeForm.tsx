@@ -5,6 +5,7 @@ import { EDGE_STYLE, RIVER_TMPL, WALL_TMPL } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
 import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "./state.ts";
 import { applyEdgeForm } from "./editops.ts";
+import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
 import type { Edge } from "../core/types.ts";
 
 export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
@@ -27,7 +28,8 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
         widthM: e.type === "river" ? val("ee_width") : undefined,
         reverse: e.type === "wall"
           ? box.current?.querySelector("#ee_rev")?.getAttribute("aria-pressed") === "true"
-          : undefined });
+          : undefined,
+        certainty: readCertainty(box.current, "ee_cert") });
     });
     inspEditSig.value = false;
     showToast("已保存修改", { undo: true });
@@ -49,6 +51,7 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
       {e.type === "wall" && <div class="frow"><label>齿面（缺省在画线方向左侧；岸线惯例＝齿朝水）</label>
         <div class="chips"><button type="button" class="ch tr" id="ee_rev" aria-pressed={e.reverse ? "true" : "false"}
           onClick={ev => { const b = ev.currentTarget as HTMLButtonElement; b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true"); }}>翻转齿面</button></div></div>}
+      <CertaintyChips id="ee_cert" value={typeof e.certainty === "string" ? e.certainty : ""} />
       <div class="frow"><label>属性（每行「键：值」，值留空的行不保存）</label>
         <textarea class="fld" id="ee_kv" rows={7} placeholder={e.type === "river" ? "河流建议：宽度/深度/流量/水质/丰水期/枯水期" : e.type === "wall" ? "工事建议：形制/高度/守方/存废" : "键：值"} defaultValue={kvText} /></div>
       <div class="frow"><label>说明</label>

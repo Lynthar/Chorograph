@@ -2,7 +2,7 @@
    自旧实现原样迁移并纯化——unitLegs 不再内建缓存（渲染帧不许触发 A*，
    缓存与失效由调用层管理，同旧版 state._legs 的角色）。 */
 import { UNIT_KINDS } from "./constants.ts";
-import { distKm } from "./geo.ts";
+import { distKm, kmPerDegLat, toRad } from "./geo.ts";
 import { astar } from "./route.ts";
 import type { Grid } from "./grid.ts";
 import type { Arm, Meta, TrackPt, Unit } from "./types.ts";
@@ -52,6 +52,65 @@ export function unitStatusAt(u: Unit, T: number): string | null {
   if (!p) return null;
   const q = (u.track || [])[p.i];
   return (q && q.st) || null;
+}
+
+/* ── 阵形足印（2026-07 特化柱B）：正面×纵深×朝向——万人步阵与二千轻骑不再同框等大。
+   全部可选：无 frontKm ＝ 无足印 ＝ 标准兵棋框逐位不变（旧档零变化）。 ── */
+
+/** 未显式给纵深时的正面:纵深比——战列的常见观感（2km 正面配 0.33km 纵深） */
+export const DEPTH_RATIO = 6;
+
+/** 阵形尺寸（km）：无正面＝null＝走标准框；纵深缺省由正面派生 */
+export function unitFootKm(u: Unit): { front: number; depth: number } | null {
+  const f = +(u.frontKm as number) || 0;
+  if (!(f > 0)) return null;
+  const d = +(u.depthKm as number) || 0;
+  return { front: f, depth: d > 0 ? d : f / DEPTH_RATIO };
+}
+
+/** 经纬向的 km 换算基（同 ringPx/笔刷环之规：经向再除 cos 纬度，平面世界不除） */
+function kmScale(meta: Meta | undefined, lat: number): { kpd: number; cosn: number } {
+  const kpd = kmPerDegLat(meta);
+  const cosn = (meta || {}).worldModel === "flat" ? 1 : Math.max(0.05, Math.cos(toRad(lat)));
+  return { kpd, cosn };
+}
+
+/** 两点间方位角（度，0=正北顺时针）：经差按 cos 纬度折算＝与图面观感同向；零长返回 null */
+export function bearingDeg(meta: Meta | undefined, lon1: number, lat1: number, lon2: number, lat2: number): number | null {
+  const { cosn } = kmScale(meta, (lat1 + lat2) / 2);
+  const e = (lon2 - lon1) * cosn, n = lat2 - lat1;
+  if (Math.abs(e) < 1e-12 && Math.abs(n) < 1e-12) return null;
+  return ((Math.atan2(e, n) * 180 / Math.PI) % 360 + 360) % 360;
+}
+
+/** 部队在 T 的朝向（度）：所处航段起点的显式 facing 优先（同 st「自该航点起生效」之规），
+    否则取行进方向——行军纵队本就朝行进向；驻止（末航点后）沿用上一段方向；无从可取＝正北。 */
+export function unitFacingAt(meta: Meta | undefined, u: Unit, T: number): number {
+  const p = unitPos(u, T);
+  if (!p) return 0;
+  const tr = u.track || [];
+  const f = +(tr[p.i] || {}).facing!;
+  if (isFinite(f)) return ((f % 360) + 360) % 360;
+  const nxt = tr[p.i + 1];
+  const fwd = nxt ? bearingDeg(meta, tr[p.i].lon, tr[p.i].lat, nxt.lon, nxt.lat) : null;
+  if (fwd != null) return fwd;
+  const prv = p.i > 0 ? bearingDeg(meta, tr[p.i - 1].lon, tr[p.i - 1].lat, tr[p.i].lon, tr[p.i].lat) : null;
+  return prv ?? 0;
+}
+
+/** 阵位条四角的经纬（绘制与拾取同源）：在地面 km 空间按朝向转出再折回度——
+    正面＝垂直于朝向的边、纵深＝沿朝向的边，部队位置＝阵形中心。
+    顺序＝前左 → 前右 → 后右 → 后左（前缘即 [0]–[1]，画粗一道即见朝向）。 */
+export function footCornersLL(meta: Meta | undefined, lon: number, lat: number,
+  front: number, depth: number, facing: number): [number, number][] {
+  const { kpd, cosn } = kmScale(meta, lat);
+  const a = toRad(facing), s = Math.sin(a), c = Math.cos(a);
+  const hw = front / 2, hd = depth / 2;
+  /* du＝沿正面（朝向的右手为正）、dv＝沿朝向（向前为正） */
+  return ([[-hw, hd], [hw, hd], [hw, -hd], [-hw, -hd]] as [number, number][]).map(([du, dv]) => {
+    const kmE = du * c + dv * s, kmN = -du * s + dv * c;
+    return [lon + kmE / (kpd * cosn), lat + kmN / kpd] as [number, number];
+  });
 }
 
 export interface Leg {

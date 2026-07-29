@@ -3,7 +3,7 @@
    按住地点/布景/部队=拖移；连线可点点或拖拽成线；其余工具空白按下只作点击。
    模块内闭持全部拖拽/笔迹瞬态；frame 经 PointerView 只读画线笔迹/框选/光标位。 */
 import { unproject, clampView, zoomAtView, panByView } from "../core/projection.ts";
-import { EDGE_STYLE, EVENT_TYPES, NODE_STYLE, DECOR_BASE, ECO, canonComposite, parseComposite } from "../core/constants.ts";
+import { CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, DECOR_BASE, ECO, canonComposite, parseComposite } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
 import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
@@ -93,6 +93,8 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (!world) { tip.style.display = "none"; return; }
     const layers = layersSig.peek(), yearNow = yearSig.peek();
     const ed = !nd ? pickEdge(cam(), ctx.meta, world, yearNow, x, y, layers) : null;
+    /* 可靠性后缀（柱B）：确证不出字（缺省无须声明），推断/传说才标——同检查器卡片之规 */
+    const certSuf = (v: unknown): string => (typeof v === "string" && CERTAINTY[v]) ? ` · ${CERTAINTY[v].名}` : "";
     let html = "";
     if (nd) {
       const isEv = nd.type === "event";
@@ -102,13 +104,13 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const f = fid ? world.factions.find(q => q.id === fid) : null;
       const pop = (!isEv && nd.字段 && nd.字段.人口) ? ` · 人口 ${escHtml(nd.字段.人口)}` : "";
       html = `<b>${escHtml(nd.名称 || nd.id)}</b> ${isEv ? `${et.sym}${et.名}` : s.名}${isEv && nd.year != null ? ` · ${escHtml(fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", nd.year, true))}` : ""}` +
-        `${f ? ` · ${escHtml(f.名称 || f.id)}` : (isEv ? "" : " · 中立")}${pop}${isEv && nd.result ? `<br>${escHtml(nd.result)}` : ""}`;
+        `${f ? ` · ${escHtml(f.名称 || f.id)}` : (isEv ? "" : " · 中立")}${pop}${certSuf(nd.certainty)}${isEv && nd.result ? `<br>${escHtml(nd.result)}` : ""}`;
     } else if (ed) {
       const st = EDGE_STYLE[ed.edge.type] || { 名: ed.edge.type };
       const a = world.nodes.find(q => q.id === ed.edge.from), b = world.nodes.find(q => q.id === ed.edge.to);
       const elen = Array.isArray(ed.edge.pts) && ed.edge.pts.length >= 2 ? polylineKm(ctx.meta, ed.edge.pts)
         : (a && b ? edgeLenKm(ctx.meta, a, b, ed.edge.type, (ed.edge.from || "") + (ed.edge.to || "")) : 0);
-      html = `<b>${escHtml(ed.edge.名称 || st.名)}</b> · ${st.名} ≈${fmtKm(elen)}`;
+      html = `<b>${escHtml(ed.edge.名称 || st.名)}</b> · ${st.名} ≈${fmtKm(elen)}${certSuf(ed.edge.certainty)}`;
     }
     if (html) {
       tip.innerHTML = html;

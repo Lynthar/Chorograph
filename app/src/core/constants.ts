@@ -153,6 +153,31 @@ export const EDGE_STYLE: Record<string, { color: string; w: number; 名: string 
 export const RIVER_TMPL = "宽度：\n深度：\n流量：\n水质：\n丰水期：\n枯水期：";
 export const WALL_TMPL = "形制：\n高度：\n守方：\n存废：";
 
+/* ── 可靠性分级（2026-07 特化柱B）：真史复原的诚实性语汇——考据有据的画成实线，推断的说明是推断。
+   **缺键（及未知值）＝确证＝现渲染逐位不变**，确证不落盘＝旧档零迁移；只落地点与连线两域
+   （作战线的 dash 已含「复原推断」语义、部队位置本就是复原、标注是自由文本自己会说话）。
+   三档起步（用户拍板）：视觉上稳定可辨的只有虚线·淡显·问号三簇，再分读图人记不住；
+   「考古确切 vs 文献确切」这类细目写进属性模板的「依据：」行。 —— */
+export const CERTAINTY: Record<string, { 名: string; alpha: number; query: boolean; nodeDash: [number, number]; edgeDash: [number, number] }> = {
+  inferred: { 名: "推断", alpha: 1, query: false, nodeDash: [3, 2.5], edgeDash: [7, 5] },
+  legend: { 名: "传说", alpha: 0.6, query: true, nodeDash: [3, 2.5], edgeDash: [7, 5] }
+};
+export const CERTAINTY_ORDER = ["inferred", "legend"];
+export interface CertaintyStyle { dash: number[] | null; alpha: number; query: boolean; 名: string | null }
+/** 确证态（缺键/未知值）：dash=null 即「不改描边」，alpha=1、无问号——现渲染逐位 */
+const CERT_SURE: CertaintyStyle = { dash: null, alpha: 1, query: false, 名: null };
+/* 逐档预建（渲染热路径每对象一次调用，不在帧内分配对象） */
+const CERT_STYLES: Record<"node" | "edge", Record<string, CertaintyStyle>> = { node: {}, edge: {} };
+for (const k of CERTAINTY_ORDER) {
+  const c = CERTAINTY[k];
+  CERT_STYLES.node[k] = { dash: c.nodeDash, alpha: c.alpha, query: c.query, 名: c.名 };
+  CERT_STYLES.edge[k] = { dash: c.edgeDash, alpha: c.alpha, query: c.query, 名: c.名 };
+}
+/** 可靠性 → 渲染样式（纯映射，绘制与图例同源）。地点与连线虚线节奏不同（记号小、线长） */
+export function certaintyStyle(v: unknown, kind: "node" | "edge"): CertaintyStyle {
+  return (typeof v === "string" && CERT_STYLES[kind][v]) || CERT_SURE;
+}
+
 /* 行军速度(km/日)——按军种给速度档（通用默认值） */
 export const SPEEDS: Record<Arm, { 名: string; v: number }[]> = {
   land: [{ 名: "大军(辎重)", v: 20 }, { 名: "步兵", v: 30 }, { 名: "急行军", v: 45 }, { 名: "骑兵", v: 60 }],

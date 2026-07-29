@@ -3,15 +3,15 @@
    「编辑」随时开表单（inspEditSig；编辑模式恒开＝旧语义保留），表单替换卡片视图；
    数据语义与 v0.14 卡一致（对齐旧 renderInfo 系列），航点动向沿旧行内编辑（战役复原工作流）。 */
 import { useRef } from "preact/hooks";
-import { DECOR, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
+import { CERTAINTY, DECOR, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
 import { edgeLenKm, polylineKm } from "../core/geometry.ts";
 import { calOf, fmtT, fmtWhen, fmtWhenRange } from "../core/calendar.ts";
-import { unitArm, unitFireKm, unitKind, unitPos, unitSpeed, unitStatusAt } from "../core/units.ts";
+import { unitArm, unitFacingAt, unitFireKm, unitFootKm, unitKind, unitPos, unitSpeed, unitStatusAt } from "../core/units.ts";
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
 import { clearOpSel, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
-import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointStatus } from "./editops.ts";
+import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointFacing, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
 import { FactionForm } from "./FactionForm.tsx";
@@ -30,6 +30,10 @@ function CardHead({ title }: { title: string }) {
 
 /** 是否显示编辑表单：卡片「编辑」钮随时开（inspEditSig）；编辑模式恒开（旧语义） */
 const editingNow = () => inspEditSig.value || modeSig.value === "edit";
+
+/** 可靠性胶囊文案（柱B）：确证＝不出胶囊（缺省无须声明），推断/传说才标出 */
+const certLabel = (v: unknown): string | null =>
+  (typeof v === "string" && CERTAINTY[v] && CERTAINTY[v].名) || null;
 
 /** Obsidian 双链行（对齐旧 linkRow/bindCopy） */
 function LinkRow({ target }: { target?: string }) {
@@ -81,6 +85,7 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
         {!isEv && (f
           ? <span class="tg" style={{ background: f.color || "#888" }}>{f.名称 || f.id}</span>
           : <span class="tg" style={{ background: "var(--tg-neutral)" }}>中立</span>)}
+        {certLabel(n.certainty) && <span class="tg" style={{ background: "var(--tg-neutral)" }}>{certLabel(n.certainty)}</span>}
       </div>
       <div class="kv2">
         {isEv && n.year != null && <><b>发生</b><span class="num">{fmtWhen(cal, tac, n.year, true)}</span></>}
@@ -202,7 +207,10 @@ function EdgeCard({ e, idx, world }: { e: Edge; idx: number; world: World }) {
   return (
     <>
       <CardHead title={e.名称 || (free ? st.名 : `${a ? a.名称 : e.from} — ${b ? b.名称 : e.to}`)} />
-      <div class="tags"><span class="tg" style={{ background: st.color }}>{st.名}</span></div>
+      <div class="tags">
+        <span class="tg" style={{ background: st.color }}>{st.名}</span>
+        {certLabel(e.certainty) && <span class="tg" style={{ background: "var(--tg-neutral)" }}>{certLabel(e.certainty)}</span>}
+      </div>
       <div class="kv2">
         {!free && <><b>两端</b><span>{a ? a.名称 : e.from} ↔ {b ? b.名称 : e.to}</span></>}
         <b>沿线长</b><span class="num">≈ {fmtKm(len)}{e.type === "river" ? "（含曲流）" : ""}</span>
@@ -230,6 +238,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
   const cal = calOf((world.meta || {}).calendar);
   const legs = unitLegsSig.value.get(u.id) || [];
   const track = u.track || [];
+  const foot = unitFootKm(u);
   return (
     <>
       <div class="sec" style={{ marginTop: "4px" }}>动向<span class="cnt">{track.length} 航点</span></div>
@@ -259,6 +268,15 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
                 {Object.entries(UNIT_STATUS).map(([k, d]) => <option key={k} value={k} selected={q.st === k}>{d.名}</option>)}
               </select>
             </> : (q.st && UNIT_STATUS[q.st] ? <> <span class="tg" style={{ background: UNIT_STATUS[q.st].color, padding: "1px 6px" }}>{UNIT_STATUS[q.st].名}</span></> : null)}
+            {/* 朝向（柱B）：只在有足印时露面——无阵位条时填了也看不出来 */}
+            {foot && (editable
+              ? <>{" "}
+                <input class="fld" type="number" min={0} max={359} step={1} title="朝向°（0=正北顺时针；留空＝行进方向）" key={i + ":fc" + (q.facing ?? "")}
+                  style={{ width: "3.8em", display: "inline-block", padding: "1px 3px", margin: 0 }}
+                  placeholder="向°" defaultValue={q.facing != null ? String(q.facing) : ""}
+                  onChange={e => { const v = (e.currentTarget as HTMLInputElement).value; mutateWorld(w => { setUnitWaypointFacing(w, u.id, q.t, v); }); }} />
+              </>
+              : (q.facing != null ? <> · 朝向 {+(+q.facing).toFixed(0)}°</> : null))}
             {L && <span class="sub" style={L.ok ? undefined : { color: "var(--q-zhu)" }}> {Math.round(L.km)}km{L.route ? "" : "(直线)"}/{fmtDur(L.days)}·需{fmtDur(L.need)}{L.ok ? "" : " ⚠"}</span>}
             {editable && <button type="button" class="link" style={{ color: "var(--q-zhu)" }} title="删此航点" onClick={() => { mutateWorld(w => { deleteUnitWaypoint(w, u.id, i); }); }}> ✕</button>}
           </div>
@@ -296,6 +314,9 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
         <b>当前({fmtT(cal, T)})</b><span class="num">{p ? `${p.lon.toFixed(3)}° · ${p.lat.toFixed(3)}°` : "未入场 / 已离场"}</span>
         {unitFireKm(u) > 0 && <><b>火力圈</b><span class="num">{unitFireKm(u)} km</span></>}
         {typeof u.vision === "number" && u.vision > 0 && <><b>视野圈</b><span class="num">{u.vision} km</span></>}
+        {(() => { const ft = unitFootKm(u); return ft
+          ? <><b>阵形</b><span class="num">正面 {+ft.front.toFixed(2)} × 纵深 {+ft.depth.toFixed(2)} km · 朝向 {Math.round(unitFacingAt(world.meta, u, T))}°</span></>
+          : null; })()}
       </div>
       {bad.length > 0 && <div class="err">⚠ {bad.length} 段行程超出速度上限——拉长间隔天数、绕开险地或调整速度（超速段在图上标红）</div>}
       <TrackList u={u} editable={false} />

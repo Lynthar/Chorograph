@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildGridCells, roadCellSet } from "../src/core/grid.ts";
 import { astar, cellCenter, cellCost, computeRoute, lonlatToCell, measureLegs, routeReport } from "../src/core/route.ts";
-import { setUnitPoint, unitLegs, unitPos } from "../src/core/units.ts";
+import { DEPTH_RATIO, bearingDeg, footCornersLL, setUnitPoint, unitFacingAt, unitFootKm, unitLegs, unitPos } from "../src/core/units.ts";
 import { pickUnit, unitSpots } from "../src/render/units.ts";
 import { project, type Camera } from "../src/core/projection.ts";
 import { yearRangeOf } from "../src/core/time.ts";
@@ -229,7 +229,7 @@ describe("部队堆叠偏移（绘制拾取同源）", () => {
   ];
   const world = plainWorld({ units });
   it("同点第二支按数组序错开 (+7,-6)、异点不动、未入场不占位", () => {
-    const sp = unitSpots(cam, world, 0);
+    const sp = unitSpots(cam, META, world, 0);
     assert.strictEqual(sp.length, 3);
     const [bx, by] = project(cam, 100, 30);
     assert.deepStrictEqual([sp[0].x, sp[0].y], [bx, by], "首支在真实位置");
@@ -237,13 +237,98 @@ describe("部队堆叠偏移（绘制拾取同源）", () => {
     const [cx2, cy2] = project(cam, 100.5, 30);
     assert.deepStrictEqual([sp[2].x, sp[2].y], [cx2, cy2], "异点不受牵连");
     const w2 = plainWorld({ units: [units[0], { id: "gone", kind: "inf", track: [] }, units[1]] });
-    assert.strictEqual(unitSpots(cam, w2, 0).length, 2, "未入场（track 空）不入位");
+    assert.strictEqual(unitSpots(cam, META, w2, 0).length, 2, "未入场（track 空）不入位");
   });
   it("pickUnit 拾偏移后的位置＝点你看见的那个框", () => {
     const [bx, by] = project(cam, 100, 30);
     assert.strictEqual(pickUnit(cam, META, world, 0, bx, by)!.id, "u1", "真实位＝首支");
     assert.strictEqual(pickUnit(cam, META, world, 0, bx + 7, by - 6)!.id, "u2", "偏移位＝第二支");
     assert.strictEqual(pickUnit(cam, META, world, 0, bx + 200, by), null, "远处空拾");
+  });
+});
+
+describe("阵形足印与朝向（柱B）", () => {
+  const kpd = 2 * Math.PI * 10000 / 360;          // META 默认星球：每纬度 km
+  const near = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
+
+  it("unitFootKm：无正面＝null（标准框逐位不变）；纵深缺省由正面派生", () => {
+    assert.strictEqual(unitFootKm({ id: "a", kind: "inf", track: [] }), null);
+    assert.strictEqual(unitFootKm({ id: "a", kind: "inf", frontKm: 0, track: [] }), null, "0 视同未设");
+    assert.deepStrictEqual(unitFootKm({ id: "a", kind: "inf", frontKm: 3, track: [] }), { front: 3, depth: 3 / DEPTH_RATIO });
+    assert.deepStrictEqual(unitFootKm({ id: "a", kind: "inf", frontKm: 3, depthKm: 1, track: [] }), { front: 3, depth: 1 });
+  });
+
+  it("bearingDeg：正北 0 / 正东 90 / 正南 180；经差按 cos 纬度折算；零长＝null", () => {
+    near(bearingDeg(META, 100, 30, 100, 31)!, 0);
+    near(bearingDeg(META, 100, 30, 101, 30)!, 90);
+    near(bearingDeg(META, 100, 30, 100, 29)!, 180);
+    near(bearingDeg(META, 100, 30, 99, 30)!, 270);
+    assert.strictEqual(bearingDeg(META, 100, 30, 100, 30), null, "零长无方向");
+    // 等经纬差的东北向：因 cos30≈0.866 压缩经距，方位角小于 45°
+    const d = bearingDeg(META, 100, 30, 101, 31)!;
+    assert.ok(d > 39 && d < 42, `等经纬差东北向≈${d}°（cos 折算后偏北）`);
+  });
+
+  it("unitFacingAt：显式优先 → 行进方向 → 驻止沿用上一段 → 无从可取＝正北", () => {
+    const u: Unit = { id: "a", kind: "inf", track: [
+      { t: 0, lon: 100, lat: 30 },                  // →正东行进
+      { t: 1, lon: 101, lat: 30, facing: 200 },     // 显式朝向（自此生效）
+      { t: 2, lon: 101, lat: 31 }                   // 驻止：沿用上一段（正北）
+    ] };
+    near(unitFacingAt(META, u, 0), 90, 1e-9);
+    near(unitFacingAt(META, u, 0.5), 90, 1e-9, );
+    near(unitFacingAt(META, u, 1), 200, 1e-9);
+    near(unitFacingAt(META, u, 1.5), 200, 1e-9, );
+    near(unitFacingAt(META, u, 9), 0, 1e-9);        // 末航点后驻止＝上一段方位（正北）
+    assert.strictEqual(unitFacingAt(META, { id: "b", kind: "inf", track: [{ t: 0, lon: 100, lat: 30 }] }, 0), 0, "单点无从可取＝正北");
+    assert.strictEqual(unitFacingAt(META, u, -5), 0, "未入场＝0");
+    near(unitFacingAt(META, { id: "c", kind: "inf", track: [{ t: 0, lon: 100, lat: 30, facing: -90 }] }, 0), 270, 1e-9);
+  });
+
+  it("footCornersLL：朝北时前缘在北、正面沿东西；正面/纵深为真实 km", () => {
+    const c = footCornersLL(META, 100, 30, 4, 1, 0);   // 正面 4km、纵深 1km、朝北
+    const [fl, fr, br, bl] = c;
+    assert.ok(fl[1] > bl[1], "前缘在北");
+    assert.ok(fr[0] > fl[0], "前右在前左之东");
+    near((fl[1] - bl[1]) * kpd, 1, 1e-6);                                  // 纵深 1km
+    near((fr[0] - fl[0]) * kpd * Math.cos(30 * Math.PI / 180), 4, 1e-6);   // 正面 4km（经向折 cos）
+    near((br[1] - bl[1]) * kpd, 0, 1e-9);
+  });
+
+  it("footCornersLL：朝东＝整块转 90°（前缘在东、正面沿南北），尺寸不变", () => {
+    const c = footCornersLL(META, 100, 30, 4, 1, 90);
+    const [fl, fr] = c;
+    const cosn = Math.cos(30 * Math.PI / 180);
+    // 前缘长仍是 4km（此时沿南北）
+    near(Math.hypot((fr[0] - fl[0]) * kpd * cosn, (fr[1] - fl[1]) * kpd), 4, 1e-6);
+    assert.ok(fl[1] > fr[1], "朝东时前左在北、前右在南");
+    assert.ok(fl[0] > 100 && fr[0] > 100, "前缘整体偏东");
+  });
+
+  it("unitSpots：足印够宽才成阵位条，阵位条不吃堆叠偏移（框态照旧）", () => {
+    const cam: Camera = { lon0: 100, lat0: 30, degPerPx: 0.0004, w: 800, h: 600, flat: false, lonShift: 0 };
+    const bar: Unit = { id: "bar", kind: "inf", frontKm: 4, track: [{ t: 0, lon: 100, lat: 30 }] };
+    const box: Unit = { id: "box", kind: "cav", track: [{ t: 0, lon: 100, lat: 30 }] };
+    const sp = unitSpots(cam, META, plainWorld({ units: [bar, box] }), 0);
+    assert.ok(sp[0].foot, "正面 4km 在 0.0004°/px 下远超阈值＝阵位条");
+    assert.strictEqual(sp[1].foot, null, "未设正面＝标准框");
+    const [bx, by] = project(cam, 100, 30);
+    assert.deepStrictEqual([sp[1].x, sp[1].y], [bx, by], "阵位条不占堆叠位＝同点的框仍在真实位");
+    // 缩到足印窄于阈值即回落标准框（远景逐位不变）
+    const far: Camera = { ...cam, degPerPx: 0.5 };
+    assert.strictEqual(unitSpots(far, META, plainWorld({ units: [bar] }), 0)[0].foot, null, "远景回落标准框");
+  });
+
+  it("pickUnit：阵位条按条内判中（条心胜过邻框边缘），条外不中", () => {
+    const cam: Camera = { lon0: 100, lat0: 30, degPerPx: 0.0004, w: 800, h: 600, flat: false, lonShift: 0 };
+    const bar: Unit = { id: "bar", kind: "inf", frontKm: 4, track: [{ t: 0, lon: 100, lat: 30, facing: 0 }] };
+    const world2 = plainWorld({ units: [bar] });
+    const [cx, cy] = project(cam, 100, 30);
+    assert.strictEqual(pickUnit(cam, META, world2, 0, cx, cy)!.id, "bar", "条心命中");
+    /* 2km 折像素：角点经度换算里的 cos(纬度) 与投影的 cosk 在视心处相消——屏上 km 各向同性 */
+    const halfFrontPx = 2 / kpd / 0.0004;
+    assert.strictEqual(pickUnit(cam, META, world2, 0, cx + halfFrontPx * 0.9, cy)!.id, "bar", "条内近前右仍命中");
+    assert.strictEqual(pickUnit(cam, META, world2, 0, cx + halfFrontPx * 1.2, cy), null, "条外不中（不再是恒定 12px 框）");
   });
 });
 

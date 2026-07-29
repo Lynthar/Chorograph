@@ -4,7 +4,8 @@
    create=从图库新建（隐藏数据区与应用钮）。卡片以 token 为 key 整体重挂=每次打开重灌表单。 */
 import { useRef, useState } from "preact/hooks";
 import { blankWorld, type BlankWorldSpec } from "../core/world.ts";
-import { calOf } from "../core/calendar.ts";
+import { blankTacticalWorld, type BlankTacSpec } from "../core/tactical.ts";
+import { calOf, parseYearForm } from "../core/calendar.ts";
 import type { CalendarCfg, GenStyle, TerrainMode, WorldModel } from "../core/types.ts";
 import { closeSettings, flyReqSig, isTacSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, uiPrefsSig, worldSig, type SettingsMode } from "./state.ts";
 import { useModalFocus } from "./modal.ts";
@@ -23,6 +24,9 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
   const [terr, setTerr] = useState<string>(create ? "auto" : (m.terrain || "sample"));
   /* 纪年历法（双轨）：create 可选 架空自定义/真实地球；既有图锁定（改 kind/月长会错位已存日戳），纪元前缀可改 */
   const [calKind, setCalKind] = useState<string>("custom");
+  /* 新建的图种（柱B）：战略图（世界/疆域，按年）／战术战场（一场战役，按日与时辰）——
+     真史战役没有母图可烘，此前只能写脚本手搓 JSON；本分支即「战略→战术」单行桥的另一个入口 */
+  const [tacNew, setTacNew] = useState(false);
   const curCal = calOf(m.calendar);
   const bb = m.bbox || { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 };
   const d = create
@@ -99,9 +103,27 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
     closeSettings();
     showToast("已应用到当前世界 · 视图出界自动回中", { undo: true });
   };
+  /* 战术战场参数（仅 create + 战术分支）：中心经纬 + 直径 + 战役年份 + 等高距；
+     其余（形态/半径/历法/地形初稿/起伏/库名）复用同一张表单的读取 */
+  const readTacSettings = (): BlankTacSpec => {
+    const s = readSettings();
+    const num = (id: string, dflt: number) => { const v = parseFloat(q<HTMLInputElement>("#" + id).value); return isFinite(v) ? v : dflt; };
+    const cal = calOf(s.calendar);
+    const yr = parseYearForm(cal, q<HTMLInputElement>("#sw_byear").value);
+    const cm = num("sw_contourm", 0);
+    return {
+      名称: s.名称, worldModel: s.worldModel, planetRadiusKm: s.planetRadiusKm, kmPerDeg: s.kmPerDeg,
+      lon: num("sw_clon", 114), lat: num("sw_clat", 38),
+      diaKm: Math.max(1, num("sw_dia", 20)),
+      battleYear: yr == null ? 0 : yr,
+      calendar: s.calendar, terrain: s.terrain, genSeed: s.genSeed, genStyle: s.genStyle,
+      relief: s.relief, contourM: cm > 0 ? cm : undefined, vault: s.vault
+    };
+  };
   const doNew = () => {
     if (!create && !confirm("以当前参数新建一张空白地图？\n当前地图原样保留在图库（顶栏 ⌂）中。")) return;
-    const w = blankWorld(readSettings(), new Date().toISOString().slice(0, 10));
+    const today = new Date().toISOString().slice(0, 10);
+    const w = create && tacNew ? blankTacticalWorld(readTacSettings(), today) : blankWorld(readSettings(), today);
     closeSettings();
     acts?.createWorld(w);
   };
@@ -121,7 +143,7 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
     <div class="modal" ref={box} role="dialog" aria-modal="true" aria-labelledby="setTitle" tabIndex={-1}>
       <div class="mo-head">
         <span class="t" id="setTitle">{create ? "🆕 新建地图" : "⚙ 设置"}</span>
-        <span class="s">{create ? "先定世界形态与尺度" : "界面偏好 · 世界参数 · 数据与出图"}</span>
+        <span class="s">{create ? (tacNew ? "先定战场位置与尺度" : "先定世界形态与尺度") : "界面偏好 · 世界参数 · 数据与出图"}</span>
         <button class="x tr" aria-label="关闭" onClick={closeSettings}>✕</button>
       </div>
       <div class="mo-body">
@@ -147,15 +169,45 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
           <h4 style={{ margin: "12px 0 4px" }}>世界参数</h4>
         </>
       ); })()}
-      <div class="setrow"><label>地图名称</label><input type="text" id="sw_name" class="wide" defaultValue={d.名称} /></div>
+      {create && (
+        <div class="setrow"><label>地图种类</label>
+          <div class="seg">
+            <button type="button" class={"tbtn" + (tacNew ? "" : " on")} aria-pressed={!tacNew} onClick={() => setTacNew(false)}>🗺 战略图（世界·按年）</button>
+            <button type="button" class={"tbtn" + (tacNew ? " on" : "")} aria-pressed={tacNew} onClick={() => setTacNew(true)}>⚔ 战术战场（一战·按日与时辰）</button>
+          </div>
+          <span class="sub">战场＝以一点为心的方图，时间轴细到日与时辰，兵棋与公里网随之开启</span>
+        </div>
+      )}
+      {/* 换图种即换默认名（key 换＝重挂）：战场叫「新地图」与标签打架；已输入的名字让位于图种切换 */}
+      <div class="setrow"><label>{create && tacNew ? "战场名称" : "地图名称"}</label>
+        <input type="text" id="sw_name" class="wide" key={create && tacNew ? "tacname" : "name"}
+          defaultValue={create && tacNew ? "新战场" : d.名称} /></div>
       <div class="setrow"><label>世界形态</label>
         <label><input type="radio" name="sw_model" value="sphere" defaultChecked={d.model === "sphere"} /> 球面星球（大圆距离）</label>
         <label><input type="radio" name="sw_model" value="flat" defaultChecked={d.model === "flat"} /> 平面·天圆地方（直线距离）</label>
       </div>
       <div class="setrow"><label>星球半径 km</label><input type="number" id="sw_radius" min={100} step={100} defaultValue={String(d.radius)} /><span class="sub">球面用。第一世界地球≈6371</span></div>
       <div class="setrow"><label>每度里程 km/°</label><input type="number" id="sw_kmdeg" min={1} step={1} defaultValue={d.kmdeg} /><span class="sub">平面用。留空=按半径换算(2πR/360)</span></div>
-      <div class="setrow"><label>经度范围 °</label><input type="number" id="sw_lonmin" step={1} defaultValue={String(d.lonMin)} /> ~ <input type="number" id="sw_lonmax" step={1} defaultValue={String(d.lonMax)} /></div>
-      <div class="setrow"><label>纬度范围 °</label><input type="number" id="sw_latmin" step={1} defaultValue={String(d.latMin)} /> ~ <input type="number" id="sw_latmax" step={1} defaultValue={String(d.latMax)} /><span class="sub">决定地形网格边界</span></div>
+      {/* 战场分支下 bbox 由中心＋直径推出；输入仍在 DOM（display:none）——readSettings 一律读它们 */}
+      <div class="setrow" style={{ display: create && tacNew ? "none" : "flex" }}><label>经度范围 °</label><input type="number" id="sw_lonmin" step={1} defaultValue={String(d.lonMin)} /> ~ <input type="number" id="sw_lonmax" step={1} defaultValue={String(d.lonMax)} /></div>
+      <div class="setrow" style={{ display: create && tacNew ? "none" : "flex" }}><label>纬度范围 °</label><input type="number" id="sw_latmin" step={1} defaultValue={String(d.latMin)} /> ~ <input type="number" id="sw_latmax" step={1} defaultValue={String(d.latMax)} /><span class="sub">决定地形网格边界</span></div>
+      {create && tacNew && (
+        <>
+          <div class="setrow"><label>战场中心 °</label>
+            <input type="number" id="sw_clon" step={0.001} defaultValue="114" title="中心经度（东经为正）" /> ,
+            <input type="number" id="sw_clat" step={0.001} defaultValue="38" title="中心纬度（北纬为正）" />
+            <span class="sub">照战役文档的坐标填；落图后可继续平移</span></div>
+          <div class="setrow"><label>战场直径 km</label>
+            <input type="number" id="sw_dia" min={1} step={1} defaultValue="20" />
+            <span class="sub">图幅边长；野战 15~40、会战 40~120</span></div>
+          <div class="setrow"><label>战役年份</label>
+            <input type="text" id="sw_byear" defaultValue="" placeholder={calKind === "earth" ? "如 前204 / 1815" : "如 3107"} />
+            <span class="sub">时间轴锚在这一年的日戳区间；细节日期落图后在时间轴上拨</span></div>
+          <div class="setrow"><label>最细等高距 米</label>
+            <input type="number" id="sw_contourm" min={0} step={5} defaultValue="" placeholder="留空＝10" />
+            <span class="sub">等高线的最细一档；平原战场 10、山地战场 50~100</span></div>
+        </>
+      )}
       <div class="setrow"><label>地形初稿</label>
         <label><input type="radio" name="sw_terr" value="auto" defaultChecked={terr === "auto"} onChange={() => setTerr("auto")} /> 自动生成</label>
         <label><input type="radio" name="sw_terr" value="plain" defaultChecked={terr === "plain"} onChange={() => setTerr("plain")} /> 空白平原</label>

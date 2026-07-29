@@ -57,6 +57,10 @@ export interface Meta {
 
 export interface Timed { since?: number | null; until?: number | null }
 
+/** 可靠性分级（2026-07 特化柱B）：真史复原的诚实性语汇，只落地点与连线。
+    **缺键＝确证＝现渲染逐位不变**（确证不落盘，旧档零迁移）；未知值同确证。 */
+export type Certainty = "inferred" | "legend";
+
 export interface Owner extends Timed { faction?: string | null }
 
 export interface PaintLayer extends Timed { cells: [number, number][] }
@@ -83,6 +87,7 @@ export interface WorldNode extends Timed {
   type: string;
   faction?: string | null;
   owners?: Owner[];
+  certainty?: Certainty;      // 可靠性（柱B）：缺键=确证；推断=虚描、传说=虚描+淡显+「?」
   radiusKm?: number;
   字段?: Record<string, string>;
   note?: string; link?: string;
@@ -104,6 +109,7 @@ export interface Edge extends Timed {
   名称?: string;
   widthM?: number;            // 河流真实水面宽（米）：按地理尺度渲染线宽（缺省=样式底宽 2.6px）
   reverse?: boolean;          // 工事齿面翻转：缺省齿在画线方向左侧（同作战线防线齿之例；岸线惯例＝齿朝水）
+  certainty?: Certainty;      // 可靠性（柱B）：缺键=确证；推断/传说走虚线+淡显（同地点之规）
   字段?: Record<string, string>;
   note?: string;
   [k: string]: unknown;
@@ -131,6 +137,7 @@ export interface HeightOverride extends Timed {
 export interface TrackPt {
   t: number; lon: number; lat: number;
   st?: string;                // 状态（UNIT_STATUS 键：battle/standoff/rout）：自该航点起生效到下一航点；缺省=行军/常态
+  facing?: number;            // 朝向（度，0=正北顺时针）：同 st「自该航点起生效」之规；缺省=行进方向（柱B 足印）
 }
 
 export interface Unit extends Timed {
@@ -143,6 +150,10 @@ export interface Unit extends Timed {
   ranges?: { 名称?: string; km: number }[];   // 旧多圈火力（v0.14 遗留）：只读回退——渲染取首条，表单保存归一为 range
   range?: number;             // 火力投射半径 km（与 vision 同机制：数字输入+圈上手柄拖动、拖近零清除）
   vision?: number;            // 视野/侦察半径 km（浅色半透明圆；选中后圈左手柄可拖动调节）
+  /* 阵形足印（柱B）：正面宽与纵深（km），缺省＝无足印＝标准兵棋框逐位不变。
+     放大到足印够宽（>BAR_MIN_PX）才改画按比例的阵位条——万人步阵与二千轻骑不再同框等大。 */
+  frontKm?: number;
+  depthKm?: number;           // 缺省＝正面 ÷ DEPTH_RATIO
   note?: string;
   [k: string]: unknown;
 }

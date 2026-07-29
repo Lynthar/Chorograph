@@ -3,7 +3,7 @@
    字段带持久小标签（.frow>label，对齐设计；填值后仍有标识）。 */
 import { useRef } from "preact/hooks";
 import { UNIT_KINDS } from "../core/constants.ts";
-import { unitFireKm, unitKind } from "../core/units.ts";
+import { DEPTH_RATIO, unitFireKm, unitFootKm, unitKind } from "../core/units.ts";
 import { applyUnitForm } from "./editops.ts";
 import { deleteUnitAt, inspEditSig, modeSig, mutateWorld, showToast, worldSig } from "./state.ts";
 import type { Unit } from "../core/types.ts";
@@ -12,6 +12,7 @@ export function UnitForm({ u }: { u: Unit }) {
   const box = useRef<HTMLDivElement>(null);
   const world = worldSig.value!;
   const kDef = (unitKind(u) || UNIT_KINDS.inf).v;
+  const foot = unitFootKm(u);
   const val = (id: string) => (box.current?.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("#" + id))?.value ?? "";
 
   const save = () => {
@@ -21,7 +22,8 @@ export function UnitForm({ u }: { u: Unit }) {
       applyUnitForm(target, {
         名称: val("uf_name"), faction: val("uf_fac"), kind: val("uf_kind"),
         strength: val("uf_str"), speed: val("uf_speed"),
-        range: val("uf_range"), vision: val("uf_vision"), note: val("uf_note")
+        range: val("uf_range"), vision: val("uf_vision"), note: val("uf_note"),
+        frontKm: val("uf_front"), depthKm: val("uf_depth")
       });
     });
     inspEditSig.value = false;
@@ -56,6 +58,17 @@ export function UnitForm({ u }: { u: Unit }) {
           defaultValue={typeof u.vision === "number" && u.vision > 0 ? String(u.vision) : ""}
           placeholder="斥候瞭望/侦骑警戒 · 派系色浅填充圆"
           title="斥候瞭望/侦骑警戒半径：图上画派系色浅填充圆；「军」工具下选中部队可直接拖动圈左侧手柄调节" /></div>
+      <div class="frow"><label>阵形正面 · 纵深 km（留空＝标准兵棋框；纵深留空＝正面÷{DEPTH_RATIO}）</label>
+        <div class="fx2">
+          <input class="fld" id="uf_front" type="number" min={0} step={0.1}
+            defaultValue={typeof u.frontKm === "number" && u.frontKm > 0 ? String(u.frontKm) : ""}
+            placeholder="正面 如 2"
+            title="阵形正面宽 km：放大到正面够宽时，兵棋框改画按比例的阵位条（朝向取航点 facing，缺省=行进方向）" />
+          <input class="fld" id="uf_depth" type="number" min={0} step={0.1}
+            defaultValue={typeof u.depthKm === "number" && u.depthKm > 0 ? String(u.depthKm) : ""}
+            placeholder={foot ? `纵深 缺省 ${+foot.depth.toFixed(2)}` : "纵深"}
+            title="阵形纵深 km：留空按正面派生（战列常见观感）" />
+        </div></div>
       <div class="frow"><label>说明</label>
         <textarea class="fld" id="uf_note" rows={3} placeholder="编制 / 主将 / 状态" defaultValue={typeof u.note === "string" ? u.note : ""} /></div>
       <div class="in-actions">

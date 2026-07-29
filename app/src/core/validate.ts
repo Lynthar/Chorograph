@@ -3,7 +3,7 @@
    · fatal：旧版导入门槛拒绝的（无 meta/nodes 非数组）+ 会让 normalize/渲染直接崩的（数组成员不是对象）；
    · warning：normalizeWorld 会补齐/改写的、以及悬空引用等数据质量问题——照常打开，仅提示写手。
    注意分级红线：凡旧版能打开的档，这里绝不能报 fatal（"旧档无损打开"是 验收）。 */
-import { DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
+import { CERTAINTY, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
 
 export interface Issue { path: string; msg: string }
 export interface ValidateResult { ok: boolean; fatal: Issue[]; warnings: Issue[] }
@@ -69,6 +69,11 @@ export function validateWorld(w: unknown): ValidateResult {
   const checkTimed = (path: string, m: Record<string, unknown>) => {
     for (const k of ["since", "until"]) if (m[k] != null && !isNum(m[k])) W(`${path}.${k}`, "不是数字，时段过滤将失准");
   };
+  /* 可靠性档位（柱B）：未知值按「确证」渲染——只提示，不改数据（同未知地形/兵种之规） */
+  const checkCertainty = (path: string, m: Record<string, unknown>) => {
+    if (m.certainty != null && !(String(m.certainty) in CERTAINTY))
+      W(`${path}.certainty`, `未知可靠性档「${String(m.certainty)}」（将按确证渲染）`);
+  };
 
   /* —— 派系 —— */
   const factionIds = new Set<string>();
@@ -101,6 +106,7 @@ export function validateWorld(w: unknown): ValidateResult {
     if (t === "event" && n.evtype != null && !(String(n.evtype) in EVENT_TYPES))
       W(`${p}.evtype`, `未知事件子类「${String(n.evtype)}」（将按"战役"处理）`);
     refFaction(`${p}.faction`, n.faction);
+    checkCertainty(p, n);
     if (Array.isArray(n.owners)) n.owners.forEach((ow, j) => {
       if (isObj(ow)) { refFaction(`${p}.owners[${j}].faction`, ow.faction); checkTimed(`${p}.owners[${j}]`, ow); }
       else W(`${p}.owners[${j}]`, "归属沿革成员不是对象");
@@ -121,6 +127,7 @@ export function validateWorld(w: unknown): ValidateResult {
     if (free) { if (e.type !== "river" && e.type !== "wall") W(`${p}.pts`, "只有河流与工事可用自由折线 pts"); }
     else for (const end of ["from", "to"]) if (!nodeIds.has(String(e[end]))) W(`${p}.${end}`, `连线引用了不存在的地点「${String(e[end])}」`);
     if (!(String(e.type) in EDGE_STYLE)) W(`${p}.type`, `未知连线类型「${String(e.type)}」`);
+    checkCertainty(p, e);
     checkTimed(p, e);
   });
 

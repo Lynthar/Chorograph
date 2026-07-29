@@ -5,9 +5,9 @@ import { wrapLon } from "../core/geo.ts";
 import { parseKV } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
 import { setUnitPoint, unitKind } from "../core/units.ts";
-import { UNIT_KINDS, canonComposite, parseComposite } from "../core/constants.ts";
+import { CERTAINTY, UNIT_KINDS, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
-import type { Arm, Asset, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
+import type { Arm, Asset, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
 
 export const newNodeId = (): string => "n" + Date.now().toString(36);
 export const newEventId = (): string => "ev" + Date.now().toString(36);
@@ -105,6 +105,7 @@ export interface NodeFormValues {
   radiusKm?: string; since?: string; until?: string;
   kv: string;
   ranges?: string;             // 战术图据点防御火力（每行「名称：公里数」；undefined=无此栏）
+  certainty?: string;          // 可靠性档位（""=确证删键；undefined=不动此键）
   year?: string; sides?: string; result?: string;   // 事件点专属
   fs?: string; pin?: string;   // 标注（type:"label"）专属：字号 px / 屏幕角（""=地图锚定）
 }
@@ -119,6 +120,7 @@ export function applyNodeForm(n: WorldNode, v: NodeFormValues): void {
   Object.keys(kv).forEach(k => { if (!kv[k]) delete kv[k]; });   // 值留空的模板行不保存
   if (Object.keys(kv).length) n.字段 = kv; else delete n.字段;
   if (v.ranges !== undefined) { const rng = parseRanges(v.ranges); if (rng.length) n.ranges = rng; else delete n.ranges; }
+  if (v.certainty !== undefined) setCertainty(n, v.certainty);
   if (n.type === "event") {
     if (v.year !== undefined) { const y = parseFloat(v.year); if (isFinite(y)) n.year = y; else delete n.year; }
     if (v.sides !== undefined) { const s = v.sides.trim(); if (s) n.sides = s; else delete n.sides; }
@@ -132,7 +134,7 @@ export function applyNodeForm(n: WorldNode, v: NodeFormValues): void {
 
 /** 连线表单一次提交（旧 ee_save 语义；widthM=河流真宽米数，>0 存、空/非法删；
     reverse=工事齿面翻转（柱B），真存假删——缺省齿在画线方向左侧不落盘 */
-export interface EdgeFormValues { 名称: string; note: string; kv: string; since: string; until: string; widthM?: string; reverse?: boolean }
+export interface EdgeFormValues { 名称: string; note: string; kv: string; since: string; until: string; widthM?: string; reverse?: boolean; certainty?: string }
 export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
   const nm = v.名称.trim(); if (nm) e.名称 = nm; else delete e.名称;
   const nt = v.note.trim(); if (nt) e.note = nt; else delete e.note;
@@ -142,6 +144,12 @@ export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
   const u = parseFloat(v.until); if (isFinite(u)) e.until = u; else delete e.until;
   if (v.widthM !== undefined) { const w = parseFloat(v.widthM); if (w > 0) e.widthM = w; else delete e.widthM; }
   if (v.reverse !== undefined) { if (v.reverse) e.reverse = true; else delete e.reverse; }
+  if (v.certainty !== undefined) setCertainty(e, v.certainty);
+}
+
+/** 可靠性写入（地点/连线共用，柱B）：确证＝删键不落盘（旧档零迁移）；未知档位按确证处理 */
+export function setCertainty(o: { certainty?: Certainty }, v: string): void {
+  if (v && v in CERTAINTY) o.certainty = v as Certainty; else delete o.certainty;
 }
 
 /* —— 归属沿革（nodes[].owners：分时段归属；旧版仅可改 JSON，这里补编辑器内核）——
@@ -404,6 +412,16 @@ export function setUnitWaypointStatus(w: World, id: string, t: number, st: strin
   return true;
 }
 
+/** 设/清某日航点的朝向（度；空/非法=删键回落行进方向）——自该航点起生效到下一航点，同 st 之规 */
+export function setUnitWaypointFacing(w: World, id: string, t: number, deg: string): boolean {
+  const u = (w.units || []).find(x => x.id === id);
+  const p = u && (u.track || []).find(q => q.t === +t);
+  if (!p) return false;
+  const v = parseFloat(deg);
+  if (isFinite(v)) p.facing = ((v % 360) + 360) % 360; else delete p.facing;
+  return true;
+}
+
 /* —— 视野/火力圈半径（拖动手柄调节）——半径按量级取整（≥100km 整数、≥10 一位小数、再小两位）。 */
 const roundKm = (km: number): number => km >= 100 ? Math.round(km) : km >= 10 ? +km.toFixed(1) : +km.toFixed(2);
 
@@ -440,7 +458,7 @@ export function formatRanges(ranges: { 名称?: string; km: number }[] | undefin
 
 /** 部队表单一次提交（旧 uf_save 语义：名称空则保留、速度>0 才设否则删；火力/视野同机制：>0 才设否则删。
     提交火力时一并清掉旧多圈 ranges（归一为单值 range；旧档只读回退在渲染层）。 */
-export interface UnitFormValues { 名称: string; faction: string; kind: string; strength: string; speed: string; note: string; range?: string; vision?: string }
+export interface UnitFormValues { 名称: string; faction: string; kind: string; strength: string; speed: string; note: string; range?: string; vision?: string; frontKm?: string; depthKm?: string }
 export function applyUnitForm(u: Unit, v: UnitFormValues): void {
   if (v.名称) u.名称 = v.名称;
   u.faction = v.faction || null;
@@ -455,6 +473,9 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
     delete u.ranges;   // 表单保存即归一（旧多圈并入单值）
   }
   if (v.vision !== undefined) { const vk = parseFloat(v.vision); if (vk > 0) u.vision = vk; else delete u.vision; }
+  /* 阵形足印（柱B）：>0 才存否则删键——无正面＝无足印＝标准框逐位不变 */
+  if (v.frontKm !== undefined) { const fk = parseFloat(v.frontKm); if (fk > 0) u.frontKm = fk; else delete u.frontKm; }
+  if (v.depthKm !== undefined) { const dk = parseFloat(v.depthKm); if (dk > 0) u.depthKm = dk; else delete u.depthKm; }
   u.note = v.note;
 }
 

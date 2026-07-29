@@ -5,7 +5,7 @@
    事件点未发生=淡显、当年=红圈；编辑模式全部地点可见（旧 nodeVisible 语义）。
    ⚠ nodeVisibleAt 是绘制与拾取（render/pick.ts）同源的可见门——改门先想两边；
    noteBox 同理是标注文本体的同源几何（画与点都由它出）。 */
-import { NODE_STYLE, RANK_ZOOM } from "../core/constants.ts";
+import { NODE_STYLE, RANK_ZOOM, certaintyStyle } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { project, type Camera } from "../core/projection.ts";
 import { kmPerDegLat, toRad } from "../core/geo.ts";
@@ -153,10 +153,13 @@ function shapePath(ctx: CanvasRenderingContext2D, x: number, y: number, r: numbe
     default: ctx.arc(x, y, r, 0, 7);
   }
 }
-function drawNodeMark(ctx: CanvasRenderingContext2D, n: WorldNode, x: number, y: number, col: string) {
+function drawNodeMark(ctx: CanvasRenderingContext2D, n: WorldNode, x: number, y: number, col: string, dash?: number[] | null) {
   const s = NODE_STYLE[n.type] || NODE_STYLE.city;
   shapePath(ctx, x, y, s.r, s.shape); ctx.fillStyle = "#fff"; ctx.fill();
-  ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.stroke();
+  ctx.lineWidth = 2; ctx.strokeStyle = col;
+  if (dash) ctx.setLineDash(dash);       // 可靠性：推断/传说＝描边转虚线（柱B）
+  ctx.stroke();
+  ctx.setLineDash([]);
   if (s.shape === "dot" || !s.shape) {
     ctx.beginPath(); ctx.arc(x, y, Math.max(1.5, s.r - 3), 0, 7); ctx.fillStyle = col; ctx.fill();
   } else if (s.shape === "ring") {
@@ -206,9 +209,16 @@ export function drawNodes(
     const s = NODE_STYLE[n.type] || NODE_STYLE.city;
     const isEv = n.type === "event";
     if (isEv && n.year != null && n.year > yearNow) ctx.globalAlpha = 0.35;   // 未发生的事件淡显
+    const cs = certaintyStyle(n.certainty, "node");   // 可靠性（柱B）：虚描/淡显/问号；确证＝逐位不变
+    ctx.globalAlpha *= cs.alpha;                      // 记号与标签同淡（本轮迭代末统一复位 1）
     const fid = ownerAt(n, yearNow);
     const col = fid ? fcolor(fid) : (isEv ? "#b0202a" : "#555");
-    drawNodeMark(ctx, n, x, y, col);
+    drawNodeMark(ctx, n, x, y, col, cs.dash);
+    if (cs.query) {                                   // 传说＝记号右上「?」浮标（白衬底，同图面文字语言）
+      ctx.save(); ctx.font = "bold 9px system-ui,sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.strokeText("?", x + s.r + 3, y - s.r - 2);
+      ctx.fillStyle = "#2c241b"; ctx.fillText("?", x + s.r + 3, y - s.r - 2); ctx.restore();
+    }
     if (isEv && n.year === yearNow) { ctx.beginPath(); ctx.arc(x, y, s.r + 4, 0, 7); ctx.lineWidth = 2; ctx.strokeStyle = "#b0202a"; ctx.stroke(); }
     if (selected) { ctx.beginPath(); ctx.arc(x, y, s.r + 5, 0, 7); ctx.lineWidth = 2.5; ctx.strokeStyle = "#c0392b"; ctx.stroke(); }
     if (on("labels")) {

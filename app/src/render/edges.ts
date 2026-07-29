@@ -1,7 +1,7 @@
 /* 连线与作战线（自 overlay.ts 原样拆出，行为不变）：
    河流三层描边（选中红晕/白衬底/河蓝）、官道双线、商路紫点线、工事墨石齿线（2026-07 特化柱B）；
    作战线 攻势=末端实心箭头 / 防线=行进方向左侧齿线（reverse 翻面）。 */
-import { EDGE_STYLE } from "../core/constants.ts";
+import { EDGE_STYLE, certaintyStyle } from "../core/constants.ts";
 import { activeAt, opVisibleAt } from "../core/time.ts";
 import { project, projectSeq, type Camera } from "../core/projection.ts";
 import { kmPerDegLat } from "../core/geo.ts";
@@ -16,13 +16,16 @@ export function riverWpx(meta: Meta | undefined, cam: Camera, e: Edge): number {
   const wm = +(e.widthM as number) || 0;
   return wm > 0 ? Math.max(2.6, (wm / 1000) / kmPerDegLat(meta) / cam.degPerPx) : 2.6;
 }
-function strokeRiver(ctx: CanvasRenderingContext2D, pts: [number, number][], wpx: number, selected: boolean): void {
+function strokeRiver(ctx: CanvasRenderingContext2D, pts: [number, number][], wpx: number, selected: boolean, dash?: number[] | null): void {
   const stroke = (w: number, col: string) => {
     ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
     ctx.lineWidth = w; ctx.strokeStyle = col; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke();
   };
   if (selected) stroke(wpx + 6.4, "rgba(192,57,43,.35)");
-  stroke(wpx + 2.4, "rgba(255,255,255,.5)"); stroke(wpx, "#3f7fc4");
+  stroke(wpx + 2.4, "rgba(255,255,255,.5)");
+  if (dash) ctx.setLineDash(dash);    // 可靠性：只断主线，衬底照画（柱B）
+  stroke(wpx, "#3f7fc4");
+  ctx.setLineDash([]);
 }
 /* —— 工事线（2026-07 特化柱B）：墨石主线+白衬底+单侧齿（雉堞刻）——壁垒/长城/堑壕/岸线同一线型。
    齿距 9px·齿长 4.5px；缺省齿在画线方向左侧，reverse 翻右（岸线惯例＝齿朝水）。
@@ -45,13 +48,15 @@ export function wallTeeth(pts: [number, number][], gap: number, len: number, rev
   }
   return out;
 }
-function strokeWall(ctx: CanvasRenderingContext2D, pts: [number, number][], selected: boolean, rev: boolean): void {
+function strokeWall(ctx: CanvasRenderingContext2D, pts: [number, number][], selected: boolean, rev: boolean, dash?: number[] | null): void {
   const st = EDGE_STYLE.wall;
   const trace = () => { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.stroke(); };
   ctx.lineJoin = "round"; ctx.lineCap = "round";
   if (selected) { ctx.strokeStyle = "rgba(192,57,43,.35)"; ctx.lineWidth = st.w + 5; trace(); }
   ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = st.w + 2.2; trace();
+  if (dash) ctx.setLineDash(dash);    // 可靠性：只断主线，衬底与齿照画（柱B）
   ctx.strokeStyle = st.color; ctx.lineWidth = st.w; trace();
+  ctx.setLineDash([]);
   ctx.lineWidth = 1.6;
   for (const t of wallTeeth(pts, 9, 4.5, rev)) { ctx.beginPath(); ctx.moveTo(t.x, t.y); ctx.lineTo(t.tx, t.ty); ctx.stroke(); }
 }
@@ -63,7 +68,45 @@ function offscreenPts(pp: [number, number][], cam: Camera): boolean {
   return maxx < 0 || minx > cam.w || maxy < 0 || miny > cam.h;
 }
 
-/** 连线（道路/河流/商路）；选中的一条垫红晕（对齐旧 isSelEdge）。单相机（overlay 拷贝循环内调用） */
+/** 一条连线的本体绘制（drawEdges 逐边在 save/restore 内调用）。dash=可靠性虚线（null＝确证，逐位不变） */
+function strokeEdge(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
+  byId: Map<string, WorldNode>, e: Edge, st: { color: string; w: number }, selected: boolean, dash: number[] | null): void {
+  if (e.type === "river" && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由画河：沿自身折线（Chaikin 柔化），无端点
+    const pp = projectSeq(cam, chaikinOpen(e.pts, 2));
+    if (!offscreenPts(pp, cam)) strokeRiver(ctx, pp, riverWpx(meta, cam, e), selected, dash);
+    return;
+  }
+  if (e.type === "wall" && Array.isArray(e.pts) && e.pts.length >= 2) {    // 自由画工事：原样折线（防线有棱角，不柔化）
+    const pp = projectSeq(cam, e.pts);
+    if (!offscreenPts(pp, cam)) strokeWall(ctx, pp, selected, !!e.reverse, dash);
+    return;
+  }
+  if (!e.from || !e.to) return;      // 经典边必有两端（自由画河/工事已在上分支处理）
+  const a = byId.get(e.from), b = byId.get(e.to); if (!a || !b) return;
+  const [x1, y1] = project(cam, a.lon, a.lat), [x2, y2] = project(cam, b.lon, b.lat);
+  if (Math.max(x1, x2) < 0 || Math.min(x1, x2) > cam.w || Math.max(y1, y2) < 0 || Math.min(y1, y2) > cam.h) return;
+  if (e.type === "river") {          // 经典 from/to 河：确定性曲流（对齐旧 drawRivers：白衬底+河蓝，选中红晕）
+    strokeRiver(ctx, meander(a, b, e.from + e.to).map(p => project(cam, p[0], p[1])), riverWpx(meta, cam, e), selected, dash);
+  } else if (e.type === "wall") {    // 锚定工事（两端点直线；UI 只产自由画，此形态供手编数据）
+    strokeWall(ctx, [[x1, y1], [x2, y2]], selected, !!e.reverse, dash);
+  } else if (e.type === "road") {    // 官道双线（可靠性虚线两层同步，否则亮线从缺口透出）
+    ctx.globalAlpha *= 0.9;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+    if (selected) { ctx.strokeStyle = "rgba(192,57,43,.35)"; ctx.lineWidth = st.w + 5; ctx.stroke(); }
+    if (dash) ctx.setLineDash(dash);
+    ctx.strokeStyle = st.color; ctx.lineWidth = st.w * 0.85; ctx.stroke();
+    ctx.strokeStyle = "#e9ddc2"; ctx.lineWidth = st.w * 0.3; ctx.stroke();
+    ctx.setLineDash([]);
+  } else {                           // 商路：紫点线（可靠性时换长虚，与本型点线可辨）
+    ctx.globalAlpha *= 0.9;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+    if (selected) { ctx.setLineDash([]); ctx.strokeStyle = "rgba(192,57,43,.35)"; ctx.lineWidth = st.w + 5; ctx.stroke(); }
+    ctx.strokeStyle = st.color; ctx.lineWidth = st.w * 0.55; ctx.setLineDash(dash || [3, 4]); ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+
+/** 连线（道路/河流/商路/工事）；选中的一条垫红晕（对齐旧 isSelEdge）。单相机（overlay 拷贝循环内调用）。
+    可靠性（柱B）：逐边 save/restore 施 alpha 与虚线——确证＝dash null + alpha 1 ＝旧渲染逐位。 */
 export function drawEdges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
   world: World, yearNow: number, byId: Map<string, WorldNode>,
   layers: Record<string, boolean>, edgeSelIdx?: number | null): void {
@@ -72,39 +115,11 @@ export function drawEdges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
     const e = world.edges[idx];
     if (!on(e.type) || !activeAt(e, yearNow)) continue;
     const st = EDGE_STYLE[e.type]; if (!st) continue;
-    const selected = edgeSelIdx === idx;
-    if (e.type === "river" && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由画河：沿自身折线（Chaikin 柔化），无端点
-      const pp = projectSeq(cam, chaikinOpen(e.pts, 2));
-      if (!offscreenPts(pp, cam)) strokeRiver(ctx, pp, riverWpx(meta, cam, e), selected);
-      continue;
-    }
-    if (e.type === "wall" && Array.isArray(e.pts) && e.pts.length >= 2) {    // 自由画工事：原样折线（防线有棱角，不柔化）
-      const pp = projectSeq(cam, e.pts);
-      if (!offscreenPts(pp, cam)) strokeWall(ctx, pp, selected, !!e.reverse);
-      continue;
-    }
-    if (!e.from || !e.to) continue;    // 经典边必有两端（自由画河/工事已在上分支处理）
-    const a = byId.get(e.from), b = byId.get(e.to); if (!a || !b) continue;
-    const [x1, y1] = project(cam, a.lon, a.lat), [x2, y2] = project(cam, b.lon, b.lat);
-    if (Math.max(x1, x2) < 0 || Math.min(x1, x2) > cam.w || Math.max(y1, y2) < 0 || Math.min(y1, y2) > cam.h) continue;
-    if (e.type === "river") {          // 经典 from/to 河：确定性曲流（对齐旧 drawRivers：白衬底+河蓝，选中红晕）
-      strokeRiver(ctx, meander(a, b, e.from + e.to).map(p => project(cam, p[0], p[1])), riverWpx(meta, cam, e), selected);
-    } else if (e.type === "wall") {    // 锚定工事（两端点直线；UI 只产自由画，此形态供手编数据）
-      strokeWall(ctx, [[x1, y1], [x2, y2]], selected, !!e.reverse);
-    } else if (e.type === "road") {    // 官道双线
-      ctx.globalAlpha = 0.9;
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
-      if (selected) { ctx.strokeStyle = "rgba(192,57,43,.35)"; ctx.lineWidth = st.w + 5; ctx.stroke(); }
-      ctx.strokeStyle = st.color; ctx.lineWidth = st.w * 0.85; ctx.stroke();
-      ctx.strokeStyle = "#e9ddc2"; ctx.lineWidth = st.w * 0.3; ctx.stroke();
-      ctx.globalAlpha = 1;
-    } else {                           // 商路：紫点线
-      ctx.globalAlpha = 0.9;
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
-      if (selected) { ctx.setLineDash([]); ctx.strokeStyle = "rgba(192,57,43,.35)"; ctx.lineWidth = st.w + 5; ctx.stroke(); }
-      ctx.strokeStyle = st.color; ctx.lineWidth = st.w * 0.55; ctx.setLineDash([3, 4]); ctx.stroke(); ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-    }
+    const cs = certaintyStyle(e.certainty, "edge");
+    ctx.save();
+    ctx.globalAlpha *= cs.alpha;
+    strokeEdge(ctx, cam, meta, byId, e, st, edgeSelIdx === idx, cs.dash);
+    ctx.restore();
   }
 }
 

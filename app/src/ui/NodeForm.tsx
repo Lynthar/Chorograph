@@ -10,6 +10,7 @@ import { calOf, eraPh, eraTy, fmtWhenForm, fmtWhenRange } from "../core/calendar
 import { formatRanges } from "./editops.ts";
 import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, opDrawSig, parseWhenInput, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, worldSig, yearSig } from "./state.ts";
 import { addEventNear, addOwner, applyNodeForm, changeNodeType, moveNode, removeOwner, updateOwner } from "./editops.ts";
+import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
 import type { WorldNode } from "../core/types.ts";
 
 /** 战役事件点的作战线列表 + 画线按钮（对齐旧 nodeEditForm 作战线段）。
@@ -145,6 +146,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
         since: isEv ? undefined : timeVal("ef_since"), until: isEv ? undefined : timeVal("ef_until"),
         kv: val("ef_kv") ?? "",
         ranges: !isEv && !isLabel && tac ? (val("ef_rng") ?? "") : undefined,
+        certainty: isLabel ? undefined : readCertainty(box.current, "ef_cert"),
         year: isEv ? timeVal("ef_year") : undefined, sides: isBattle ? val("ef_sides") : undefined, result: isBattle ? val("ef_result") : undefined,
         fs: isLabel ? (val("ef_fs") ?? "") : undefined, pin: isLabel ? (val("ef_pin") ?? "") : undefined
       });
@@ -250,6 +252,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
       )}
       {!isEv && !isLabel && <div class="frow"><label>范围半径 km（{n.type === "resource" ? "矿脉/产区幅员" : "城郊/地域幅员"}，留空＝仅一点）</label>
         <input class="fld" id="ef_r" type="number" min={0} step={1} defaultValue={n.radiusKm ? String(n.radiusKm) : ""} placeholder="如 120" /></div>}
+      {!isLabel && <CertaintyChips id="ef_cert" value={typeof n.certainty === "string" ? n.certainty : ""} />}
       {!isEv && (
         <div class="frow"><label>存在 · 起 / 止（留空＝远古 / 至今）</label>
           <div class="fx2">

@@ -66,7 +66,7 @@ export function drawOverlay(
       const field = createLabelField();   // 标签避让场（每拷贝一场）：线注记/标注 claim → 当日事件→地名→部队 先占先得
       if (on("arrows")) drawOps(ctx, c2, world, yearNow, opts.selId, opts.opSel, field);
       if (on("nodes")) drawNodes(ctx, c2, world, yearNow, opts, multiSet, fcolor, field);   // 地点记号 + 楷体标签（避让）
-      if (on("units")) drawUnits(ctx, c2, world, yearNow,   // 部队【记号】压在地点之上（战场主角）；标签让地名
+      if (on("units")) drawUnits(ctx, c2, meta, world, yearNow,   // 部队【记号】压在地点之上（战场主角）；标签让地名
         { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field });
     }
     if (on("graticule")) drawGraticule(ctx, cam, meta);   // 经纬网：拷贝循环外，屏幕空间一次绘制

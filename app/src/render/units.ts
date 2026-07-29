@@ -4,7 +4,8 @@
    世界拷贝循环逐拷贝调用（同 drawEco/drawDecor）；pickUnit 独立，自带拷贝循环（同 pickNode）。 */
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { kmPerDegLat, toRad } from "../core/geo.ts";
-import { unitFireKm, unitKind, unitPos, unitStatusAt, type Leg, type UnitPos } from "../core/units.ts";
+import { footCornersLL, unitFacingAt, unitFireKm, unitFootKm, unitKind, unitPos, unitStatusAt, type Leg, type UnitPos } from "../core/units.ts";
+import { pointInPoly } from "../core/geometry.ts";
 import { UNIT_STATUS } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { hexA } from "../core/util.ts";
@@ -67,6 +68,45 @@ function drawUnitSymbol(ctx: CanvasRenderingContext2D, x: number, y: number, wor
   ctx.restore();
 }
 
+/** 阵位条（柱B）：按真实正面×纵深画的旋转矩形——派系色三成填充+实描边，**前缘加粗一道**即见朝向；
+    兵种字正立在阵中（不随条转,斜排汉字不可读）,状态语言与标准框同规（溃退虚框/交战红芯/徽章）。 */
+function drawUnitBar(ctx: CanvasRenderingContext2D, pts: [number, number][], world: World, u: Unit, selMe: boolean, st?: string | null): void {
+  const col = boxColor(world, u);
+  const sd = st ? UNIT_STATUS[st] : null;
+  const trace = () => { ctx.beginPath(); pts.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath(); };
+  ctx.save();
+  ctx.lineJoin = "round";
+  if (selMe) { ctx.shadowColor = "#d4b24a"; ctx.shadowBlur = 10; }
+  trace(); ctx.fillStyle = hexA(col, .3); ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = col;
+  if (st === "rout") ctx.setLineDash([4, 3]);          // 溃退=虚边（建制涣散，同标准框）
+  trace(); ctx.stroke();
+  ctx.setLineDash([]); ctx.shadowBlur = 0;
+  const cx = (pts[0][0] + pts[2][0]) / 2, cy = (pts[0][1] + pts[2][1]) / 2;
+  if (st === "battle" && sd) {   // 交战=**外扩一圈**红晕（同标准框之规）——不覆边框：边框色是派系身份，状态色不夺
+    ctx.beginPath();
+    pts.forEach((q, i) => {
+      const dx = q[0] - cx, dy = q[1] - cy, L = Math.hypot(dx, dy) || 1;
+      const ox = q[0] + dx / L * 3, oy = q[1] + dy / L * 3;
+      i ? ctx.lineTo(ox, oy) : ctx.moveTo(ox, oy);
+    });
+    ctx.closePath();
+    ctx.lineWidth = 1.3; ctx.strokeStyle = hexA(sd.color, .85); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(pts[1][0], pts[1][1]);   // 前缘
+  ctx.lineWidth = 3.6; ctx.strokeStyle = col; ctx.stroke();
+  /* 兵种字随纵深收缩——薄条（纵深缺省＝正面÷6）里 11px 会溢出条外 */
+  const dpx = Math.hypot(pts[0][0] - pts[3][0], pts[0][1] - pts[3][1]);
+  const k = unitKind(u);
+  ctx.font = `bold ${Math.max(7, Math.min(11, dpx * 0.8)).toFixed(1)}px system-ui,sans-serif`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.85)";                          // 白衬底=图面文字语言
+  ctx.strokeText(k ? k.glyph : String(u.kind || "?").slice(0, 1), cx, cy);
+  ctx.fillStyle = col; ctx.fillText(k ? k.glyph : String(u.kind || "?").slice(0, 1), cx, cy);
+  ctx.restore();
+  if (sd) drawStatusBadge(ctx, pts[1][0], pts[1][1], st!, sd.color);                      // 徽章挂前右角（右翼之前）
+}
+
 /** 折线（投影后按拷贝重投影）：透明度/线宽/虚线可配 */
 function strokeSeq(ctx: CanvasRenderingContext2D, cam: Camera, pts: { lon: number; lat: number }[],
   color: string, w: number, alpha: number, dash?: number[]): void {
@@ -112,21 +152,38 @@ export interface UnitDrawOpts {
   labelField?: LabelField;          // 帧内标签避让场（与地名/标注共用）；缺省=旧行为无条件画
 }
 
-export interface UnitSpot { u: Unit; p: UnitPos; x: number; y: number }
+/** 足印够宽才改画阵位条：正面屏宽 ≤ 此值＝维持标准框（旧档与远景逐位不变） */
+export const BAR_MIN_PX = 34;
+
+export interface UnitSpot {
+  u: Unit; p: UnitPos; x: number; y: number;
+  /** 阵位条四角屏幕坐标（前左→前右→后右→后左）；null＝标准框态 */
+  foot: [number, number][] | null;
+}
 
 /** 各在场部队的屏幕位（含同点堆叠偏移，2026-07 特化 P0）：真实位置屏幕距 <10px 的部队
     按数组序向右上阶梯错开（每级 +7,-6px——在框高内,记号不全遮又看得出「叠着」）。
     绘制与拾取共用此一源（pickUnit 拾偏移后的位置=点你看见的那个框）;
-    尾迹端点与火力/视野圈仍锚真实经纬（地理事实）,框选 unitsInBox 亦按真实位置（框选按锚点之规）。 */
-export function unitSpots(cam: Camera, world: World, T: number): UnitSpot[] {
+    尾迹端点与火力/视野圈仍锚真实经纬（地理事实）,框选 unitsInBox 亦按真实位置（框选按锚点之规）。
+    ⚠ 阵位条（柱B）**不参与堆叠**：真实足印各占其地、天然分离，错开反而挪离阵位。 */
+export function unitSpots(cam: Camera, meta: Meta | undefined, world: World, T: number): UnitSpot[] {
   const spots: UnitSpot[] = [], base: [number, number][] = [];
   for (const u of world.units || []) {
     const p = unitPos(u, T); if (!p) continue;
     const [bx, by] = project(cam, p.lon, p.lat);
+    const fk = unitFootKm(u);
+    if (fk) {   // 足印够宽＝阵位条：四角各自投影（前缘屏宽即判据，无须另算 km→px）
+      const pts = footCornersLL(meta, p.lon, p.lat, fk.front, fk.depth, unitFacingAt(meta, u, T))
+        .map(q => project(cam, q[0], q[1]) as [number, number]);
+      if (Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) > BAR_MIN_PX) {
+        spots.push({ u, p, x: bx, y: by, foot: pts });
+        continue;
+      }
+    }
     let n = 0;
     for (const [qx, qy] of base) if (Math.hypot(bx - qx, by - qy) < 10) n++;
     base.push([bx, by]);
-    spots.push({ u, p, x: bx + n * 7, y: by - n * 6 });
+    spots.push({ u, p, x: bx + n * 7, y: by - n * 6, foot: null });
   }
   return spots;
 }
@@ -134,27 +191,33 @@ export function unitSpots(cam: Camera, world: World, T: number): UnitSpot[] {
 /** 画所有在场部队（单相机；overlay 拷贝循环内调用）。部队压在地点之上——战场主角；
     但部队【标签】让地名（用户拍板：地点语义上固定不动，标签该稳；部队是移动体）——
     框下→框上两候选位试进共用避让场，全撞不画（选中部队恒显并登记占位）。 */
-export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, world: World, T: number, opts: UnitDrawOpts = {}): void {
+export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined, world: World, T: number, opts: UnitDrawOpts = {}): void {
   if (!(world.units || []).length) return;
-  for (const { u, p, x, y } of unitSpots(cam, world, T)) {   // 含同点堆叠偏移（与 pickUnit 同源）
+  for (const { u, p, x, y, foot } of unitSpots(cam, meta, world, T)) {   // 含同点堆叠偏移（与 pickUnit 同源）
     const selMe = opts.selId === u.id || !!(opts.multiIds && opts.multiIds.includes(u.id));
     if (opts.trails) drawTrail(ctx, cam, world, u, T, p, opts.legs && opts.legs.get(u.id));
-    drawUnitSymbol(ctx, x, y, world, u, selMe, unitStatusAt(u, T));
+    const st = unitStatusAt(u, T);
+    if (foot) drawUnitBar(ctx, foot, world, u, selMe, st);
+    else drawUnitSymbol(ctx, x, y, world, u, selMe, st);
     if (opts.labels) {
+      /* 标签仍在图面直立、仍走共用避让场；阵位条态改锚其外接盒的上下缘（条比框大得多，贴框距会压在阵中） */
+      const lo = foot ? Math.max(...foot.map(q => q[1])) : y + 8.5;
+      const hi = foot ? Math.min(...foot.map(q => q[1])) : y - 8.5;
+      const mx = foot ? (foot[0][0] + foot[2][0]) / 2 : x;
       const lbl = (u.名称 || "部队") + (u.strength ? ` ${u.strength}` : "");
       ctx.save(); ctx.font = "10.5px KaiTi,楷体,serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       const w = ctx.measureText(lbl).width, h = 13;
-      let ly: number | null = y + 16;
+      let ly: number | null = lo + 7.5;
       if (opts.labelField) {
         ly = null;
-        for (const cy of [y + 16, y - 17]) {   // 框下优先，占了试框上
-          if (opts.labelField.tryPlace({ x: x - w / 2, y: cy - h / 2, w, h })) { ly = cy; break; }
+        for (const cy of [lo + 7.5, hi - 8.5]) {   // 下缘优先，占了试上缘
+          if (opts.labelField.tryPlace({ x: mx - w / 2, y: cy - h / 2, w, h })) { ly = cy; break; }
         }
-        if (ly == null && selMe) { ly = y + 16; opts.labelField.claim({ x: x - w / 2, y: ly - h / 2, w, h }); }
+        if (ly == null && selMe) { ly = lo + 7.5; opts.labelField.claim({ x: mx - w / 2, y: ly - h / 2, w, h }); }
       }
       if (ly != null) {
-        ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.strokeText(lbl, x, ly);
-        ctx.fillStyle = "#2c241b"; ctx.fillText(lbl, x, ly);
+        ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.strokeText(lbl, mx, ly);
+        ctx.fillStyle = "#2c241b"; ctx.fillText(lbl, mx, ly);
       }
       ctx.restore();
     }
@@ -287,14 +350,25 @@ export function pickRangeHandle(cam: Camera, meta: Meta | undefined, world: Worl
 }
 
 /** 拾取部队（矩形容差；优先级最高——战场主角）。x/y 为 CSS 像素，自带世界拷贝循环。
-    位置经 unitSpots＝含堆叠偏移,与绘制同源——点你看见的那个框。 */
+    位置经 unitSpots＝含堆叠偏移,与绘制同源——点你看见的那个框。
+    阵位条态（柱B）＝落在四角围出的条内即命中,距离折算成同一量纲（条心 0 → 条边 12）
+    与框态可比：点在条心胜过点在旁边框的边缘,点在条边则让位于压在那里的框。 */
 export function pickUnit(cam: Camera, meta: Meta | undefined, world: World, T: number, x: number, y: number): Unit | null {
   let best: Unit | null = null, bd = Infinity;
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
-    for (const sp of unitSpots(c2, world, T)) {
-      const d = Math.max(Math.abs(x - sp.x) / 1.5, Math.abs(y - sp.y));
-      if (d < 12 && d < bd) { bd = d; best = sp.u; }
+    for (const sp of unitSpots(c2, meta, world, T)) {
+      let d: number;
+      if (sp.foot) {
+        if (!pointInPoly(x, y, sp.foot)) continue;
+        const cx = (sp.foot[0][0] + sp.foot[2][0]) / 2, cy = (sp.foot[0][1] + sp.foot[2][1]) / 2;
+        const half = Math.hypot(sp.foot[0][0] - cx, sp.foot[0][1] - cy) || 1;
+        d = Math.min(12, Math.hypot(x - cx, y - cy) / half * 12);
+      } else {
+        d = Math.max(Math.abs(x - sp.x) / 1.5, Math.abs(y - sp.y));
+        if (d >= 12) continue;
+      }
+      if (d < bd) { bd = d; best = sp.u; }
     }
   }
   return best;

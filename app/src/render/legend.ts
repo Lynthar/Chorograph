@@ -2,7 +2,7 @@
    当刻在场派系、全体部队的兵种、动向里用过的状态徽章;全空=不画。
    右下角锚、宣纸底衬同比例尺;色调恒定不随主题（同「出图垫纸色」裁决:产物不随主题变）。
    坐标系=CSS 像素（调用方先按 DPR scale,同 drawOverlay 之约）。 */
-import { UNIT_KINDS, UNIT_STATUS } from "../core/constants.ts";
+import { CERTAINTY, CERTAINTY_ORDER, UNIT_KINDS, UNIT_STATUS } from "../core/constants.ts";
 import { activeAt } from "../core/time.ts";
 import { drawStatusBadge } from "./units.ts";
 import type { World } from "../core/types.ts";
@@ -25,6 +25,21 @@ export function drawLegend(g: CanvasRenderingContext2D, world: World, T: number,
     g.fillText(UNIT_KINDS[k].glyph, x + 8, y + 0.5);
   } });
   for (const s of stats) rows.push({ label: UNIT_STATUS[s].名, draw: (x, y) => drawStatusBadge(g, x + 7, y, s, UNIT_STATUS[s].color) });
+  /* 可靠性（柱B）：图内真出现的档位才列——「诚实性」要在图上说得出，读图人才知道虚线不是别的意思 */
+  const certs = CERTAINTY_ORDER.filter(k =>
+    (world.nodes || []).some(n => n.certainty === k && activeAt(n, T)) ||
+    (world.edges || []).some(e => e.certainty === k && activeAt(e, T)));
+  for (const k of certs) rows.push({ label: CERTAINTY[k].名, draw: (x, y) => {
+    g.save();
+    g.globalAlpha = CERTAINTY[k].alpha;
+    g.strokeStyle = "#4a4238"; g.lineWidth = 1.6; g.setLineDash(CERTAINTY[k].edgeDash); g.lineCap = "butt";
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + 16, y); g.stroke(); g.setLineDash([]);
+    if (CERTAINTY[k].query) {
+      g.font = "bold 9px system-ui,sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillStyle = "#3a2f1d"; g.fillText("?", x + 8, y - 6);
+    }
+    g.restore();
+  } });
   if (!rows.length) return;
   g.save();
   g.font = "11px system-ui,sans-serif";

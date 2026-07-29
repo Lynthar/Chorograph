@@ -12,11 +12,11 @@ import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
-import { EDGE_STYLE, NODE_STYLE, NODE_TMPL, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, flattenTerrain, terrainProps } from "../src/core/constants.ts";
+import { EDGE_STYLE, NODE_STYLE, NODE_TMPL, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, certaintyStyle, flattenTerrain, terrainProps } from "../src/core/constants.ts";
 import { wallTeeth } from "../src/render/edges.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, countsOf, normalizeWorld } from "../src/core/world.ts";
-import { createTacticalWorld, tacDiaDeg } from "../src/core/tactical.ts";
+import { blankTacticalWorld, createTacticalWorld, tacDiaDeg } from "../src/core/tactical.ts";
 import { paintStep, resamplePaintCells, territoryLoops } from "../src/core/territory.ts";
 import { nodesInBox, pickEdge, pickNode } from "../src/render/overlay.ts";
 import { pickDecor } from "../src/render/decor.ts";
@@ -683,6 +683,75 @@ describe("战场表达（柱B）：微地物/工事线/主帅", () => {
     assert.deepStrictEqual(ok.warnings, []);
     const bad = validateWorld({ meta: {}, nodes: [], edges: [{ type: "road", pts: [[1, 1], [2, 2]] }] });
     assert.ok(bad.warnings.some(i => i.msg.includes("河流与工事")), "道路带 pts 应警告");
+  });
+});
+
+describe("可靠性分级 certainty（柱B）", () => {
+  it("缺键/未知值＝确证＝现渲染逐位（dash null · alpha 1 · 无问号）", () => {
+    for (const v of [undefined, null, "", "确证", "sure", 3, {}]) {
+      for (const k of ["node", "edge"] as const) {
+        const s = certaintyStyle(v, k);
+        assert.strictEqual(s.dash, null, `${String(v)} 不该改描边`);
+        assert.strictEqual(s.alpha, 1);
+        assert.strictEqual(s.query, false);
+        assert.strictEqual(s.名, null);
+      }
+    }
+  });
+  it("推断=虚描不淡显；传说=虚描+淡显+问号；地点与连线虚线节奏各别", () => {
+    const ni = certaintyStyle("inferred", "node"), ei = certaintyStyle("inferred", "edge");
+    assert.deepStrictEqual(ni.dash, [3, 2.5]); assert.deepStrictEqual(ei.dash, [7, 5]);
+    assert.strictEqual(ni.alpha, 1); assert.strictEqual(ni.query, false); assert.strictEqual(ni.名, "推断");
+    const nl = certaintyStyle("legend", "node");
+    assert.ok(nl.alpha < 1, "传说应淡显"); assert.strictEqual(nl.query, true); assert.strictEqual(nl.名, "传说");
+  });
+  it("同档同类返回同一对象（渲染热路径不在帧内分配）", () => {
+    assert.strictEqual(certaintyStyle("legend", "node"), certaintyStyle("legend", "node"));
+    assert.strictEqual(certaintyStyle(undefined, "node"), certaintyStyle("乱值", "edge"), "确证态共用同一常量");
+    assert.notStrictEqual(certaintyStyle("legend", "node"), certaintyStyle("legend", "edge"));
+  });
+  it("validate：未知档位仅警告（按确证渲染），合法档位无警告", () => {
+    const ok = validateWorld({ meta: {}, nodes: [{ id: "a", type: "city", lon: 1, lat: 2, certainty: "legend" }],
+      edges: [], factions: [] });
+    assert.deepStrictEqual(ok.warnings, []);
+    const w = validateWorld({ meta: {}, nodes: [{ id: "a", type: "city", lon: 1, lat: 2, certainty: "存疑" }] });
+    assert.strictEqual(w.ok, true);
+    assert.ok(w.warnings.some(i => i.path.endsWith(".certainty")), "未知档位应有警告");
+  });
+});
+
+describe("新建战术战场 blankTacticalWorld（柱B）", () => {
+  const S = { 名称: "试战场", lon: 114, lat: 38, diaKm: 20, battleYear: 3000 };
+  it("档形完整（空数组齐备）且过校验零 fatal——meta-only 会被导入校验拦死", () => {
+    const w = blankTacticalWorld(S, "2026-07-28");
+    for (const k of ["factions", "nodes", "edges", "decor", "terrainOverrides", "units"]) {
+      assert.ok(Array.isArray((w as unknown as Record<string, unknown>)[k]), `${k} 应为数组`);
+      assert.strictEqual(((w as unknown as Record<string, unknown[]>)[k]).length, 0);
+    }
+    assert.deepStrictEqual(validateWorld(w).fatal, []);
+    assert.deepStrictEqual(validateWorld(w).warnings, []);
+  });
+  it("bbox 由中心＋直径推出，与烘焙同源（tacDiaDeg）；中心即视角", () => {
+    const w = blankTacticalWorld(S, "2026-07-28");
+    const { lonSpan, latSpan } = tacDiaDeg(w.meta, 20, 38);
+    close(w.meta.bbox!.lonMax - w.meta.bbox!.lonMin, lonSpan, 3);
+    close(w.meta.bbox!.latMax - w.meta.bbox!.latMin, latSpan, 3);
+    close((w.meta.bbox!.lonMin + w.meta.bbox!.lonMax) / 2, 114, 3);
+    assert.strictEqual(w.meta.view!.lon0, 114);
+    assert.strictEqual(w.meta.mapKind, "tactical");
+    assert.deepStrictEqual(w.meta.tacSpan, yearSpanT(calOf(), 3000));
+  });
+  it("直径钳 [20,2000]；纬度钳 ±85；缺省键不落盘（历法/起伏/等高距/kmPerDeg）", () => {
+    assert.deepStrictEqual(blankTacticalWorld({ ...S, diaKm: 1 }, "d").meta.bbox, blankTacticalWorld({ ...S, diaKm: 20 }, "d").meta.bbox, "过小直径钳到 20km");
+    assert.deepStrictEqual(blankTacticalWorld({ ...S, diaKm: 9e9 }, "d").meta.bbox, blankTacticalWorld({ ...S, diaKm: 2000 }, "d").meta.bbox, "过大直径钳到 2000km");
+    const polar = blankTacticalWorld({ ...S, lat: 89 }, "d");
+    assert.ok(polar.meta.bbox!.latMax <= 85 && polar.meta.view!.lat0 === 85);
+    const m = blankTacticalWorld(S, "d").meta;
+    for (const k of ["calendar", "relief", "contourM", "kmPerDeg", "genSeed", "parent"]) assert.ok(!(k in m), `${k} 缺省不该落盘`);
+    const e = blankTacticalWorld({ ...S, calendar: { kind: "earth" }, contourM: 100, battleYear: -204 }, "d").meta;
+    assert.deepStrictEqual(e.calendar, { kind: "earth" });
+    assert.strictEqual(e.contourM, 100);
+    assert.deepStrictEqual(e.tacSpan, yearSpanT(calOf({ kind: "earth" }), -204), "earth 历法的年区间");
   });
 });
 
