@@ -27,10 +27,10 @@ export function applyEra<T extends { since?: number | null; until?: number | nul
   return o;
 }
 
-/** 新建地点（旧 addNodeAt：固定 city 起步，类型在表单里改） */
-export function addNode(w: World, 名称: string, lon: number, lat: number, id = newNodeId()): WorldNode {
+/** 新建地点（旧 addNodeAt：缺省 city 起步；柱B 起「地点」子工具类型 chips 可预选 type,类型仍可在表单里改） */
+export function addNode(w: World, 名称: string, lon: number, lat: number, type = "city", id = newNodeId()): WorldNode {
   const n: WorldNode = { id, 名称, lon: +dataLon(w.meta, lon).toFixed(3), lat: +lat.toFixed(3),
-    type: "city", faction: null, 字段: {}, note: "", link: 名称 };
+    type, faction: null, 字段: {}, note: "", link: 名称 };
   w.nodes.push(n);
   return n;
 }
@@ -81,12 +81,14 @@ export function removeEdgeAt(w: World, idx: number): boolean {
   return true;
 }
 
-/** 新增一条自由画河道（pts 折线、无端点）：type=river，返回新边（改道＝删了重画，同作战线） */
-export function addRiver(w: World, pts: [number, number][]): Edge {
-  const e: Edge = { type: "river", pts };
+/** 新增一条自由画线（pts 折线、无端点）：河流或工事（柱B），返回新边（改线＝删了重画，同作战线） */
+export function addFreeEdge(w: World, pts: [number, number][], type: "river" | "wall"): Edge {
+  const e: Edge = { type, pts };
   w.edges.push(e);
   return e;
 }
+/** 新增一条自由画河道：addFreeEdge 的河流便捷形（旧名保留） */
+export function addRiver(w: World, pts: [number, number][]): Edge { return addFreeEdge(w, pts, "river"); }
 
 /** 移动地点（拖动/微调共用）：经度折回、纬度钳 ±85、四位小数（对齐旧 nudgeSel） */
 export function moveNode(w: World, id: string, lon: number, lat: number): void {
@@ -128,8 +130,9 @@ export function applyNodeForm(n: WorldNode, v: NodeFormValues): void {
   }
 }
 
-/** 连线表单一次提交（旧 ee_save 语义；widthM=河流真宽米数，>0 存、空/非法删） */
-export interface EdgeFormValues { 名称: string; note: string; kv: string; since: string; until: string; widthM?: string }
+/** 连线表单一次提交（旧 ee_save 语义；widthM=河流真宽米数，>0 存、空/非法删；
+    reverse=工事齿面翻转（柱B），真存假删——缺省齿在画线方向左侧不落盘 */
+export interface EdgeFormValues { 名称: string; note: string; kv: string; since: string; until: string; widthM?: string; reverse?: boolean }
 export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
   const nm = v.名称.trim(); if (nm) e.名称 = nm; else delete e.名称;
   const nt = v.note.trim(); if (nt) e.note = nt; else delete e.note;
@@ -138,6 +141,7 @@ export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
   const s = parseFloat(v.since); if (isFinite(s)) e.since = s; else delete e.since;
   const u = parseFloat(v.until); if (isFinite(u)) e.until = u; else delete e.until;
   if (v.widthM !== undefined) { const w = parseFloat(v.widthM); if (w > 0) e.widthM = w; else delete e.widthM; }
+  if (v.reverse !== undefined) { if (v.reverse) e.reverse = true; else delete e.reverse; }
 }
 
 /* —— 归属沿革（nodes[].owners：分时段归属；旧版仅可改 JSON，这里补编辑器内核）——

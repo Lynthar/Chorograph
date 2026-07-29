@@ -470,6 +470,7 @@ export const brushSmoothSig = signal(2);                      // 涂域边界平
 export const eraNewSig = signal<{ on: boolean; since: number | null; until: number | null }>({ on: false, since: null, until: null });
 export const paintTerrainSig = signal<string>("water");       // 地形涂改：当前笔刷复合串（"地貌"/"地貌/生态"；两轴）
 export const terrainAxisSig = signal<"lf" | "eco" | "height">("lf");   // 地形子工具三轴：地貌 / 生态(改地面+落真实印章) / 高程起伏
+export const addTypeSig = signal<string>("city");             // 地点：落点预选类型（柱B——同布景选印章之例；缺省城市=旧行为）
 export const decorKindSig = signal<string>("tree");           // 布景：当前印章种类
 export const decorSizeSig = signal(1);                        // 布景印章尺寸（0.5–2.5）
 export const routePtsSig = signal<RoutePoint[]>([]);

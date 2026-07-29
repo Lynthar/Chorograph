@@ -52,6 +52,8 @@ export const LAYERS: LayerDef[] = [
   { id: "road", 名: "道路", on: true },
   { id: "river", 名: "河流", on: true },
   { id: "trade", 名: "商路·经济", on: true },
+  /* 工事（2026-07 特化柱B，平价白名单）：壁垒/长城/堑壕/岸线线型——不设 tacOnly（长城属战略语汇） */
+  { id: "wall", 名: "工事(壁垒·岸线)", on: true },
   { id: "nodes", 名: "地点", on: true },
   { id: "labels", 名: "地名标签", on: true },
   { id: "notes", 名: "标注(自由文本)", on: true },
@@ -65,11 +67,11 @@ export const LAYERS: LayerDef[] = [
 ];
 export const PRESETS: Record<string, Record<string, 1>> = {
   "政治": { terrain: 1, politics: 1, range: 1, road: 1, nodes: 1, labels: 1, notes: 1 },
-  "军事": { terrain: 1, politics: 1, range: 1, road: 1, river: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },
+  "军事": { terrain: 1, politics: 1, range: 1, road: 1, river: 1, wall: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },
   "经济": { terrain: 1, road: 1, river: 1, trade: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
   "地理": { terrain: 1, contour: 1, decor: 1, graticule: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
-  "战术": { terrain: 1, contour: 1, decor: 1, road: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },   // contour: 战场地文=棱线/凹路,等高线即战术图的骨架（2026-07 特化 P0 白名单）
-  "全部": { terrain: 1, contour: 1, decor: 1, graticule: 1, politics: 1, range: 1, road: 1, river: 1, trade: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 }
+  "战术": { terrain: 1, contour: 1, decor: 1, road: 1, river: 1, wall: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },   // contour: 战场地文=棱线/凹路,等高线即战术图的骨架（2026-07 特化 P0 白名单）；wall=柱B 同批白名单
+  "全部": { terrain: 1, contour: 1, decor: 1, graticule: 1, politics: 1, range: 1, road: 1, river: 1, trade: 1, wall: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 }
 };
 
 /* 地点类型（11 类）→ 记号。rank 控制随缩放显隐：0=永远可见…4=贴近才见 */
@@ -85,6 +87,13 @@ export const NODE_STYLE: Record<string, { r: number; sym: string; 名: string; r
   event:    { r: 5.5, sym: "▽", 名: "事件点", rank: 2, shape: "triDown" },
   resource: { r: 5, sym: "◆", 名: "资源点", rank: 3, shape: "diamond" },
   special:  { r: 5.5, sym: "✦", 名: "特殊地点", rank: 1, shape: "spark" },
+  /* 战场微地物（2026-07 特化柱B，additive 白名单）：战场测绘语汇——旧版打开回退 city 记号+导入提示 */
+  camp:     { r: 5.5, sym: "▣", 名: "营垒", rank: 2, shape: "camp" },
+  pass:     { r: 5, sym: "⋈", 名: "隘口", rank: 2, shape: "pass" },
+  bridge:   { r: 4.5, sym: "∩", 名: "桥梁", rank: 3, shape: "bridge" },
+  summit:   { r: 4.5, sym: "△", 名: "制高点", rank: 3, shape: "summit" },
+  manor:    { r: 5, sym: "⌂", 名: "庄园", rank: 3, shape: "house" },
+  site:     { r: 4.5, sym: "⊕", 名: "考古点", rank: 3, shape: "site" },
   /* 标注（v0.15 新增，旧版打开降级为 city 记号+文本标签）：无记号、名称即图面文本 */
   label:    { r: 4, sym: "🏷", 名: "标注", rank: 0, shape: "dot" }
 };
@@ -113,6 +122,12 @@ export const NODE_TMPL: Record<string, string> = {
   ford: "通行方式：\n丰水期通行：\n枯水期通行：",
   resource: "资源类型：\n储量：\n产量：\n开采方：\n输往：",
   special: "类别：\n所属/主人：\n品阶：\n出入条件：\n传承/渊源：",
+  camp: "驻军：\n主将：\n垒防：\n补给：",
+  pass: "通行：\n险要：\n扼守方：",
+  bridge: "跨度：\n形制：\n通行：",
+  summit: "高程：\n瞰制：\n驻守：",
+  manor: "形制：\n驻守：\n围防：",
+  site: "年代：\n发现：\n出土：\n对应事件：",
   event: "",
   label: ""
 };
@@ -127,13 +142,16 @@ export const EVENT_TMPL: Record<string, string> = {
 /* rank → degPerPx 上限（≤阈值才显示） */
 export const RANK_ZOOM = [Infinity, 0.2, 0.12, 0.065, 0.045];
 
-/* 连线样式：道路=双线、河流=蓝曲流、商路=紫点线 */
+/* 连线样式：道路=双线、河流=蓝曲流、商路=紫点线；工事=墨石齿线（2026-07 特化柱B，additive——
+   壁垒/长城/堑壕/岸线同一线型，渲染先行**寻路不吃**，画法见 render/edges.strokeWall） */
 export const EDGE_STYLE: Record<string, { color: string; w: number; 名: string }> = {
   road: { color: "#6f5228", w: 3.6, 名: "道路" },
   river: { color: "#3f7fc4", w: 2.6, 名: "河流" },
-  trade: { color: "#a03aa0", w: 2.4, 名: "商路" }
+  trade: { color: "#a03aa0", w: 2.4, 名: "商路" },
+  wall: { color: "#55504a", w: 2.8, 名: "工事" }
 };
 export const RIVER_TMPL = "宽度：\n深度：\n流量：\n水质：\n丰水期：\n枯水期：";
+export const WALL_TMPL = "形制：\n高度：\n守方：\n存废：";
 
 /* 行军速度(km/日)——按军种给速度档（通用默认值） */
 export const SPEEDS: Record<Arm, { 名: string; v: number }[]> = {
@@ -160,7 +178,9 @@ export const UNIT_KINDS: Record<string, { 名: string; glyph: string; v: number;
   navy:  { 名: "水师", glyph: "≈", v: 35, arm: "water" },
   air:   { 名: "飞舟", glyph: "▲", v: 200, arm: "air" },
   mage:  { 名: "修士", glyph: "✦", v: 150, arm: "air" },
-  scout: { 名: "斥候", glyph: "◇", v: 75, arm: "land" }
+  scout: { 名: "斥候", glyph: "◇", v: 75, arm: "land" },
+  /* 主帅（2026-07 特化柱B，additive）：glyph 用汉字——单位框字形走 system-ui 粗体，跨平台恒定不入 emoji 摇摆 */
+  cmd:   { 名: "主帅", glyph: "帅", v: 60, arm: "land" }
 };
 
 /* 地形 → 示意高程 / 自然色阶（渲染层）。

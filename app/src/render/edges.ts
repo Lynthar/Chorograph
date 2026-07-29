@@ -1,5 +1,5 @@
 /* 连线与作战线（自 overlay.ts 原样拆出，行为不变）：
-   河流三层描边（选中红晕/白衬底/河蓝）、官道双线、商路紫点线；
+   河流三层描边（选中红晕/白衬底/河蓝）、官道双线、商路紫点线、工事墨石齿线（2026-07 特化柱B）；
    作战线 攻势=末端实心箭头 / 防线=行进方向左侧齿线（reverse 翻面）。 */
 import { EDGE_STYLE } from "../core/constants.ts";
 import { activeAt, opVisibleAt } from "../core/time.ts";
@@ -24,7 +24,39 @@ function strokeRiver(ctx: CanvasRenderingContext2D, pts: [number, number][], wpx
   if (selected) stroke(wpx + 6.4, "rgba(192,57,43,.35)");
   stroke(wpx + 2.4, "rgba(255,255,255,.5)"); stroke(wpx, "#3f7fc4");
 }
-/** 投影后折线整体在画布外＝跳过（自由画河的视口裁剪；经典边沿用端点裁剪） */
+/* —— 工事线（2026-07 特化柱B）：墨石主线+白衬底+单侧齿（雉堞刻）——壁垒/长城/堑壕/岸线同一线型。
+   齿距 9px·齿长 4.5px；缺省齿在画线方向左侧，reverse 翻右（岸线惯例＝齿朝水）。
+   渲染先行**寻路不吃**（route/grid 无 wall 分支，平价不动）；要吃只走战术分支另议。 —— */
+export interface WallTooth { x: number; y: number; tx: number; ty: number }
+/** 齿位（纯几何，node:test 锁）：与作战线防线齿同一走步——起步 0.6×gap、跨段累计弧长、短段跳过 */
+export function wallTeeth(pts: [number, number][], gap: number, len: number, rev?: boolean): WallTooth[] {
+  const out: WallTooth[] = [];
+  let acc = 0, next = gap * 0.6;
+  for (let i = 1; i < pts.length; i++) {
+    const ax = pts[i - 1][0], ay = pts[i - 1][1], bx = pts[i][0], by = pts[i][1];
+    const seg = Math.hypot(bx - ax, by - ay); if (seg < 0.5) { acc += seg; continue; }
+    const ux = (bx - ax) / seg, uy = (by - ay) / seg, s = rev ? -1 : 1, nx = s * uy, ny = -s * ux;
+    while (next <= acc + seg) {
+      const px = ax + ux * (next - acc), py = ay + uy * (next - acc);
+      out.push({ x: px, y: py, tx: px + nx * len, ty: py + ny * len });
+      next += gap;
+    }
+    acc += seg;
+  }
+  return out;
+}
+function strokeWall(ctx: CanvasRenderingContext2D, pts: [number, number][], selected: boolean, rev: boolean): void {
+  const st = EDGE_STYLE.wall;
+  const trace = () => { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.stroke(); };
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+  if (selected) { ctx.strokeStyle = "rgba(192,57,43,.35)"; ctx.lineWidth = st.w + 5; trace(); }
+  ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = st.w + 2.2; trace();
+  ctx.strokeStyle = st.color; ctx.lineWidth = st.w; trace();
+  ctx.lineWidth = 1.6;
+  for (const t of wallTeeth(pts, 9, 4.5, rev)) { ctx.beginPath(); ctx.moveTo(t.x, t.y); ctx.lineTo(t.tx, t.ty); ctx.stroke(); }
+}
+
+/** 投影后折线整体在画布外＝跳过（自由画河/工事的视口裁剪；经典边沿用端点裁剪） */
 function offscreenPts(pp: [number, number][], cam: Camera): boolean {
   let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
   for (const p of pp) { if (p[0] < minx) minx = p[0]; if (p[0] > maxx) maxx = p[0]; if (p[1] < miny) miny = p[1]; if (p[1] > maxy) maxy = p[1]; }
@@ -46,12 +78,19 @@ export function drawEdges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
       if (!offscreenPts(pp, cam)) strokeRiver(ctx, pp, riverWpx(meta, cam, e), selected);
       continue;
     }
-    if (!e.from || !e.to) continue;    // 经典边必有两端（自由画河已在上分支处理）
+    if (e.type === "wall" && Array.isArray(e.pts) && e.pts.length >= 2) {    // 自由画工事：原样折线（防线有棱角，不柔化）
+      const pp = projectSeq(cam, e.pts);
+      if (!offscreenPts(pp, cam)) strokeWall(ctx, pp, selected, !!e.reverse);
+      continue;
+    }
+    if (!e.from || !e.to) continue;    // 经典边必有两端（自由画河/工事已在上分支处理）
     const a = byId.get(e.from), b = byId.get(e.to); if (!a || !b) continue;
     const [x1, y1] = project(cam, a.lon, a.lat), [x2, y2] = project(cam, b.lon, b.lat);
     if (Math.max(x1, x2) < 0 || Math.min(x1, x2) > cam.w || Math.max(y1, y2) < 0 || Math.min(y1, y2) > cam.h) continue;
     if (e.type === "river") {          // 经典 from/to 河：确定性曲流（对齐旧 drawRivers：白衬底+河蓝，选中红晕）
       strokeRiver(ctx, meander(a, b, e.from + e.to).map(p => project(cam, p[0], p[1])), riverWpx(meta, cam, e), selected);
+    } else if (e.type === "wall") {    // 锚定工事（两端点直线；UI 只产自由画，此形态供手编数据）
+      strokeWall(ctx, [[x1, y1], [x2, y2]], selected, !!e.reverse);
     } else if (e.type === "road") {    // 官道双线
       ctx.globalAlpha = 0.9;
       ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);

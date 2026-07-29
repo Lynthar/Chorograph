@@ -12,7 +12,8 @@ import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
-import { TERRAIN, TERRAIN_ORDER, flattenTerrain, terrainProps } from "../src/core/constants.ts";
+import { EDGE_STYLE, NODE_STYLE, NODE_TMPL, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, flattenTerrain, terrainProps } from "../src/core/constants.ts";
+import { wallTeeth } from "../src/render/edges.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, countsOf, normalizeWorld } from "../src/core/world.ts";
 import { createTacticalWorld, tacDiaDeg } from "../src/core/tactical.ts";
@@ -645,6 +646,43 @@ describe("存档校验 validateWorld", () => {
     // 正常量级（数千地点、±180/±85）不受影响
     assert.strictEqual(validateWorld({ meta: { bbox: { lonMin: -180, lonMax: 180, latMin: -85, latMax: 85 } },
       nodes: new Array(5000).fill({ id: "x", type: "city", lon: 1, lat: 2 }) }).ok, true);
+  });
+});
+
+describe("战场表达（柱B）：微地物/工事线/主帅", () => {
+  it("微地物六类完备：记号/名/rank/属性模板齐（防白名单豁免空转）", () => {
+    for (const t of ["camp", "pass", "bridge", "summit", "manor", "site"]) {
+      const s = NODE_STYLE[t];
+      assert.ok(s && s.名 && s.shape && s.r > 0, `${t} 样式不全`);
+      assert.ok(s.rank >= 0 && s.rank <= 4, `${t} rank 越出 RANK_ZOOM 域`);
+      assert.ok(typeof NODE_TMPL[t] === "string" && NODE_TMPL[t].includes("："), `${t} 缺属性模板`);
+    }
+  });
+  it("工事线型与主帅兵种就位（渲染先行，寻路不吃 wall）", () => {
+    assert.deepStrictEqual(EDGE_STYLE.wall, { color: "#55504a", w: 2.8, 名: "工事" });
+    assert.deepStrictEqual(UNIT_KINDS.cmd, { 名: "主帅", glyph: "帅", v: 60, arm: "land" });
+  });
+  it("wallTeeth：直线等距布齿（起步 0.6×gap）、齿垂直于线、reverse 翻面", () => {
+    const teeth = wallTeeth([[0, 0], [100, 0]], 9, 4.5);
+    assert.strictEqual(teeth.length, 11, "5.4 起每 9px 一齿至 95.4");
+    close(teeth[0].x, 5.4); close(teeth[0].y, 0);
+    close(teeth[0].tx, 5.4); close(teeth[0].ty, -4.5);   // 行进向右,左侧=屏幕上方（y 向下）
+    const rev = wallTeeth([[0, 0], [100, 0]], 9, 4.5, true);
+    close(rev[0].ty, 4.5, 6);                             // 翻面=下方
+  });
+  it("wallTeeth：跨段累计弧长（拐角不重置步进）、<0.5px 短段跳过不崩", () => {
+    const teeth = wallTeeth([[0, 0], [10, 0], [10, 0.1], [10, 40]], 9, 4.5);
+    assert.strictEqual(teeth.length, 5, "总弧长 50：5.4/14.4/23.4/32.4/41.4");
+    const past = teeth.filter(t => t.y > 0.2);            // 拐角后落在竖段上的齿
+    assert.strictEqual(past.length, 4);
+    for (const t of past) { close(t.x, 10); close(t.tx, 14.5); }   // 行进向下,左侧=+x
+  });
+  it("validate：工事与河流可用自由折线 pts，道路带 pts 仍警告", () => {
+    const ok = validateWorld({ meta: {}, nodes: [], edges: [{ type: "wall", pts: [[1, 1], [2, 2]], reverse: true }] });
+    assert.strictEqual(ok.ok, true);
+    assert.deepStrictEqual(ok.warnings, []);
+    const bad = validateWorld({ meta: {}, nodes: [], edges: [{ type: "road", pts: [[1, 1], [2, 2]] }] });
+    assert.ok(bad.warnings.some(i => i.msg.includes("河流与工事")), "道路带 pts 应警告");
   });
 });
 

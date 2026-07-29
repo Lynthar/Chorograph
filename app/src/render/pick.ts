@@ -31,8 +31,8 @@ export function pickEdge(
       if (layers && layers[e.type] === false) return;   // 图层关了不拾取
       if (!activeAt(e, yearNow)) return;
       const tol = e.type === "river" ? Math.max(6, riverWpx(meta, cam, e) / 2 + 4) : 6;
-      if (e.type === "river" && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由画河：逐段到自身折线拾取（同 pickOp）
-        const pp = projectSeq(c2, chaikinOpen(e.pts, 2));
+      if ((e.type === "river" || e.type === "wall") && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由折线（河/工事）：逐段到自身折线拾取（同 pickOp）；河按渲染柔化后折线、工事原样——与绘制同源
+        const pp = projectSeq(c2, e.type === "river" ? chaikinOpen(e.pts, 2) : e.pts);
         for (let k = 1; k < pp.length; k++) {
           const d = segDist(x, y, pp[k - 1][0], pp[k - 1][1], pp[k][0], pp[k][1]);
           if (d < tol && d < bd) { bd = d; best = { edge: e, idx }; }

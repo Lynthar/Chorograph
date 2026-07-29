@@ -1,7 +1,7 @@
 /* 连线编辑表单（UI 1:1 还原 v0.14 edgeEditForm/ee_save）：名称/存在时段/属性/说明一次提交；
    删除带确认。类型在创建时定死（与旧版一致，改类型=删了重连）。字段带持久小标签（.frow>label）。 */
 import { useRef } from "preact/hooks";
-import { EDGE_STYLE, RIVER_TMPL } from "../core/constants.ts";
+import { EDGE_STYLE, RIVER_TMPL, WALL_TMPL } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
 import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "./state.ts";
 import { applyEdgeForm } from "./editops.ts";
@@ -14,7 +14,7 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
   const st = EDGE_STYLE[e.type] || { 名: e.type };
   const kvText = (e.字段 && Object.keys(e.字段).length)
     ? Object.entries(e.字段).map(([k, v]) => `${k}：${v}`).join("\n")
-    : (e.type === "river" ? RIVER_TMPL : "");
+    : (e.type === "river" ? RIVER_TMPL : e.type === "wall" ? WALL_TMPL : "");
   const val = (id: string) => (box.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>("#" + id))?.value ?? "";
   /* 时间输入经历法解析折成数字串（applyEdgeForm parseFloat 空删语义；custom 战略=原样） */
   const timeVal = (id: string) => { const v = parseWhenInput(cal, tac, val(id)); return v == null ? "" : String(v); };
@@ -24,7 +24,10 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
       const target = w.edges[idx];
       if (!target) return;
       applyEdgeForm(target, { 名称: val("ee_name"), note: val("ee_note"), kv: val("ee_kv"), since: timeVal("ee_since"), until: timeVal("ee_until"),
-        widthM: e.type === "river" ? val("ee_width") : undefined });
+        widthM: e.type === "river" ? val("ee_width") : undefined,
+        reverse: e.type === "wall"
+          ? box.current?.querySelector("#ee_rev")?.getAttribute("aria-pressed") === "true"
+          : undefined });
     });
     inspEditSig.value = false;
     showToast("已保存修改", { undo: true });
@@ -43,8 +46,11 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
       {e.type === "river" && <div class="frow"><label>水面宽 米（留空＝示意细线；放大后按真实尺度显宽）</label>
         <input class="fld" id="ee_width" type="number" min={0} step={10}
           placeholder="如 200" defaultValue={e.widthM != null ? String(e.widthM) : ""} /></div>}
+      {e.type === "wall" && <div class="frow"><label>齿面（缺省在画线方向左侧；岸线惯例＝齿朝水）</label>
+        <div class="chips"><button type="button" class="ch tr" id="ee_rev" aria-pressed={e.reverse ? "true" : "false"}
+          onClick={ev => { const b = ev.currentTarget as HTMLButtonElement; b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true"); }}>翻转齿面</button></div></div>}
       <div class="frow"><label>属性（每行「键：值」，值留空的行不保存）</label>
-        <textarea class="fld" id="ee_kv" rows={7} placeholder={e.type === "river" ? "河流建议：宽度/深度/流量/水质/丰水期/枯水期" : "键：值"} defaultValue={kvText} /></div>
+        <textarea class="fld" id="ee_kv" rows={7} placeholder={e.type === "river" ? "河流建议：宽度/深度/流量/水质/丰水期/枯水期" : e.type === "wall" ? "工事建议：形制/高度/守方/存废" : "键：值"} defaultValue={kvText} /></div>
       <div class="frow"><label>说明</label>
         <textarea class="fld" id="ee_note" rows={2} placeholder="说明" defaultValue={typeof e.note === "string" ? e.note : ""} /></div>
       <div class="in-actions">

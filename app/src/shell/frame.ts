@@ -70,14 +70,15 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
           octx.restore();
         }
       }
-      if (m === "edit" && ptr.opStroke && ptr.opStroke.river && ptr.opStroke.pts.length) {   // 自由画河预览：河蓝线 + 橡皮筋到光标
+      if (m === "edit" && ptr.opStroke && ptr.opStroke.free && ptr.opStroke.pts.length) {   // 自由画河/工事预览：型色线 + 橡皮筋到光标
         const pts = ptr.opStroke.pts.slice();
         if (ptr.mxy) { const ll = unproject(cam(), ptr.mxy[0], ptr.mxy[1]); pts.push([dataLon(ctx.meta, ll[0]), ll[1]]); }
         if (pts.length >= 2) {
+          const est = EDGE_STYLE[ptr.opStroke.free];
           octx.save(); octx.globalAlpha = 0.7; octx.scale(ctx.DPR, ctx.DPR);
           const pp = projectSeq(cam(), pts);
           octx.beginPath(); pp.forEach((p, i) => i ? octx.lineTo(p[0], p[1]) : octx.moveTo(p[0], p[1]));
-          octx.lineWidth = 2.6; octx.strokeStyle = "#3f7fc4"; octx.lineJoin = "round"; octx.lineCap = "round"; octx.stroke();
+          octx.lineWidth = est.w; octx.strokeStyle = est.color; octx.lineJoin = "round"; octx.lineCap = "round"; octx.stroke();
           octx.restore();
         }
       }
@@ -137,7 +138,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       v.lon0, v.lat0, v.degPerPx,
       // 指针瞬态（画线笔迹/框选/光标位）
       m ? m[0] : -1, m ? m[1] : -1,
-      os ? os.pts.length : -1, os ? os.river : false,
+      os ? os.pts.length : -1, os ? os.free : false,
       bs ? bs.x1 : -1, bs ? bs.y1 : -1, bs ? bs.moved : false,
       // 顶栏保存态文案的来源（同样不是 signal，漏了就会「已保存」迟迟不上屏）
       autosave.pending, ctx.savedAt, ctx.saveErr, ctx.bootNote, ctx.mapId, ctx.source, ctx.lib

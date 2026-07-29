@@ -2,13 +2,13 @@
    未选子工具＝选择态（editSubSig="select"），再点当前子工具＝退回选择（Shift+1~6 同序同语义）；
    各子工具上下文（涂域派系/时段层、地形生态/高程、布景印章、连线类型、⏳新对象时段）
    语义自旧编辑面板原样转写；笔刷数值与画布上方 fprops 浮条同信号联动。 */
-import { DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, parseComposite } from "../core/constants.ts";
+import { DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_STYLE, NODE_TYPES, parseComposite } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhen, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
 import { elevUnitM } from "../core/elev.ts";
 import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
-import { brushEraseSig, canRedoSig, canUndoSig, decorKindSig, editSubSig, eraNewSig, isTacSig, linkFromSig, linkTypeSig,
+import { addTypeSig, brushEraseSig, canRedoSig, canUndoSig, decorKindSig, editSubSig, eraNewSig, isTacSig, linkFromSig, linkTypeSig,
   mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, parseWhenInput, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisSig, undoWorld, worldSig,
   type EditSub } from "./state.ts";
 
@@ -190,6 +190,20 @@ function DecorCtx() {
   );
 }
 
+/** 地点（点）：落点类型预选 chips（柱B 增——同布景选印章/连线选线型之例;缺省城市=旧流程逐位）。
+    事件/标注不入 chips：事件=落点后类型下拉换型（evtype 语义在表单）、标注有专属「注」子工具 */
+function AddCtx() {
+  return (
+    <div class="chips">
+      {NODE_TYPES.filter(t => t !== "event" && t !== "label").map(t => (
+        <button key={t} class="ch tr" aria-pressed={addTypeSig.value === t} onClick={() => { addTypeSig.value = t; }}>
+          {NODE_STYLE[t].sym}{NODE_STYLE[t].名}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** 连线（线）：类型选择 + 起点状态（对齐旧 link 面板）。战术图不供商路（战场图上是战略语汇噪音;
     残留选中态由 boot 的守卫 effect 回落 road,与军工具非战术回落同规） */
 function LinkCtx() {
@@ -208,6 +222,8 @@ function LinkCtx() {
       </div>
       <div class="hint">{linkTypeSig.value === "river"
         ? <>河流＝<b>自由画河</b>：图上按住<b>拖动</b>画出河道（不必锚地点）· 右键/Esc 取消 · 画完在检查器改名/水面宽/时段 · 改道＝删了重画</>
+        : linkTypeSig.value === "wall"
+        ? <>工事＝<b>自由画线</b>：图上按住<b>拖动</b>画出壁垒/长城/堑壕/岸线（不必锚地点）· 右键/Esc 取消 · 检查器改名/时段/翻转齿面 · 改线＝删了重画</>
         : fromNode
         ? <>起点：<b>{fromNode.名称 || fromNode.id}</b>——拖到/点击另一地点成线（右键或点空白取消）</>
         : <>按住一个地点<b>拖到</b>另一地点，或依次点击两地；已有连线直接点击可查看/编辑属性</>}</div>
@@ -260,14 +276,15 @@ export function DrawPane() {
       </div>
       <div class="hint" id="draw-tip">
         {sub === "select" && <><b>默认＝选择</b>：点击选中 · 空白拖＝框选（Shift+拖＝强制框选）· 按住对象拖＝移动 · 方向键微调 · <kbd>Delete</kbd> 删除 · 点作战线＝选中开悬浮框（再点子工具可切换）</>}
-        {sub === "add" && <>点空白＝落新地点（名称先填，类型/归属/沿革在检查器表单里改，11 类）</>}
+        {sub === "add" && <>先选类型、点空白落点（缺省城市）；改名/归属/沿革在检查器表单（事件点＝落点后类型下拉换「事件」，标注走「注」子工具）</>}
         {sub === "label" && <>点空白＝落自由文本标注（钟点/风向/兵力/争议注记…），检查器改 多行文本/字号/派系色/屏幕角固定，可配 ⏳时段分相位显示</>}
         {sub === "unit" && <>兵棋部队：军面板<b>「＋ 新增部队」</b>先入列表（未入场），按住列表项<b>拖入地图放置</b>；按住图上部队<b>拖动＝记录当日位置</b>（先把时间轴拖到目标日）；同日重拖＝改写航点；<b>Shift+拖</b>＝框选；<kbd>Delete</kbd>＝删部队</>}
         {sub === "terrain" && <>生态类型 8 色画笔逐格改地形 · ⛰高程＝抬升/下切（<kbd>E</kbd> 换向）</>}
-        {sub === "link" && <>选类型：河流＝自由画河道（拖动画线，不必锚地点）· 道路/商路＝地点连地点</>}
+        {sub === "link" && <>选类型：河流/工事＝自由画线（拖动，不必锚地点）· 道路/商路＝地点连地点</>}
         {sub === "paint" && <>笔刷直涂派系疆域（优先于据点凸包）· 橡皮＝反涂 · 开涂自动建层</>}
         {sub === "decor" && <>9 印章 · 点放或按住播撒 · 右键删单个 · <kbd>Alt</kbd>+点取样</>}
       </div>
+      {sub === "add" && <AddCtx />}
       {sub === "paint" && <PaintCtx />}
       {sub === "terrain" && <TerrainCtx />}
       {sub === "decor" && <DecorCtx />}

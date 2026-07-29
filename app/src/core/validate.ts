@@ -117,8 +117,8 @@ export function validateWorld(w: unknown): ValidateResult {
   /* —— 连线 —— */
   (Array.isArray(o.edges) ? (o.edges as Record<string, unknown>[]) : []).forEach((e, i) => {
     const p = `edges[${i}]`;
-    const free = Array.isArray(e.pts) && (e.pts as unknown[]).length >= 2;   // 自由画河：pts 折线、无端点
-    if (free) { if (e.type !== "river") W(`${p}.pts`, "只有河流可用自由折线 pts"); }
+    const free = Array.isArray(e.pts) && (e.pts as unknown[]).length >= 2;   // 自由折线（河流/工事）：pts 折线、无端点
+    if (free) { if (e.type !== "river" && e.type !== "wall") W(`${p}.pts`, "只有河流与工事可用自由折线 pts"); }
     else for (const end of ["from", "to"]) if (!nodeIds.has(String(e[end]))) W(`${p}.${end}`, `连线引用了不存在的地点「${String(e[end])}」`);
     if (!(String(e.type) in EDGE_STYLE)) W(`${p}.type`, `未知连线类型「${String(e.type)}」`);
     checkTimed(p, e);

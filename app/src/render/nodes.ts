@@ -1,5 +1,6 @@
 /* 地点记号 + 地名标签 + 标注（自 overlay.ts 原样拆出，行为不变）：
-   记号形状按类型（★都城/◉主要/●○·聚落/▲要塞/═渡口/▽事件/◆资源/✦特殊），描边色=当年归属；
+   记号形状按类型（★都城/◉主要/●○·聚落/▲要塞/═渡口/▽事件/◆资源/✦特殊，
+   柱B 微地物：▣营垒/⋈隘口/∩桥梁/△制高点/⌂庄园/⊕考古点），描边色=当年归属；
    楷体标签四方位避让（重要地点先占位），撞满则不画（选中除外）；
    事件点未发生=淡显、当年=红圈；编辑模式全部地点可见（旧 nodeVisible 语义）。
    ⚠ nodeVisibleAt 是绘制与拾取（render/pick.ts）同源的可见门——改门先想两边；
@@ -131,6 +132,24 @@ function shapePath(ctx: CanvasRenderingContext2D, x: number, y: number, r: numbe
     case "spark": ctx.moveTo(x, y - r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.quadraticCurveTo(x, y, x, y + r);
       ctx.quadraticCurveTo(x, y, x - r, y); ctx.quadraticCurveTo(x, y, x, y - r); ctx.closePath(); break;
     case "rect": ctx.rect(x - r, y - r * 0.45, r * 2, r * 0.9); break;
+    /* 战场微地物（2026-07 特化柱B）：子路径统一走「白底填充→描边→30% 色调→中心点」现管线 */
+    case "camp": ctx.rect(x - r * 0.85, y - r * 0.85, r * 1.7, r * 1.7); break;   // 方形围郭（中心点=中军）
+    case "pass":                                                                   // 双三角夹峙（山峡收口）
+      ctx.moveTo(x - r, y - r * 0.75); ctx.lineTo(x - r * 0.15, y); ctx.lineTo(x - r, y + r * 0.75); ctx.closePath();
+      ctx.moveTo(x + r, y - r * 0.75); ctx.lineTo(x + r * 0.15, y); ctx.lineTo(x + r, y + r * 0.75); ctx.closePath(); break;
+    case "bridge":                                                                 // 拱弧双墩
+      ctx.moveTo(x - r, y + r * 0.3); ctx.quadraticCurveTo(x, y - r * 1.1, x + r, y + r * 0.3);
+      ctx.moveTo(x - r, y + r * 0.3); ctx.lineTo(x - r, y + r * 0.85);
+      ctx.moveTo(x + r, y + r * 0.3); ctx.lineTo(x + r, y + r * 0.85); break;
+    case "summit":                                                                 // 测绘三角点：三角+出头基线（与要塞▲以基线·内点区分）
+      ctx.moveTo(x, y - r); ctx.lineTo(x - r * 0.85, y + r * 0.7); ctx.lineTo(x + r * 0.85, y + r * 0.7); ctx.closePath();
+      ctx.moveTo(x - r * 1.15, y + r * 0.7); ctx.lineTo(x + r * 1.15, y + r * 0.7); break;
+    case "house":                                                                  // 方基人字顶（设防庄邸/坞堡）
+      ctx.moveTo(x - r * 0.8, y + r * 0.8); ctx.lineTo(x - r * 0.8, y - r * 0.1); ctx.lineTo(x, y - r);
+      ctx.lineTo(x + r * 0.8, y - r * 0.1); ctx.lineTo(x + r * 0.8, y + r * 0.8); ctx.closePath(); break;
+    case "site":                                                                   // 圆内十字（考古测点惯例，十字出圆）
+      ctx.arc(x, y, r * 0.8, 0, 7);
+      ctx.moveTo(x - r, y); ctx.lineTo(x + r, y); ctx.moveTo(x, y - r); ctx.lineTo(x, y + r); break;
     default: ctx.arc(x, y, r, 0, 7);
   }
 }

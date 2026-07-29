@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { addEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells } from "../src/core/grid.ts";
@@ -120,6 +120,8 @@ describe("编辑操作内核", () => {
   it("addNode：city 起步、三位小数、link=名称", () => {
     const w = mkWorld();
     const n = addNode(w, "洛城", 100.12345, 30.9876);
+    assert.strictEqual(n.type, "city", "缺省仍 city 起步（旧行为）");
+    assert.strictEqual(addNode(w, "垒", 101, 31, "camp").type, "camp", "柱B：可预选类型落点");
     assert.strictEqual(n.type, "city");
     assert.strictEqual(n.lon, 100.123);
     assert.strictEqual(n.lat, 30.988);
@@ -177,6 +179,24 @@ describe("编辑操作内核", () => {
     assert.ok(!("from" in e) && !("to" in e), "自由画河无端点");
     assert.strictEqual(w.edges.length, 1);
     assert.strictEqual(w.edges[0], e);
+  });
+  it("addFreeEdge：自由画工事=一条 wall 边（柱B），pts 折线、无端点", () => {
+    const w = mkWorld({});
+    const e = addFreeEdge(w, [[100, 30], [101, 30]], "wall");
+    assert.strictEqual(e.type, "wall");
+    assert.deepStrictEqual(e.pts, [[100, 30], [101, 30]]);
+    assert.ok(!("from" in e) && !("to" in e), "自由画工事无端点");
+    assert.strictEqual(w.edges.length, 1);
+  });
+  it("applyEdgeForm：工事齿面 reverse 真存假删、未传不动（柱B）", () => {
+    const e = { type: "wall", pts: [[0, 0], [1, 1]] } as never as import("../src/core/types.ts").Edge;
+    applyEdgeForm(e, { 名称: "", note: "", kv: "", since: "", until: "", reverse: true });
+    assert.strictEqual(e.reverse, true);
+    applyEdgeForm(e, { 名称: "", note: "", kv: "", since: "", until: "", reverse: false });
+    assert.ok(!("reverse" in e), "假=删键（缺省齿朝左不落盘）");
+    e.reverse = true;
+    applyEdgeForm(e, { 名称: "", note: "", kv: "", since: "", until: "" });
+    assert.strictEqual(e.reverse, true, "未传 reverse 不动既有值");
   });
   it("addAsset/removeAsset：幂等内嵌 + 连带删落章、空了删键", () => {
     const w = mkWorld({});

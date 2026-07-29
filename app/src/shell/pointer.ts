@@ -19,13 +19,13 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUn
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
   inspEditSig, settingsSig, closeSettings, helpOpenSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
-  paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, decorKindSig, decorSizeSig,
+  addTypeSig, paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, eraNewSig,
   mutateWorld, mutateWorldLive, pushHistoryOnce, beginStroke, endStroke, undoWorld, redoWorld,
   deleteNodeAt, deleteUnitAt, deleteEdgeIdx, deleteDecorAt,
   type EditSub, type Sel }
   from "../ui/state.ts";
-import { addNode, addEdge, addRiver, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
+import { addNode, addEdge, addFreeEdge, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
   removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setNodeRangeKm, moveNode, moveDecor, dataLon, paintTerrainAt, paintHeightAt }
   from "../ui/editops.ts";
 import { poolGet } from "../ui/stamps.ts";
@@ -38,7 +38,7 @@ import type { WorldNode } from "../core/types.ts";
 
 /* —— 拖拽/笔迹瞬态（每帧读写，不进 signals）—— */
 interface PanDrag { x: number; y: number; lon0: number; lat0: number; click: boolean }
-interface OpStroke { pts: [number, number][]; lastX: number; lastY: number; river?: boolean }   // river=自由画河笔迹（收笔入 river 边），否则作战线
+interface OpStroke { pts: [number, number][]; lastX: number; lastY: number; free?: "river" | "wall" }   // free=自由画连线笔迹（收笔入该型 pts 边），否则作战线
 interface BoxSel { x0: number; y0: number; x1: number; y1: number; moved: boolean; decorOnly?: boolean }   // decorOnly=布景子工具的框选（只圈布景）
 interface PaintStroke { set: Set<string>; dims: PaintDims; fid: string; idx: number }
 interface DecorStroke { erase: boolean; lastX: number; lastY: number }
@@ -331,10 +331,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       canvas.setPointerCapture(e.pointerId);
       return;
     }
-    // 河流自由画线：连线子工具选「河流」时按住拖一笔成河（镜像作战线画线，无需锚地点）
-    if (world && modeSig.value === "edit" && editSubSig.value === "link" && linkTypeSig.value === "river") {
+    // 自由画线：连线子工具选「河流/工事」时按住拖一笔成线（镜像作战线画线，无需锚地点）
+    if (world && modeSig.value === "edit" && editSubSig.value === "link" && (linkTypeSig.value === "river" || linkTypeSig.value === "wall")) {
       const ll = unproject(cam(), e.offsetX, e.offsetY);
-      opStroke = { pts: [[+dataLon(ctx.meta, ll[0]).toFixed(3), +ll[1].toFixed(3)]], lastX: e.offsetX, lastY: e.offsetY, river: true };
+      opStroke = { pts: [[+dataLon(ctx.meta, ll[0]).toFixed(3), +ll[1].toFixed(3)]], lastX: e.offsetX, lastY: e.offsetY, free: linkTypeSig.value };
       canvas.setPointerCapture(e.pointerId);
       return;
     }
@@ -613,12 +613,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   canvas.addEventListener("pointerup", e => {
     const world = worldSig.value;
     if (opStroke) {   // 收笔：RDP 简化后入库并自动选中（<2 点=只点了一下，不成线/河）
-      const raw = opStroke.pts, wasRiver = opStroke.river; opStroke = null;
+      const raw = opStroke.pts, freeTp = opStroke.free; opStroke = null;
       const simp = raw.length >= 2 && world
         ? rdp(raw, ctx.view.degPerPx * 2.5).map(p => [+p[0].toFixed(3), +p[1].toFixed(3)] as [number, number]) : [];
-      if (simp.length >= 2 && wasRiver) {          // 自由画河：入库为一条 river 边（pts 折线、无端点），自动选中
+      if (simp.length >= 2 && freeTp) {            // 自由画河/工事：入库为一条 pts 折线边（无端点），自动选中
         let idx = -1;
-        mutateWorld(w => { const ed = addRiver(w, simp); applyEra(ed, eraNewSig.peek()); idx = w.edges.length - 1; });
+        mutateWorld(w => { const ed = addFreeEdge(w, simp, freeTp); applyEra(ed, eraNewSig.peek()); idx = w.edges.length - 1; });
         if (idx >= 0) selSig.value = { kind: "edge", idx };
       } else if (simp.length >= 2 && opDrawSig.value) {   // 作战线：原语义
         const dd = opDrawSig.value; let idx: number | null = null;
@@ -727,7 +727,8 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (hit) selSig.value = { kind: "node", id: hit.id };
         else {
           let nid: string | null = null;
-          mutateWorld(w => { nid = applyEra(addNode(w, "新地点", ll[0], ll[1]), eraNewSig.peek()).id; });
+          const tp = addTypeSig.peek();   // 类型 chips 预选（柱B）；默认名带类型便于检查器分辨
+          mutateWorld(w => { nid = applyEra(addNode(w, "新" + ((NODE_STYLE[tp] || NODE_STYLE.city).名 || "地点"), ll[0], ll[1], tp), eraNewSig.peek()).id; });
           if (nid) selSig.value = { kind: "node", id: nid };   // 落默认名并选中→检查器改名（去 prompt）
         }
       } else if (mode === "edit" && editSubSig.value === "label") {
@@ -760,7 +761,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   canvas.addEventListener("contextmenu", e => {
     e.preventDefault();
     const mode = modeSig.value;
-    if (opStroke && opStroke.river) { opStroke = null; return; }         // 右键取消在画河道
+    if (opStroke && opStroke.free) { opStroke = null; return; }          // 右键取消在画河道/工事
     if (opDrawSig.value) { opStroke = null; cancelOpDraw(); return; }   // 右键取消画线
     if (mode === "measure") { routePtsSig.value = routePtsSig.value.slice(0, -1); return; }   // 右键撤上一点
     if (mode === "edit" && editSubSig.value === "decor") {   // 右键=删单个布景（层隐藏不许盲删）
@@ -791,7 +792,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     }
     if (e.key === "?") { helpOpenSig.value = true; return; }
     if (e.key === "Escape") {
-      if (opStroke && opStroke.river) { opStroke = null; return; }        // 先退在画河道
+      if (opStroke && opStroke.free) { opStroke = null; return; }         // 先退在画河道/工事
       if (opDrawSig.value) { opStroke = null; cancelOpDraw(); return; }   // 再退画线态
       if (opSelSig.value) { clearOpSel(); return; }                       // 再退作战线选中
       if (inspEditSig.peek()) { inspEditSig.value = false; return; }      // 再退「随时编辑」表单回卡片（两段式：不一步清掉选中）

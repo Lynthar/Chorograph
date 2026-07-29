@@ -98,11 +98,12 @@ export interface WorldNode extends Timed {
 }
 
 export interface Edge extends Timed {
-  from?: string; to?: string;  // 经典边（道路/商路/锚端点河）必填；自由画河用 pts、两端皆无
-  pts?: [number, number][];    // 自由画河道折线（[lon,lat]…）：有 pts≥2 即自由河，渲染/拾取/量长沿 pts（Chaikin 柔化）；旧 from/to 河走原路径
-  type: "road" | "river" | "trade";
+  from?: string; to?: string;  // 经典边（道路/商路/锚端点河）必填；自由画河/工事用 pts、两端皆无
+  pts?: [number, number][];    // 自由折线（[lon,lat]…）：河流经 Chaikin 柔化、工事原样折线（防线有棱角）；旧 from/to 边走原路径
+  type: "road" | "river" | "trade" | "wall";   // wall=工事（2026-07 特化柱B，additive）：壁垒/长城/堑壕/岸线，寻路不吃
   名称?: string;
   widthM?: number;            // 河流真实水面宽（米）：按地理尺度渲染线宽（缺省=样式底宽 2.6px）
+  reverse?: boolean;          // 工事齿面翻转：缺省齿在画线方向左侧（同作战线防线齿之例；岸线惯例＝齿朝水）
   字段?: Record<string, string>;
   note?: string;
   [k: string]: unknown;

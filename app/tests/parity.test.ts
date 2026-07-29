@@ -49,40 +49,47 @@ describe("常量与旧实现深度一致", () => {
     assert.strictEqual(C.PD, g.PD);
   });
   it("图层/预设/布景", () => {
-    // LAYERS：新增 "notes"/"vision"、移除 "eco"（自动生态点缀改为生态笔刷落真实印章）后与旧版逐位一致
-    assert.deepStrictEqual(C.LAYERS.filter(l => l.id !== "notes" && l.id !== "vision"), g.LAYERS.filter((l: { id: string }) => l.id !== "eco"));
+    // LAYERS：新增 "notes"/"vision"/"wall"（柱B 工事）、移除 "eco"（自动生态点缀改为生态笔刷落真实印章）后与旧版逐位一致
+    assert.deepStrictEqual(C.LAYERS.filter(l => l.id !== "notes" && l.id !== "vision" && l.id !== "wall"), g.LAYERS.filter((l: { id: string }) => l.id !== "eco"));
     assert.strictEqual(C.LAYERS.filter(l => l.id === "notes").length, 1);
     assert.strictEqual(C.LAYERS.filter(l => l.id === "vision").length, 1);
+    assert.strictEqual(C.LAYERS.filter(l => l.id === "wall").length, 1);
     assert.strictEqual(C.LAYERS.find(l => l.id === "eco"), undefined, "eco 自动点缀层已移除（生态改由笔刷落真实印章）");
     assert.strictEqual(C.LAYERS.find(l => l.id === "vision")!.tacOnly, true, "vision 应为战术图专属");
-    // PRESETS：每个预设剔除新增 notes/vision、移除 eco 后与旧版一致；标注全预设开、视野仅军事/战术/全部
+    assert.strictEqual(C.LAYERS.find(l => l.id === "wall")!.tacOnly, undefined, "工事不设 tacOnly（长城属战略语汇）");
+    // PRESETS：每个预设剔除新增 notes/vision/wall、移除 eco 后与旧版一致；标注全预设开、视野与工事按白名单
     assert.deepStrictEqual(Object.keys(C.PRESETS), Object.keys(g.PRESETS));
     for (const k of Object.keys(C.PRESETS)) {
       // 战术预设另剔 contour（2026-07 特化 P0 白名单：战场地文=棱线/凹路,等高线默认开）——只豁免战术,地理/全部的 contour 漂移照红
-      assert.deepStrictEqual(stripKeys(C.PRESETS[k], k === "战术" ? ["notes", "vision", "contour"] : ["notes", "vision"]), stripKeys(g.PRESETS[k], ["eco"]), `预设「${k}」旧键漂移`);
+      assert.deepStrictEqual(stripKeys(C.PRESETS[k], k === "战术" ? ["notes", "vision", "contour", "wall"] : ["notes", "vision", "wall"]), stripKeys(g.PRESETS[k], ["eco"]), `预设「${k}」旧键漂移`);
       assert.strictEqual(C.PRESETS[k].notes, 1, `预设「${k}」应含标注层`);
       assert.strictEqual(C.PRESETS[k].eco, undefined, `预设「${k}」eco 已移除`);
       assert.strictEqual(C.PRESETS[k].vision, ["军事", "战术", "全部"].includes(k) ? 1 : undefined, `预设「${k}」vision 白名单`);
+      assert.strictEqual(C.PRESETS[k].wall, ["军事", "战术", "全部"].includes(k) ? 1 : undefined, `预设「${k}」wall 白名单（柱B）`);
     }
     assert.strictEqual(C.PRESETS.战术.contour, 1, "战术预设应含等高线（白名单成员须真在,防豁免空转）");
     assert.deepStrictEqual(C.DECOR, g.DECOR);
   });
   it("地点/事件类型与模板", () => {
-    // NODE_STYLE/NODE_TYPES/NODE_TMPL：剔除新增 "label" 后与旧版逐位一致
-    assert.deepStrictEqual(stripKeys(C.NODE_STYLE, ["label"]), g.NODE_STYLE);
-    assert.ok(C.NODE_STYLE.label, "v0.15 标注类型应存在");
-    assert.deepStrictEqual(C.NODE_TYPES.filter(t => t !== "label"), g.NODE_TYPES);
+    // NODE_STYLE/NODE_TYPES/NODE_TMPL：剔除新增 "label"（v0.15）与柱B 微地物六类后与旧版逐位一致
+    const NEW_NODE_TYPES = ["label", "camp", "pass", "bridge", "summit", "manor", "site"];
+    assert.deepStrictEqual(stripKeys(C.NODE_STYLE, NEW_NODE_TYPES), g.NODE_STYLE);
+    for (const t of NEW_NODE_TYPES) assert.ok(C.NODE_STYLE[t], `新增类型「${t}」应存在（防豁免空转）`);
+    assert.deepStrictEqual(C.NODE_TYPES.filter(t => !NEW_NODE_TYPES.includes(t)), g.NODE_TYPES);
     assert.deepStrictEqual(C.LEGACY_TYPE, g.LEGACY_TYPE);
     assert.deepStrictEqual(C.EVENT_TYPES, g.EVENT_TYPES);
-    assert.deepStrictEqual(stripKeys(C.NODE_TMPL, ["label"]), g.NODE_TMPL);
+    assert.deepStrictEqual(stripKeys(C.NODE_TMPL, NEW_NODE_TYPES), g.NODE_TMPL);
     assert.deepStrictEqual(C.EVENT_TMPL, g.EVENT_TMPL);
     assert.deepStrictEqual(C.RANK_ZOOM.map(v => (isFinite(v) ? v : "Infinity")), g.RANK_ZOOM);
   });
   it("连线/速度/兵种", () => {
-    assert.deepStrictEqual(C.EDGE_STYLE, g.EDGE_STYLE);
+    // EDGE_STYLE/UNIT_KINDS：剔除柱B 新增 "wall"/"cmd" 后与旧版逐位一致
+    assert.deepStrictEqual(stripKeys(C.EDGE_STYLE, ["wall"]), g.EDGE_STYLE);
+    assert.ok(C.EDGE_STYLE.wall, "柱B 工事线型应存在（防豁免空转）");
     assert.strictEqual(C.RIVER_TMPL, g.RIVER_TMPL);
     assert.deepStrictEqual(C.SPEEDS, g.SPEEDS);
-    assert.deepStrictEqual(C.UNIT_KINDS, g.UNIT_KINDS);
+    assert.deepStrictEqual(stripKeys(C.UNIT_KINDS, ["cmd"]), g.UNIT_KINDS);
+    assert.ok(C.UNIT_KINDS.cmd, "柱B 主帅兵种应存在（防豁免空转）");
   });
 });
 
