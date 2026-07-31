@@ -59,7 +59,8 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   else if (dl.wantOvl === "settings") openSettings("app");
   else if (dl.wantOvl === "create") openSettings("create");
   if (dl.wantDrawer === "layers") layersOpenSig.value = true;   // 截图/演示：直开抽屉「层」面
-  if (dl.wantGrain === "hour" && isTacSig.peek()) subDaySig.value = true;   // #grain=hour：战术图直开「时」粒度（时轨展开）
+  if (dl.wantGrain === "hour" && isTacSig.peek()) subDaySig.value = true;    // #grain=hour：战术图直开「时」粒度（时轨展开）
+  if (dl.wantGrain === "month" && !isTacSig.peek()) subDaySig.value = true;  // #grain=month：战略图直开「月」粒度
   if (dl.wantSel && worldSig.value) {
     const hit = worldSig.value.nodes.find(n => n.id === dl.wantSel || n.名称 === dl.wantSel);
     const fhit = hit ? null : worldSig.value.factions.find(f => f.id === dl.wantSel || f.名称 === dl.wantSel);
@@ -112,8 +113,6 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     if (req.degPerPx != null && isFinite(req.degPerPx) && req.degPerPx > 0
       && (req.ifAbove == null || ctx.view.degPerPx > req.ifAbove)) ctx.view.degPerPx = req.degPerPx;
   });
-  /* 部队子工具仅战术图：换到非战术图时退回选择工具 */
-  effect(() => { if (!isTacSig.value && editSubSig.peek() === "unit") editSubSig.value = "select"; });
   /* 商路线型仅战略图：战术图上是战略语汇噪音（chips 已藏）,残留选中态回落道路 */
   effect(() => { if (isTacSig.value && linkTypeSig.peek() === "trade") linkTypeSig.value = "road"; });
   /* 战术图请求桥：InfoPanel 战役卡按钮设 tacReqSig → 外壳做库链接/生成/导航（组件不碰库 IO） */

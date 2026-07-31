@@ -7,7 +7,7 @@
    通知订阅者，editVer++ 驱动外壳自动保存与寻路上下文重发；grid 标记驱动网格重建）。 */
 import { batch, computed, effect, signal } from "@preact/signals";
 import { EDGE_STYLE, LAYERS, PRESETS } from "../core/constants.ts";
-import { parseWhenForm, ymdOverflow, type CalendarSpec } from "../core/calendar.ts";
+import { calOf, monthsOf, parseWhenForm, ymdOverflow, type CalendarSpec } from "../core/calendar.ts";
 import { yearRangeOf } from "../core/time.ts";
 import { normalizeWorld } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
@@ -16,7 +16,8 @@ import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Arm, Decor, Edge, Faction, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
 
-/** 新壳已实现的图层子集（未实现的不出现在面板上）。units/trails/ranges/vision 为战术图专属（tacOnly） */
+/** 新壳已实现的图层子集（未实现的不出现在面板上）。trails/ranges/vision 为战术图专属（tacOnly）；
+    units 两种图都画（2026-07-31 起战略图可摆基础部队） */
 export const IMPL_LAYERS = ["terrain", "contour", "decor", "graticule", "politics", "range", "road", "river", "trade", "wall", "nodes", "labels", "notes", "events", "arrows", "units", "trails", "ranges", "vision"];
 
 export const worldSig = signal<World | null>(null);
@@ -107,11 +108,16 @@ export const rangeSig = computed(() => {
   return { min: r.min, max: r.max };
 });
 
-/* —— 战术图时间步进粒度：日（默认，旧语义）｜时（半时辰=1/24 日；滑杆/播放/方向键共用）——
-   小数日戳 core 原生支持（unitPos 连续插值、activeAt 连续比较），此处只是 UI 步长。 */
+/* —— 时间步进粒度的**细档开关**（两种图共用一个信号，各自的粗/细两档）：
+   战术图＝日（粗，旧语义）｜半时辰 1/24 日（细）；战略图＝年（粗）｜月 1/月数 年（细，2026-07-31）。
+   小数时刻 core 原生支持（unitPos 连续插值、activeAt 连续比较），此处只是 UI 步长。 */
 export const subDaySig = signal(false);
-export function timeStep(): number { return isTacSig.peek() && subDaySig.peek() ? 1 / 24 : 1; }
-/** 切回「日」粒度时把当前时刻落回整日（避免 +1 步在小数位上漂移） */
+export function timeStep(): number {
+  if (!subDaySig.peek()) return 1;
+  if (isTacSig.peek()) return 1 / 24;
+  return 1 / monthsOf(calOf((worldSig.peek()?.meta || {}).calendar));
+}
+/** 切回粗档（日/年）时把当前时刻落回整数（避免 +1 步在小数位上漂移） */
 export function toggleSubDay(): void {
   batch(() => {
     subDaySig.value = !subDaySig.peek();
@@ -119,7 +125,7 @@ export function toggleSubDay(): void {
   });
 }
 
-/* —— 时间轴播放（对齐旧 togglePlay：300ms 一年/一日（时粒度=半时辰），到头自停；再按=暂停）—— */
+/* —— 时间轴播放（对齐旧 togglePlay：300ms 一步＝当前粒度（年/月｜日/半时辰），到头自停；再按=暂停）—— */
 export const playingSig = signal(false);
 let playTimer: ReturnType<typeof setInterval> | null = null;
 /** 停止播放（换图/撤销/回库共用——否则计时器继续推新世界的年份，见审计）。 */

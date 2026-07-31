@@ -157,19 +157,67 @@ export function ymdOverflow(cal: CalendarSpec, s: unknown): string | null {
 
 /* —— 纪年显示/表单助手（战略图年份与信息卡共用；custom 正年份输出与旧字符串逐字一致）—— */
 
-/** 纪年标签：SE3107 / SE 3107(spaced) / 公元1863 / 公元前216（earth 不受 spaced 影响） */
+/* —— 战略图「月」粒度（2026-07-31）：年份取小数＝年 + (月-1)/月数。
+   custom 的小数年本就是历史现状（parseYearForm 走 parseFloat），故这是**纯 additive**——
+   整数年的显示与解析逐字不变（黄金基准锁定），activeAt 等数值比较天然照旧。
+   ⚠ 不落月格的任意小数年（如手编的 3107.3）一律**原样保全**：显示走旧式、表单回填原数字串，
+   免得「打开表单再保存」把它静默吸附到最近的月上。 —— */
+
+/** 一年几个月：custom 取历法配置、earth 恒 12 */
+export function monthsOf(cal: CalendarSpec): number { return cal.kind === "earth" ? 12 : cal.months; }
+
+/** 年 + 月（1 基）→ 小数年 */
+export function yearMonthT(cal: CalendarSpec, y: number, m: number): number {
+  const M = monthsOf(cal);
+  return y + (Math.min(M, Math.max(1, m)) - 1) / M;
+}
+
+/** 小数年 → {年, 月}（1 基）。⚠ 负年同规：y=-215、m=7 → -214.5，floor 取回 -215 */
+export function yearMonthOf(cal: CalendarSpec, v: number): { y: number; m: number } {
+  const M = monthsOf(cal), y = Math.floor(v);
+  return { y, m: Math.min(M, Math.max(1, Math.round((v - y) * M) + 1)) };
+}
+
+/** 恰落在月格上（往返取得回原值）＝可按「年-月」显示；否则原样走整年式 */
+function onMonth(cal: CalendarSpec, v: number): boolean {
+  if (Number.isInteger(v)) return false;
+  const { y, m } = yearMonthOf(cal, v);
+  return Math.abs(v - yearMonthT(cal, y, m)) < 1e-9;
+}
+
+/** 纪年标签：SE3107 / SE 3107(spaced) / 公元1863 / 公元前216（earth 不受 spaced 影响）；
+    月粒度＝SE3107·三月 / 公元1863年7月 */
 export function fmtYear(cal: CalendarSpec, y: number, spaced?: boolean): string {
+  if (onMonth(cal, y)) {
+    const { y: gy, m } = yearMonthOf(cal, y);
+    return cal.kind === "earth"
+      ? `${gy > 0 ? "公元" + gy : "公元前" + (1 - gy)}年${m}月`
+      : `${cal.era}${spaced ? " " : ""}${gy}·${cnMonth(m)}月`;
+  }
   if (cal.kind === "earth") return y > 0 ? `公元${y}` : `公元前${1 - y}`;
   return cal.era + (spaced ? " " : "") + y;
 }
-/** 表单年份值：custom=原数字串（含小数年，历史现状）；earth=「1863」/「前216」 */
+/** 表单年份值：custom=原数字串（含小数年，历史现状）；earth=「1863」/「前216」；月粒度=「3107-3」 */
 export function fmtYearForm(cal: CalendarSpec, y: number): string {
+  if (onMonth(cal, y)) {
+    const { y: gy, m } = yearMonthOf(cal, y);
+    return `${cal.kind === "earth" ? bcYear(gy) : String(gy)}-${m}`;
+  }
   return cal.kind === "earth" ? bcYear(y) : String(y);
 }
-/** 表单年份解析：custom=parseFloat（旧语义）；earth=整数年，收「前N」/「-N」/「N」；空/非法→null */
+/* 「年-月」输入（两轨共用）。⚠ 分隔符**不含小数点**——custom 的 "3107.5" 必须继续走 parseFloat
+   （小数年是历史现状且黄金语义），当成 3107 年 5 月即是静默改值。 */
+const YM_RE = /^(前|-)?(\d{1,6})[-/年]\s*(\d{1,2})\s*月?$/;
+/** 表单年份解析：先认「年-月」；否则 custom=parseFloat（旧语义）、earth=整数年收「前N」/「-N」/「N」；空/非法→null */
 export function parseYearForm(cal: CalendarSpec, s: unknown): number | null {
   const str = String(s == null ? "" : s).trim();
   if (!str) return null;
+  const ym = str.match(YM_RE);
+  if (ym) {
+    const y = ym[1] === "前" ? 1 - +ym[2] : (ym[1] === "-" ? -+ym[2] : +ym[2]);
+    const mo = +ym[3];
+    return (mo >= 1 && mo <= monthsOf(cal)) ? yearMonthT(cal, y, mo) : null;
+  }
   if (cal.kind !== "earth") { const v = parseFloat(str); return isFinite(v) ? v : null; }
   const m = str.match(/^(前|-)?(\d{1,6})$/);
   if (!m) return null;
@@ -211,11 +259,12 @@ export function yearSpanT(cal: CalendarSpec, y: number): [number, number] {
 }
 
 /* —— 表单输入策略（各编辑表单共用；custom 战略图与 v0.14 现状逐字一致）—— */
-/** 时段输入占位符：战术图=年-月-日、earth 战略=公元年、custom 战略=纪元名（默认 SE） */
+/** 时段输入占位符：战术图=年-月-日、earth 战略=公元年、custom 战略=纪元名（默认 SE）；战略两轨均可带「-月」 */
 export function eraPh(cal: CalendarSpec, tac: boolean): string {
-  return tac ? "年-月-日" : (cal.kind === "earth" ? "公元年" : cal.era);
+  return tac ? "年-月-日" : (cal.kind === "earth" ? "公元年[-月]" : `${cal.era}[-月]`);
 }
-/** 时段输入控件类型：custom 战略保持 number（旧语义）；战术/earth 战略用 text（收日期/「前N」） */
-export function eraTy(cal: CalendarSpec, tac: boolean): "text" | "number" {
-  return (tac || cal.kind === "earth") ? "text" : "number";
+/** 时段输入控件类型：一律 text。⚠ custom 战略原为 number（旧语义），战略图加月粒度后
+    number 打不进「3107-3」——数据解析仍由 parseYearForm 兜住纯数字与小数年。 */
+export function eraTy(_cal: CalendarSpec, _tac: boolean): "text" | "number" {
+  return "text";
 }

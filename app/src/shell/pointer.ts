@@ -11,7 +11,7 @@ import { elevUnitM, elevSmooth } from "../core/elev.ts";
 import { distKm } from "../core/geo.ts";
 import { fmtKm } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
-import { pickEdge, pickNode, pickOp, nodesInBox } from "../render/overlay.ts";
+import { pickEdge, pickNode, pickOp, nodesInBox, layerOn } from "../render/overlay.ts";
 import { pickUnit, pickRangeHandle, unitsInBox, type RingHit } from "../render/units.ts";
 import { fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStrengthAt } from "../core/units.ts";
 import { pickDecor, decorIdsInRadius, decorsInBox } from "../render/decor.ts";
@@ -158,7 +158,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
      关掉的层不再"隐形可选"；部队/布景拾取同规则在各调用点看 units/decor 层。 */
   const pickGate = () => ({ layers: layersSig.peek(), editing: modeSig.peek() === "edit" });
   const decorPickable = () => layersSig.peek().decor !== false;
-  const unitPickable = () => isTacSig.peek() && layersSig.peek().units !== false;
+  /* 部队可拾取＝与渲染同一道门（layerOn：开关 × tacOnly）。战略图 2026-07-31 起也画部队，
+     故判据不再是「战术图 && 层开」——门在 LAYERS 标记上，改层属性即两边同步。 */
+  const unitPickable = () => layerOn(layersSig.peek(), ctx.meta, "units");
   const paintDab = (x: number, y: number): void => {
     if (!paintStroke) return;
     const ll = unproject(cam(), x, y);
@@ -420,14 +422,14 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         }
       }
     }
-    // 部队工具（战术图）：按住部队拖动=记录/改写当日位置；Shift+拖=框选；按住框选成员=整体拖移
-    if (world && modeSig.value === "edit" && editSubSig.value === "unit" && isTacSig.value) {
+    // 部队工具：按住部队拖动=记录/改写当前时刻位置；Shift+拖=框选；按住框选成员=整体拖移
+    if (world && modeSig.value === "edit" && editSubSig.value === "unit") {
       if (e.shiftKey) {
         boxSel = { x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, moved: false };
         canvas.setPointerCapture(e.pointerId);
         return;
       }
-      const un = layersSig.peek().units !== false   // 部队层隐藏＝不可点选（同框选门）
+      const un = unitPickable()   // 部队层隐藏＝不可点选（同框选门）
         ? pickUnit(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY) : null;
       if (un) {
         const s = selSig.value;
@@ -444,7 +446,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         canvas.setPointerCapture(e.pointerId);
         return;
       }
-      if (isTacSig.value && layersSig.peek().units !== false) {   // 部队优先于地点（框小、常压在地点上层）；层隐藏不可选
+      if (unitPickable()) {   // 部队优先于地点（框小、常压在地点上层）；层隐藏不可选
         const un = pickUnit(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY);
         if (un) {
           const s = selSig.value;
@@ -678,7 +680,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         return;
       }
       const ids = world ? nodesInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1, pickGate()) : [];
-      const unitIds = world && isTacSig.peek() && layersSig.peek().units !== false   // 部队层隐藏时不隔空捕获
+      const unitIds = world && unitPickable()   // 部队层隐藏时不隔空捕获
         ? unitsInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1) : [];
       selSig.value = (ids.length || unitIds.length || decorIds.length)
         ? { kind: "multi", ids, ...(unitIds.length ? { unitIds } : {}), ...(decorIds.length ? { decorIds } : {}) } : null;
@@ -761,7 +763,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
           tryLink(linkFromSig.value, hit.id);
           linkFromSig.value = null;
         }
-      } else if (mode === "edit" && editSubSig.value === "unit" && isTacSig.value) {
+      } else if (mode === "edit" && editSubSig.value === "unit") {
         selSig.value = null;   // 军工具点击＝选择（空击清选）；新增走军面板「＋ 新增部队」→按住列表项拖入地图
       } else if (mode === "edit" && editSubSig.value === "delete") {
         if (hit) deleteNodeAt(hit.id);   // 删工具即时删 + 可撤销 toast（去 confirm）
@@ -828,7 +830,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (e.key === "1") { setRailTool("browse"); return; }
       if (e.key === "2") { setRailTool("measure"); return; }
       if (e.key === "3") { setRailTool("draw"); return; }
-      if (e.key === "4") { if (isTacSig.peek()) setRailTool("units"); return; }
+      if (e.key === "4") { setRailTool("units"); return; }
       if (e.key === "0") { deps.resetView(); return; }
     }
     /* PgUp/PgDn＝上/下相位（战术图分帧导航；无相位或到头＝不动。战略图不拦默认行为） */
@@ -861,10 +863,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && modeSig.value === "edit" && /^Digit[1-7]$/.test(e.code)) {
-      /* 绘子工具新序＝地形/地点/连线/涂域/布景/标注；Shift+7=部队（仅战术图）。
+      /* 绘子工具新序＝地形/地点/连线/涂域/布景/标注；Shift+7=部队。
          与 stgrid 一致：再按当前子工具＝退回选择态（无「选择」子工具，null 态即选择）。 */
-      const subs: EditSub[] = (["terrain", "add", "link", "paint", "decor", "label"] as EditSub[])
-        .concat(isTacSig.peek() ? (["unit"] as EditSub[]) : []);
+      const subs: EditSub[] = ["terrain", "add", "link", "paint", "decor", "label", "unit"];
       const s = subs[+e.code.slice(5) - 1];
       if (s) pickEditSub(s);   // 再按当前＝退回选择；连带清理（含 cancelOpDraw）见 state.pickEditSub
       return;
@@ -916,11 +917,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (!id) return;
     e.preventDefault();
     const w0 = worldSig.peek();
-    if (!w0 || !isTacSig.peek() || !(w0.units || []).some(u => u.id === id)) return;
+    if (!w0 || !(w0.units || []).some(u => u.id === id)) return;
     const ll = unproject(cam(), e.offsetX, e.offsetY);
     mutateWorld(w => { setUnitWaypoint(w, id, yearSig.peek(), ll[0], ll[1]); });
     selSig.value = { kind: "unit", id };
-    showToast(`已入场 ${fmtWhen(calOf(ctx.meta.calendar), true, yearSig.peek())}`, { undo: true });
+    /* ⚠ 时刻格式随图种（原硬编码 true＝战术日戳，战略图上会把年份当日戳读成乱纪年） */
+    showToast(`已入场 ${fmtWhen(calOf(ctx.meta.calendar), isTacSig.peek(), yearSig.peek())}`, { undo: true });
   });
   canvas.addEventListener("wheel", e => {
     e.preventDefault();

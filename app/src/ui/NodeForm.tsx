@@ -220,7 +220,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
         <input class="fld" id="ef_year" type={eraTy(cal, tac)} key={n.id + ":y" + (tac ? "t" : "n")}
           placeholder={tac
             ? (cal.kind === "earth" ? "年-月-日，可带时刻 13:30；前N=公元前" : "年-月-日，如 3107-3-7")
-            : (cal.kind === "earth" ? "公元年，前N=公元前" : `${cal.era} 纪年`)}
+            : (cal.kind === "earth" ? "公元年 或 年-月；前N=公元前" : `${cal.era} 纪年，可带 -月`)}
           defaultValue={n.year != null ? fmtWhenForm(cal, tac, n.year) : ""} /></div>}
       {isEv && (n.tacmap || !tac) && (
         <div class="seg" style={{ alignItems: "center" }}>

@@ -59,7 +59,9 @@ export const LAYERS: LayerDef[] = [
   { id: "notes", 名: "标注(自由文本)", on: true },
   { id: "events", 名: "军事·战役(事件点)", on: true },
   { id: "arrows", 名: "军事·作战线(攻势/防线)", on: true },
-  { id: "units", 名: "军事·部队(兵棋)", on: true, tacOnly: true },
+  /* 部队层不设 tacOnly（2026-07-31）：战略图也可摆基础部队（名称/归属/兵种/兵力/速度＋逐年位置）——
+     军团的多年推进属战略语汇。尾迹/火力/视野仍是战术图专属＝战场尺度的账目。 */
+  { id: "units", 名: "军事·部队(兵棋)", on: true },
   { id: "trails", 名: "军事·行军尾迹", on: true, tacOnly: true },
   { id: "ranges", 名: "军事·火力射程", on: true, tacOnly: true },
   /* 视野（v0.15 新增，平价白名单）：部队侦察/瞭望半径点线圈 */
@@ -197,7 +199,7 @@ export function certaintyStyle(v: unknown, kind: "node" | "edge"): CertaintyStyl
   return (typeof v === "string" && CERT_STYLES[kind][v]) || CERT_SURE;
 }
 
-/* 行军速度(km/日)——按军种给速度档（通用默认值） */
+/* 行军速度(km/日)——按移动方式给速度档（通用默认值） */
 export const SPEEDS: Record<Arm, { 名: string; v: number }[]> = {
   land: [{ 名: "大军(辎重)", v: 20 }, { 名: "步兵", v: 30 }, { 名: "急行军", v: 45 }, { 名: "骑兵", v: 60 }],
   water: [{ 名: "漕船(载重/逆流)", v: 35 }, { 名: "帆船(顺风)", v: 70 }],
@@ -212,11 +214,13 @@ export const UNIT_STATUS: Record<string, { 名: string; color: string }> = {
   rout:     { 名: "溃退", color: "#556270" }
 };
 
-/* 兵棋部队兵种预设（符号/默认速度/军种）。
-   2026-07-30 整表换代为通用十三类。表的次序即表单下拉次序：陆战主力（轻重步/轻重骑）→ 远程 → 后勤 →
-   非陆行（舰船/飞行）→ 侦察 → 重型装备 → 兜底三档（合成/特殊/指挥）。字形沿北约兵棋式几何符号、
-   轻重成对（✕⊠、╱╳）；「帅」用汉字是既定理由：单位框字形走 system-ui 粗体，汉字跨平台恒定、
-   不入 emoji 表现摇摆。⚠ 军种只是**默认值**——Unit.arm 可在表单显式覆写且优先（unitArm）。
+/* 兵棋部队兵种预设（符号/默认速度/默认移动方式）。
+   2026-07-30 整表换代为通用十三类，2026-07-31 加「运输」＝十四类。表的次序即表单下拉次序：
+   陆战主力（轻重步/轻重骑）→ 远程 → 后勤 → 运输 → 非陆行（舰船/飞行）→ 侦察 → 重型装备 →
+   兜底三档（合成/特殊/指挥）。字形沿北约兵棋式几何符号、轻重成对（✕⊠、╱╳）；「帅」用汉字是既定理由：
+   单位框字形走 system-ui 粗体，汉字跨平台恒定、不入 emoji 表现摇摆。
+   ⚠ arm 只是**默认移动方式**——Unit.arm 可显式覆写且优先（unitArm），但表单只对 armOptional 的兵种
+   给这一行（骑兵肯定陆行、舰船肯定水行）。
    `noFire` = 该兵种无远程投射能力（步/骑/后勤/侦察），火力圈对它们一律不成立：判据收在 unitFireKm
    一处，渲染/拾取/手柄/图例/表单全部随之，别在消费端各写一份。 */
 export const UNIT_KINDS: Record<string, { 名: string; glyph: string; v: number; arm: Arm; noFire?: boolean }> = {
@@ -226,6 +230,7 @@ export const UNIT_KINDS: Record<string, { 名: string; glyph: string; v: number;
   hcav:  { 名: "重骑兵", glyph: "╳", v: 45, arm: "land", noFire: true },
   rng:   { 名: "远程部队", glyph: "⌒", v: 30, arm: "land" },
   log:   { 名: "后勤部队", glyph: "▭", v: 20, arm: "land", noFire: true },
+  trans: { 名: "运输", glyph: "▤", v: 20, arm: "land", noFire: true },
   navy:  { 名: "舰船", glyph: "≈", v: 35, arm: "water" },
   air:   { 名: "飞行部队", glyph: "▲", v: 200, arm: "air" },
   scout: { 名: "侦察", glyph: "◇", v: 75, arm: "land", noFire: true },
@@ -234,8 +239,15 @@ export const UNIT_KINDS: Record<string, { 名: string; glyph: string; v: number;
   spec:  { 名: "特殊", glyph: "✦", v: 30, arm: "land" },
   cmd:   { 名: "指挥", glyph: "帅", v: 60, arm: "land" }
 };
-/* 军种显示名（寻路方式）：检查器卡片与部队表单同源，免两处漂移 */
+/* 移动方式（旧称「军种」，数据键仍是 Arm/u.arm＝存档兼容）显示名：检查器卡片与部队表单同源，免两处漂移 */
 export const ARM_NAME: Record<Arm, string> = { land: "陆行", water: "水行", air: "飞行" };
+
+/* 移动方式可选的兵种（2026-07-31 用户点单）：步/骑/远程/合成/重型/舰船/飞行的移动方式由本体决定
+   （骑兵肯定陆行、舰船肯定水行），给个选项只是噪音；只有编制上真有陆运/水运/空运之分的
+   后勤·运输·侦察·特殊·指挥才出这一行。⚠ 另立一张表，不给平价逐位比对的 UNIT_KINDS 加字段
+   （同 NODE_CATS 之规）；判据只此一处，表单显隐与 applyUnitForm 的删键同走它。 */
+export const ARM_OPT_KINDS = ["log", "trans", "scout", "spec", "cmd"];
+export function armOptional(kind: string): boolean { return ARM_OPT_KINDS.includes(kind); }
 
 /* 旧兵种迁移（旧存档/导入自动升级，同 LEGACY_TYPE 之例）：navy/scout/siege/cmd/**air** 五键原样存活
    （air 旧名「飞舟」，新表的「飞行部队」同键同字形同速度同军种＝旧档逐位不变），其余在此改嫁。

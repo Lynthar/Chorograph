@@ -28,7 +28,7 @@ export interface DeepLink {
   wantOvl: string | null;
   /** #drawer=layers：启动即开抽屉「层」面（截图/演示用，增） */
   wantDrawer: string | null;
-  /** #grain=hour：战术图直开「时」粒度（时轨展开；截图/分享精确时刻用，增） */
+  /** #grain=hour｜month：直开细粒度（战术＝时轨展开、战略＝月档；截图/分享精确时刻用，增） */
   wantGrain: string | null;
   force: "cpu" | "webgl2" | undefined;
 }
@@ -59,7 +59,7 @@ export function parseDeepLink(ctx: ShellCtx): DeepLink {
     if (k === "lib") dl.wantLib = true;   // 启动即进开始界面（截图/演示用）
     if (k === "ovl") dl.wantOvl = v;      // help|settings|create：启动即开对应弹层（截图/演示用）
     if (k === "drawer") dl.wantDrawer = v;   // layers：启动即开抽屉「层」面（截图/演示用）
-    if (k === "grain") dl.wantGrain = v;     // hour：战术图直开「时」粒度（截图/分享用）
+    if (k === "grain") dl.wantGrain = v;     // hour=战术「时」/ month=战略「月」（截图/分享用）
     if (k === "analysis" || k === "mode") dl.wantAnalysis = v;             // measure|route|edit
     if (k === "sub") dl.wantSub = v;                                       // 编辑子工具（select|add|link|paint|delete）
     if (k === "op" && v !== "") dl.wantOp = num(v);                        // 选中事件的第 N 条作战线（开悬浮框，演示/截图用）

@@ -37,7 +37,9 @@ export function wireOrchestration(ctx: ShellCtx, host: Pick<Host, "rebuildIfNeed
     host.rebuildIfNeeded();
     /* 战术图·可达性预算：为【选中部队】算行军 legs 填 unitLegsSig（对齐旧 renderUnitInfo：只算当前查看的部队）；
        必须在重建之后（ctx.grid 新鲜）。缓存**只保留当前选中部队**（换成 new Map，不累积）——否则换年/涂改地形后，
-       之前选中过的部队仍以旧地形的 legs 画超速⚠/可达性表（审计：非选中部队陈旧、换年不重算、replaceCurrent 不清缓存）。 */
+       之前选中过的部队仍以旧地形的 legs 画超速⚠/可达性表（审计：非选中部队陈旧、换年不重算、replaceCurrent 不清缓存）。
+       ⚠ isTacSig 这道门不是遗漏：战略图（2026-07-31 起也可摆部队）的航点时刻是**年**，而 unitLegs 的
+       days 是日数——年差直接当日数比，会把「一年行军千里」判成超速。战略图的速度只作记账（同士气之规）。 */
     const sel = selSig.value;
     editVerSig.value;                                       // 依赖：编辑改动（拖航点实时重算）
     const u = (w && ctx.grid && isTacSig.peek() && sel && sel.kind === "unit") ? (w.units || []).find(x => x.id === sel.id) : null;

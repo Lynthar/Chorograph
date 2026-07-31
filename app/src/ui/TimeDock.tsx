@@ -8,7 +8,7 @@ import { Fragment } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { signal } from "@preact/signals";
 import type { JSX } from "preact";
-import { calOf, cnDay, cnMonth, fmtHM, fmtShichen, fmtT, fmtYear, fromT, type CalendarSpec } from "../core/calendar.ts";
+import { calOf, cnDay, cnMonth, fmtHM, fmtShichen, fmtT, fmtYear, fromT, monthsOf, yearMonthOf, type CalendarSpec } from "../core/calendar.ts";
 import { phaseIndexAt, phasesOf } from "../core/time.ts";
 import { isTacSig, playingSig, rangeSig, stopPlay, subDaySig, timeStep, togglePlay, toggleSubDay, worldSig, yearSig } from "./state.ts";
 import { buildMarks, hourWindow, quantTime, subTicks, type EvMark } from "./timedock.ts";
@@ -33,7 +33,9 @@ export function TimeDock() {
   const tac = isTacSig.value;
   const playing = playingSig.value;
   const cal = calOf((worldSig.value?.meta || {}).calendar);
-  const sub = tac && subDaySig.value;
+  /* 细档开关两图共用（战术=半时辰、战略=月）；下层时轨只属战术图，故另立 sub */
+  const fine = subDaySig.value;
+  const sub = tac && fine;
   const span = max - min;
   const pct = span > 0 ? Math.min(100, Math.max(0, ((y - min) / span) * 100)) : 0;
 
@@ -64,8 +66,10 @@ export function TimeDock() {
     mainLab = cal.kind === "earth" ? `${p.m}月${p.d}日` : `${cnMonth(p.m)}月${cnDay(p.d)}`;
     subLab = fmtYear(cal, p.y, true) + (sub ? " · " + (cal.kind === "earth" ? fmtHM(frac) : fmtShichen(frac)) : "");
   } else {
-    mainLab = fmtYear(cal, Math.round(y), true);
-    subLab = "纪年 · 步进 1 年";
+    /* 战略图月粒度（2026-07-31）：细档下主标签＝月名、副标签＝纪年——与战术图「主日副年」同构 */
+    const g = yearMonthOf(cal, y);
+    mainLab = fine ? (cal.kind === "earth" ? `${g.m}月` : `${cnMonth(g.m)}月`) : fmtYear(cal, Math.round(y), true);
+    subLab = fine ? fmtYear(cal, g.y, true) : "纪年 · 步进 1 年";
   }
   const mmMin = tac ? dayShort(cal, min) : fmtYear(cal, Math.round(min), true);
   const mmMax = tac ? dayShort(cal, max) : fmtYear(cal, Math.round(max), true);
@@ -115,8 +119,8 @@ export function TimeDock() {
   return (
     <>
       <button class="dk-play tr" title="播放时间轴 (P)" aria-label={playing ? "暂停" : "播放"} onClick={togglePlay}>{playing ? "⏸" : "▶"}</button>
-      <button class="dk-step tr" title={tac ? (sub ? "后退半时辰" : "后退一日") : "后退一年"} aria-label="后退一步" onClick={() => stepBy(-1)}>‹</button>
-      <button class="dk-step tr" title={tac ? (sub ? "前进半时辰" : "前进一日") : "前进一年"} aria-label="前进一步" onClick={() => stepBy(1)}>›</button>
+      <button class="dk-step tr" title={tac ? (sub ? "后退半时辰" : "后退一日") : (fine ? "后退一月" : "后退一年")} aria-label="后退一步" onClick={() => stepBy(-1)}>‹</button>
+      <button class="dk-step tr" title={tac ? (sub ? "前进半时辰" : "前进一日") : (fine ? "前进一月" : "前进一年")} aria-label="前进一步" onClick={() => stepBy(1)}>›</button>
       <div class="dk-year" title="时间为基底：疆域·归属·战役·地点/道路/地形的存在时段，一切依纪年显示">
         <span class="y">{mainLab}</span><span class="s">{subLab}</span>
       </div>
@@ -176,15 +180,20 @@ export function TimeDock() {
           </div>
         )}
       </div>
+      {/* 粒度段控件按图种给两钮（2026-07-31 分化）：战略＝年/月、战术＝日/时——
+          用不上的粒度不再占位（原来战略图上「日」「时」灰着、「年」是不可操作的死 Tab 位）。 */}
       <div class="dk-seg">
-        {/* 「年」从不可操作——战略图上它本就是唯一粒度、战术图上不可用（无 onClick）。恒 disabled
-            去掉「战略图下可聚焦可回车却什么都不发生」的死 Tab 位；aria-pressed 继续表达当前粒度，
-            .dk-seg 有 disabled 不淡化已选的规则兜住选中态观感。 */}
-        <button disabled aria-pressed={!tac} title={tac ? "战术图为日/时粒度" : "战略图粒度：按年步进"}>年</button>
-        <button disabled={!tac} aria-pressed={tac && !subDaySig.value} title={tac ? "时间步进：按日" : "战术图可用"}
-          onClick={() => { if (subDaySig.peek()) toggleSubDay(); }}>日</button>
-        <button disabled={!tac} aria-pressed={sub} title={tac ? "时间步进：半时辰（1/24 日）——小时级战役分帧" : "战术图可用"}
-          onClick={() => { if (!subDaySig.peek()) toggleSubDay(); }}>时</button>
+        {tac ? <>
+          <button aria-pressed={!fine} title="时间步进：按日"
+            onClick={() => { if (subDaySig.peek()) toggleSubDay(); }}>日</button>
+          <button aria-pressed={fine} title="时间步进：半时辰（1/24 日）——小时级战役分帧"
+            onClick={() => { if (!subDaySig.peek()) toggleSubDay(); }}>时</button>
+        </> : <>
+          <button aria-pressed={!fine} title="时间步进：按年"
+            onClick={() => { if (subDaySig.peek()) toggleSubDay(); }}>年</button>
+          <button aria-pressed={fine} title={`时间步进：按月（1/${monthsOf(cal)} 年）——时段与事件年份亦可填「3107-3」`}
+            onClick={() => { if (!subDaySig.peek()) toggleSubDay(); }}>月</button>
+        </>}
       </div>
     </>
   );

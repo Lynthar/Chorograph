@@ -5,7 +5,7 @@ import { wrapLon } from "../core/geo.ts";
 import { parseKV } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
 import { setUnitPoint, unitKind } from "../core/units.ts";
-import { CERTAINTY, UNIT_KINDS, canonComposite, parseComposite } from "../core/constants.ts";
+import { CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Asset, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
 
@@ -478,9 +478,12 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
   if (v.名称) u.名称 = v.名称;
   u.faction = v.faction || null;
   u.kind = v.kind;
-  /* 军种：缺省取兵种表，表单可显式覆写——十一类兵种里没有飞行档，飞行部队正由此入口保住（unitArm 以 u.arm 优先） */
+  /* 移动方式（旧称军种）：只对「可选」兵种收表单值（后勤/运输/侦察/特殊/指挥——编制上真有陆运水运空运之分）；
+     其余兵种的移动方式由本体决定，一律**删键**回落兵种默认（unitArm 以 u.arm 优先）——
+     否则换成步兵后留着个够不着又与兵种矛盾的水行，同 noFire 清 range 之规。 */
   const kindArm = ((UNIT_KINDS[u.kind] || {}).arm || "land") as Arm;
-  u.arm = (v.arm === "land" || v.arm === "water" || v.arm === "air") ? v.arm : kindArm;
+  if (armOptional(u.kind)) u.arm = (v.arm === "land" || v.arm === "water" || v.arm === "air") ? v.arm : kindArm;
+  else delete u.arm;
   /* 兵力＝「人」数值单值：输入 × 单位倍率（人/千/万）后取整（人数无小数），>0 才存否则删键（同速度/火力之规） */
   const sv = parseFloat(v.strength) * Math.max(1, parseFloat(v.strengthUnit || "1") || 1);
   if (isFinite(sv) && sv > 0) u.strength = Math.round(sv); else delete u.strength;
@@ -505,10 +508,11 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
   u.note = v.note;
 }
 
-/** 改兵种（立即生效那一步；同步 arm，对齐旧 uf_kind） */
+/** 改兵种（立即生效那一步；同步移动方式，对齐旧 uf_kind——不可选的兵种删键回落默认，同 applyUnitForm） */
 export function changeUnitKind(u: Unit, kind: string): void {
   u.kind = kind;
-  u.arm = ((UNIT_KINDS[kind] || {}).arm || "land") as Arm;
+  if (armOptional(kind)) u.arm = ((UNIT_KINDS[kind] || {}).arm || "land") as Arm;
+  else delete u.arm;
 }
 
 /** 兵种默认速度（表单占位/展示用；unitKind 已导出于 core） */

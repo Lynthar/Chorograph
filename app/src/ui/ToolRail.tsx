@@ -3,7 +3,7 @@
    朱=活动工具（三色分权：金不作选中、朱不作悬停）。
    图标：单色剪影内联 SVG（24 视框，fill:currentColor→随按钮 dim/hover/朱 自动变色，发行单文件内联）。
    眼睛=览、两脚规=测、毛笔=绘、军旗=军、三叠图页=层。 */
-import { drawerOpenSig, editSubSig, isTacSig, layersOpenSig, modeSig, railToolOf, setRailTool, type RailTool } from "./state.ts";
+import { drawerOpenSig, editSubSig, layersOpenSig, modeSig, railToolOf, setRailTool, type RailTool } from "./state.ts";
 
 type IconName = RailTool | "layers";
 
@@ -50,17 +50,17 @@ const TOOLS: { t: RailTool; lab: string; kbd: string; tip: string }[] = [
   { t: "browse", lab: "浏览", kbd: "1", tip: "浏览 · 拖拽平移 / 点击看详情" },
   { t: "measure", lab: "量距", kbd: "2", tip: "量距 · 行军推演" },
   { t: "draw", lab: "绘制", kbd: "3", tip: "绘制 · 地点/连线/涂域/地形/布景/标注" },
-  { t: "units", lab: "部队", kbd: "4", tip: "部队 · 战术图兵棋" },
+  { t: "units", lab: "部队", kbd: "4", tip: "部队 · 兵棋摆放" },
 ];
 
 export function ToolRail() {
   const active = railToolOf(modeSig.value, editSubSig.value);
   const layersOn = layersOpenSig.value;
-  const tac = isTacSig.value;
   return (
     <nav class="rail" aria-label="工具">
       {TOOLS.map(({ t, lab, kbd, tip }) => (
-        <button key={t} class="rl tr" disabled={t === "units" && !tac}
+        /* 部队工具两种图都可用（2026-07-31）：战略图摆基础部队、战术图摆全套兵棋 */
+        <button key={t} class="rl tr"
           aria-pressed={!layersOn && active === t} aria-label={lab}
           onClick={() => setRailTool(t)}>
           <RailIcon n={t} /><span class="kbd">{kbd}</span><span class="tip">{tip}<s>{kbd}</s></span>

@@ -49,8 +49,15 @@ describe("常量与旧实现深度一致", () => {
     assert.strictEqual(C.PD, g.PD);
   });
   it("图层/预设/布景", () => {
-    // LAYERS：新增 "notes"/"vision"/"wall"（柱B 工事）、移除 "eco"（自动生态点缀改为生态笔刷落真实印章）后与旧版逐位一致
-    assert.deepStrictEqual(C.LAYERS.filter(l => l.id !== "notes" && l.id !== "vision" && l.id !== "wall"), g.LAYERS.filter((l: { id: string }) => l.id !== "eco"));
+    /* LAYERS：新增 "notes"/"vision"/"wall"（柱B 工事）、移除 "eco"（自动生态点缀改为生态笔刷落真实印章）、
+       units 单独比（2026-07-31 去 tacOnly）后与旧版逐位一致 */
+    const LAY_SKIP = ["notes", "vision", "wall", "units"];
+    assert.deepStrictEqual(C.LAYERS.filter(l => !LAY_SKIP.includes(l.id)),
+      g.LAYERS.filter((l: { id: string }) => l.id !== "eco" && l.id !== "units"));
+    /* units 的 sanctioned 偏离＝**只**去掉 tacOnly（战略图可摆基础部队），其余字段仍由 golden 推出——
+       名/on 漂移照红，tacOnly 若被谁加回来也照红。 */
+    const gUnits = g.LAYERS.find((l: { id: string }) => l.id === "units") as { id: string; 名: string; on: boolean };
+    assert.deepStrictEqual(C.LAYERS.find(l => l.id === "units"), { id: gUnits.id, 名: gUnits.名, on: gUnits.on });
     assert.strictEqual(C.LAYERS.filter(l => l.id === "notes").length, 1);
     assert.strictEqual(C.LAYERS.filter(l => l.id === "vision").length, 1);
     assert.strictEqual(C.LAYERS.filter(l => l.id === "wall").length, 1);
@@ -99,7 +106,8 @@ describe("常量与旧实现深度一致", () => {
       assert.strictEqual(lg ? lg.v : C.UNIT_KINDS[to].v, gk.v, `旧兵种「${old}」速度档须保住`);
       assert.strictEqual(lg ? lg.arm : C.UNIT_KINDS[to].arm, gk.arm, `旧兵种「${old}」军种须保住`);
     }
-    assert.strictEqual(Object.keys(C.UNIT_KINDS).length, 13, "新表恰十三类（防豁免空转）");
+    assert.strictEqual(Object.keys(C.UNIT_KINDS).length, 14, "新表恰十四类（防豁免空转）");
+    assert.ok(C.UNIT_KINDS.trans, "2026-07-31 新增的运输兵种应存在");
   });
 });
 

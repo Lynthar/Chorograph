@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
 import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
-import { unitFireKm, unitStatusAt } from "../src/core/units.ts";
+import { unitArm, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells } from "../src/core/grid.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
@@ -794,7 +794,7 @@ describe("部队编辑内核（战术图）", () => {
     assert.strictEqual(formatRanges([{ km: 3 }]), "射程：3", "缺名回退「射程」");
     assert.strictEqual(formatRanges(undefined), "");
   });
-  it("applyUnitForm：名称空则保留、兵种定默认军种、兵力×单位归一为人数、速度>0 才设否则删、火力单值+提交即归一旧多圈", () => {
+  it("applyUnitForm：名称空则保留、兵种定默认移动方式、兵力×单位归一为人数、速度>0 才设否则删、火力单值+提交即归一旧多圈", () => {
     const w = mkWorld({ factions: [{ id: "f1", 名称: "东军" }] });
     const u = addUnit(w, "旧名", 1, 1, 0, "u1");
     u.ranges = [{ 名称: "床弩", km: 2 }];   // v0.14 遗留多圈
@@ -802,7 +802,9 @@ describe("部队编辑内核（战术图）", () => {
     assert.strictEqual(u.名称, "新名");
     assert.strictEqual(u.faction, "f1");
     assert.strictEqual(u.kind, "navy");
-    assert.strictEqual(u.arm, "water", "军种缺省取兵种表");
+    /* 舰船的移动方式由本体决定（armOptional 之外）＝不落显式键，读数仍回落兵种表的水行 */
+    assert.ok(!("arm" in u), "不可选移动方式的兵种不落 arm 键");
+    assert.strictEqual(unitArm(u), "water", "读数回落兵种表");
     assert.strictEqual(u.strength, 30000, "兵力＝输入×单位倍率，落库恒为人数");
     assert.strictEqual(u.speed, 70);
     assert.strictEqual(u.range, 3, "火力=单值（与视野同机制）");
@@ -811,13 +813,29 @@ describe("部队编辑内核（战术图）", () => {
     applyUnitForm(u, { 名称: "", faction: "", kind: "spec", arm: "air", strength: "", speed: "0", range: "", note: "" });
     assert.strictEqual(u.名称, "新名", "名称留空=保留");
     assert.strictEqual(u.faction, null, "所属留空=中立");
-    assert.strictEqual(u.arm, "air", "军种可显式覆写——十一类无飞行档，飞行部队正由此入口保住");
+    assert.strictEqual(u.arm, "air", "特殊兵种的移动方式可显式覆写（armOptional 之内）");
     assert.ok(!("strength" in u), "兵力留空=删键");
     assert.ok(!("speed" in u), "速度≤0=删键（回退兵种默认）");
     assert.ok(!("range" in u), "火力留空=删键");
     applyUnitForm(u, { 名称: "", faction: "", kind: "lcav", strength: "800", speed: "", range: "", note: "" });
-    assert.strictEqual(u.arm, "land", "未传军种＝回落新兵种的默认（换兵种不留旧军种）");
+    assert.ok(!("arm" in u), "换成骑兵＝移动方式回落本体，旧的显式飞行必须清掉");
+    assert.strictEqual(unitArm(u), "land");
     assert.strictEqual(u.strength, 800, "单位缺省＝人");
+  });
+  /* 战略图的精简表单不渲染 士气/火力/视野/阵形 四行——未渲染的行**不传字段**（UnitForm 的 valOpt 返
+     undefined），applyUnitForm 才不会把手编档里的这些键当成「清空」删掉。空串＝清空、缺席＝不动，两义之别。 */
+  it("applyUnitForm：字段缺席＝不动那个键（战略图精简表单不误删士气/视野/阵形）", () => {
+    const w = mkWorld();
+    const u = addUnit(w, "军", 1, 1, 0, "u1");
+    u.morale = 70; u.vision = 5; u.frontKm = 2; u.depthKm = 0.4;
+    applyUnitForm(u, { 名称: "", faction: "", kind: "linf", strength: "900", speed: "", note: "" });
+    assert.strictEqual(u.morale, 70, "未传士气＝不动");
+    assert.strictEqual(u.vision, 5, "未传视野＝不动");
+    assert.strictEqual(u.frontKm, 2, "未传阵形＝不动");
+    assert.strictEqual(u.depthKm, 0.4);
+    applyUnitForm(u, { 名称: "", faction: "", kind: "linf", strength: "900", speed: "", note: "", morale: "", vision: "" });
+    assert.ok(!("morale" in u), "传空串＝清空");
+    assert.ok(!("vision" in u), "传空串＝清空");
   });
   it("unitFireKm：单值优先、旧多圈只读回退首条、无投射能力的兵种恒 0", () => {
     const w = mkWorld();

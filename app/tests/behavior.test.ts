@@ -2,7 +2,7 @@
   （历法进退位、时段区间开闭、投影可逆、地形确定性等）——平价测试防漂移，这里防"两边一起错"。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { calOf, cnDay, cnMonth, fmtShichen, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearForm, fromT, parseYMD, parseYearForm, tacT, yearSpanT, ymdOverflow } from "../src/core/calendar.ts";
+import { calOf, cnDay, cnMonth, fmtShichen, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearForm, fromT, monthsOf, parseYMD, parseYearForm, tacT, yearMonthOf, yearMonthT, yearSpanT, ymdOverflow } from "../src/core/calendar.ts";
 import { distKm, haversine, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm } from "../src/core/geometry.ts";
 import { genTerrainAt, seedTerrain } from "../src/core/terrain.ts";
@@ -12,7 +12,7 @@ import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
-import { EDGE_STYLE, LEGACY_KIND, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, certaintyStyle, flattenTerrain, nodeCatOf, terrainProps } from "../src/core/constants.ts";
+import { ARM_OPT_KINDS, EDGE_STYLE, LEGACY_KIND, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, nodeCatOf, terrainProps } from "../src/core/constants.ts";
 import { fmtStrength, parseStrength, unitInheritedAt, unitMoraleAt, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { wallTeeth } from "../src/render/edges.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
@@ -142,6 +142,41 @@ describe("历法·真实地球（earth：日戳=JDN，儒略≤1582-10-04/格里
     assert.strictEqual(fmtYear(calOf({ era: "天启" }), 88), "天启88");
     assert.strictEqual(parseYearForm(C, "3107.5"), 3107.5);   // custom 保 parseFloat 旧语义
     assert.strictEqual(parseYearForm(C, ""), null);
+  });
+  /* 战略图月粒度（2026-07-31）：年份取小数＝年 + (月-1)/月数。锁三件事——往返一致、
+     整年输出逐字不变（黄金基准）、**不落月格的任意小数年原样保全**（parseFloat 是 custom 的历史现状，
+     被月吸附即静默改值）。 */
+  it("战略图月粒度：年-月 往返、整年逐字不变、任意小数年原样保全", () => {
+    const C = calOf(), E = calOf({ kind: "earth" });
+    assert.strictEqual(monthsOf(C), 12);
+    assert.strictEqual(monthsOf(calOf({ months: 10, dpm: 36 })), 10, "custom 随历法配置");
+    const march = yearMonthT(C, 3107, 3);
+    assert.strictEqual(march, 3107 + 2 / 12);
+    assert.deepStrictEqual(yearMonthOf(C, march), { y: 3107, m: 3 });
+    assert.strictEqual(fmtYear(C, march), "SE3107·三月");
+    assert.strictEqual(fmtYear(C, march, true), "SE 3107·三月");
+    assert.strictEqual(fmtYearForm(C, march), "3107-3");
+    assert.strictEqual(parseYearForm(C, "3107-3"), march);
+    assert.strictEqual(parseYearForm(C, fmtYearForm(C, march)), march, "表单互逆");
+    /* 公元前（天文纪年）：-215 年 8 月＝-214.4167，floor 仍取回 -215 */
+    const bc8 = yearMonthT(E, -215, 8);
+    assert.deepStrictEqual(yearMonthOf(E, bc8), { y: -215, m: 8 });
+    assert.strictEqual(fmtYear(E, bc8), "公元前216年8月");
+    assert.strictEqual(fmtYearForm(E, bc8), "前216-8");
+    assert.strictEqual(parseYearForm(E, "前216-8"), bc8);
+    assert.strictEqual(parseYearForm(E, "1863-7"), 1863.5);
+    assert.strictEqual(fmtYear(E, 1863.5), "公元1863年7月");
+    // 整年＝旧输出逐字不变
+    assert.strictEqual(fmtYear(C, 3107), "SE3107");
+    assert.strictEqual(fmtYearForm(C, 3107), "3107");
+    assert.strictEqual(fmtYear(E, -215), "公元前216");
+    // ⚠ 不落月格的小数年：显示与回填都原样，不吸附到最近的月
+    assert.strictEqual(fmtYear(C, 3107.3), "SE3107.3");
+    assert.strictEqual(fmtYearForm(C, 3107.3), "3107.3");
+    assert.strictEqual(parseYearForm(C, "3107.5"), 3107.5, "小数点不是年月分隔符");
+    // 越界月＝解析不出（不静默进位到次年）
+    assert.strictEqual(parseYearForm(C, "3107-13"), null);
+    assert.strictEqual(parseYearForm(calOf({ months: 10, dpm: 36 }), "3107-11"), null);
   });
   it("yearSpanT：custom 与旧 y*dpy 一致；earth=当年 JDN 闭区间", () => {
     assert.deepStrictEqual(yearSpanT(calOf(), 3107), [3107 * 360, 3108 * 360 - 1]);
@@ -685,8 +720,8 @@ describe("战场表达（柱B）：微地物/工事线/主帅", () => {
     assert.deepStrictEqual(EDGE_STYLE.wall, { color: "#55504a", w: 2.8, 名: "工事" });
     assert.deepStrictEqual(UNIT_KINDS.cmd, { 名: "指挥", glyph: "帅", v: 60, arm: "land" });
   });
-  it("兵种换代：旧键全可解析、新表恰十三类、旧速度与军种由 normalizeWorld 就地保住", () => {
-    assert.strictEqual(Object.keys(UNIT_KINDS).length, 13);
+  it("兵种换代：旧键全可解析、新表恰十四类、旧速度与移动方式由 normalizeWorld 就地保住", () => {
+    assert.strictEqual(Object.keys(UNIT_KINDS).length, 14);
     for (const [old, lg] of Object.entries(LEGACY_KIND)) {
       assert.ok(UNIT_KINDS[lg.to], `旧兵种「${old}」的迁移目标「${lg.to}」须在新表里`);
       assert.ok(!UNIT_KINDS[old], `旧键「${old}」不该同时留在新表里——否则迁移永不触发`);
@@ -696,6 +731,17 @@ describe("战场表达（柱B）：微地物/工事线/主帅", () => {
     const w = normalizeWorld({ meta: {}, units: [{ id: "a", kind: "mage" }, { id: "b", kind: "cav" }, { id: "c", kind: "air" }] });
     assert.deepStrictEqual(w.units.map(u => [u.kind, u.speed, u.arm]),
       [["spec", 150, "air"], ["lcav", undefined, "land"], ["air", undefined, "air"]]);
+  });
+  /* 移动方式（旧称军种）只对编制上真有陆运/水运/空运之分的兵种可选（2026-07-31 用户点单）：
+     判据只在 armOptional 一处——表单显隐与 applyUnitForm 的删键同走它，漏一个即「换了兵种却留着
+     够不着又相矛盾的水行」。 */
+  it("移动方式可选集：骑兵/舰船等由本体决定不给选项，后勤/运输/侦察/特殊/指挥才可另择", () => {
+    for (const k of ARM_OPT_KINDS) assert.ok(UNIT_KINDS[k], `可选集里的「${k}」须是真兵种`);
+    for (const k of ["log", "trans", "scout", "spec", "cmd"]) assert.strictEqual(armOptional(k), true, k);
+    for (const k of ["linf", "hinf", "lcav", "hcav", "rng", "comb", "siege", "navy", "air"])
+      assert.strictEqual(armOptional(k), false, `${k} 的移动方式由本体决定`);
+    assert.strictEqual(armOptional("未知兵种"), false);
+    assert.deepStrictEqual(UNIT_KINDS.trans, { 名: "运输", glyph: "▤", v: 20, arm: "land", noFire: true });
   });
   it("逐航点存量：兵力/速度/士气自该航点起生效，未声明＝沿用而非回默认", () => {
     const u = {
@@ -872,16 +918,18 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
   });
   it("layerOn：tacOnly 层在非战术图上一律不画（层面板没有它们的行＝用户关不掉）", () => {
     const tacM = { mapKind: "tactical" } as const, strM = {};
-    for (const id of ["units", "trails", "ranges", "vision"]) {
+    /* ⚠ units 2026-07-31 起**不再** tacOnly（战略图可摆基础部队）；战场尺度的三层仍是战术图专属 */
+    for (const id of ["trails", "ranges", "vision"]) {
       assert.strictEqual(layerOn({}, strM, id), false, `${id} 在战略图上不该画`);
       assert.strictEqual(layerOn({}, tacM, id), true, `${id} 在战术图上缺省开`);
       assert.strictEqual(layerOn({ [id]: false }, tacM, id), false, "战术图上开关照旧生效");
     }
-    for (const id of ["nodes", "road", "wall", "arrows", "events"]) {   // 非 tacOnly：两种图一视同仁
+    for (const id of ["nodes", "road", "wall", "arrows", "events", "units"]) {   // 非 tacOnly：两种图一视同仁
       assert.strictEqual(layerOn({}, strM, id), true);
       assert.strictEqual(layerOn({ [id]: false }, strM, id), false);
     }
-    assert.strictEqual(layerOn(undefined, undefined, "units"), false, "无 meta＝非战术图");
+    assert.strictEqual(layerOn(undefined, undefined, "trails"), false, "无 meta＝非战术图");
+    assert.strictEqual(layerOn(undefined, undefined, "units"), true, "部队层不再是战术图专属");
   });
   it("pinnedStackH：屏幕角标注堆的占高（出图图例据此让开 se）", () => {
     const T = 3107;

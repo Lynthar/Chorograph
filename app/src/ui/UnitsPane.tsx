@@ -1,7 +1,8 @@
-/* 军面 · 部队列表：战术图列全部部队——兵种徽章（派系色）+ 名称 + 兵力·速度；
+/* 军面 · 部队列表：列全部部队——兵种徽章（派系色）+ 名称 + 兵力·速度；
    点击＝选中（检查器出卡）并飞到当前时刻位置。「＋ 新增部队」＝先入列表（未入场，track 空），
    在检查器改名设属性，再按住列表项拖到地图放置（HTML5 DnD→画布 drop 落首航点）；画布点击恒为选择。
-   ⚠超速标记只在选中部队的检查器卡里给出（可达性预算只算选中部队，见 boot 的 unitLegs effect）。 */
+   战略图（2026-07-31 起可摆基础部队）走同一套流程，只是时刻粒度为年/月、属性只到基础五项。
+   ⚠超速标记只在选中部队的检查器卡里给出（可达性预算只算选中部队且只在战术图算，见 orchestrate 的编排 effect）。 */
 import { fmtStrength, unitKind, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../core/units.ts";
 import { addUnitUnplaced } from "./editops.ts";
 import { flyReqSig, isTacSig, mutateWorld, selSig, showToast, worldSig, yearSig } from "./state.ts";
@@ -11,12 +12,6 @@ export function UnitsPane() {
   const tac = isTacSig.value;
   const sel = selSig.value;
   const T = yearSig.value;
-  if (!tac) {
-    return (
-      <div class="empty"><span class="ph">军</span><b>部队为战术图专属</b>
-        <p>打开某场战役的战术图后，部队在此列出（战役事件卡 →「⚔ 打开战术图」）。</p></div>
-    );
-  }
   const units = world.units || [];
   return (
     <>
@@ -30,7 +25,7 @@ export function UnitsPane() {
           }}>＋ 新增部队</button></div>
       {units.length === 0 && (
         <div class="empty"><span class="ph">军</span><b>还没有部队</b>
-          <p>点上方「＋ 新增部队」先入列表（未入场），再按住列表项<b>拖到地图上</b>放置；按住图上部队拖动＝记录当日位置（先把时间轴拖到目标日）。</p></div>
+          <p>点上方「＋ 新增部队」先入列表（未入场），再按住列表项<b>拖到地图上</b>放置；按住图上部队拖动＝记录{tac ? "当日" : "当年"}位置（先把时间轴拖到目标{tac ? "日" : "年"}）。</p></div>
       )}
       {units.length > 0 && (
         <div class="rows">
@@ -63,7 +58,9 @@ export function UnitsPane() {
           })}
         </div>
       )}
-      <div class="hint">航点 track＝[{"{"}日t, 经, 纬, 状态{"}"}] · 位置按航点<b>插值回放</b> · 选中后可拖圈上手柄调火力/视野 · <b>Shift+拖</b>＝框选部队</div>
+      <div class="hint">{tac
+        ? <>航点 track＝[{"{"}日t, 经, 纬, 状态{"}"}] · 位置按航点<b>插值回放</b> · 选中后可拖圈上手柄调火力/视野 · <b>Shift+拖</b>＝框选部队</>
+        : <>航点 track＝[{"{"}年t, 经, 纬{"}"}] · 位置按航点<b>插值回放</b>（多个年份＝军团逐年推进）· <b>Shift+拖</b>＝框选部队</>}</div>
     </>
   );
 }

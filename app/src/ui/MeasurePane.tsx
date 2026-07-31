@@ -1,6 +1,6 @@
 /* 测面 · 量距/行军读数：语义同旧 Measure/Route——
    量距=逐段大圆/平面直线累计；行军=A* 当年道路与地形、各速度档耗时、沿途地形拆分、途经。
-   无路径错误就地（朱框）并给两条出路：换军种 / 去涂地形。 */
+   无路径错误就地（朱框）并给两条出路：换移动方式 / 去涂地形。 */
 import { SPEEDS, terrainProps } from "../core/constants.ts";
 import { distKm } from "../core/geo.ts";
 import { measureLegs } from "../core/route.ts";
@@ -54,7 +54,7 @@ function Route({ meta }: { meta: Meta }) {
       {busy && <div class="hint">算路中…</div>}
       {!busy && res && res.fail && (
         <>
-          <div class="err"><b>该军种无可行路径。</b>水/山阻隔？换军种，或用「绘 → 形」涂通一条地形。</div>
+          <div class="err"><b>该移动方式无可行路径。</b>水/山阻隔？换移动方式，或用「绘 → 形」涂通一条地形。</div>
           <div style={{ display: "flex", gap: "5px" }}>
             {arm !== "land" && <button class="ghostbt tr" onClick={() => { armSig.value = "land"; }}>换 陆军</button>}
             <button class="ghostbt tr" onClick={() => { setRailTool("draw"); editSubSig.value = "terrain"; }}>去涂地形</button>
@@ -88,7 +88,7 @@ function Route({ meta }: { meta: Meta }) {
         );
       })()}
       {pts.length > 0 && <button class="ghostbt tr" onClick={() => { routePtsSig.value = []; }}>清除重来</button>}
-      <div class="hint">点地图上两处（优先吸附到地点）· 军种决定可否翻山/渡水/直飞</div>
+      <div class="hint">点地图上两处（优先吸附到地点）· 移动方式决定可否翻山/渡水/直飞</div>
     </>
   );
 }

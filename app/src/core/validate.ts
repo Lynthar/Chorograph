@@ -151,7 +151,7 @@ export function validateWorld(w: unknown): ValidateResult {
   (Array.isArray(o.units) ? (o.units as Record<string, unknown>[]) : []).forEach((u, i) => {
     const p = `units[${i}]`;
     const uk = (LEGACY_KIND as Record<string, { to: string }>)[String(u.kind)];
-    if (u.kind != null && !uk && !(String(u.kind) in UNIT_KINDS)) W(`${p}.kind`, `未知兵种「${String(u.kind)}」（军种按陆军处理）`);
+    if (u.kind != null && !uk && !(String(u.kind) in UNIT_KINDS)) W(`${p}.kind`, `未知兵种「${String(u.kind)}」（移动方式按陆行处理）`);
     /* 兵力已是数值字段：非数值的旧文本照常打开，但要说清它会被 normalizeWorld 挪走（同上「会补齐/改写的」之级） */
     if (u.strength != null && String(u.strength).trim() && parseStrength(u.strength) == null)
       W(`${p}.strength`, `兵力「${String(u.strength).trim()}」不是数值，将移入「说明」`);

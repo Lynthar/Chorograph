@@ -234,23 +234,27 @@ const fmtDur = (d: number): string => d >= 1 - 1e-9 ? `${+d.toFixed(1)}日` : `$
 /** 航点动向（沿旧行内编辑语义：坐标数字栏/状态选择/删航点；editable=编辑态） */
 function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
   const world = worldSig.value!;
+  const tac = isTacSig.value;
   const cal = calOf((world.meta || {}).calendar);
   const legs = unitLegsSig.value.get(u.id) || [];
   const track = u.track || [];
   const foot = unitFootKm(u);
   const inh = (i: number, key: "strength" | "speed" | "morale") => unitInheritedAt(u, i, key);
+  /* 战场尺度的逐航点控件（坐标微调/状态/朝向/逐航点存量）只在战术图出——战略图的部队是基础摆件，
+     动向只保留「看得见的年份+位置」与删除（误记一笔总得能清掉，改写则直接再拖一次）。 */
+  const full = editable && tac;
   return (
     <>
       <div class="sec" style={{ marginTop: "4px" }}>动向<span class="cnt">{track.length} 航点</span></div>
-      {track.length === 0 && <div class="sub">（尚无航点——拖动部队即记录当日位置）</div>}
+      {track.length === 0 && <div class="sub">（尚无航点——拖动部队即记录{tac ? "当日" : "当年"}位置）</div>}
       {track.map((q, i) => {
         const L = legs.find(g => g.i === i);
         const setPt = (lon: number, lat: number) => { mutateWorld(w => { setUnitWaypoint(w, u.id, q.t, lon, lat); }); };
         return (
           <div key={i} class="kv">
             {/* .time＝这一条 .link 确实把时间轴拨到该时刻,是金的正当用处（其余 .link 已退回墨色） */}
-            <button type="button" class="link time" onClick={() => { yearSig.value = q.t; }}>{fmtT(cal, q.t)}</button>
-            {editable ? <>{" "}
+            <button type="button" class="link time" onClick={() => { yearSig.value = q.t; }}>{fmtWhen(cal, tac, q.t)}</button>
+            {full ? <>{" "}
               <input class="fld" type="number" step={0.0001} title="经度°" key={i + ":lon" + q.lon}
                 style={{ width: "5.4em", display: "inline-block", padding: "1px 3px", margin: 0 }}
                 defaultValue={String(q.lon)}
@@ -260,7 +264,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
                 defaultValue={String(q.lat)}
                 onChange={e => { const v = parseFloat((e.currentTarget as HTMLInputElement).value); if (isFinite(v)) setPt(q.lon, v); }} />
             </> : <> · {q.lon}°, {q.lat}°</>}
-            {editable ? <>{" "}
+            {full ? <>{" "}
               <select class="fld" title="自该航点起的状态（到下一航点为止）" key={i + ":st" + (q.st || "")}
                 style={{ width: "4.4em", display: "inline-block", padding: "1px 2px", margin: 0 }}
                 onChange={e => { const v = (e.currentTarget as HTMLSelectElement).value; mutateWorld(w => { setUnitWaypointStatus(w, u.id, q.t, v); }); }}>
@@ -269,7 +273,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
               </select>
             </> : (q.st && UNIT_STATUS[q.st] ? <> <span class="tg" style={{ background: UNIT_STATUS[q.st].color, padding: "1px 6px" }}>{UNIT_STATUS[q.st].名}</span></> : null)}
             {/* 朝向（柱B）：只在有足印时露面——无阵位条时填了也看不出来 */}
-            {foot && (editable
+            {foot && (full
               ? <>{" "}
                 <input class="fld" type="number" min={0} max={359} step={1} title="朝向°（0=正北顺时针；留空＝行进方向）" key={i + ":fc" + (q.facing ?? "")}
                   style={{ width: "3.8em", display: "inline-block", padding: "1px 3px", margin: 0 }}
@@ -282,7 +286,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
             {/* 逐航点存量：兵力/速度/士气自该航点起生效。⚠ 留空＝「没变」而非回默认，故占位符显示的是
                 「此刻实际生效的值」——沿用上一次声明或部队级基线，所见即留空后的结果。另起一行是因为
                 主行已排到删钮，六个控件挤一行会把日期与腿账压没。 */}
-            {editable && <div class="sub" style={{ paddingLeft: "2px", marginTop: "2px" }}>
+            {full && <div class="sub" style={{ paddingLeft: "2px", marginTop: "2px" }}>
               {([["strength", "兵力", "人", inh(i, "strength")], ["speed", "速度", "km/日", inh(i, "speed")],
                  ["morale", "士气", "0–100", inh(i, "morale")]] as const).map(([key, 名, unit, cur]) => (
                 <span key={key} style={{ marginRight: "6px", whiteSpace: "nowrap" }}>{名}{" "}
@@ -303,6 +307,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
 
 function UnitCard({ u, world }: { u: Unit; world: World }) {
   const T = yearSig.value;
+  const tac = isTacSig.value;
   const cal = calOf((world.meta || {}).calendar);
   const k = unitKind(u);
   const f = u.faction ? world.factions.find(x => x.id === u.faction) : null;
@@ -328,7 +333,7 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
         {strength && <><b>兵力</b><span class="num">{strength}</span></>}
         {morale != null && <><b>士气</b><span class="num">{morale} / 100</span></>}
         <b>速度</b><span class="num">{unitSpeedAt(u, T)} km/日 · {ARM_NAME[unitArm(u)] || "陆行"}</span>
-        <b>当前({fmtT(cal, T)})</b><span class="num">{p ? `${p.lon.toFixed(3)}° · ${p.lat.toFixed(3)}°` : "未入场 / 已离场"}</span>
+        <b>当前({fmtWhen(cal, tac, T)})</b><span class="num">{p ? `${p.lon.toFixed(3)}° · ${p.lat.toFixed(3)}°` : "未入场 / 已离场"}</span>
         {unitFireKm(u) > 0 && <><b>火力圈</b><span class="num">{unitFireKm(u)} km</span></>}
         {typeof u.vision === "number" && u.vision > 0 && <><b>视野圈</b><span class="num">{u.vision} km</span></>}
         {(() => { const ft = unitFootKm(u); return ft
@@ -338,7 +343,7 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
       {bad.length > 0 && <div class="err">⚠ {bad.length} 段行程超出速度上限——拉长间隔天数、绕开险地或调整速度（超速段在图上标红）</div>}
       <TrackList u={u} editable={false} />
       {typeof u.note === "string" && u.note && <div class="sub" style={{ lineHeight: 1.7 }}>{u.note}</div>}
-      <div class="hint">切到「军」工具（4）后，图上拖<b>右手柄</b>调火力圈、<b>左手柄</b>调视野圈（一次拖动＝一步撤销）</div>
+      {tac && <div class="hint">切到「军」工具（4）后，图上拖<b>右手柄</b>调火力圈、<b>左手柄</b>调视野圈（一次拖动＝一步撤销）</div>}
       <div class="in-actions">
         <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑部队</button>
         <button class="bt danger-ghost tr" onClick={del}>删除部队</button>
