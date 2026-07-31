@@ -368,14 +368,14 @@ export const newUnitId = (): string => "u" + Date.now().toString(36) + Math.floo
 
 /** 新建未入场部队（track 空＝不在图上）：军面板「＋ 新增部队」用——先入列表改名设属性，再从列表拖入地图落首航点 */
 export function addUnitUnplaced(w: World, 名称: string, id = newUnitId()): Unit {
-  const u: Unit = { id, 名称, faction: null, kind: "inf", arm: "land", strength: "", track: [] };
+  const u: Unit = { id, 名称, faction: null, kind: "linf", arm: "land", track: [] };
   (w.units || (w.units = [])).push(u);
   return u;
 }
 
 /** 新建部队：默认步兵、track 首航点=当日 T（对齐旧 addUnitAt；名称由外壳 prompt 后传入） */
 export function addUnit(w: World, 名称: string, lon: number, lat: number, T: number, id = newUnitId()): Unit {
-  const u: Unit = { id, 名称, faction: null, kind: "inf", arm: "land", strength: "",
+  const u: Unit = { id, 名称, faction: null, kind: "linf", arm: "land",
     track: [{ t: +T, lon: +(+lon).toFixed(4), lat: +(+lat).toFixed(4) }] };
   (w.units || (w.units = [])).push(u);
   return u;
@@ -422,6 +422,21 @@ export function setUnitWaypointFacing(w: World, id: string, t: number, deg: stri
   return true;
 }
 
+/** 设/清某日航点的存量（兵力/速度/士气；空或非法=删键回落到上一次声明或部队级基线）。
+    ⚠ 与 st/facing 不同，这三样缺省＝「没变」而非「回默认」——回溯语义在 core 的 unitStrengthAt 一族里，
+    这里只管落键：兵力/速度须 >0，士气收 0–100（0＝崩溃是有意义的值，不能当空处理）。 */
+export function setUnitWaypointNum(w: World, id: string, t: number, key: "strength" | "speed" | "morale", raw: string): boolean {
+  const u = (w.units || []).find(x => x.id === id);
+  const p = u && (u.track || []).find(q => q.t === +t);
+  if (!p) return false;
+  const v = parseFloat(raw);
+  if (!isFinite(v)) { delete p[key]; return true; }
+  if (key === "morale") p.morale = Math.min(100, Math.max(0, Math.round(v)));
+  else if (v > 0) p[key] = key === "strength" ? Math.round(v) : v;
+  else delete p[key];
+  return true;
+}
+
 /* —— 视野/火力圈半径（拖动手柄调节）——半径按量级取整（≥100km 整数、≥10 一位小数、再小两位）。 */
 const roundKm = (km: number): number => km >= 100 ? Math.round(km) : km >= 10 ? +km.toFixed(1) : +km.toFixed(2);
 
@@ -458,16 +473,27 @@ export function formatRanges(ranges: { 名称?: string; km: number }[] | undefin
 
 /** 部队表单一次提交（旧 uf_save 语义：名称空则保留、速度>0 才设否则删；火力/视野同机制：>0 才设否则删。
     提交火力时一并清掉旧多圈 ranges（归一为单值 range；旧档只读回退在渲染层）。 */
-export interface UnitFormValues { 名称: string; faction: string; kind: string; strength: string; speed: string; note: string; range?: string; vision?: string; frontKm?: string; depthKm?: string }
+export interface UnitFormValues { 名称: string; faction: string; kind: string; arm?: string; strength: string; strengthUnit?: string; speed: string; morale?: string; note: string; range?: string; vision?: string; frontKm?: string; depthKm?: string }
 export function applyUnitForm(u: Unit, v: UnitFormValues): void {
   if (v.名称) u.名称 = v.名称;
   u.faction = v.faction || null;
   u.kind = v.kind;
-  u.arm = ((UNIT_KINDS[u.kind] || {}).arm || "land") as Arm;
-  u.strength = v.strength.trim();
+  /* 军种：缺省取兵种表，表单可显式覆写——十一类兵种里没有飞行档，飞行部队正由此入口保住（unitArm 以 u.arm 优先） */
+  const kindArm = ((UNIT_KINDS[u.kind] || {}).arm || "land") as Arm;
+  u.arm = (v.arm === "land" || v.arm === "water" || v.arm === "air") ? v.arm : kindArm;
+  /* 兵力＝「人」数值单值：输入 × 单位倍率（人/千/万）后取整（人数无小数），>0 才存否则删键（同速度/火力之规） */
+  const sv = parseFloat(v.strength) * Math.max(1, parseFloat(v.strengthUnit || "1") || 1);
+  if (isFinite(sv) && sv > 0) u.strength = Math.round(sv); else delete u.strength;
   const spv = parseFloat(v.speed);
   if (spv > 0) u.speed = spv; else delete u.speed;
-  if (v.range !== undefined) {
+  /* 士气 0–100：0＝崩溃是有意义的值，故判据是 isFinite 而非 >0；空/非法＝删键（未记录） */
+  if (v.morale !== undefined) {
+    const mv = parseFloat(v.morale);
+    if (isFinite(mv)) u.morale = Math.min(100, Math.max(0, Math.round(mv))); else delete u.morale;
+  }
+  /* 火力：无投射能力的兵种连表单行都不出，故提交即清键——否则换成步兵后留着个够不着又不生效的半径 */
+  if ((UNIT_KINDS[u.kind] || {}).noFire) { delete u.range; delete u.ranges; }
+  else if (v.range !== undefined) {
     const rk = parseFloat(v.range);
     if (rk > 0) u.range = rk; else delete u.range;
     delete u.ranges;   // 表单保存即归一（旧多圈并入单值）
@@ -486,7 +512,7 @@ export function changeUnitKind(u: Unit, kind: string): void {
 }
 
 /** 兵种默认速度（表单占位/展示用；unitKind 已导出于 core） */
-export function unitKindDefaultSpeed(u: Unit): number { return (unitKind(u) || UNIT_KINDS.inf).v; }
+export function unitKindDefaultSpeed(u: Unit): number { return (unitKind(u) || UNIT_KINDS.linf).v; }
 
 /* —— 相位（战术图分帧命名时刻;meta.phases 纯书签,时间为基底）—— */
 

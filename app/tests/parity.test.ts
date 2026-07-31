@@ -88,8 +88,18 @@ describe("常量与旧实现深度一致", () => {
     assert.ok(C.EDGE_STYLE.wall, "柱B 工事线型应存在（防豁免空转）");
     assert.strictEqual(C.RIVER_TMPL, g.RIVER_TMPL);
     assert.deepStrictEqual(C.SPEEDS, g.SPEEDS);
-    assert.deepStrictEqual(stripKeys(C.UNIT_KINDS, ["cmd"]), g.UNIT_KINDS);
-    assert.ok(C.UNIT_KINDS.cmd, "柱B 主帅兵种应存在（防豁免空转）");
+    /* UNIT_KINDS：2026-07-30 整表换代为通用十一类（用户点单）＝对黄金基准的 sanctioned 偏离。
+       逐位比对换成「每个旧键仍解析得到，且速度档与军种一分不差」——换表唯一不能破的是旧档的行军账房。
+       ⚠ 映射在此**另写一份**字面表，与 constants 的 LEGACY_KIND 互为对证（同表自证等于没测）。 */
+    const UP: Record<string, string> = { inf: "linf", cav: "lcav", bow: "rng", sup: "log", mage: "spec" };   // air 原样存活＝旧「飞舟」即新「飞行部队」
+    for (const [old, gk] of Object.entries(g.UNIT_KINDS as Record<string, { v: number; arm: string }>)) {
+      const to = UP[old] || old, lg = C.LEGACY_KIND[old];
+      assert.ok(C.UNIT_KINDS[to], `旧兵种「${old}」应解析到新表的「${to}」`);
+      assert.strictEqual(lg ? lg.to : old, to, `旧兵种「${old}」的迁移目标`);
+      assert.strictEqual(lg ? lg.v : C.UNIT_KINDS[to].v, gk.v, `旧兵种「${old}」速度档须保住`);
+      assert.strictEqual(lg ? lg.arm : C.UNIT_KINDS[to].arm, gk.arm, `旧兵种「${old}」军种须保住`);
+    }
+    assert.strictEqual(Object.keys(C.UNIT_KINDS).length, 13, "新表恰十三类（防豁免空转）");
   });
 });
 
@@ -243,8 +253,22 @@ describe("相机操作一致", () => {
 describe("世界规范化/构造一致", () => {
   const g = golden.world;
   it("normalizeWorld（缺字段补齐 / 旧类型升级 / v0.9 events 迁移）", () => {
-    for (const c of g.normalize)
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(normalizeWorld(clone(c.input)))), c.output);
+    /* 2026-07-30 兵种换代：normalizeWorld 现把旧兵种键就地升级（同 LEGACY_TYPE 之例），旧速度/军种与
+       新键不同者落成显式键。golden 侧期望按**另写的**字面映射改造，其余任何漂移照红。 */
+    const UP: Record<string, { kind: string; speed?: number }> = {
+      inf: { kind: "linf" }, cav: { kind: "lcav" }, bow: { kind: "rng" },
+      sup: { kind: "log" }, mage: { kind: "spec", speed: 150 }   // air 原样存活，不在迁移表内
+    };
+    for (const c of g.normalize) {
+      const want = clone(c.output) as { units?: Record<string, unknown>[] };
+      (want.units || []).forEach(u => {
+        const up = UP[String(u.kind)];
+        if (!up) return;
+        u.kind = up.kind;
+        if (up.speed != null && !(+(u.speed as number) > 0)) u.speed = up.speed;
+      });
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(normalizeWorld(clone(c.input)))), want);
+    }
   });
   it("blankWorld（更新 字段以占位日期锁定其余全部）", () => {
     for (const c of g.blank)
@@ -313,7 +337,10 @@ describe("寻路/行军/时间轴范围一致", () => {
   it("unitLegs（骑兵超速/水师回退直线/飞舟/零间隔）", () => {
     const G: any = grids.R;
     for (const c of R.unitLegs) {
-      const u = { id: c.id, kind: c.kind, speed: c.speed, track: clone(c.track) };
+      /* 2026-07-30 兵种换代：夹具用的是旧兵种键，而旧档进画布必经 normalizeWorld 升级——这里就走那条真实路径。
+         断言仍是腿账逐位一致，即「换表不动行军账房」这条硬承诺（改写期望反而测不出它）。 */
+      const raw = { id: c.id, kind: c.kind, speed: c.speed, track: clone(c.track) };
+      const u = normalizeWorld({ meta: {}, units: [raw] }).units[0];
       assert.deepStrictEqual(JSON.parse(JSON.stringify(unitLegs(G.meta, G.grid, G.roads, u as never))), c.legs, c.id);
     }
   });

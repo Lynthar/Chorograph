@@ -24176,7 +24176,8 @@
      "facing": 90,
      "st": "battle"
     }
-   ]
+   ],
+   "arm": "land"
   },
   {
    "id": "u_qin_cmd1",
@@ -24196,7 +24197,8 @@
      "lon": 112.845,
      "lat": 35.815
     }
-   ]
+   ],
+   "arm": "land"
   },
   {
    "id": "u_qin_cmd2",
@@ -24217,7 +24219,8 @@
      "lon": 112.85,
      "lat": 35.815
     }
-   ]
+   ],
+   "arm": "land"
   },
   {
    "id": "u_qin_qi",
@@ -24257,7 +24260,8 @@
      "facing": 180,
      "st": "battle"
     }
-   ]
+   ],
+   "arm": "land"
   },
   {
    "id": "u_qin_cav",
@@ -24290,7 +24294,8 @@
      "facing": 45,
      "st": "battle"
     }
-   ]
+   ],
+   "arm": "land"
   },
   {
    "id": "u_qin_henei",
@@ -24315,7 +24320,8 @@
      "facing": 0,
      "st": "standoff"
     }
-   ]
+   ],
+   "arm": "land"
   },
   {
    "id": "u_zhao_main",
@@ -24389,7 +24395,8 @@
      "facing": 270,
      "st": "rout"
     }
-   ]
+   ],
+   "arm": "land"
   },
   {
    "id": "u_zhao_lei",
@@ -24423,7 +24430,8 @@
      "facing": 270,
      "st": "rout"
     }
-   ]
+   ],
+   "arm": "land"
   },
   {
    "id": "u_zhao_cmd1",
@@ -24444,7 +24452,8 @@
      "lon": 112.965,
      "lat": 35.845
     }
-   ]
+   ],
+   "arm": "land"
   },
   {
    "id": "u_zhao_cmd2",
@@ -24471,7 +24480,8 @@
      "lat": 35.858,
      "st": "rout"
     }
-   ]
+   ],
+   "arm": "land"
   }
  ]
 }

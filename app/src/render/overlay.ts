@@ -2,6 +2,7 @@
    地点·标签·标注 nodes / 部队 units / 生态·布景 decor），本文件只留 编排 + 画布 chrome
    （经纬网/比例尺/图名）；拆出的域文件与拾取（pick.ts）经此门面再导出——外部 import 面不变。
    数百要素直绘足够；万级批量与空间索引在 后段定案。 */
+import { LAYERS } from "../core/constants.ts";
 import { project, unproject, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { distKm, kmPerDegLat, toRad, wrapLon } from "../core/geo.ts";
 import { calOf, fmtT, fmtYear } from "../core/calendar.ts";
@@ -19,7 +20,18 @@ import type { Meta, World, WorldNode } from "../core/types.ts";
 /* 门面再导出（拆层不改调用点）：绘制单线 drawOp 供画线预览（frame），拾取全家（pointer） */
 export { drawOp } from "./edges.ts";
 export { pickEdge, pickOp, pickNode, nodesInBox } from "./pick.ts";
+export { pinnedStackH } from "./nodes.ts";   // 出图图例让开 se 屏幕角标注（library.composeFrame）
 export type { NodeGateOpts } from "./nodes.ts";
+
+/** 战术图专属层 id（tacOnly 的唯一消费点，与 LayersPane 的「战术」小签同源于 LAYERS） */
+const TAC_ONLY = new Set(LAYERS.filter(l => l.tacOnly).map(l => l.id));
+/** 图层是否该画：开关（缺省=开）× tacOnly 门。tacOnly 层在非战术图上一律不画——
+    层面板不显示它们的行＝用户关不掉，若某张战略图的存档带了 units[]/node.ranges，
+    就会画出关不掉的兵棋。与 pointer 的 unitPickable() 同义＝拾取绘制同源。 */
+export function layerOn(layers: Record<string, boolean> | undefined, meta: Meta | undefined, id: string): boolean {
+  if ((layers || {})[id] === false) return false;
+  return (meta || {}).mapKind === "tactical" || !TAC_ONLY.has(id);
+}
 
 export interface OverlayOpts {
   layers?: Record<string, boolean>;   // 图层开关（缺省=开；键同 LAYERS.id）
@@ -42,7 +54,7 @@ export function drawOverlay(
   world: World, yearNow: number, dpr: number, opts: OverlayOpts = {}
 ): void {
   const L = opts.layers || {};
-  const on = (id: string) => L[id] !== false;
+  const on = (id: string) => layerOn(L, meta, id);   // 开关 × tacOnly 门（判据见 layerOn）
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   ctx.save(); ctx.scale(dpr, dpr);
   /* try/finally：任一绘制域抛异常也须归位画布状态——否则下帧 save+scale 在残留变换上复利，

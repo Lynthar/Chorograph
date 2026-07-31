@@ -101,6 +101,25 @@ export const NODE_TYPES = Object.keys(NODE_STYLE);
 /* 旧类型迁移（旧存档/导入自动升级） */
 export const LEGACY_TYPE: Record<string, string> = { vassalseat: "major", prefecture: "major", sect: "special", ruin: "special", region: "special" };
 
+/* 地点四类（2026-07-30）：16 个可落点类型平铺成一排 chips 认不过来，改为「落点选类别 → 表单选具体型」。
+   ⚠ 另立一张表而不给 NODE_STYLE 加字段——NODE_STYLE 是平价锁定的逐位比对对象。
+   归类按本体：港口是有人住的城＝定居；隘口在中文语境里基本就是关隘＝军事；渡口是天然渡河点＝自然；
+   桥梁是人造物且不属前三类＝特殊（「特殊」按定义就是兜底类）。事件点/标注不入四类：
+   二者各有专属入口（表单「▽ 在此地新增事件点」/「注」子工具），身份不该在类型下拉里随手换掉。
+   def=该类默认型（落点即用它；定居点=city 保住旧缺省行为逐位）。 */
+export const NODE_CATS: Record<string, { 名: string; def: string; types: string[] }> = {
+  settle:   { 名: "定居点", def: "city", types: ["capital", "major", "city", "town", "village", "manor", "port"] },
+  military: { 名: "军事地点", def: "fortress", types: ["fortress", "camp", "pass"] },
+  nature:   { 名: "自然地点", def: "summit", types: ["summit", "ford", "resource"] },
+  special:  { 名: "特殊地点", def: "special", types: ["special", "site", "bridge"] }
+};
+export const NODE_CAT_ORDER = ["settle", "military", "nature", "special"];
+/** 类型反查类别；事件点/标注与未知类型返回 null（调用方据此回退到全量下拉） */
+export function nodeCatOf(type: string | undefined): string | null {
+  for (const k of NODE_CAT_ORDER) if (NODE_CATS[k].types.includes(String(type))) return k;
+  return null;
+}
+
 /* 事件点子类型：只有"战役"带 对阵/结果/作战线 */
 export const EVENT_TYPES: Record<string, { 名: string; sym: string }> = {
   battle:   { 名: "战役", sym: "⚔" },
@@ -193,19 +212,41 @@ export const UNIT_STATUS: Record<string, { 名: string; color: string }> = {
   rout:     { 名: "溃退", color: "#556270" }
 };
 
-/* 兵棋部队兵种预设（符号/默认速度/军种） */
-export const UNIT_KINDS: Record<string, { 名: string; glyph: string; v: number; arm: Arm }> = {
-  inf:   { 名: "步兵", glyph: "✕", v: 30, arm: "land" },
-  cav:   { 名: "骑兵", glyph: "╱", v: 60, arm: "land" },
-  bow:   { 名: "弓弩", glyph: "⌒", v: 30, arm: "land" },
-  siege: { 名: "器械/攻城", glyph: "◎", v: 15, arm: "land" },
-  sup:   { 名: "辎重", glyph: "▭", v: 20, arm: "land" },
-  navy:  { 名: "水师", glyph: "≈", v: 35, arm: "water" },
-  air:   { 名: "飞舟", glyph: "▲", v: 200, arm: "air" },
-  mage:  { 名: "修士", glyph: "✦", v: 150, arm: "air" },
-  scout: { 名: "斥候", glyph: "◇", v: 75, arm: "land" },
-  /* 主帅（2026-07 特化柱B，additive）：glyph 用汉字——单位框字形走 system-ui 粗体，跨平台恒定不入 emoji 摇摆 */
-  cmd:   { 名: "主帅", glyph: "帅", v: 60, arm: "land" }
+/* 兵棋部队兵种预设（符号/默认速度/军种）。
+   2026-07-30 整表换代为通用十三类。表的次序即表单下拉次序：陆战主力（轻重步/轻重骑）→ 远程 → 后勤 →
+   非陆行（舰船/飞行）→ 侦察 → 重型装备 → 兜底三档（合成/特殊/指挥）。字形沿北约兵棋式几何符号、
+   轻重成对（✕⊠、╱╳）；「帅」用汉字是既定理由：单位框字形走 system-ui 粗体，汉字跨平台恒定、
+   不入 emoji 表现摇摆。⚠ 军种只是**默认值**——Unit.arm 可在表单显式覆写且优先（unitArm）。
+   `noFire` = 该兵种无远程投射能力（步/骑/后勤/侦察），火力圈对它们一律不成立：判据收在 unitFireKm
+   一处，渲染/拾取/手柄/图例/表单全部随之，别在消费端各写一份。 */
+export const UNIT_KINDS: Record<string, { 名: string; glyph: string; v: number; arm: Arm; noFire?: boolean }> = {
+  linf:  { 名: "轻步兵", glyph: "✕", v: 30, arm: "land", noFire: true },
+  hinf:  { 名: "重步兵", glyph: "⊠", v: 24, arm: "land", noFire: true },
+  lcav:  { 名: "轻骑兵", glyph: "╱", v: 60, arm: "land", noFire: true },
+  hcav:  { 名: "重骑兵", glyph: "╳", v: 45, arm: "land", noFire: true },
+  rng:   { 名: "远程部队", glyph: "⌒", v: 30, arm: "land" },
+  log:   { 名: "后勤部队", glyph: "▭", v: 20, arm: "land", noFire: true },
+  navy:  { 名: "舰船", glyph: "≈", v: 35, arm: "water" },
+  air:   { 名: "飞行部队", glyph: "▲", v: 200, arm: "air" },
+  scout: { 名: "侦察", glyph: "◇", v: 75, arm: "land", noFire: true },
+  siege: { 名: "重型装备", glyph: "◎", v: 15, arm: "land" },
+  comb:  { 名: "合成部队", glyph: "⊕", v: 24, arm: "land" },
+  spec:  { 名: "特殊", glyph: "✦", v: 30, arm: "land" },
+  cmd:   { 名: "指挥", glyph: "帅", v: 60, arm: "land" }
+};
+/* 军种显示名（寻路方式）：检查器卡片与部队表单同源，免两处漂移 */
+export const ARM_NAME: Record<Arm, string> = { land: "陆行", water: "水行", air: "飞行" };
+
+/* 旧兵种迁移（旧存档/导入自动升级，同 LEGACY_TYPE 之例）：navy/scout/siege/cmd/**air** 五键原样存活
+   （air 旧名「飞舟」，新表的「飞行部队」同键同字形同速度同军种＝旧档逐位不变），其余在此改嫁。
+   ⚠ 记下旧速度档与旧军种：新键的 v/arm 与旧值不同者（mage 150·飞行），由 normalizeWorld 就地落成显式
+   speed/arm——否则旧档的行军账房会因换表凭空变快变慢，而账房是本工具的立身之本。 */
+export const LEGACY_KIND: Record<string, { to: string; v: number; arm: Arm }> = {
+  inf:  { to: "linf", v: 30, arm: "land" },
+  cav:  { to: "lcav", v: 60, arm: "land" },
+  bow:  { to: "rng", v: 30, arm: "land" },
+  sup:  { to: "log", v: 20, arm: "land" },
+  mage: { to: "spec", v: 150, arm: "air" }
 };
 
 /* 地形 → 示意高程 / 自然色阶（渲染层）。

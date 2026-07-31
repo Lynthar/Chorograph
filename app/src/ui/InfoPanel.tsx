@@ -3,15 +3,15 @@
    「编辑」随时开表单（inspEditSig；编辑模式恒开＝旧语义保留），表单替换卡片视图；
    数据语义与 v0.14 卡一致（对齐旧 renderInfo 系列），航点动向沿旧行内编辑（战役复原工作流）。 */
 import { useRef } from "preact/hooks";
-import { CERTAINTY, DECOR, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
+import { ARM_NAME, CERTAINTY, DECOR, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
 import { edgeLenKm, polylineKm } from "../core/geometry.ts";
 import { calOf, fmtT, fmtWhen, fmtWhenRange } from "../core/calendar.ts";
-import { unitArm, unitFacingAt, unitFireKm, unitFootKm, unitKind, unitPos, unitSpeed, unitStatusAt } from "../core/units.ts";
+import { fmtStrength, unitArm, unitFacingAt, unitFireKm, unitFootKm, unitInheritedAt, unitKind, unitMoraleAt, unitPos, unitSpeedAt, unitStatusAt, unitStrengthAt } from "../core/units.ts";
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
 import { clearOpSel, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
-import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointFacing, setUnitWaypointStatus } from "./editops.ts";
+import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
 import { FactionForm } from "./FactionForm.tsx";
@@ -227,7 +227,6 @@ function EdgeCard({ e, idx, world }: { e: Edge; idx: number; world: World }) {
   );
 }
 
-const ARM_NAME: Record<string, string> = { land: "陆行", water: "水行", air: "飞行" };
 
 /** 航段时长读数：≥1 日按日、不足 1 日按小时(时辰级航点的 days 是 1/24 浮点,裸显是一串小数) */
 const fmtDur = (d: number): string => d >= 1 - 1e-9 ? `${+d.toFixed(1)}日` : `${+(d * 24).toFixed(1)}时`;
@@ -239,6 +238,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
   const legs = unitLegsSig.value.get(u.id) || [];
   const track = u.track || [];
   const foot = unitFootKm(u);
+  const inh = (i: number, key: "strength" | "speed" | "morale") => unitInheritedAt(u, i, key);
   return (
     <>
       <div class="sec" style={{ marginTop: "4px" }}>动向<span class="cnt">{track.length} 航点</span></div>
@@ -279,6 +279,21 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
               : (q.facing != null ? <> · 朝向 {+(+q.facing).toFixed(0)}°</> : null))}
             {L && <span class="sub" style={L.ok ? undefined : { color: "var(--q-zhu)" }}> {Math.round(L.km)}km{L.route ? "" : "(直线)"}/{fmtDur(L.days)}·需{fmtDur(L.need)}{L.ok ? "" : " ⚠"}</span>}
             {editable && <button type="button" class="link" style={{ color: "var(--q-zhu)" }} title="删此航点" onClick={() => { mutateWorld(w => { deleteUnitWaypoint(w, u.id, i); }); }}> ✕</button>}
+            {/* 逐航点存量：兵力/速度/士气自该航点起生效。⚠ 留空＝「没变」而非回默认，故占位符显示的是
+                「此刻实际生效的值」——沿用上一次声明或部队级基线，所见即留空后的结果。另起一行是因为
+                主行已排到删钮，六个控件挤一行会把日期与腿账压没。 */}
+            {editable && <div class="sub" style={{ paddingLeft: "2px", marginTop: "2px" }}>
+              {([["strength", "兵力", "人", inh(i, "strength")], ["speed", "速度", "km/日", inh(i, "speed")],
+                 ["morale", "士气", "0–100", inh(i, "morale")]] as const).map(([key, 名, unit, cur]) => (
+                <span key={key} style={{ marginRight: "6px", whiteSpace: "nowrap" }}>{名}{" "}
+                  <input class="fld" type="number" min={0} step="any" title={`${名}（${unit}）：自该航点起生效；留空＝沿用 ${cur ?? "—"}`}
+                    key={i + ":" + key + (q[key] ?? "")}
+                    style={{ width: "4.6em", display: "inline-block", padding: "1px 3px", margin: 0 }}
+                    placeholder={cur != null ? String(cur) : "—"} defaultValue={q[key] != null ? String(q[key]) : ""}
+                    onChange={e => { const v = (e.currentTarget as HTMLInputElement).value; mutateWorld(w => { setUnitWaypointNum(w, u.id, q.t, key, v); }); }} />
+                </span>
+              ))}
+            </div>}
           </div>
         );
       })}
@@ -294,7 +309,8 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
   const p = unitPos(u, T);
   const legs = unitLegsSig.value.get(u.id) || [];
   const bad = legs.filter(L => !L.ok);
-  const strength = u.strength != null ? String(u.strength).trim() : "";
+  const strength = fmtStrength(unitStrengthAt(u, T));
+  const morale = unitMoraleAt(u, T);
   if (editingNow()) {
     return <><CardHead title={`编辑 · ${u.名称 || "未命名部队"}`} /><UnitForm key={u.id} u={u} /><TrackList u={u} editable={true} /></>;
   }
@@ -310,7 +326,8 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
       </div>
       <div class="kv2">
         {strength && <><b>兵力</b><span class="num">{strength}</span></>}
-        <b>速度</b><span class="num">{unitSpeed(u)} km/日 · {ARM_NAME[unitArm(u)] || "陆行"}</span>
+        {morale != null && <><b>士气</b><span class="num">{morale} / 100</span></>}
+        <b>速度</b><span class="num">{unitSpeedAt(u, T)} km/日 · {ARM_NAME[unitArm(u)] || "陆行"}</span>
         <b>当前({fmtT(cal, T)})</b><span class="num">{p ? `${p.lon.toFixed(3)}° · ${p.lat.toFixed(3)}°` : "未入场 / 已离场"}</span>
         {unitFireKm(u) > 0 && <><b>火力圈</b><span class="num">{unitFireKm(u)} km</span></>}
         {typeof u.vision === "number" && u.vision > 0 && <><b>视野圈</b><span class="num">{u.vision} km</span></>}

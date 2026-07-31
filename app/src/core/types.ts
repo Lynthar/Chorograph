@@ -138,13 +138,21 @@ export interface TrackPt {
   t: number; lon: number; lat: number;
   st?: string;                // 状态（UNIT_STATUS 键：battle/standoff/rout）：自该航点起生效到下一航点；缺省=行军/常态
   facing?: number;            // 朝向（度，0=正北顺时针）：同 st「自该航点起生效」之规；缺省=行进方向（柱B 足印）
+  /* 逐航点存量（2026-07-30）：兵力/速度/士气随时间变——伤亡、分兵合流、强行军、士气起落。
+     ⚠ 语义与 st 不同：st 缺省＝常态（每航点各自声明），这三样是**存量**，缺省＝「没变」，
+     由 unitStrengthAt/unitSpeedAt/unitMoraleAt 向前回溯最近一次声明，都没有才回落部队级基线。 */
+  strength?: number;          // 兵力（人）
+  speed?: number;             // 行军速度 km/日
+  morale?: number;            // 士气 0–100
 }
 
 export interface Unit extends Timed {
   id: string; 名称?: string;
   kind: string; arm?: Arm;
+  /* 兵力/速度/士气三者都是**基线**：航点上未声明的时段用它；string 仅旧档未经 normalizeWorld 的只读回退 */
   strength?: string | number;
   speed?: number;             // 可覆速度 km/日（缺省用兵种表默认 v）
+  morale?: number;            // 士气 0–100（缺省＝未记录，不显示不落盘）
   faction?: string | null;
   track: TrackPt[];
   ranges?: { 名称?: string; km: number }[];   // 旧多圈火力（v0.14 遗留）：只读回退——渲染取首条，表单保存归一为 range

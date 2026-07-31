@@ -4,7 +4,7 @@
    世界拷贝循环逐拷贝调用（同 drawEco/drawDecor）；pickUnit 独立，自带拷贝循环（同 pickNode）。 */
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { kmPerDegLat, toRad } from "../core/geo.ts";
-import { footCornersLL, unitFacingAt, unitFireKm, unitFootKm, unitKind, unitPos, unitStatusAt, type Leg, type UnitPos } from "../core/units.ts";
+import { fmtStrength, footCornersLL, unitFacingAt, unitFireKm, unitFootKm, unitKind, unitPos, unitStatusAt, unitStrengthAt, type Leg, type UnitPos } from "../core/units.ts";
 import { pointInPoly } from "../core/geometry.ts";
 import { UNIT_STATUS } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
@@ -204,7 +204,8 @@ export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
       const lo = foot ? Math.max(...foot.map(q => q[1])) : y + 8.5;
       const hi = foot ? Math.min(...foot.map(q => q[1])) : y - 8.5;
       const mx = foot ? (foot[0][0] + foot[2][0]) / 2 : x;
-      const lbl = (u.名称 || "部队") + (u.strength ? ` ${u.strength}` : "");
+      const str = fmtStrength(unitStrengthAt(u, T));
+      const lbl = (u.名称 || "部队") + (str ? ` ${str}` : "");
       ctx.save(); ctx.font = "10.5px KaiTi,楷体,serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       const w = ctx.measureText(lbl).width, h = 13;
       let ly: number | null = lo + 7.5;

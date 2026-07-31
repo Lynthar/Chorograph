@@ -3,7 +3,7 @@
    按住地点/布景/部队=拖移；连线可点点或拖拽成线；其余工具空白按下只作点击。
    模块内闭持全部拖拽/笔迹瞬态；frame 经 PointerView 只读画线笔迹/框选/光标位。 */
 import { unproject, clampView, zoomAtView, panByView } from "../core/projection.ts";
-import { CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, DECOR_BASE, ECO, canonComposite, parseComposite } from "../core/constants.ts";
+import { CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_KINDS, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
 import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
@@ -13,7 +13,7 @@ import { fmtKm } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
 import { pickEdge, pickNode, pickOp, nodesInBox } from "../render/overlay.ts";
 import { pickUnit, pickRangeHandle, unitsInBox, type RingHit } from "../render/units.ts";
-import { unitPos } from "../core/units.ts";
+import { fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStrengthAt } from "../core/units.ts";
 import { pickDecor, decorIdsInRadius, decorsInBox } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
@@ -85,18 +85,28 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     return Math.max(fit, meta?.view?.degPerPx0 || 0);
   };
 
-  /* 悬停速览提示（v0.14 #tip）：地点/连线 hover 出小卡；拖动/绘制时隐藏 */
+  /* 悬停速览提示（v0.14 #tip）：部队/地点/连线 hover 出小卡；拖动/绘制时隐藏。
+     部队优先同 clickAt 之序（画在最上层者先答），故战术图上悬停部队即知可点。 */
   const tip = $("tip");
   const escHtml = (s: unknown): string => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const updateTip = (x: number, y: number, nd: WorldNode | null): void => {
     const world = worldSig.value;
     if (!world) { tip.style.display = "none"; return; }
     const layers = layersSig.peek(), yearNow = yearSig.peek();
-    const ed = !nd ? pickEdge(cam(), ctx.meta, world, yearNow, x, y, layers) : null;
+    const un = unitPickable() ? pickUnit(cam(), ctx.meta, world, yearNow, x, y) : null;
+    const ed = !un && !nd ? pickEdge(cam(), ctx.meta, world, yearNow, x, y, layers) : null;
     /* 可靠性后缀（柱B）：确证不出字（缺省无须声明），推断/传说才标——同检查器卡片之规 */
     const certSuf = (v: unknown): string => (typeof v === "string" && CERTAINTY[v]) ? ` · ${CERTAINTY[v].名}` : "";
     let html = "";
-    if (nd) {
+    if (un) {
+      const k = UNIT_KINDS[un.kind], f = un.faction ? world.factions.find(q => q.id === un.faction) : null;
+      const st = UNIT_STATUS[unitStatusAt(un, yearNow) || ""];
+      const sf = fmtStrength(unitStrengthAt(un, yearNow));
+      const str = sf ? ` · 兵力 ${escHtml(sf)}` : "";
+      const mo = unitMoraleAt(un, yearNow);
+      html = `<b>${escHtml(un.名称 || un.id)}</b> ${k ? `${k.glyph} ${k.名}` : "部队"}` +
+        `${f ? ` · ${escHtml(f.名称 || f.id)}` : ""}${str}${mo != null ? ` · 士气 ${mo}` : ""}${st ? ` · ${st.名}` : ""}`;
+    } else if (nd) {
       const isEv = nd.type === "event";
       const et = EVENT_TYPES[nd.evtype!] || EVENT_TYPES.battle;
       const s = NODE_STYLE[nd.type] || NODE_STYLE.city;
@@ -148,6 +158,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
      关掉的层不再"隐形可选"；部队/布景拾取同规则在各调用点看 units/decor 层。 */
   const pickGate = () => ({ layers: layersSig.peek(), editing: modeSig.peek() === "edit" });
   const decorPickable = () => layersSig.peek().decor !== false;
+  const unitPickable = () => isTacSig.peek() && layersSig.peek().units !== false;
   const paintDab = (x: number, y: number): void => {
     if (!paintStroke) return;
     const ll = unproject(cam(), x, y);
@@ -708,8 +719,11 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate());
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       if (mode === "browse" || (mode === "edit" && editSubSig.value === "select")) {
-        // 拾取优先级：地点 > 作战线 > 连线（部队随战术图批次）
-        if (hit) { clearOpSel(); selSig.value = { kind: "node", id: hit.id }; }
+        /* 拾取优先级：部队 > 地点 > 作战线 > 连线——部队画在地点之上（战场主角），点你看见的最上层，
+           与「选择」子工具 pointerdown 同序。浏览态此前不认部队＝检查器里齐备的部队卡片够不着。 */
+        const un = unitPickable() ? pickUnit(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY) : null;
+        if (un) { clearOpSel(); selSig.value = { kind: "unit", id: un.id }; }
+        else if (hit) { clearOpSel(); selSig.value = { kind: "node", id: hit.id }; }
         else {
           const selId = (selSig.value && selSig.value.kind === "node") ? selSig.value.id : null;
           const op = pickOp(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, layersSig.value, selId);

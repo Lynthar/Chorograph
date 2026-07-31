@@ -1,7 +1,8 @@
 /* 世界数据的规范化与构造（自 v0.14 index.html 原样迁移，黄金基准平价锁定）。
    normalizeWorld 是"单点迁移"哲学的载体：外部导入/旧存档缺什么补什么、旧字段就地升级，
    改这里的任何分支都是行为变更——旧档打开后的内容会跟着变，先想兼容。 */
-import { LEGACY_TYPE, EVENT_TYPES, UNIT_KINDS } from "./constants.ts";
+import { LEGACY_KIND, LEGACY_TYPE, EVENT_TYPES, UNIT_KINDS } from "./constants.ts";
+import { parseStrength } from "./units.ts";
 import type { BBox, CalendarCfg, GenStyle, TerrainMode, World, WorldModel } from "./types.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- 入参是任意外部 JSON，宽松索引即语义 */
@@ -39,7 +40,24 @@ export function normalizeWorld(w: unknown): World {
   o.units.forEach((u: any) => {
     u.track = Array.isArray(u.track) ? u.track.filter(isRec) : [];
     u.track.sort((a: any, b: any) => a.t - b.t);
+    /* 旧兵种键就地升级（2026-07-30 整表换代，同上面 LEGACY_TYPE 之例）：旧速度/军种与新键不同者
+       落成显式 speed/arm——否则旧档的行军里程账会因换表凭空变快变慢。 */
+    const lg = (LEGACY_KIND as any)[u.kind];
+    if (lg) {
+      if (!(+u.speed > 0) && lg.v !== (UNIT_KINDS as any)[lg.to].v) u.speed = lg.v;
+      if (!u.arm) u.arm = lg.arm;
+      u.kind = lg.to;
+    }
     if (!u.arm) u.arm = ((UNIT_KINDS as any)[u.kind] || {}).arm || "land";
+    /* 兵力归一为「人」数值（2026-07-30）：旧的自由文本多是史料注记（「号称二十万（实数无定论）」
+       「中军·大将旗」），换成数值字段不能把它们凭空丢掉——挪进「说明」保住内容再删键。 */
+    const sv = parseStrength(u.strength);
+    if (sv != null) u.strength = sv;
+    else {
+      const raw = u.strength == null ? "" : String(u.strength).trim();
+      if (raw) u.note = (typeof u.note === "string" && u.note ? u.note + "\n" : "") + `兵力：${raw}`;
+      delete u.strength;
+    }
   });
   o.factions.forEach((f: any) => {
     if (Array.isArray(f.paint)) f.paint = f.paint.filter(isRec).map((L: any) => {

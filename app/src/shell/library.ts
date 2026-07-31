@@ -15,6 +15,7 @@ import { createTacticalWorld } from "../core/tactical.ts";
 import { contourStepFor } from "../core/elev.ts";
 import { safeName } from "../core/util.ts";
 import { drawLegend } from "../render/legend.ts";
+import { pinnedStackH } from "../render/overlay.ts";
 import { pickBootEntry, planOpen, wantsDeepStart, type OpenSnap } from "./openplan.ts";
 import { landWorld } from "./orchestrate.ts";
 import { calOf, fmtT, fmtWhen } from "../core/calendar.ts";
@@ -285,10 +286,17 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     if (R) g2.drawImage(canvas, 0, 0);
     else { g2.fillStyle = "#d9d2c0"; g2.fillRect(0, 0, off.width, off.height); }
     g2.drawImage(ov, 0, 0);
-    /* 图例块（战术·本机偏好可关）：内容自动取图内实际出现的;按 DPR 折回 CSS 像素画右下角 */
+    /* 图例块（战术·本机偏好可关）：内容自动取图内当刻实际出现的;按 DPR 折回 CSS 像素画右下角。
+       让开 se 屏幕角标注（图例不上画布，不让位就会压住画布上摆好的图注）——标注层关掉则无须让。 */
     if (ctx.meta.mapKind === "tactical" && uiPrefsSig.peek().legend !== false) {
-      const w = worldSig.peek();
-      if (w) { g2.save(); g2.scale(ctx.DPR, ctx.DPR); drawLegend(g2, w, yearSig.peek(), off.width / ctx.DPR, off.height / ctx.DPR); g2.restore(); }
+      const w = worldSig.peek(), T = yearSig.peek(), s = selSig.peek();
+      if (w) {
+        const reserve = layersSig.peek().notes !== false
+          ? pinnedStackH(w, T, "se", s && s.kind === "node" ? s.id : null) : 0;
+        g2.save(); g2.scale(ctx.DPR, ctx.DPR);
+        drawLegend(g2, w, T, off.width / ctx.DPR, off.height / ctx.DPR, reserve);
+        g2.restore();
+      }
     }
     return new Promise(res => off.toBlob(b => res(b), "image/png"));
   }

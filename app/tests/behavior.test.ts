@@ -12,13 +12,14 @@ import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
-import { EDGE_STYLE, NODE_STYLE, NODE_TMPL, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, certaintyStyle, flattenTerrain, terrainProps } from "../src/core/constants.ts";
+import { EDGE_STYLE, LEGACY_KIND, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, certaintyStyle, flattenTerrain, nodeCatOf, terrainProps } from "../src/core/constants.ts";
+import { fmtStrength, parseStrength, unitInheritedAt, unitMoraleAt, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { wallTeeth } from "../src/render/edges.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, countsOf, normalizeWorld } from "../src/core/world.ts";
 import { blankTacticalWorld, createTacticalWorld, tacDiaDeg } from "../src/core/tactical.ts";
 import { paintStep, resamplePaintCells, territoryLoops } from "../src/core/territory.ts";
-import { nodesInBox, pickEdge, pickNode } from "../src/render/overlay.ts";
+import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { pickDecor } from "../src/render/decor.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 import { validateWorld } from "../src/core/validate.ts";
@@ -658,9 +659,82 @@ describe("战场表达（柱B）：微地物/工事线/主帅", () => {
       assert.ok(typeof NODE_TMPL[t] === "string" && NODE_TMPL[t].includes("："), `${t} 缺属性模板`);
     }
   });
-  it("工事线型与主帅兵种就位（渲染先行，寻路不吃 wall）", () => {
+  /* 地点四类（2026-07-30）：落点 chips 由 16 型收成 4 类，具体型在表单里改。这条锁「覆盖闭合」——
+     新增地点类型若漏归类，落点 chips 与表单下拉都摸不到它（同 wall 漏进 IMPL_LAYERS 之症）。 */
+  it("地点四类覆盖闭合：除事件点/标注外每型恰属一类，默认型在本类内", () => {
+    const seen = new Map<string, string>();
+    assert.deepStrictEqual(NODE_CAT_ORDER.slice().sort(), Object.keys(NODE_CATS).sort(), "类别表与序表须同集");
+    for (const k of NODE_CAT_ORDER) {
+      const c = NODE_CATS[k];
+      assert.ok(c.types.includes(c.def), `${k} 的默认型 ${c.def} 不在本类`);
+      for (const t of c.types) {
+        assert.ok(NODE_STYLE[t], `${k} 列了不存在的类型 ${t}`);
+        assert.strictEqual(seen.get(t), undefined, `${t} 被 ${seen.get(t)} 与 ${k} 重复收入`);
+        seen.set(t, k);
+        assert.strictEqual(nodeCatOf(t), k);
+      }
+    }
+    for (const t of NODE_TYPES) {
+      if (t === "event" || t === "label") { assert.strictEqual(nodeCatOf(t), null, `${t} 不该入四类（各有专属入口）`); continue; }
+      assert.ok(seen.has(t), `地点类型 ${t} 没归类＝落点 chips 与表单下拉都摸不到它`);
+    }
+    assert.strictEqual(NODE_CATS.settle.def, "city", "定居点默认型须为城市＝旧缺省落点行为逐位");
+    assert.strictEqual(nodeCatOf("vassalseat"), null, "旧类型未归类＝表单回退全量下拉（不锁死）");
+  });
+  it("工事线型与指挥兵种就位（渲染先行，寻路不吃 wall）", () => {
     assert.deepStrictEqual(EDGE_STYLE.wall, { color: "#55504a", w: 2.8, 名: "工事" });
-    assert.deepStrictEqual(UNIT_KINDS.cmd, { 名: "主帅", glyph: "帅", v: 60, arm: "land" });
+    assert.deepStrictEqual(UNIT_KINDS.cmd, { 名: "指挥", glyph: "帅", v: 60, arm: "land" });
+  });
+  it("兵种换代：旧键全可解析、新表恰十三类、旧速度与军种由 normalizeWorld 就地保住", () => {
+    assert.strictEqual(Object.keys(UNIT_KINDS).length, 13);
+    for (const [old, lg] of Object.entries(LEGACY_KIND)) {
+      assert.ok(UNIT_KINDS[lg.to], `旧兵种「${old}」的迁移目标「${lg.to}」须在新表里`);
+      assert.ok(!UNIT_KINDS[old], `旧键「${old}」不该同时留在新表里——否则迁移永不触发`);
+    }
+    /* 三种情形各一：速度与新键不同（修士 150·飞行→落显式键）／相同（骑兵 60→不落，档形不因升级变胖）／
+       旧键原样存活（飞舟 air 即新的飞行部队，同键同速同军种＝逐位不变，故根本不进迁移表） */
+    const w = normalizeWorld({ meta: {}, units: [{ id: "a", kind: "mage" }, { id: "b", kind: "cav" }, { id: "c", kind: "air" }] });
+    assert.deepStrictEqual(w.units.map(u => [u.kind, u.speed, u.arm]),
+      [["spec", 150, "air"], ["lcav", undefined, "land"], ["air", undefined, "air"]]);
+  });
+  it("逐航点存量：兵力/速度/士气自该航点起生效，未声明＝沿用而非回默认", () => {
+    const u = {
+      id: "u1", kind: "linf", strength: 100000, morale: 80,
+      track: [{ t: 0, lon: 0, lat: 0 }, { t: 1, lon: 0, lat: 0, strength: 30000, speed: 40, morale: 0 }, { t: 2, lon: 0, lat: 0 }]
+    } as unknown as import("../src/core/types.ts").Unit;
+    assert.strictEqual(unitStrengthAt(u, 0), 100000, "首段用部队级基线");
+    assert.strictEqual(unitStrengthAt(u, 1), 30000, "自该航点起改写");
+    assert.strictEqual(unitStrengthAt(u, 2), 30000, "⚠ 下一航点未声明＝没变，打光的兵不会自己长回来");
+    assert.strictEqual(unitSpeedAt(u, 0), 30, "速度三级回落：航点→部队→兵种表默认");
+    assert.strictEqual(unitSpeedAt(u, 2), 40, "速度同样沿用");
+    assert.strictEqual(unitMoraleAt(u, 0), 80);
+    assert.strictEqual(unitMoraleAt(u, 2), 0, "士气 0＝崩溃是有意义的值，不能当空处理");
+    assert.strictEqual(unitStrengthAt(u, -5), 100000, "未入场回落基线（回溯不到航点）");
+    /* 占位符口径：只看**之前**的航点——所见即「这一格留空后会变成什么」 */
+    assert.strictEqual(unitInheritedAt(u, 1, "strength"), 100000, "第 1 个航点若不声明则沿用基线");
+    assert.strictEqual(unitInheritedAt(u, 2, "strength"), 30000, "第 2 个航点若不声明则沿用上一次声明");
+  });
+  it("兵力数值化：半数值不吞、显示按万折算、旧文本挪进说明不丢", () => {
+    assert.strictEqual(parseStrength(" 8000 "), 8000);
+    assert.strictEqual(parseStrength("8000骑"), null, "半数值＝整条不收：parseFloat 会悄悄取走 8000 丢掉「骑」");
+    assert.strictEqual(parseStrength("数十万"), null);
+    assert.strictEqual(parseStrength(0), null);
+    assert.strictEqual(fmtStrength(450000), "45万");
+    assert.strictEqual(fmtStrength(25000), "2.5万");
+    assert.strictEqual(fmtStrength(10500), "1.05万");
+    assert.strictEqual(fmtStrength(9999), "9999", "不足一万原样，「9.999千」反而更难读");
+    assert.strictEqual(fmtStrength(undefined), "");
+    assert.strictEqual(fmtStrength("号称二十万"), "号称二十万", "未经归一的旧数据原样返回，显示层不吞内容");
+    const w = normalizeWorld({ meta: {}, units: [
+      { id: "a", kind: "linf", strength: "号称二十万（实数无定论）", note: "旧注" },
+      { id: "b", kind: "linf", strength: "25000" },
+      { id: "c", kind: "linf", strength: "" }
+    ] });
+    assert.ok(!("strength" in w.units[0]), "非数值兵力删键");
+    assert.strictEqual(w.units[0].note, "旧注\n兵力：号称二十万（实数无定论）", "史料注记挪进说明，接在既有说明之后");
+    assert.strictEqual(w.units[1].strength, 25000, "数字串归一为数");
+    assert.ok(!("strength" in w.units[2]), "空串＝无兵力");
+    assert.ok(!("note" in w.units[2]), "空串不该留下一条空说明");
   });
   it("wallTeeth：直线等距布齿（起步 0.6×gap）、齿垂直于线、reverse 翻面", () => {
     const teeth = wallTeeth([[0, 0], [100, 0]], 9, 4.5);
@@ -795,6 +869,35 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     const w = mkWorld([{ type: "label", 名称: "帧题", pin: "nw" }]);
     assert.strictEqual(pick(w, { editing: true }), null);
     assert.strictEqual(pick(w, {}), null);
+  });
+  it("layerOn：tacOnly 层在非战术图上一律不画（层面板没有它们的行＝用户关不掉）", () => {
+    const tacM = { mapKind: "tactical" } as const, strM = {};
+    for (const id of ["units", "trails", "ranges", "vision"]) {
+      assert.strictEqual(layerOn({}, strM, id), false, `${id} 在战略图上不该画`);
+      assert.strictEqual(layerOn({}, tacM, id), true, `${id} 在战术图上缺省开`);
+      assert.strictEqual(layerOn({ [id]: false }, tacM, id), false, "战术图上开关照旧生效");
+    }
+    for (const id of ["nodes", "road", "wall", "arrows", "events"]) {   // 非 tacOnly：两种图一视同仁
+      assert.strictEqual(layerOn({}, strM, id), true);
+      assert.strictEqual(layerOn({ [id]: false }, strM, id), false);
+    }
+    assert.strictEqual(layerOn(undefined, undefined, "units"), false, "无 meta＝非战术图");
+  });
+  it("pinnedStackH：屏幕角标注堆的占高（出图图例据此让开 se）", () => {
+    const T = 3107;
+    // 块高=行数×(字号+3)；se 基线 42、条间 8、衬底外扩 3
+    const one = mkWorld([{ type: "label", 名称: "图注一\n第二行", pin: "se" }]);
+    assert.strictEqual(pinnedStackH(one, T, "se"), 42 + 32 + 3);
+    const two = mkWorld([{ type: "label", 名称: "图注一\n第二行", pin: "se" }, { type: "label", 名称: "图注二", pin: "se" }]);
+    assert.strictEqual(pinnedStackH(two, T, "se"), 42 + 32 + 16 + 8 + 3);
+    assert.strictEqual(pinnedStackH(one, T, "sw"), 0, "该角无标注=0：图例位置逐位不变");
+    assert.strictEqual(pinnedStackH(mkWorld([{ type: "label", 名称: "帧题", pin: "nw" }]), T, "nw"), 46 + 16 + 3, "nw 基线让开图名");
+    assert.strictEqual(pinnedStackH(mkWorld([{ type: "label", 名称: "大", fs: 24, pin: "se" }]), T, "se"), 42 + 27 + 3);
+    // 时限同 drawPinnedNotes：过期不占位，但选中的过期标注照画照占（画布与出图一致）
+    const past = mkWorld([{ type: "label", 名称: "旧注", pin: "se", since: 3100, until: 3105 }]);
+    assert.strictEqual(pinnedStackH(past, T, "se"), 0);
+    assert.strictEqual(pinnedStackH(past, T, "se", "n0"), 42 + 16 + 3);
+    assert.strictEqual(pinnedStackH(mkWorld([{ type: "city", pin: "se" }]), T, "se"), 0, "只认标注：pin 记在别的类型上不占位");
   });
   it("rank 缩放门：浏览态按显隐拾取，编辑态全见（与 drawNodes 同规）", () => {
     const w = mkWorld([{ type: "village" }]);              // rank4：degPerPx 0.1 > 0.045 = 浏览不可见

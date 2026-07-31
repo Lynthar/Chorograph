@@ -218,6 +218,23 @@ describe("部队（语义）", () => {
     const fl = unitLegs(META, grid, roads, far);
     assert.ok(fl[0].need > 1.9 && !fl[0].ok, "两格/日于一格配额=旧公式超速");
   });
+  it("unitLegs：逐腿速度取出发航点当时生效的值，未重新声明＝沿用不弹回基线", () => {
+    const world = plainWorld();
+    const { grid, roads } = mkGrid(world);
+    const kmCell = distKm(META, 100.5, 30.5, 101.5, 30.5);
+    const u: Unit = { id: "u3", kind: "linf", speed: kmCell, track: [
+      { t: 0, lon: 100.5, lat: 30.5 },
+      { t: 1, lon: 101.5, lat: 30.5, speed: 2 * kmCell },   // 自此腿起提速一倍（强行军）
+      { t: 2, lon: 102.5, lat: 30.5 },
+      { t: 3, lon: 103.5, lat: 30.5 }] };
+    const legs = unitLegs(META, grid, roads, u);
+    assert.ok(Math.abs(legs[0].need - 1 / 3) < 1e-9, "第一腿用部队级基线");
+    assert.ok(Math.abs(legs[1].need - 1 / 6) < 1e-9, "第二腿按出发航点声明的速度记账");
+    assert.ok(Math.abs(legs[2].need - 1 / 6) < 1e-9, "第三腿未重新声明＝沿用提速，不弹回基线");
+    /* 旧档没有航点速度：回溯必空、恒落部队级基线＝腿账逐位不变（黄金基准据此仍成立） */
+    const old: Unit = { id: "old", kind: "linf", speed: kmCell, track: u.track.map(({ t, lon, lat }) => ({ t, lon, lat })) };
+    assert.deepStrictEqual(unitLegs(META, grid, roads, old).map(L => L.need), [1 / 3, 1 / 3, 1 / 3]);
+  });
 });
 
 describe("部队堆叠偏移（绘制拾取同源）", () => {

@@ -5,7 +5,7 @@
    · 战术图：年份/存在时段用「年-月-日」文本（parseYMD/fmtYMD），另有据点防御火力栏。
    输入用非受控 + key=节点id：换选中即重置，重渲不丢输入。 */
 import { useLayoutEffect, useRef } from "preact/hooks";
-import { EVENT_TMPL, EVENT_TYPES, NODE_STYLE, NODE_TMPL, NODE_TYPES } from "../core/constants.ts";
+import { EVENT_TMPL, EVENT_TYPES, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, nodeCatOf } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm, fmtWhenRange } from "../core/calendar.ts";
 import { formatRanges } from "./editops.ts";
 import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, opDrawSig, parseWhenInput, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, worldSig, yearSig } from "./state.ts";
@@ -118,6 +118,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
   const cal = calOf((world.meta || {}).calendar);
   const isEv = n.type === "event";
   const isLabel = n.type === "label";
+  const cat = nodeCatOf(n.type);   // 类型两级选择的当前类别；null=事件/标注/未知型
   const evt = EVENT_TYPES[String(n.evtype)] ? String(n.evtype) : "battle";
   const isBattle = isEv && evt === "battle";
   const fsCur = String(n.fs || 13);
@@ -154,6 +155,11 @@ export function NodeForm({ n }: { n: WorldNode }) {
     inspEditSig.value = false;
     showToast(coordSkipped ? "已保存——经纬度需成对填有效数字，坐标未改" : "已保存修改", { undo: true });
   };
+  /* 改类型：先记脏字段（改选即重渲表单，重挂的控件会被重置＝未保存输入蒸发），提交后补回 */
+  const setType = (t: string) => {
+    captureDirty();
+    mutateWorld(w => { const x = w.nodes.find(y => y.id === n.id); if (x) changeNodeType(x, t, yearSig.peek(), v => !!EVENT_TYPES[String(v)]); });
+  };
   const del = () => deleteNodeAt(n.id);
   const addEv = () => {
     let id: string | null = null;
@@ -174,15 +180,24 @@ export function NodeForm({ n }: { n: WorldNode }) {
           ? <textarea class="fld" id="ef_name" rows={3} defaultValue={n.名称 || ""}
               placeholder="可多行；风向用箭头字符如 ↗；不确定加「？」「（一说…）」" />
           : <input class="fld" id="ef_name" defaultValue={n.名称 || ""} placeholder="地点名称" />}</div>
-      <div class="frow"><label>类型 · 改选立即生效</label>
-        <select class="fld" id="ef_type" title="改类型立即生效（可撤销），表单随之切换" value={n.type}
-          onChange={e => {
-            const t = (e.currentTarget as HTMLSelectElement).value;
-            captureDirty();   // 改选即重渲：先记脏字段，提交后补回（防未保存输入蒸发）
-            mutateWorld(w => { const x = w.nodes.find(y => y.id === n.id); if (x) changeNodeType(x, t, yearSig.peek(), v => !!EVENT_TYPES[String(v)]); });
-          }}>
-          {NODE_TYPES.map(t => <option key={t} value={t}>{NODE_STYLE[t].名}</option>)}
-        </select></div>
+      {!isEv && !isLabel && (
+        <div class="frow"><label>类型 · 改选立即生效</label>
+          {/* 两级（2026-07-30）：类别 chips + 只列本类的下拉。换类别＝换成该类默认型（各记一步撤销）。
+              未知/旧类型（nodeCatOf 取不到）回退全量下拉，免得归不了类的地点被锁死改不了型。 */}
+          {cat && (
+            <div class="chips" style={{ marginBottom: "5px" }}>
+              {NODE_CAT_ORDER.map(k => (
+                <button key={k} type="button" class="ch tr" aria-pressed={cat === k}
+                  title={NODE_CATS[k].types.map(t => NODE_STYLE[t].名).join(" / ")}
+                  onClick={() => { if (k !== cat) setType(NODE_CATS[k].def); }}>{NODE_CATS[k].名}</button>
+              ))}
+            </div>
+          )}
+          <select class="fld" id="ef_type" title="改类型立即生效（可撤销），表单随之切换" value={n.type}
+            onChange={e => setType((e.currentTarget as HTMLSelectElement).value)}>
+            {(cat ? NODE_CATS[cat].types : NODE_TYPES).map(t => <option key={t} value={t}>{NODE_STYLE[t].sym} {NODE_STYLE[t].名}</option>)}
+          </select></div>
+      )}
       <div class="frow"><label>经纬度°（东经 / 北纬为正，±85）</label>
         <div class="fx2">
           <input class="fld" id="ef_lon" type="number" step={0.0001} key={n.id + ":lon" + n.lon}

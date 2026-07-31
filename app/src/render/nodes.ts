@@ -91,25 +91,50 @@ export function drawNoteText(
   ctx.restore();
 }
 
-/* 屏幕角标注（label.pin=nw/ne/sw/se：帧标题/图注块）——拷贝循环外屏幕空间一次绘制，
-   同角多条按数组序堆叠（底角从下往上）；nw 让开图名、sw 让开比例尺。
+/* —— 屏幕角标注（label.pin=nw/ne/sw/se：帧标题/图注块）——
+   拷贝循环外屏幕空间一次绘制，同角多条按数组序堆叠（底角从下往上）。
+   ⚠ 四角让位约定：nw 让开图名、sw 让开比例尺、se 由出图图例反向让开（见 pinnedStackH）——
+   新增任何画布 chrome 都要认领自己那一角，否则出图时与图注硬碰（2026-07-29 长平画图实证）。
+   宣纸衬底同图名/比例尺/图例：屏幕角标注是图廓装饰而非图面内容，长图注压在地形上须自成一块。
    时限过滤同 nodeVisible（编辑模式亦按当刻，选中除外）；画布不可拾取，经搜索/地图锚点选中。 */
+export type PinCorner = "nw" | "ne" | "sw" | "se";
+const PINS: PinCorner[] = ["nw", "ne", "sw", "se"];
+/** 各角首条标注距所在边缘的距离（nw 让开图名，底角让开比例尺一线） */
+const PIN_BASE: Record<PinCorner, number> = { nw: 46, ne: 16, sw: 42, se: 42 };
+const PIN_GAP = 8, PLATE_X = 8, PLATE_Y = 3;
+/** 某角当刻可见的标注及其块高——drawPinnedNotes 与 pinnedStackH 同源（堆叠算法只此一处出） */
+function pinnedAt(world: World, T: number, pin: PinCorner, selId?: string | null): { n: WorldNode; h: number }[] {
+  return world.nodes
+    .filter(n => n.type === "label" && String(n.pin) === pin && (activeAt(n, T) || n.id === selId))
+    .map(n => ({ n, h: String(n.名称 || "").split("\n").length * (NOTE_FS(n) + 3) }));
+}
+/** 某角标注堆自所在边缘算起占去的高度（CSS 像素；该角无标注=0，故图例位置逐位不变）。
+    出图图例据此让开 se——图例只进 PNG 不上画布，不让位就会压住画布上摆好的图注。 */
+export function pinnedStackH(world: World, T: number, pin: PinCorner, selId?: string | null): number {
+  const ns = pinnedAt(world, T, pin, selId);
+  if (!ns.length) return 0;
+  return PIN_BASE[pin] + ns.reduce((a, b) => a + b.h, 0) + PIN_GAP * (ns.length - 1) + PLATE_Y;
+}
 export function drawPinnedNotes(
   ctx: CanvasRenderingContext2D, cam: Camera, world: World, yearNow: number,
   opts: OverlayOpts, fcolor: (id: string | null) => string
 ) {
-  const cur: Record<string, number> = { nw: 46, ne: 16, sw: cam.h - 42, se: cam.h - 42 };
-  for (const n of world.nodes) {
-    if (n.type !== "label" || !n.pin || !(String(n.pin) in cur)) continue;
-    const selected = n.id === opts.selId;
-    if (!activeAt(n, yearNow) && !selected) continue;
-    const pin = String(n.pin);
+  const measure: NoteMeasure = (t, f) => { ctx.font = f; return ctx.measureText(t).width; };
+  for (const pin of PINS) {
     const left = pin === "nw" || pin === "sw", bottom = pin === "sw" || pin === "se";
-    const h = String(n.名称 || "").split("\n").length * (NOTE_FS(n) + 3);
-    const y0 = bottom ? cur[pin] - h : cur[pin];
-    const fid = ownerAt(n, yearNow);
-    drawNoteText(ctx, n, left ? 14 : cam.w - 14, y0, fid ? fcolor(fid) : "#2c241b", selected, null, left ? "left" : "right");
-    cur[pin] = bottom ? y0 - 8 : y0 + h + 8;
+    let cur = bottom ? cam.h - PIN_BASE[pin] : PIN_BASE[pin];
+    for (const { n, h } of pinnedAt(world, yearNow, pin, opts.selId)) {
+      const y0 = bottom ? cur - h : cur, x = left ? 14 : cam.w - 14, align: NoteAlign = left ? "left" : "right";
+      ctx.save();
+      const b = noteBox(measure, n, x, y0, align);
+      ctx.fillStyle = "rgba(246,239,220,.85)"; ctx.strokeStyle = "rgba(90,74,38,.5)"; ctx.lineWidth = 1;
+      ctx.fillRect(b.x - PLATE_X, b.y - PLATE_Y, b.w + PLATE_X * 2, b.h + PLATE_Y * 2);
+      ctx.strokeRect(b.x - PLATE_X, b.y - PLATE_Y, b.w + PLATE_X * 2, b.h + PLATE_Y * 2);
+      ctx.restore();
+      const fid = ownerAt(n, yearNow);
+      drawNoteText(ctx, n, x, y0, fid ? fcolor(fid) : "#2c241b", n.id === opts.selId, null, align);
+      cur = bottom ? y0 - PIN_GAP : y0 + h + PIN_GAP;
+    }
   }
 }
 

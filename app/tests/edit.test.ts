@@ -8,9 +8,9 @@ import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEve
 import { unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells } from "../src/core/grid.ts";
-import { canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
+import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
   paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selSig, setWorldState, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
-import { EVENT_TYPES } from "../src/core/constants.ts";
+import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 
 const mkWorld = (over: Partial<World> = {}): World => ({
@@ -742,11 +742,11 @@ describe("布景 + 框选", () => {
 });
 
 describe("部队编辑内核（战术图）", () => {
-  it("addUnit：默认步兵/陆军、首航点=当日 T、坐标四位小数、无所属", () => {
+  it("addUnit：默认轻步兵/陆军、首航点=当日 T、坐标四位小数、无所属", () => {
     const w = mkWorld();
     const u = addUnit(w, "龙骧前军", 100.5, 30.25, 5, "u1");
     assert.strictEqual(w.units.length, 1);
-    assert.strictEqual(u.kind, "inf");
+    assert.strictEqual(u.kind, "linf");
     assert.strictEqual(u.arm, "land");
     assert.strictEqual(u.faction, null);
     assert.deepStrictEqual(u.track, [{ t: 5, lon: 100.5, lat: 30.25 }]);
@@ -794,35 +794,45 @@ describe("部队编辑内核（战术图）", () => {
     assert.strictEqual(formatRanges([{ km: 3 }]), "射程：3", "缺名回退「射程」");
     assert.strictEqual(formatRanges(undefined), "");
   });
-  it("applyUnitForm：名称空则保留、兵种同步 arm、速度>0 才设否则删、火力单值+提交即归一旧多圈", () => {
+  it("applyUnitForm：名称空则保留、兵种定默认军种、兵力×单位归一为人数、速度>0 才设否则删、火力单值+提交即归一旧多圈", () => {
     const w = mkWorld({ factions: [{ id: "f1", 名称: "东军" }] });
     const u = addUnit(w, "旧名", 1, 1, 0, "u1");
     u.ranges = [{ 名称: "床弩", km: 2 }];   // v0.14 遗留多圈
-    applyUnitForm(u, { 名称: "新名", faction: "f1", kind: "navy", strength: " 三万 ", speed: "70", range: "3", note: "备注" });
+    applyUnitForm(u, { 名称: "新名", faction: "f1", kind: "navy", strength: " 3 ", strengthUnit: "10000", speed: "70", range: "3", note: "备注" });
     assert.strictEqual(u.名称, "新名");
     assert.strictEqual(u.faction, "f1");
     assert.strictEqual(u.kind, "navy");
-    assert.strictEqual(u.arm, "water", "兵种决定军种");
-    assert.strictEqual(u.strength, "三万", "兵力去空白");
+    assert.strictEqual(u.arm, "water", "军种缺省取兵种表");
+    assert.strictEqual(u.strength, 30000, "兵力＝输入×单位倍率，落库恒为人数");
     assert.strictEqual(u.speed, 70);
     assert.strictEqual(u.range, 3, "火力=单值（与视野同机制）");
     assert.ok(!("ranges" in u), "提交火力即归一：旧多圈删除");
     assert.strictEqual(u.note, "备注");
-    applyUnitForm(u, { 名称: "", faction: "", kind: "air", strength: "", speed: "0", range: "", note: "" });
+    applyUnitForm(u, { 名称: "", faction: "", kind: "spec", arm: "air", strength: "", speed: "0", range: "", note: "" });
     assert.strictEqual(u.名称, "新名", "名称留空=保留");
     assert.strictEqual(u.faction, null, "所属留空=中立");
-    assert.strictEqual(u.arm, "air");
+    assert.strictEqual(u.arm, "air", "军种可显式覆写——十一类无飞行档，飞行部队正由此入口保住");
+    assert.ok(!("strength" in u), "兵力留空=删键");
     assert.ok(!("speed" in u), "速度≤0=删键（回退兵种默认）");
     assert.ok(!("range" in u), "火力留空=删键");
+    applyUnitForm(u, { 名称: "", faction: "", kind: "lcav", strength: "800", speed: "", range: "", note: "" });
+    assert.strictEqual(u.arm, "land", "未传军种＝回落新兵种的默认（换兵种不留旧军种）");
+    assert.strictEqual(u.strength, 800, "单位缺省＝人");
   });
-  it("unitFireKm：单值优先、旧多圈只读回退首条", () => {
+  it("unitFireKm：单值优先、旧多圈只读回退首条、无投射能力的兵种恒 0", () => {
     const w = mkWorld();
     const u = addUnit(w, "军", 1, 1, 0, "u1");
+    u.kind = "rng";                      // 远程部队＝有投射能力
     assert.strictEqual(unitFireKm(u), 0);
     u.ranges = [{ 名称: "弓弩", km: 2 }, { km: 9 }];
     assert.strictEqual(unitFireKm(u), 2, "回退取首条");
     u.range = 3.5;
     assert.strictEqual(unitFireKm(u), 3.5, "单值优先");
+    /* 步/骑/后勤/侦察无远程投射：判据收在 unitFireKm 一处，数据留着也一律不成立 */
+    for (const k of ["linf", "hinf", "lcav", "hcav", "log", "scout"]) {
+      u.kind = k;
+      assert.strictEqual(unitFireKm(u), 0, `${k} 不该有火力圈`);
+    }
   });
   it("航点状态：setUnitWaypointStatus 设/清、同日改写保留 st、unitStatusAt 按航段取值", () => {
     const w = mkWorld();
@@ -942,6 +952,24 @@ describe("子工具自动开图层（隐藏层上放置＝幽灵编辑，切入�
     revealLayersFor("link");   // river 已开 → 无操作
     assert.strictEqual(layersSig.peek(), ref);
     layersSig.value = s0; linkTypeSig.value = "road";
+  });
+  /* 图层接线闭合（2026-07-29）：`wall` 曾只做了一半——LAYERS 与三个预设里都有，却漏进 IMPL_LAYERS，
+     于是 layersSig 没有 wall 键 → 面板无此行关不掉、applyPreset 只遍历现有键故「地理」也关不掉、
+     drawEdges 的 on("wall") 读到 undefined 恒为真＝永远画。下面两条断言各咬住其中一环。 */
+  it("图层接线闭合：IMPL_LAYERS ⊆ LAYERS 且预设列出的层都可开关", () => {
+    const ids = new Set(LAYERS.map(l => l.id));
+    for (const id of IMPL_LAYERS) assert.ok(ids.has(id), `IMPL_LAYERS 的 ${id} 不在 LAYERS`);
+    for (const [k, p] of Object.entries(PRESETS))
+      for (const id of Object.keys(p))
+        assert.ok(IMPL_LAYERS.includes(id), `预设「${k}」列了 ${id}，但它不在 IMPL_LAYERS＝applyPreset 关不掉它`);
+  });
+  it("applyPreset 真能关掉工事层（白名单外的预设）", () => {
+    const s0 = snap();
+    applyPreset("地理");
+    assert.strictEqual(layersSig.peek().wall, false, "地理预设不含工事＝须关掉");
+    applyPreset("战术");
+    assert.strictEqual(layersSig.peek().wall, true);
+    layersSig.value = s0;
   });
 });
 

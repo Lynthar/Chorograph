@@ -1,18 +1,24 @@
-/* 图例块（2026-07 特化·相位批）：只画进导出 PNG,不上画布。内容自动取图内实际出现的——
-   当刻在场派系、全体部队的兵种、动向里用过的状态徽章;全空=不画。
+/* 图例块（2026-07 特化·相位批）：只画进导出 PNG,不上画布。内容自动取图内**当刻**实际出现的——
+   在场派系、在场部队的兵种与状态徽章、图上用到的可靠性档位;全空=不画。
+   ⚠ 四行同一口径「这一帧真出现的」(2026-07-29 收口:原兵种取全体部队、状态取全时段用过的,
+   于是长平相位0 的图例里列着 t7 才入场的辎重)。代价=各帧图例高矮不一,如实即可。
    右下角锚、宣纸底衬同比例尺;色调恒定不随主题（同「出图垫纸色」裁决:产物不随主题变）。
    坐标系=CSS 像素（调用方先按 DPR scale,同 drawOverlay 之约）。 */
 import { CERTAINTY, CERTAINTY_ORDER, UNIT_KINDS, UNIT_STATUS } from "../core/constants.ts";
 import { activeAt } from "../core/time.ts";
+import { unitPos, unitStatusAt } from "../core/units.ts";
 import { drawStatusBadge } from "./units.ts";
 import type { World } from "../core/types.ts";
 
 const ROW = 17, PADX = 9, PADY = 8, SW = 22, MARGIN = 12;
 
-export function drawLegend(g: CanvasRenderingContext2D, world: World, T: number, cssW: number, cssH: number): void {
+/** reserveBottom=右下角已被屏幕角标注占去的高度（pinnedStackH）——图例据此上抬让位。 */
+export function drawLegend(g: CanvasRenderingContext2D, world: World, T: number, cssW: number, cssH: number,
+  reserveBottom = 0): void {
   const facs = (world.factions || []).filter(f => activeAt(f, T));
-  const kinds = [...new Set((world.units || []).map(u => u.kind))].filter(k => UNIT_KINDS[k]);
-  const stats = [...new Set((world.units || []).flatMap(u => (u.track || []).map(q => q.st || "")))].filter(s => UNIT_STATUS[s]);
+  const live = (world.units || []).filter(u => unitPos(u, T));   // 未入场/已离场的部队不进图例
+  const kinds = [...new Set(live.map(u => u.kind))].filter(k => UNIT_KINDS[k]);
+  const stats = [...new Set(live.map(u => unitStatusAt(u, T) || ""))].filter(s => UNIT_STATUS[s]);
   const rows: { label: string; draw: (x: number, y: number) => void }[] = [];
   for (const f of facs) rows.push({ label: f.名称 || f.id, draw: (x, y) => {
     g.fillStyle = f.color || "#888"; g.fillRect(x, y - 5, 14, 10);
@@ -46,7 +52,7 @@ export function drawLegend(g: CanvasRenderingContext2D, world: World, T: number,
   let wMax = 0;
   for (const r of rows) wMax = Math.max(wMax, g.measureText(r.label).width);
   const W = PADX * 2 + SW + wMax, H = PADY * 2 + rows.length * ROW;
-  const x0 = cssW - W - MARGIN, y0 = cssH - H - MARGIN;
+  const x0 = cssW - W - MARGIN, y0 = Math.max(MARGIN, cssH - H - MARGIN - reserveBottom);
   g.fillStyle = "rgba(246,239,220,.85)"; g.fillRect(x0, y0, W, H);
   g.strokeStyle = "rgba(90,74,38,.5)"; g.lineWidth = 1; g.strokeRect(x0, y0, W, H);
   rows.forEach((r, i) => {

@@ -17,7 +17,7 @@ import type { Leg } from "../core/units.ts";
 import type { Arm, Decor, Edge, Faction, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
 
 /** 新壳已实现的图层子集（未实现的不出现在面板上）。units/trails/ranges/vision 为战术图专属（tacOnly） */
-export const IMPL_LAYERS = ["terrain", "contour", "decor", "graticule", "politics", "range", "road", "river", "trade", "nodes", "labels", "notes", "events", "arrows", "units", "trails", "ranges", "vision"];
+export const IMPL_LAYERS = ["terrain", "contour", "decor", "graticule", "politics", "range", "road", "river", "trade", "wall", "nodes", "labels", "notes", "events", "arrows", "units", "trails", "ranges", "vision"];
 
 export const worldSig = signal<World | null>(null);
 export const yearSig = signal(3107);
@@ -416,6 +416,10 @@ function takeWhenNotes(): { text: string; err: boolean } | null {
   whenNotes = [];
   return { text, err };
 }
+/** 表单静默变形回执（通用出口）：与 parseWhenInput 共用同一条缓冲，由本次提交末尾那条回执捎走。
+    数值字段（兵力/速度）打不进合法值时，空删语义会把原值抹掉——同「只报不改」之规，说出来即可。 */
+export function noteFormWarn(text: string): void { noteWhen(text, true); }
+
 function noteWhen(text: string, err: boolean): void {
   whenNotes.push({ text, err });
   if (whenTimer) clearTimeout(whenTimer);

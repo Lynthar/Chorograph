@@ -2,7 +2,7 @@
    未选子工具＝选择态（editSubSig="select"），再点当前子工具＝退回选择（Shift+1~6 同序同语义）；
    各子工具上下文（涂域派系/时段层、地形生态/高程、布景印章、连线类型、⏳新对象时段）
    语义自旧编辑面板原样转写；笔刷数值与画布上方 fprops 浮条同信号联动。 */
-import { DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_STYLE, NODE_TYPES, parseComposite } from "../core/constants.ts";
+import { DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, nodeCatOf, parseComposite } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhen, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
 import { elevUnitM } from "../core/elev.ts";
 import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
@@ -190,17 +190,24 @@ function DecorCtx() {
   );
 }
 
-/** 地点（点）：落点类型预选 chips（柱B 增——同布景选印章/连线选线型之例;缺省城市=旧流程逐位）。
-    事件/标注不入 chips：事件=落点后类型下拉换型（evtype 语义在表单）、标注有专属「注」子工具 */
+/** 地点（点）：落点**类别**预选 chips（2026-07-30 由 16 个类型收成 4 类——一排全铺认不过来）。
+    落的是该类默认型，具体型在检查器表单里改（那儿的下拉只列本类）。
+    事件/标注不入四类：事件走表单「▽ 在此地新增事件点」、标注有专属「注」子工具 */
 function AddCtx() {
+  const cat = nodeCatOf(addTypeSig.value);
   return (
-    <div class="chips">
-      {NODE_TYPES.filter(t => t !== "event" && t !== "label").map(t => (
-        <button key={t} class="ch tr" aria-pressed={addTypeSig.value === t} onClick={() => { addTypeSig.value = t; }}>
-          {NODE_STYLE[t].sym}{NODE_STYLE[t].名}
-        </button>
-      ))}
-    </div>
+    <>
+      <div class="chips">
+        {NODE_CAT_ORDER.map(k => (
+          <button key={k} class="ch tr" aria-pressed={cat === k}
+            title={NODE_CATS[k].types.map(t => NODE_STYLE[t].名).join(" / ")}
+            onClick={() => { addTypeSig.value = NODE_CATS[k].def; }}>
+            {NODE_STYLE[NODE_CATS[k].def].sym}{NODE_CATS[k].名}
+          </button>
+        ))}
+      </div>
+      <div class="hint">落点为该类默认型「{NODE_STYLE[addTypeSig.value]?.名 || "城市"}」，具体类型在检查器表单里改</div>
+    </>
   );
 }
 

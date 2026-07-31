@@ -2,7 +2,7 @@
    点击＝选中（检查器出卡）并飞到当前时刻位置。「＋ 新增部队」＝先入列表（未入场，track 空），
    在检查器改名设属性，再按住列表项拖到地图放置（HTML5 DnD→画布 drop 落首航点）；画布点击恒为选择。
    ⚠超速标记只在选中部队的检查器卡里给出（可达性预算只算选中部队，见 boot 的 unitLegs effect）。 */
-import { unitKind, unitPos, unitSpeed } from "../core/units.ts";
+import { fmtStrength, unitKind, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../core/units.ts";
 import { addUnitUnplaced } from "./editops.ts";
 import { flyReqSig, isTacSig, mutateWorld, selSig, showToast, worldSig, yearSig } from "./state.ts";
 
@@ -38,7 +38,8 @@ export function UnitsPane() {
             const k = unitKind(u);
             const f = u.faction ? world.factions.find(x => x.id === u.faction) : null;
             const isSel = !!(sel && sel.kind === "unit" && sel.id === u.id);
-            const strength = u.strength != null ? String(u.strength).trim() : "";
+            const strength = fmtStrength(unitStrengthAt(u, T));
+            const morale = unitMoraleAt(u, T);
             const unplaced = !(u.track || []).length;
             return (
               <button key={u.id} class={"unit tr" + (isSel ? " sel" : "")} draggable={unplaced}
@@ -56,7 +57,7 @@ export function UnitsPane() {
                 }}>
                 <span class="bs" style={{ background: (f && f.color) || "var(--tg-kind)" }}>{k ? k.glyph : "旅"}</span>
                 <span class="un"><b>{u.名称 || "未命名部队"}</b>
-                  <span>{strength ? strength + " · " : ""}{unitSpeed(u)} km/日{unplaced ? " · 未入场·拖入地图放置" : ` · ${u.track.length} 航点`}</span></span>
+                  <span>{strength ? strength + " · " : ""}{morale != null ? `士气 ${morale} · ` : ""}{unitSpeedAt(u, T)} km/日{unplaced ? " · 未入场·拖入地图放置" : ` · ${u.track.length} 航点`}</span></span>
               </button>
             );
           })}
