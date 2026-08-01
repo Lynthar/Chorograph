@@ -7,12 +7,13 @@ import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenIn
 import { applyEdgeForm } from "./editops.ts";
 import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
 import type { Edge } from "../core/types.ts";
+import { tget } from "../core/util.ts";
 
 export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
   const box = useRef<HTMLDivElement>(null);
   const tac = isTacSig.value;
   const cal = calOf((worldSig.value?.meta || {}).calendar);
-  const st = EDGE_STYLE[e.type] || { 名: e.type };
+  const st = tget(EDGE_STYLE, e.type) || { 名: e.type };
   const kvText = (e.字段 && Object.keys(e.字段).length)
     ? Object.entries(e.字段).map(([k, v]) => `${k}：${v}`).join("\n")
     : (e.type === "river" ? RIVER_TMPL : e.type === "wall" ? WALL_TMPL : "");

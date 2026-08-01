@@ -8,7 +8,7 @@ import { edgeLenKm, polylineKm } from "../core/geometry.ts";
 import { calOf, fmtT, fmtWhen, fmtWhenRange } from "../core/calendar.ts";
 import { fmtStrength, unitArm, unitFacingAt, unitFireKm, unitFootKm, unitInheritedAt, unitKind, unitMoraleAt, unitPos, unitSpeedAt, unitStatusAt, unitStrengthAt } from "../core/units.ts";
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
-import { fmtKm } from "../core/util.ts";
+import { fmtKm, tget } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
 import { clearOpSel, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
 import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
@@ -33,7 +33,7 @@ const editingNow = () => inspEditSig.value || modeSig.value === "edit";
 
 /** 可靠性胶囊文案（柱B）：确证＝不出胶囊（缺省无须声明），推断/传说才标出 */
 const certLabel = (v: unknown): string | null =>
-  (typeof v === "string" && CERTAINTY[v] && CERTAINTY[v].名) || null;
+  tget(CERTAINTY, v)?.名 || null;
 
 /** Obsidian 双链行（对齐旧 linkRow/bindCopy） */
 function LinkRow({ target }: { target?: string }) {
@@ -61,11 +61,11 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
   const cal = calOf((world.meta || {}).calendar);
   const isEv = n.type === "event";
   const isLabel = n.type === "label";
-  const et = EVENT_TYPES[String(n.evtype)] || EVENT_TYPES.battle;
+  const et = tget(EVENT_TYPES, n.evtype) || EVENT_TYPES.battle;
   const isBattle = isEv && (!n.evtype || n.evtype === "battle");
   const fid = ownerAt(n, y);
   const f = fid ? world.factions.find(x => x.id === fid) : null;
-  const s = NODE_STYLE[n.type] || NODE_STYLE.city;
+  const s = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
   const diaRef = useRef<HTMLInputElement>(null);   // 生成战术图直径（内联数字框，去 prompt）
   if (editingNow()) {
     return <><CardHead title={`编辑 · ${n.名称 || n.id}`} /><NodeForm key={n.id} n={n} /></>;
@@ -196,7 +196,7 @@ function FactionCard({ f, world }: { f: Faction; world: World }) {
 function EdgeCard({ e, idx, world }: { e: Edge; idx: number; world: World }) {
   const tac = isTacSig.value;
   const cal = calOf((world.meta || {}).calendar);
-  const st = EDGE_STYLE[e.type] || { color: "#888", w: 2, 名: e.type };
+  const st = tget(EDGE_STYLE, e.type) || { color: "#888", w: 2, 名: e.type };
   const a = world.nodes.find(n => n.id === e.from), b = world.nodes.find(n => n.id === e.to);
   const free = Array.isArray(e.pts) && e.pts.length >= 2;   // 自由画河：无两端、沿 pts 量长
   const len = free ? polylineKm(world.meta, e.pts!) : (a && b ? edgeLenKm(world.meta, a, b, e.type, (e.from || "") + (e.to || "")) : 0);
@@ -271,7 +271,8 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
                 <option value="" selected={!q.st}>常态</option>
                 {Object.entries(UNIT_STATUS).map(([k, d]) => <option key={k} value={k} selected={q.st === k}>{d.名}</option>)}
               </select>
-            </> : (q.st && UNIT_STATUS[q.st] ? <> <span class="tg" style={{ background: UNIT_STATUS[q.st].color, padding: "1px 6px" }}>{UNIT_STATUS[q.st].名}</span></> : null)}
+            </> : (() => { const sd = tget(UNIT_STATUS, q.st);
+              return sd ? <> <span class="tg" style={{ background: sd.color, padding: "1px 6px" }}>{sd.名}</span></> : null; })()}
             {/* 朝向（柱B）：只在有足印时露面——无阵位条时填了也看不出来 */}
             {foot && (full
               ? <>{" "}
@@ -326,13 +327,13 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
       <div class="tags">
         {f && <span class="tg" style={{ background: f.color || "#888" }}>{f.名称 || f.id}</span>}
         <span class="tg" style={{ background: "var(--tg-kind)" }}>{k ? `${k.glyph} ${k.名}` : (u.kind || "部队")}</span>
-        {(() => { const st = p ? unitStatusAt(u, T) : null; const sd = st ? UNIT_STATUS[st] : null;
+        {(() => { const st = p ? unitStatusAt(u, T) : null; const sd = tget(UNIT_STATUS, st) || null;
           return sd ? <span class="tg" style={{ background: sd.color }}>{sd.名}</span> : null; })()}
       </div>
       <div class="kv2">
         {strength && <><b>兵力</b><span class="num">{strength}</span></>}
         {morale != null && <><b>士气</b><span class="num">{morale} / 100</span></>}
-        <b>速度</b><span class="num">{unitSpeedAt(u, T)} km/日 · {ARM_NAME[unitArm(u)] || "陆行"}</span>
+        <b>速度</b><span class="num">{unitSpeedAt(u, T)} km/日 · {tget(ARM_NAME, unitArm(u)) || "陆行"}</span>
         <b>当前({fmtWhen(cal, tac, T)})</b><span class="num">{p ? `${p.lon.toFixed(3)}° · ${p.lat.toFixed(3)}°` : "未入场 / 已离场"}</span>
         {unitFireKm(u) > 0 && <><b>火力圈</b><span class="num">{unitFireKm(u)} km</span></>}
         {typeof u.vision === "number" && u.vision > 0 && <><b>视野圈</b><span class="num">{u.vision} km</span></>}
@@ -358,7 +359,7 @@ function DecorCard({ d, world }: { d: Decor; world: World }) {
   const cal = calOf((world.meta || {}).calendar);
   const isImg = typeof d.kind === "string" && d.kind.startsWith("img:");
   const size = d.size ?? 1;
-  const kindName = isImg ? "自定义印章" : (DECOR[d.kind]?.名 || d.kind);
+  const kindName = isImg ? "自定义印章" : (tget(DECOR, d.kind)?.名 || d.kind);
   const patch = (p: Partial<Decor>) => mutateWorld(w => { const x = (w.decor || []).find(y => y.id === d.id); if (x) Object.assign(x, p); });
   return (
     <>
@@ -411,7 +412,7 @@ function MultiCard({ nodes, units, decors, world }: { nodes: WorldNode[]; units:
         {nodes.map(n => {
           const fid = ownerAt(n, y);
           const f = fid ? world.factions.find(x => x.id === fid) : null;
-          const s = NODE_STYLE[n.type] || NODE_STYLE.city;
+          const s = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
           return (
             <button key={n.id} class="row tr" onClick={() => { selSig.value = { kind: "node", id: n.id }; }}>
               <span class="dot" style={{ background: (f && f.color) || "var(--tg-neutral)" }} />
@@ -436,7 +437,7 @@ function MultiCard({ nodes, units, decors, world }: { nodes: WorldNode[]; units:
           return (
             <button key={d.id} class="row tr" onClick={() => { selSig.value = { kind: "decor", id: d.id }; }}>
               <span class="dot" style={{ background: "var(--tg-decor)" }} />
-              <span class="nm">{isImg ? "自定义印章" : (DECOR[d.kind]?.名 || d.kind)}</span>
+              <span class="nm">{isImg ? "自定义印章" : (tget(DECOR, d.kind)?.名 || d.kind)}</span>
               <span class="eye">布景</span>
             </button>
           );

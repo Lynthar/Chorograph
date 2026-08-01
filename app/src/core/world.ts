@@ -3,6 +3,7 @@
    改这里的任何分支都是行为变更——旧档打开后的内容会跟着变，先想兼容。 */
 import { LEGACY_KIND, LEGACY_TYPE, EVENT_TYPES, UNIT_KINDS } from "./constants.ts";
 import { parseStrength } from "./units.ts";
+import { tget } from "./util.ts";
 import type { BBox, CalendarCfg, GenStyle, TerrainMode, World, WorldModel } from "./types.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- 入参是任意外部 JSON，宽松索引即语义 */
@@ -42,13 +43,13 @@ export function normalizeWorld(w: unknown): World {
     u.track.sort((a: any, b: any) => a.t - b.t);
     /* 旧兵种键就地升级（2026-07-30 整表换代，同上面 LEGACY_TYPE 之例）：旧速度/军种与新键不同者
        落成显式 speed/arm——否则旧档的行军里程账会因换表凭空变快变慢。 */
-    const lg = (LEGACY_KIND as any)[u.kind];
+    const lg = tget(LEGACY_KIND, u.kind);
     if (lg) {
-      if (!(+u.speed > 0) && lg.v !== (UNIT_KINDS as any)[lg.to].v) u.speed = lg.v;
+      if (!(+u.speed > 0) && lg.v !== UNIT_KINDS[lg.to].v) u.speed = lg.v;
       if (!u.arm) u.arm = lg.arm;
       u.kind = lg.to;
     }
-    if (!u.arm) u.arm = ((UNIT_KINDS as any)[u.kind] || {}).arm || "land";
+    if (!u.arm) u.arm = (tget(UNIT_KINDS, u.kind) || {}).arm || "land";
     /* 兵力归一为「人」数值（2026-07-30）：旧的自由文本多是史料注记（「号称二十万（实数无定论）」
        「中军·大将旗」），换成数值字段不能把它们凭空丢掉——挪进「说明」保住内容再删键。 */
     const sv = parseStrength(u.strength);
@@ -66,8 +67,8 @@ export function normalizeWorld(w: unknown): World {
     });
   });
   o.nodes.forEach((n: any) => {
-    if ((LEGACY_TYPE as any)[n.type]) n.type = LEGACY_TYPE[n.type];             // 旧地点类型自动升级
-    if (n.type === "event" && !(EVENT_TYPES as any)[n.evtype]) n.evtype = "battle"; // v0.11：旧事件点默认=战役
+    const lt = tget(LEGACY_TYPE, n.type); if (lt) n.type = lt;                  // 旧地点类型自动升级
+    if (n.type === "event" && !tget(EVENT_TYPES, n.evtype)) n.evtype = "battle";   // v0.11：旧事件点默认=战役
     if (Array.isArray(n.owners)) n.owners = n.owners.filter(isRec);
     if (Array.isArray(n.ops)) n.ops = n.ops.filter((op: any) => {   // 作战线折线净化（同 edges.pts；渲染/拾取对 null 成员会崩）
       if (!isRec(op) || !Array.isArray(op.pts)) return false;

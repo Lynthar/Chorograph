@@ -12,6 +12,7 @@ import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, opDrawSig, p
 import { addEventNear, addOwner, applyNodeForm, changeNodeType, moveNode, removeOwner, updateOwner } from "./editops.ts";
 import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
 import type { WorldNode } from "../core/types.ts";
+import { tget } from "../core/util.ts";
 
 /** 战役事件点的作战线列表 + 画线按钮（对齐旧 nodeEditForm 作战线段）。
     每条线的编辑（派系/部队/标注/粗细/翻转/删除）在地图上的悬浮框 OpBox。 */
@@ -119,7 +120,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
   const isEv = n.type === "event";
   const isLabel = n.type === "label";
   const cat = nodeCatOf(n.type);   // 类型两级选择的当前类别；null=事件/标注/未知型
-  const evt = EVENT_TYPES[String(n.evtype)] ? String(n.evtype) : "battle";
+  const evt = tget(EVENT_TYPES, String(n.evtype)) ? String(n.evtype) : "battle";
   const isBattle = isEv && evt === "battle";
   const fsCur = String(n.fs || 13);
   const kvText = (n.字段 && Object.keys(n.字段).length)
@@ -158,7 +159,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
   /* 改类型：先记脏字段（改选即重渲表单，重挂的控件会被重置＝未保存输入蒸发），提交后补回 */
   const setType = (t: string) => {
     captureDirty();
-    mutateWorld(w => { const x = w.nodes.find(y => y.id === n.id); if (x) changeNodeType(x, t, yearSig.peek(), v => !!EVENT_TYPES[String(v)]); });
+    mutateWorld(w => { const x = w.nodes.find(y => y.id === n.id); if (x) changeNodeType(x, t, yearSig.peek(), v => !!tget(EVENT_TYPES, String(v))); });
   };
   const del = () => deleteNodeAt(n.id);
   const addEv = () => {

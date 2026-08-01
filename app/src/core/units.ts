@@ -2,12 +2,13 @@
    自旧实现原样迁移并纯化——unitLegs 不再内建缓存（渲染帧不许触发 A*，
    缓存与失效由调用层管理，同旧版 state._legs 的角色）。 */
 import { UNIT_KINDS } from "./constants.ts";
+import { tget } from "./util.ts";
 import { distKm, kmPerDegLat, toRad } from "./geo.ts";
 import { astar } from "./route.ts";
 import type { Grid } from "./grid.ts";
 import type { Arm, Meta, TrackPt, Unit } from "./types.ts";
 
-export function unitKind(u: Unit) { return UNIT_KINDS[u.kind] || null; }
+export function unitKind(u: Unit) { return tget(UNIT_KINDS, u.kind) || null; }
 export function unitArm(u: Unit): Arm { return (u.arm || (unitKind(u) || {} as { arm?: Arm }).arm || "land") as Arm; }
 export function unitSpeed(u: Unit): number { return +(u.speed || 0) || (unitKind(u) || {} as { v?: number }).v || 30; }
 

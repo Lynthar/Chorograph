@@ -9,7 +9,7 @@ import { NODE_STYLE, RANK_ZOOM, certaintyStyle } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { project, type Camera } from "../core/projection.ts";
 import { kmPerDegLat, toRad } from "../core/geo.ts";
-import { hexA } from "../core/util.ts";
+import { hexA, tget } from "../core/util.ts";
 import type { LabelField } from "./labels.ts";
 import type { Meta, World, WorldNode } from "../core/types.ts";
 import type { OverlayOpts } from "./overlay.ts";
@@ -179,7 +179,7 @@ function shapePath(ctx: CanvasRenderingContext2D, x: number, y: number, r: numbe
   }
 }
 function drawNodeMark(ctx: CanvasRenderingContext2D, n: WorldNode, x: number, y: number, col: string, dash?: number[] | null) {
-  const s = NODE_STYLE[n.type] || NODE_STYLE.city;
+  const s = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
   shapePath(ctx, x, y, s.r, s.shape); ctx.fillStyle = "#fff"; ctx.fill();
   ctx.lineWidth = 2; ctx.strokeStyle = col;
   if (dash) ctx.setLineDash(dash);       // 可靠性：推断/传说＝描边转虚线（柱B）
@@ -205,7 +205,7 @@ export function nodeVisibleAt(n: WorldNode, cam: Camera, yearNow: number, opts: 
   if (n.type === "event" && L.events === false) return false;
   if (n.type === "label" && L.notes === false) return false;
   if (opts.editing) return true;                       // 编辑也按当年世界编辑，但全部地点可见
-  const s = NODE_STYLE[n.type] || NODE_STYLE.city;
+  const s = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
   return cam.degPerPx <= RANK_ZOOM[s.rank == null ? 2 : s.rank];
 }
 export function drawNodes(
@@ -218,7 +218,7 @@ export function drawNodes(
   /* 占位次序＝让位次序：标注最先（不让位）→ 当日事件（战场焦点，2026-07 提级）→ 地名按 rank；
      部队标签在 drawUnits（同场、更后）——部队让地名（用户拍板：地点语义上固定不动，标签该稳）。 */
   const keyOf = (n: WorldNode): number => n.type === "label" ? -2
-    : (n.type === "event" && n.year === yearNow ? -1 : ((NODE_STYLE[n.type] || NODE_STYLE.city).rank || 0));
+    : (n.type === "event" && n.year === yearNow ? -1 : ((tget(NODE_STYLE, n.type) || NODE_STYLE.city).rank || 0));
   const order = world.nodes.slice().sort((a, b) => keyOf(a) - keyOf(b));
   for (const n of order) {
     const selected = n.id === opts.selId || multiSet.has(n.id);
@@ -231,7 +231,7 @@ export function drawNodes(
       continue;
     }
     const [x, y] = project(cam, n.lon, n.lat);
-    const s = NODE_STYLE[n.type] || NODE_STYLE.city;
+    const s = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
     const isEv = n.type === "event";
     if (isEv && n.year != null && n.year > yearNow) ctx.globalAlpha = 0.35;   // 未发生的事件淡显
     const cs = certaintyStyle(n.certainty, "node");   // 可靠性（柱B）：虚描/淡显/问号；确证＝逐位不变
@@ -283,7 +283,7 @@ export function drawNodeRanges(
   for (const n of world.nodes) {
     if (!(typeof n.radiusKm === "number" && n.radiusKm > 0)) continue;
     const selected = n.id === selId;
-    const st = NODE_STYLE[n.type] || NODE_STYLE.city;
+    const st = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
     const visible = activeAt(n, yearNow) && cam.degPerPx <= (RANK_ZOOM[st.rank] ?? Infinity);
     if (!visible && !selected) continue;
     const dLat = n.radiusKm / kpd;

@@ -7,6 +7,7 @@ import { phaseIndexAt, phasesOf } from "../core/time.ts";
 import { addPhaseAt, removePhaseAt, renamePhase } from "./editops.ts";
 import { clearOpSel, flyReqSig, isTacSig, mutateWorld, selSig, showToast, stopPlay, worldSig, yearSig } from "./state.ts";
 import type { World } from "../core/types.ts";
+import { tget } from "../core/util.ts";
 
 /** 相位行内短时刻：战役图内年份是常量,行内只报「几月几日 时刻」（同坞轨标签式）,
     全格式（含纪年）留给悬停提示——否则挤瘪改名框。 */
@@ -70,7 +71,7 @@ export function EventsPane() {
       <div class="rows" id="ev-list">
         {evs.map(ev => {
           const y = ev.year as number;
-          const et = EVENT_TYPES[ev.evtype as string] || EVENT_TYPES.battle;
+          const et = tget(EVENT_TYPES, ev.evtype) || EVENT_TYPES.battle;
           const isSel = !!(sel && sel.kind === "node" && sel.id === ev.id);
           return (
             <button key={ev.id}

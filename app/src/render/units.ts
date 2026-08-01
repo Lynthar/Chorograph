@@ -8,7 +8,7 @@ import { fmtStrength, footCornersLL, unitFacingAt, unitFireKm, unitFootKm, unitK
 import { pointInPoly } from "../core/geometry.ts";
 import { UNIT_STATUS } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
-import { hexA } from "../core/util.ts";
+import { hexA, tget } from "../core/util.ts";
 import type { LabelField } from "./labels.ts";
 import type { Meta, Unit, World } from "../core/types.ts";
 
@@ -47,7 +47,7 @@ export function drawStatusBadge(ctx: CanvasRenderingContext2D, bx: number, by: n
     st=状态：交战=红色外框光晕+徽章、对峙=琥珀徽章、溃退=虚线框+徽章（缺省行军无饰） */
 function drawUnitSymbol(ctx: CanvasRenderingContext2D, x: number, y: number, world: World, u: Unit, selMe: boolean, st?: string | null): void {
   const W = 26, H = 17, col = boxColor(world, u);
-  const sd = st ? UNIT_STATUS[st] : null;
+  const sd = tget(UNIT_STATUS, st) || null;
   ctx.save();
   if (selMe) { ctx.shadowColor = "#d4b24a"; ctx.shadowBlur = 10; }
   ctx.fillStyle = "rgba(24,26,30,.78)";
@@ -72,7 +72,7 @@ function drawUnitSymbol(ctx: CanvasRenderingContext2D, x: number, y: number, wor
     兵种字正立在阵中（不随条转,斜排汉字不可读）,状态语言与标准框同规（溃退虚框/交战红芯/徽章）。 */
 function drawUnitBar(ctx: CanvasRenderingContext2D, pts: [number, number][], world: World, u: Unit, selMe: boolean, st?: string | null): void {
   const col = boxColor(world, u);
-  const sd = st ? UNIT_STATUS[st] : null;
+  const sd = tget(UNIT_STATUS, st) || null;
   const trace = () => { ctx.beginPath(); pts.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath(); };
   ctx.save();
   ctx.lineJoin = "round";

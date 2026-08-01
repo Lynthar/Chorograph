@@ -15,6 +15,7 @@ import { removeDecor, removeEdgeAt, removeFaction, removeNode, removeUnit } from
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Arm, Decor, Edge, Faction, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
+import { tget } from "../core/util.ts";
 
 /** 新壳已实现的图层子集（未实现的不出现在面板上）。trails/ranges/vision 为战术图专属（tacOnly）；
     units 两种图都画（2026-07-31 起战略图可摆基础部队） */
@@ -224,7 +225,7 @@ export function deleteEdgeIdx(idx: number): void {
   const w = worldSig.peek();
   const e = w && w.edges[idx];
   if (!e) return;
-  const 名 = (EDGE_STYLE[e.type] || { 名: e.type }).名;
+  const 名 = (tget(EDGE_STYLE, e.type) || { 名: e.type }).名;
   mutateWorld(x => removeEdgeAt(x, idx));
   const s = selSig.peek();
   if (s && s.kind === "edge" && s.idx === idx) selSig.value = null;
@@ -321,7 +322,7 @@ export function setWorldState(w: World): void {
 
 /** 图层预设一键切换（未实现图层忽略） */
 export function applyPreset(name: string): void {
-  const p = PRESETS[name];
+  const p = tget(PRESETS, name);   // name 可来自 #preset= —— 原型键取到 Object.prototype 是真值，早退兜不住
   if (!p) return;
   layersSig.value = Object.fromEntries(Object.keys(layersSig.peek()).map(id => [id, !!p[id]]));
 }
@@ -383,7 +384,7 @@ const SUB_LAYERS: Partial<Record<EditSub, string[]>> = {
   label: ["nodes", "notes"], unit: ["units"],
 };
 export function revealLayersFor(s: EditSub): void {
-  const ids = s === "link" ? [linkTypeSig.peek()] : SUB_LAYERS[s];
+  const ids = s === "link" ? [linkTypeSig.peek()] : tget(SUB_LAYERS, s);   // s 可来自 #sub= —— 原型键取到的不是数组
   const cur = layersSig.peek();
   const off = (ids || []).filter(id => cur[id] === false);
   if (off.length) layersSig.value = { ...cur, ...Object.fromEntries(off.map(id => [id, true])) };

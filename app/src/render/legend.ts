@@ -6,6 +6,7 @@
    坐标系=CSS 像素（调用方先按 DPR scale,同 drawOverlay 之约）。 */
 import { CERTAINTY, CERTAINTY_ORDER, UNIT_KINDS, UNIT_STATUS } from "../core/constants.ts";
 import { activeAt } from "../core/time.ts";
+import { tget } from "../core/util.ts";
 import { unitPos, unitStatusAt } from "../core/units.ts";
 import { drawStatusBadge } from "./units.ts";
 import type { World } from "../core/types.ts";
@@ -17,8 +18,8 @@ export function drawLegend(g: CanvasRenderingContext2D, world: World, T: number,
   reserveBottom = 0): void {
   const facs = (world.factions || []).filter(f => activeAt(f, T));
   const live = (world.units || []).filter(u => unitPos(u, T));   // 未入场/已离场的部队不进图例
-  const kinds = [...new Set(live.map(u => u.kind))].filter(k => UNIT_KINDS[k]);
-  const stats = [...new Set(live.map(u => unitStatusAt(u, T) || ""))].filter(s => UNIT_STATUS[s]);
+  const kinds = [...new Set(live.map(u => u.kind))].filter(k => tget(UNIT_KINDS, k));
+  const stats = [...new Set(live.map(u => unitStatusAt(u, T) || ""))].filter(s => tget(UNIT_STATUS, s));
   const rows: { label: string; draw: (x: number, y: number) => void }[] = [];
   for (const f of facs) rows.push({ label: f.名称 || f.id, draw: (x, y) => {
     g.fillStyle = f.color || "#888"; g.fillRect(x, y - 5, 14, 10);

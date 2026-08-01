@@ -13,6 +13,7 @@ import { DEPTH_RATIO, unitArm, unitFireKm, unitFootKm, unitKind } from "../core/
 import { applyUnitForm } from "./editops.ts";
 import { deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, noteFormWarn, showToast, worldSig } from "./state.ts";
 import type { Arm, Unit } from "../core/types.ts";
+import { tget } from "../core/util.ts";
 
 export function UnitForm({ u }: { u: Unit }) {
   const box = useRef<HTMLDivElement>(null);
@@ -23,7 +24,7 @@ export function UnitForm({ u }: { u: Unit }) {
      移动方式同为受控——它随兵种出现/消失，靠 querySelector 写 DOM 会在「刚出现的那一帧」扑空。 */
   const [kind, setKind] = useState(u.kind || "linf");
   const [arm, setArm] = useState<Arm>(unitArm(u));
-  const kd = UNIT_KINDS[kind] || UNIT_KINDS.linf;
+  const kd = tget(UNIT_KINDS, kind) || UNIT_KINDS.linf;
   const kDef = kd.v;
   const armOn = armOptional(kind);
   const foot = unitFootKm(u);

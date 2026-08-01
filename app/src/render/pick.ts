@@ -4,6 +4,8 @@
 import { activeAt, opVisibleAt } from "../core/time.ts";
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { chaikinOpen } from "../core/geometry.ts";
+import { EDGE_STYLE } from "../core/constants.ts";
+import { tget } from "../core/util.ts";
 import { nodeVisibleAt, noteHit, noteMeasure, type NodeGateOpts, type NoteMeasure } from "./nodes.ts";
 import { riverWpx } from "./edges.ts";
 import type { Edge, Meta, World, WorldNode } from "../core/types.ts";
@@ -28,6 +30,10 @@ export function pickEdge(
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
     world.edges.forEach((e, idx) => {
+      /* 未知线型（手编档/他人分享档的自由字符串）drawEdges 一律不画，这里必须同门——否则
+         图上什么都没有却悬停得中、点得中，破「拾取绘制同源」；那条隐形命中曾把未转义的
+         type 原文送进 #tip 的 innerHTML。要改这条数据得走搜索框选中→检查器，不从画布走。 */
+      if (!tget(EDGE_STYLE, e.type)) return;
       if (layers && layers[e.type] === false) return;   // 图层关了不拾取
       if (!activeAt(e, yearNow)) return;
       const tol = e.type === "river" ? Math.max(6, riverWpx(meta, cam, e) / 2 + 4) : 6;

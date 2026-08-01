@@ -12,7 +12,7 @@ import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
-import { ARM_OPT_KINDS, EDGE_STYLE, LEGACY_KIND, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, nodeCatOf, terrainProps } from "../src/core/constants.ts";
+import { ARM_OPT_KINDS, EDGE_STYLE, LEGACY_KIND, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
 import { fmtStrength, parseStrength, unitInheritedAt, unitMoraleAt, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { wallTeeth } from "../src/render/edges.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
@@ -20,7 +20,7 @@ import { blankWorld, countsOf, normalizeWorld } from "../src/core/world.ts";
 import { blankTacticalWorld, createTacticalWorld, tacDiaDeg } from "../src/core/tactical.ts";
 import { paintStep, resamplePaintCells, territoryLoops } from "../src/core/territory.ts";
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
-import { pickDecor } from "../src/render/decor.ts";
+import { drawDecor, pickDecor } from "../src/render/decor.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 import { validateWorld } from "../src/core/validate.ts";
 import { readFileSync } from "node:fs";
@@ -674,6 +674,53 @@ describe("存档校验 validateWorld", () => {
   it("真史示例世界：零 fatal（井陉之战战术图）", () => {
     const sample = JSON.parse(readFileSync(new URL("../../井陉之战-战术.json", import.meta.url), "utf8"));
     assert.deepStrictEqual(validateWorld(sample).fatal, []);
+  });
+  /* 原型键名对抗（2026-08）：查表的键名也是用户数据。`k in TABLE` / `TABLE[k] || 缺省` 沿原型链
+     取得到 toString/constructor/__proto__ 这些继承成员，于是校验说「认识这个键」、缺省又兜不住
+     （函数是真值）。现有测试只锁了「normalize 能整形 ⇒ 不 fatal」这一个方向，缺的正是反向性质：
+     **校验说 ok ⇒ 开图不崩、判据不撒谎**。判据收在 core/util.tget 一处。 */
+  const PROTO_KEYS = ["toString", "valueOf", "constructor", "hasOwnProperty", "__proto__", "isPrototypeOf",
+    "propertyIsEnumerable", "toLocaleString", "__defineGetter__", "__lookupGetter__"];
+  it("原型键名：查表判据不认继承成员（校验照常给出「未知××」警告）", () => {
+    for (const k of PROTO_KEYS) {
+      assert.strictEqual(isValidTerrain(k), false, `isValidTerrain(${k}) 应为假`);
+      assert.strictEqual(isValidTerrain("plain/" + k), false, `isValidTerrain(plain/${k}) 应为假`);
+      assert.deepStrictEqual(parseComposite(k), ["plain", "none"], `parseComposite(${k}) 应回落`);
+      assert.deepStrictEqual(parseComposite("plain/" + k), ["plain", "none"]);
+      assert.strictEqual(certaintyStyle(k, "node").名, null, `certaintyStyle(${k}) 应按确证`);
+      const w = { meta: {}, nodes: [{ id: "a", type: k, lon: 1, lat: 2 }, { id: "b", type: "city", lon: 3, lat: 4, certainty: k }],
+        edges: [{ from: "a", to: "b", type: k }], decor: [{ id: "d", kind: k, lon: 1, lat: 2 }],
+        units: [{ id: "u", kind: k, track: [] }], terrainOverrides: [{ lon: 1, lat: 2, t: k }] };
+      const r = validateWorld(w);
+      assert.strictEqual(r.ok, true, `${k}：不该 fatal（旧档无损打开红线）`);
+      const text = r.warnings.map(i => i.path).join("|");
+      for (const frag of ["nodes[0].type", "nodes[1].certainty", "edges[0].type", "decor[0].kind", "units[0].kind", "terrainOverrides[0].t"])
+        assert.ok(text.includes(frag), `${k}：应报「${frag} 未知」，实得 ${text}`);
+    }
+  });
+  /* 2D 上下文替身：drawDecor 只调这些方法、属性一律可写——够锁住「选中即崩」那条链
+     （PRIM_BOX[kind] 取到继承来的函数、对着它解构 → TypeError → 每帧「⚠ 渲染帧异常」）。 */
+  const fakeCtx = (): CanvasRenderingContext2D => new Proxy({} as Record<string | symbol, unknown>, {
+    get: (t, k) => (k in t ? t[k] : () => {}),
+    set: (t, k, v) => { t[k] = v; return true; }
+  }) as unknown as CanvasRenderingContext2D;
+  it("原型键名：校验放行的档 normalize + 建网格 + 拾取 + 绘制全不崩", () => {
+    for (const k of PROTO_KEYS) {
+      const w = normalizeWorld({ meta: { bbox: { lonMin: 0, lonMax: 4, latMin: 0, latMax: 4 } },
+        nodes: [{ id: "a", type: k, lon: 1, lat: 2 }, { id: "b", type: "city", lon: 3, lat: 2 }],
+        edges: [{ from: "a", to: "b", type: k }], decor: [{ id: "d", kind: k, lon: 2, lat: 2 }],
+        units: [{ id: "u", kind: k, track: [] }], terrainOverrides: [{ lon: 1, lat: 2, t: k }] });
+      assert.strictEqual(typeof w.nodes[0].type, "string", `${k}：地点类型不该被写成继承来的对象/函数`);
+      const g = buildGridCells(w.meta, w.terrainOverrides, 0);   // 开图必经：原先 canonComposite 在此 TypeError＝整张图再打不开
+      assert.strictEqual(terrainProps(g.cells[2][1]).land > 0, true, `${k}：涂改格的通行代价不该是 NaN`);
+      const cam: Camera = { lon0: 2, lat0: 2, degPerPx: 0.05, w: 200, h: 200, flat: false };
+      // 未知印章仍可点选＝既定设计（PRIM_BOX_DEF 头注：旧档/未来基元取包络上界，选得中才修得掉）；
+      // 要锁的是它被选中时不再崩——原先 DECOR_BASE[kind] 是函数使 s=NaN，选中即解构继承来的函数。
+      const d = pickDecor(cam, w.meta, w, 0, 100, 100);
+      assert.ok(d, `${k}：未知印章仍应可点选（否则改不掉它）`);
+      assert.doesNotThrow(() => drawDecor(fakeCtx(), cam, w, 0, 1, { id: d!.id, ids: null }), `${k}：选中未知印章不该抛`);
+      assert.strictEqual(pickEdge(cam, w.meta, w, 0, 100, 100), null, `${k}：画不出来的连线不该点得中（拾取绘制同源）`);
+    }
   });
   it("量级闸：超大数组 / 超大 bbox 跨度 = fatal（防损坏或恶意分享档冻结）", () => {
     const huge = new Array(200001).fill({ id: "x", type: "city", lon: 1, lat: 2 });

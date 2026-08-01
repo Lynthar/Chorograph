@@ -1,5 +1,6 @@
 /* 领域常量（自 v0.14 index.html 原样迁移；黄金基准测试与旧实现深度比对——
    改这里的任何数值都是行为变更，须先想清楚旧存档兼容）。 */
+import { tget } from "./util.ts";
 import type { Arm, Ecotype, Landform, TerrainId } from "./types.ts";
 
 /* 8 种地形：显示名 / 陆军寻路代价 / 底色 */
@@ -196,7 +197,7 @@ for (const k of CERTAINTY_ORDER) {
 }
 /** 可靠性 → 渲染样式（纯映射，绘制与图例同源）。地点与连线虚线节奏不同（记号小、线长） */
 export function certaintyStyle(v: unknown, kind: "node" | "edge"): CertaintyStyle {
-  return (typeof v === "string" && CERT_STYLES[kind][v]) || CERT_SURE;
+  return tget(CERT_STYLES[kind], v) || CERT_SURE;
 }
 
 /* 行军速度(km/日)——按移动方式给速度档（通用默认值） */
@@ -310,10 +311,10 @@ const LEGACY_COMPOSITES = new Set<string>(Object.values(LEGACY_TO_COMPOSITE));
 /** 复合串 → [地貌, 生态]（生态缺省 none；非法地貌→plain、非法生态→none）。
     旧 TerrainId（如 "forest"）先归一到其 canonical 复合串（"plain/forest"）再拆。 */
 export function parseComposite(cell: string): [Landform, Ecotype] {
-  const c = cell in LEGACY_TO_COMPOSITE ? LEGACY_TO_COMPOSITE[cell as TerrainId] : (cell || "plain");
+  const c = tget(LEGACY_TO_COMPOSITE, cell) ?? (cell || "plain");
   const parts = c.split("/");
-  const lf = parts[0] in LANDFORM ? parts[0] : "plain";
-  const eco = parts[1] && parts[1] in ECO ? parts[1] : "none";
+  const lf = tget(LANDFORM, parts[0]) ? parts[0] : "plain";
+  const eco = tget(ECO, parts[1]) ? parts[1] : "none";
   return [lf as Landform, eco as Ecotype];
 }
 /** 规范化为 canonical 复合串（eco=none 省略；旧 id 亦归一） */
@@ -325,7 +326,7 @@ export function canonComposite(cell: string): string {
 export function flattenTerrain(cell: string): TerrainId {
   const [lf, eco] = parseComposite(cell);
   if (eco === "forest" || eco === "desert" || eco === "marsh") return eco;
-  return (lf in TERRAIN ? lf : "plain") as TerrainId;
+  return (tget(TERRAIN, lf) ? lf : "plain") as TerrainId;
 }
 
 export interface TerrainProps { lf: Landform; eco: Ecotype; 名: string; land: number; color: string; tint: [number, number, number] | null; elev: number; relief: number; water: boolean; scatter: EcoScatter[] }
@@ -372,10 +373,10 @@ export function allComposites(): string[] {
 }
 /** 复合串是否合法（validate 白名单）：旧 8 类，或 "地貌"/"地貌/生态"（各部分在 LANDFORM/ECO 表内） */
 export function isValidTerrain(cell: string): boolean {
-  if (cell in LEGACY_TO_COMPOSITE) return true;
+  if (tget(LEGACY_TO_COMPOSITE, cell)) return true;
   const parts = cell.split("/");
-  if (!(parts[0] in LANDFORM)) return false;
-  return parts.length === 1 || (parts.length === 2 && parts[1] in ECO);
+  if (!tget(LANDFORM, parts[0])) return false;
+  return parts.length === 1 || (parts.length === 2 && !!tget(ECO, parts[1]));
 }
 
 /* 势力涂域格尺寸（0.5°） */

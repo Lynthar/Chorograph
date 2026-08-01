@@ -2,7 +2,7 @@
    语义对齐旧实现：删地点连带清理其连线与派系 territory 引用；新对象 id 用时间戳 base36；
    数据经度一律折回本初域（平面世界不折）。撤销/广播由调用方经 state.mutateWorld 走管线。 */
 import { wrapLon } from "../core/geo.ts";
-import { parseKV } from "../core/util.ts";
+import { parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
 import { setUnitPoint, unitKind } from "../core/units.ts";
 import { CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
@@ -149,7 +149,7 @@ export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
 
 /** 可靠性写入（地点/连线共用，柱B）：确证＝删键不落盘（旧档零迁移）；未知档位按确证处理 */
 export function setCertainty(o: { certainty?: Certainty }, v: string): void {
-  if (v && v in CERTAINTY) o.certainty = v as Certainty; else delete o.certainty;
+  if (v && tget(CERTAINTY, v)) o.certainty = v as Certainty; else delete o.certainty;
 }
 
 /* —— 归属沿革（nodes[].owners：分时段归属；旧版仅可改 JSON，这里补编辑器内核）——
@@ -481,7 +481,7 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
   /* 移动方式（旧称军种）：只对「可选」兵种收表单值（后勤/运输/侦察/特殊/指挥——编制上真有陆运水运空运之分）；
      其余兵种的移动方式由本体决定，一律**删键**回落兵种默认（unitArm 以 u.arm 优先）——
      否则换成步兵后留着个够不着又与兵种矛盾的水行，同 noFire 清 range 之规。 */
-  const kindArm = ((UNIT_KINDS[u.kind] || {}).arm || "land") as Arm;
+  const kindArm = ((tget(UNIT_KINDS, u.kind) || {}).arm || "land") as Arm;
   if (armOptional(u.kind)) u.arm = (v.arm === "land" || v.arm === "water" || v.arm === "air") ? v.arm : kindArm;
   else delete u.arm;
   /* 兵力＝「人」数值单值：输入 × 单位倍率（人/千/万）后取整（人数无小数），>0 才存否则删键（同速度/火力之规） */
@@ -495,7 +495,7 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
     if (isFinite(mv)) u.morale = Math.min(100, Math.max(0, Math.round(mv))); else delete u.morale;
   }
   /* 火力：无投射能力的兵种连表单行都不出，故提交即清键——否则换成步兵后留着个够不着又不生效的半径 */
-  if ((UNIT_KINDS[u.kind] || {}).noFire) { delete u.range; delete u.ranges; }
+  if ((tget(UNIT_KINDS, u.kind) || {}).noFire) { delete u.range; delete u.ranges; }
   else if (v.range !== undefined) {
     const rk = parseFloat(v.range);
     if (rk > 0) u.range = rk; else delete u.range;
@@ -511,7 +511,7 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
 /** 改兵种（立即生效那一步；同步移动方式，对齐旧 uf_kind——不可选的兵种删键回落默认，同 applyUnitForm） */
 export function changeUnitKind(u: Unit, kind: string): void {
   u.kind = kind;
-  if (armOptional(kind)) u.arm = ((UNIT_KINDS[kind] || {}).arm || "land") as Arm;
+  if (armOptional(kind)) u.arm = ((tget(UNIT_KINDS, kind) || {}).arm || "land") as Arm;
   else delete u.arm;
 }
 

@@ -3,6 +3,7 @@
    印章基元 drawPrim（8 种手绘符号）；坐标经相机 project 投影，尺度随缩放 (step/degPerPx)/14——
    高清不糊、深放大退场。调用方（drawOverlay）已按 dpr 缩放并按世界拷贝重投影。 */
 import { DECOR_BASE, DECOR_BASE_IMG } from "../core/constants.ts";
+import { tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
 import { project, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import type { Asset, Decor, Meta, World } from "../core/types.ts";
@@ -111,12 +112,12 @@ export function drawDecor(ctx: C, cam: Camera, world: World, yearNow: number, st
       if (isSel(d.id)) selBox(ctx, x - dw / 2, y - dh, x + dw / 2, y);
       continue;
     }
-    const s = (DECOR_BASE[d.kind] || 5) * (d.size || 1) * scale;
+    const s = (tget(DECOR_BASE, d.kind) || 5) * (d.size || 1) * scale;
     if (s > 420) continue;                                   // 深放大退场
     const [x, y] = project(cam, d.lon, d.lat);
     if (x < -50 - s || y < -50 - s || x > cam.w + 50 + s || y > cam.h + 50 + s) continue;
     drawPrim(ctx, d.kind, x, y, s);
-    if (isSel(d.id)) { const [hw, up, dn] = PRIM_BOX[d.kind] || PRIM_BOX_DEF; selBox(ctx, x - hw * s, y - up * s, x + hw * s, y + dn * s); }
+    if (isSel(d.id)) { const [hw, up, dn] = tget(PRIM_BOX, d.kind) || PRIM_BOX_DEF; selBox(ctx, x - hw * s, y - up * s, x + hw * s, y + dn * s); }
   }
   ctx.restore();
 }
@@ -172,9 +173,9 @@ export function pickDecor(cam: Camera, meta: Meta | undefined, world: World, yea
           dd = boxDist(x, y, px - dw / 2, py - dh, px + dw / 2, py);
         }
       } else {
-        const s = (DECOR_BASE[d.kind] || 5) * (d.size || 1) * scale;
+        const s = (tget(DECOR_BASE, d.kind) || 5) * (d.size || 1) * scale;
         if (s <= 420) {                        // 深放大退场者不给体（与绘制同门）
-          const [hw, up, dn] = PRIM_BOX[d.kind] || PRIM_BOX_DEF;
+          const [hw, up, dn] = tget(PRIM_BOX, d.kind) || PRIM_BOX_DEF;
           dd = boxDist(x, y, px - hw * s, py - up * s, px + hw * s, py + dn * s);
         }
       }

@@ -5,6 +5,7 @@
    注意分级红线：凡旧版能打开的档，这里绝不能报 fatal（"旧档无损打开"是 验收）。 */
 import { CERTAINTY, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_KIND, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
 import { parseStrength } from "./units.ts";
+import { tget } from "./util.ts";
 
 export interface Issue { path: string; msg: string }
 export interface ValidateResult { ok: boolean; fatal: Issue[]; warnings: Issue[] }
@@ -72,7 +73,7 @@ export function validateWorld(w: unknown): ValidateResult {
   };
   /* 可靠性档位（柱B）：未知值按「确证」渲染——只提示，不改数据（同未知地形/兵种之规） */
   const checkCertainty = (path: string, m: Record<string, unknown>) => {
-    if (m.certainty != null && !(String(m.certainty) in CERTAINTY))
+    if (m.certainty != null && !tget(CERTAINTY, String(m.certainty)))
       W(`${path}.certainty`, `未知可靠性档「${String(m.certainty)}」（将按确证渲染）`);
   };
 
@@ -102,9 +103,9 @@ export function validateWorld(w: unknown): ValidateResult {
     else if (nodeIds.has(n.id)) W(p, `地点 id「${n.id}」重复`);
     else nodeIds.add(n.id);
     if (!isNum(n.lon) || !isNum(n.lat)) W(p, `地点${label(n)}经纬度无效，将不可见`);
-    const t = (LEGACY_TYPE as Record<string, string>)[String(n.type)] || n.type;
-    if (t != null && !(t as string in NODE_STYLE)) W(`${p}.type`, `未知地点类型「${String(n.type)}」`);
-    if (t === "event" && n.evtype != null && !(String(n.evtype) in EVENT_TYPES))
+    const t = tget(LEGACY_TYPE as Record<string, string>, n.type) ?? n.type;
+    if (t != null && !tget(NODE_STYLE, t)) W(`${p}.type`, `未知地点类型「${String(n.type)}」`);
+    if (t === "event" && n.evtype != null && !tget(EVENT_TYPES, String(n.evtype)))
       W(`${p}.evtype`, `未知事件子类「${String(n.evtype)}」（将按"战役"处理）`);
     refFaction(`${p}.faction`, n.faction);
     checkCertainty(p, n);
@@ -127,7 +128,7 @@ export function validateWorld(w: unknown): ValidateResult {
     const free = Array.isArray(e.pts) && (e.pts as unknown[]).length >= 2;   // 自由折线（河流/工事）：pts 折线、无端点
     if (free) { if (e.type !== "river" && e.type !== "wall") W(`${p}.pts`, "只有河流与工事可用自由折线 pts"); }
     else for (const end of ["from", "to"]) if (!nodeIds.has(String(e[end]))) W(`${p}.${end}`, `连线引用了不存在的地点「${String(e[end])}」`);
-    if (!(String(e.type) in EDGE_STYLE)) W(`${p}.type`, `未知连线类型「${String(e.type)}」`);
+    if (!tget(EDGE_STYLE, String(e.type))) W(`${p}.type`, `未知连线类型「${String(e.type)}」`);
     checkCertainty(p, e);
     checkTimed(p, e);
   });
@@ -137,7 +138,7 @@ export function validateWorld(w: unknown): ValidateResult {
   (Array.isArray(o.decor) ? (o.decor as Record<string, unknown>[]) : []).forEach((d, i) => {
     const k = String(d.kind);
     if (k.startsWith("img:")) { if (!assetIds.has(k.slice(4))) W(`decor[${i}].kind`, `自定义印章缺资产「${k}」`); }   // 悬空引用
-    else if (!(k in DECOR)) W(`decor[${i}].kind`, `未知布景印章「${k}」`);
+    else if (!tget(DECOR, k)) W(`decor[${i}].kind`, `未知布景印章「${k}」`);
     checkTimed(`decor[${i}]`, d);
   });
   (Array.isArray(o.terrainOverrides) ? (o.terrainOverrides as Record<string, unknown>[]) : []).forEach((t, i) => {
@@ -150,13 +151,13 @@ export function validateWorld(w: unknown): ValidateResult {
   /* —— 部队（战术图） —— */
   (Array.isArray(o.units) ? (o.units as Record<string, unknown>[]) : []).forEach((u, i) => {
     const p = `units[${i}]`;
-    const uk = (LEGACY_KIND as Record<string, { to: string }>)[String(u.kind)];
-    if (u.kind != null && !uk && !(String(u.kind) in UNIT_KINDS)) W(`${p}.kind`, `未知兵种「${String(u.kind)}」（移动方式按陆行处理）`);
+    const uk = tget(LEGACY_KIND as Record<string, { to: string }>, String(u.kind));
+    if (u.kind != null && !uk && !tget(UNIT_KINDS, String(u.kind))) W(`${p}.kind`, `未知兵种「${String(u.kind)}」（移动方式按陆行处理）`);
     /* 兵力已是数值字段：非数值的旧文本照常打开，但要说清它会被 normalizeWorld 挪走（同上「会补齐/改写的」之级） */
     if (u.strength != null && String(u.strength).trim() && parseStrength(u.strength) == null)
       W(`${p}.strength`, `兵力「${String(u.strength).trim()}」不是数值，将移入「说明」`);
     /* 无远程投射能力的兵种带着火力半径：数据留着但一律不画（unitFireKm 判据），说一声免得写手以为图坏了 */
-    const nk = UNIT_KINDS[uk ? uk.to : String(u.kind)];
+    const nk = tget(UNIT_KINDS, uk ? uk.to : String(u.kind));
     if (nk && nk.noFire && (u.range != null || u.ranges != null))
       W(`${p}.range`, `「${nk.名}」无远程投射能力，火力圈不会绘制`);
     refFaction(`${p}.faction`, u.faction);

@@ -2,6 +2,7 @@
    河流三层描边（选中红晕/白衬底/河蓝）、官道双线、商路紫点线、工事墨石齿线（2026-07 特化柱B）；
    作战线 攻势=末端实心箭头 / 防线=行进方向左侧齿线（reverse 翻面）。 */
 import { EDGE_STYLE, certaintyStyle } from "../core/constants.ts";
+import { tget } from "../core/util.ts";
 import { activeAt, opVisibleAt } from "../core/time.ts";
 import { project, projectSeq, type Camera } from "../core/projection.ts";
 import { kmPerDegLat } from "../core/geo.ts";
@@ -114,7 +115,7 @@ export function drawEdges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
   for (let idx = 0; idx < world.edges.length; idx++) {
     const e = world.edges[idx];
     if (!on(e.type) || !activeAt(e, yearNow)) continue;
-    const st = EDGE_STYLE[e.type]; if (!st) continue;
+    const st = tget(EDGE_STYLE, e.type); if (!st) continue;   // 未知线型不画——pickEdge 同门（拾取绘制同源）
     const cs = certaintyStyle(e.certainty, "edge");
     ctx.save();
     ctx.globalAlpha *= cs.alpha;

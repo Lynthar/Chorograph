@@ -3,6 +3,16 @@
 /** 深拷贝（JSON 语义：丢函数/undefined——与旧实现一致，勿换 structuredClone 以免行为漂移） */
 export function clone<T>(o: T): T { return JSON.parse(JSON.stringify(o)) as T; }
 
+/** 查表取值——**键名也是用户数据**。存档/URL 里的 `edge.type`、`decor.kind`、`terrainOverrides.t`、
+    `#preset=` 等等都是自由字符串，而 `TABLE[k]` 沿原型链取得到 `toString`/`constructor`/`__proto__`
+    这些继承成员：于是 `k in TABLE` 说「认识这个键」（校验绿灯放行）、`TABLE[k] || 缺省` 又兜不住
+    （函数是真值），拿去 `.split()`/解构/算术即崩或悄悄变 NaN。本函数只认表**自有**的键。
+    凡键来自存档/URL/表单的查表一律走它；键来自本表 Object.keys/ORDER 数组的内部遍历不必。
+    ⚠ 别改用 `Object.create(null)` 建表绕开——parity 的 deepStrictEqual 连原型一起比，会破平价基线。 */
+export function tget<T>(table: Record<string, T>, key: unknown): T | undefined {
+  return typeof key === "string" && Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 /** HTML 转义：所有进入 innerHTML 的用户数据一律过它 */
 export function esc(s: unknown): string {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c =>

@@ -3,11 +3,12 @@
    非受控（同两表单其余字段的 defaultValue 之规）：选中态存在 DOM 的 aria-pressed 上，
    提交时由 readCertainty 读回——避免为一枚 chip 引入表单级 state 而牵动整表重渲。 */
 import { CERTAINTY, CERTAINTY_ORDER } from "../core/constants.ts";
+import { tget } from "../core/util.ts";
 
 const OPTS: [string, string][] = [["", "确证"], ...CERTAINTY_ORDER.map(k => [k, CERTAINTY[k].名] as [string, string])];
 
 export function CertaintyChips({ id, value }: { id: string; value?: string }) {
-  const cur = value && value in CERTAINTY ? value : "";
+  const cur = value && tget(CERTAINTY, value) ? value : "";
   return (
     <div class="frow"><label>可靠性（史料/考据把握；缺省＝确证，不写入存档）</label>
       <div class="chips" id={id}>

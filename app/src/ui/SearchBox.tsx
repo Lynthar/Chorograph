@@ -6,6 +6,7 @@ import { EDGE_STYLE, NODE_STYLE } from "../core/constants.ts";
 import { activeAt } from "../core/time.ts";
 import { flyReqSig, selSig, worldSig, yearSig } from "./state.ts";
 import type { Edge, Faction, World, WorldNode } from "../core/types.ts";
+import { tget } from "../core/util.ts";
 
 type Hit =
   | { kind: "node"; ref: WorldNode; label: string; sub: string }
@@ -23,7 +24,7 @@ function searchAll(w: World | null, q: string): Hit[] {
   const R: Hit[] = [];
   w.nodes.forEach(n => {
     if ((n.名称 || "").toLowerCase().includes(q) || (n.link || "").toLowerCase().includes(q))
-      R.push({ kind: "node", ref: n, label: n.名称 || n.id, sub: (NODE_STYLE[n.type as string] || {}).名 || "" });
+      R.push({ kind: "node", ref: n, label: n.名称 || n.id, sub: (tget(NODE_STYLE, n.type) || {}).名 || "" });
   });
   w.factions.forEach(f => {
     if ((f.名称 || "").toLowerCase().includes(q))
@@ -31,7 +32,7 @@ function searchAll(w: World | null, q: string): Hit[] {
   });
   w.edges.forEach((e, i) => {
     if (e.名称 && e.名称.toLowerCase().includes(q))
-      R.push({ kind: "edge", ref: e, idx: i, label: e.名称, sub: (EDGE_STYLE[e.type] || {}).名 || "" });
+      R.push({ kind: "edge", ref: e, idx: i, label: e.名称, sub: (tget(EDGE_STYLE, e.type) || {}).名 || "" });
   });
   return R.slice(0, 9);
 }
