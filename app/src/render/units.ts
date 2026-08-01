@@ -315,7 +315,7 @@ export interface RingHit { owner: "unit" | "node"; id: string; ring: "vision" | 
     x/y=CSS 像素，自带世界拷贝循环（同 pickUnit）；fire/vision 对应图层开关（关了的层不可拖）。 */
 export function pickRangeHandle(cam: Camera, meta: Meta | undefined, world: World, T: number, x: number, y: number,
   unitId: string | null, nodeId: string | null, opts: { fire?: boolean; vision?: boolean } = {}): RingHit | null {
-  const fire = opts.fire !== false, vision = opts.vision !== false, HIT = 7;
+  const fire = opts.fire !== false, vision = !!opts.vision, HIT = 7;   // 缺省与 drawRanges 同源（火力缺省开、视野缺省关），免两边各记一套
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };
     if (unitId) {

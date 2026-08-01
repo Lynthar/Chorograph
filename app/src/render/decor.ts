@@ -107,7 +107,7 @@ export function drawDecor(ctx: C, cam: Camera, world: World, yearNow: number, st
       const ar = (a.w && a.h) ? a.w / a.h : 1;
       const dw = ar >= 1 ? base : base * ar, dh = ar >= 1 ? base / ar : base;
       const [x, y] = project(cam, d.lon, d.lat);
-      if (x < -50 - dw || y < -50 - dh || x > cam.w + 50 + dw || y > cam.h + 50) continue;
+      if (x < -50 - dw || y < -50 - dh || x > cam.w + 50 + dw || y > cam.h + 50 + dh) continue;   // ⚠ 底缘须加 dh：印章底中锚定、体在锚点上方，锚点落到画布下方 50px 时大印章仍有半截在画面里（缺 dh 即整章突然消失，而 pickDecor 按完整体判中＝那条带里点得中一个没画出来的印章）
       ctx.drawImage(im, x - dw / 2, y - dh, dw, dh);         // 底中锚定：印章"站"在点上
       if (isSel(d.id)) selBox(ctx, x - dw / 2, y - dh, x + dw / 2, y);
       continue;

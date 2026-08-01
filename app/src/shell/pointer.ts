@@ -279,7 +279,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (!worldSig.peek()) return;
     const nodeIds = sel && sel.kind === "node" ? [sel.id] : sel && sel.kind === "multi" ? sel.ids : [];
     const unitIds = sel && sel.kind === "multi" ? (sel.unitIds || []) : [];   // 框选含部队：与整组拖移一致，同步微调
-    if (!nodeIds.length && !unitIds.length) return;
+    /* 布景同理——整组的成员集合此处曾漏了它（startMultiDrag 的 dorig 与批删的 dids 都认），
+       症状两样：只圈了印章时方向键成死键（keydown 上一行已 preventDefault 吃掉平移，
+       于是既不微调也不平移、毫无反应），混选时则是地点部队动了而印章留在原地——
+       一次精调就把刚拖齐的一组拆散。 */
+    const decorIds = sel && sel.kind === "multi" ? (sel.decorIds || []) : [];
+    if (!nodeIds.length && !unitIds.length && !decorIds.length) return;
     const now = performance.now();
     if (now - nudgeT > 1200) pushHistoryOnce();
     nudgeT = now;
@@ -296,6 +301,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         const u = (w.units || []).find(x => x.id === id);
         const p = u ? unitPos(u, T) : null;
         if (p) setUnitWaypoint(w, id, T, p.lon + dLon, p.lat + dLat);
+      }
+      for (const id of decorIds) {         // 布景＝直接平移（同 startMultiDrag 的 dorig）
+        const d = (w.decor || []).find(x => x.id === id);
+        if (d) moveDecor(w, id, d.lon + dLon, d.lat + dLat);
       }
     });
   };
@@ -412,7 +421,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (hu || hn) {
         const Lyr = layersSig.value;
         const rh = pickRangeHandle(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, hu, hn,
-          { fire: Lyr.ranges !== false, vision: Lyr.vision !== false });
+          { fire: layerOn(Lyr, ctx.meta, "ranges"), vision: layerOn(Lyr, ctx.meta, "vision") });
         if (rh) {
           stopPlay();   // 播放中拖半径：冻结时刻，圈心不随播放漂移
           rangeDrag = { ...rh, pushed: false, x0: e.offsetX, y0: e.offsetY };
@@ -486,6 +495,11 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         const from = linkFromSig.peek();
         if (from && from !== hit.id) {            // 第二点：成线（点击-点击路径）
           tryLink(from, hit.id);
+          /* 成线即收起起点——同拖拽收笔与 clickAt 里那两份镜像实现。此处曾漏，而**这份才是
+             常跑的那份**（clickAt 的镜像只在 pointerdown 没拾到地点时才走，那时同坐标重拾通常
+             仍是空）：于是点 A→点 B 连出 A→B 后提示仍写着「起点：A」、橡皮筋继续从 A 拖着，
+             接着想连 B→C 点了 C，实得 A→C。面板文案写的是「依次点击两地」，没有连多条之说。 */
+          linkFromSig.value = null;
           return;
         }
         linkFromSig.value = hit.id;               // 起点：可拖到另一地点成线（拖拽路径）
@@ -610,8 +624,11 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         const sv = selSig.value;
         const hu = sv && sv.kind === "unit" ? sv.id : null, hn = sv && sv.kind === "node" ? sv.id : null;
         const Lyr = layersSig.value;
+        /* ⚠ 门必须走 layerOn（含 tacOnly）而不是生开关：ranges/vision 都标了 tacOnly，战略图上
+           drawRanges 整体不执行，用生开关就留下一圈看不见却拖得动的热区——按下即静默改写半径。
+           这正是同批把 unitPickable 收口到 layerOn 时修掉的同类病，圈手柄这条当时漏了。 */
         const over = (hu || hn) && pickRangeHandle(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, hu, hn,
-          { fire: Lyr.ranges !== false, vision: Lyr.vision !== false });
+          { fire: layerOn(Lyr, ctx.meta, "ranges"), vision: layerOn(Lyr, ctx.meta, "vision") });
         if (over && canvas.style.cursor !== "ew-resize") canvas.style.cursor = "ew-resize";
         else if (!over && canvas.style.cursor === "ew-resize") canvas.style.cursor = "";
       }

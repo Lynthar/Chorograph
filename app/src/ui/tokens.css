@@ -466,11 +466,16 @@ select.fld,button.fld{cursor:pointer}
 .mo-body .sub{color:var(--q-faint)}
 
 /* ── toast ── */
+/* ⚠ 隐藏态须 visibility:hidden（同 .drawer.closed 之法）：pointer-events 不拦键盘焦点，
+   opacity:0 的元素仍在 Tab 序里，而 toastSig 从不回落 null——于是任何一次带「撤销」的操作之后，
+   那颗按钮就永久留在 Tab 序里：键盘用户会 Tab 到一个看不见的控件（焦点环也随 opacity 一起没了，
+   违反 WCAG 2.4.7），一按回车撤销的还是**当下最新**一步而非它当时指的那步。
+   延迟 .2s 与淡出同步，动画不受影响。 */
 .toast{position:fixed;bottom:calc(var(--h-dock) + 14px);left:50%;transform:translate(-50%,8px);background:var(--q-pn);border:1px solid var(--q-ln2);border-radius:10px;box-shadow:var(--q-shadow);
-  padding:9px 16px;font-size:var(--fs-sm);color:var(--q-tx);z-index:80;opacity:0;pointer-events:none;display:flex;gap:8px;align-items:center;white-space:nowrap}
+  padding:9px 16px;font-size:var(--fs-sm);color:var(--q-tx);z-index:80;opacity:0;visibility:hidden;pointer-events:none;display:flex;gap:8px;align-items:center;white-space:nowrap}
 #app:has(.dk-sub.on) .toast{bottom:calc(var(--h-dock) + var(--h-sub) + 14px)}   /* 时轨展开：toast 抬到坞上方 */
-.toast.show{opacity:1;transform:translate(-50%,0);pointer-events:auto}
-@media (prefers-reduced-motion:no-preference){.toast{transition:opacity .2s,transform .2s}}
+.toast.show{opacity:1;visibility:visible;transform:translate(-50%,0);pointer-events:auto}
+@media (prefers-reduced-motion:no-preference){.toast{transition:opacity .2s,transform .2s,visibility 0s .2s}.toast.show{transition:opacity .2s,transform .2s,visibility 0s}}
 .toast .okdot{width:7px;height:7px;border-radius:50%;background:var(--q-ok);flex:none}
 .toast.err .okdot{background:var(--q-zhu)}
 .toast .und{color:var(--q-zhu);font-weight:700;margin-left:4px;cursor:pointer}   /* 撤销＝动作,朱（亮 5.66:1 / 暗 4.71:1）；金只留时间 */
