@@ -246,8 +246,14 @@ export function deleteEdgeIdx(idx: number): void {
   if (!e) return;
   const 名 = (tget(EDGE_STYLE, e.type) || { 名: e.type }).名;
   mutateWorld(x => removeEdgeAt(x, idx));
+  /* 连线选中模型用的是**下标**：删掉一条低下标的边会把后面的边整体前移，选中态若不跟着挪
+     就悄悄指向了别的边（删工具删的是鼠标底下那条，与当前选中往往不是同一条——`#sub=delete`
+     今天就能进这个工具）。删的是自己＝清选中；删的在自己之前＝下标减一。 */
   const s = selSig.peek();
-  if (s && s.kind === "edge" && s.idx === idx) selSig.value = null;
+  if (s && s.kind === "edge") {
+    if (s.idx === idx) selSig.value = null;
+    else if (s.idx > idx) selSig.value = { kind: "edge", idx: s.idx - 1 };
+  }
   showToast(`已删除${名}${e.名称 ? `「${e.名称}」` : ""}`, { undo: true });
 }
 
