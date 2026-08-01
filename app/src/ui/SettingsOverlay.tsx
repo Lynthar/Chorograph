@@ -28,6 +28,8 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
      真史战役没有母图可烘，此前只能写脚本手搓 JSON；本分支即「战略→战术」单行桥的另一个入口 */
   const [tacNew, setTacNew] = useState(false);
   const curCal = calOf(m.calendar);
+  /* 地势起伏的当前档：新建缺省 0.7、既有图取存档值（缺键=0=无）——档位落在 option 的 selected 上 */
+  const relCur = create ? 0.7 : (m.relief != null ? +m.relief : 0);
   const bb = m.bbox || { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 };
   const d = create
     ? { 名称: "新地图", model: "sphere", radius: 10000, kmdeg: "", lonMin: 82, lonMax: 130, latMin: 22, latMax: 54,
@@ -224,11 +226,16 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
       </div>
       <div class="setrow"><label></label><span class="sub">「自动生成」按种子程序化生成海岸线/山川/生态；初稿只是底子——编辑模式可继续涂改，已涂改的格子(terrainOverrides)始终保留其上。</span></div>
       <div class="setrow"><label>地势起伏</label>
-        <select id="sw_relief" defaultValue={String(create ? 0.7 : (m.relief != null ? m.relief : 0))}>
-          <option value="0">无（示意高程：同类地形等高，旧观感）</option>
-          <option value="0.35">柔和</option>
-          <option value="0.7">自然</option>
-          <option value="1">险峻</option>
+        {/* ⚠ 初值必须落在 option 的 selected 上（同 sw_genstyle / ef_fs 之法）：核心 Preact 只在
+            `name in dom` 时写属性，而 HTMLSelectElement **没有** defaultValue——单靠它会落成惰性
+            attribute、选中项永远停在首项「无」，于是「打开设置什么都不改点应用」就把这张图的
+            地势起伏静默抹掉并落盘（三张示例图全是 0.7）。 */}
+        <select id="sw_relief">
+          {/* 手编档的档外值另立一项（同 ef_fs 之法）：否则无一 option 命中＝浏览器选首项，一点「应用」照样抹掉 */}
+          {![0, 0.35, 0.7, 1].includes(relCur) && <option value={String(relCur)} selected>{relCur}（自定义）</option>}
+          {[["0", "无（示意高程：同类地形等高，旧观感）"], ["0.35", "柔和"], ["0.7", "自然"], ["1", "险峻"]].map(([v, 名]) => (
+            <option key={v} value={v} selected={+v === relCur}>{名}</option>
+          ))}
         </select>
         <span class="sub">山有高低、等高线成形；编辑→地形→⛰高程 可再手工雕琢。随时可改，不动数据。</span>
       </div>
