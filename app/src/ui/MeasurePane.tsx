@@ -1,7 +1,7 @@
 /* 测面 · 量距/行军读数：语义同旧 Measure/Route——
    量距=逐段大圆/平面直线累计；行军=A* 当年道路与地形、各速度档耗时、沿途地形拆分、途经。
    无路径错误就地（朱框）并给两条出路：换移动方式 / 去涂地形。 */
-import { SPEEDS, terrainProps } from "../core/constants.ts";
+import { ARM_NAME, SPEEDS, terrainProps } from "../core/constants.ts";
 import { distKm } from "../core/geo.ts";
 import { measureLegs } from "../core/route.ts";
 import { fmtKm } from "../core/util.ts";
@@ -42,8 +42,9 @@ function Route({ meta }: { meta: Meta }) {
   return (
     <>
       <div class="seg2" id="armSeg">
-        {([["land", "陆军"], ["water", "水军"], ["air", "飞行"]] as [Arm, string][]).map(([a, label]) => (
-          <button key={a} aria-pressed={arm === a} onClick={() => { armSig.value = a; }}>{label}</button>
+        {/* 显示名走 ARM_NAME 单一真源（它的头注写着「免两处漂移」——此处曾是漂移的第三处） */}
+        {(Object.keys(ARM_NAME) as Arm[]).map(a => (
+          <button key={a} aria-pressed={arm === a} onClick={() => { armSig.value = a; }}>{ARM_NAME[a]}</button>
         ))}
       </div>
       <div class="kv2">
@@ -56,7 +57,7 @@ function Route({ meta }: { meta: Meta }) {
         <>
           <div class="err"><b>该移动方式无可行路径。</b>水/山阻隔？换移动方式，或用「绘 → 形」涂通一条地形。</div>
           <div style={{ display: "flex", gap: "5px" }}>
-            {arm !== "land" && <button class="ghostbt tr" onClick={() => { armSig.value = "land"; }}>换 陆军</button>}
+            {arm !== "land" && <button class="ghostbt tr" onClick={() => { armSig.value = "land"; }}>换 {ARM_NAME.land}</button>}
             <button class="ghostbt tr" onClick={() => { setRailTool("draw"); editSubSig.value = "terrain"; }}>去涂地形</button>
           </div>
         </>

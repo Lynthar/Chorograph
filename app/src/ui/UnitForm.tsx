@@ -38,16 +38,23 @@ export function UnitForm({ u }: { u: Unit }) {
 
   /* 数值字段的静默变形回执：type=number 打不进合法值时 .value 恒为空串，空删语义会把原值抹掉而毫无声响。
      判据用 validity.badInput（浏览器才知道用户到底敲进去了什么），非正数另报——只报不改，同 parseWhenInput 之规。 */
-  const warnNum = (id: string, 名: string, tail: string) => {
+  const warnNum = (id: string, 名: string, tail: string, allowZero = false) => {
     const el = box.current?.querySelector<HTMLInputElement>("#" + id);
     if (!el) return;
     if (el.validity?.badInput) noteFormWarn(`${名}不是数值　${tail}`);
-    else if (el.value.trim() && !(parseFloat(el.value) > 0)) noteFormWarn(`${名}须为正数　${tail}`);
+    else if (el.value.trim() && !(parseFloat(el.value) >= (allowZero ? 0 : 1e-9))) noteFormWarn(`${名}须为${allowZero ? "非负数" : "正数"}　${tail}`);
   };
 
   const save = () => {
+    /* 每个数值字段都要有回执——原先只覆盖兵力与速度，其余打错即静默删键而 toast 照说「已保存修改」，
+       正是本项目自订「数值字段静默变形要报回执」针对的失败模式。⚠ 士气 0＝崩溃是有意义的值，故放行 0。 */
     warnNum("uf_str", "兵力", "该项已清空");
     warnNum("uf_speed", "速度", "已回落兵种默认");
+    warnNum("uf_morale", "士气", "该项已清空", true);
+    warnNum("uf_range", "火力半径", "该项已清空");
+    warnNum("uf_vision", "视野半径", "该项已清空");
+    warnNum("uf_front", "阵形正面", "该项已清空");
+    warnNum("uf_depth", "阵形纵深", "该项已清空");
     mutateWorld(w => {
       const target = (w.units || []).find(x => x.id === u.id);
       if (!target) return;

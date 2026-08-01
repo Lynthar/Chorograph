@@ -9,17 +9,35 @@ import { activeAt } from "../core/time.ts";
 import { tget } from "../core/util.ts";
 import { unitPos, unitStatusAt } from "../core/units.ts";
 import { drawStatusBadge } from "./units.ts";
-import type { World } from "../core/types.ts";
+import { layerOn } from "./overlay.ts";
+import type { Meta, World } from "../core/types.ts";
 
 const ROW = 17, PADX = 9, PADY = 8, SW = 22, MARGIN = 12;
 
-/** reserveBottom=右下角已被屏幕角标注占去的高度（pinnedStackH）——图例据此上抬让位。 */
-export function drawLegend(g: CanvasRenderingContext2D, world: World, T: number, cssW: number, cssH: number,
-  reserveBottom = 0): void {
-  const facs = (world.factions || []).filter(f => activeAt(f, T));
-  const live = (world.units || []).filter(u => unitPos(u, T));   // 未入场/已离场的部队不进图例
+/** 图例条目（纯函数，可测）：**这一帧真出现的**——当刻在场 × 该层真的画得出来。
+    ⚠ 「真出现」两个条件缺一不可：此前只判「当刻在场」，于是关掉部队层导出一张纯地形图，
+    PNG 右下角照样列着兵种与状态行——与它自己立的口径自相矛盾。层门一律走 layerOn（含 tacOnly）。
+    · 派系：涂域(politics)／地点归属色(nodes)／部队框色(units) 任一层开着就还看得见
+    · 兵种·状态：units 层
+    · 可靠性：地点记号虚描要 nodes 层，连线虚描要该线型自己的层 */
+export function legendItems(world: World, T: number, layers?: Record<string, boolean>, meta?: Meta) {
+  const on = (id: string) => layerOn(layers, meta, id);
+  const facsVisible = on("politics") || on("nodes") || on("units");
+  const facs = facsVisible ? (world.factions || []).filter(f => activeAt(f, T)) : [];
+  const live = on("units") ? (world.units || []).filter(u => unitPos(u, T)) : [];   // 未入场/已离场的部队不进图例
   const kinds = [...new Set(live.map(u => u.kind))].filter(k => tget(UNIT_KINDS, k));
   const stats = [...new Set(live.map(u => unitStatusAt(u, T) || ""))].filter(s => tget(UNIT_STATUS, s));
+  const certs = CERTAINTY_ORDER.filter(k =>
+    (on("nodes") && (world.nodes || []).some(n => n.certainty === k && activeAt(n, T))) ||
+    (world.edges || []).some(e => e.certainty === k && activeAt(e, T) && on(e.type)));
+  return { facs, kinds, stats, certs };
+}
+
+/** reserveBottom=右下角已被屏幕角标注占去的高度（pinnedStackH）——图例据此上抬让位。
+    layers/meta 传当帧的图层态：图例只列真画得出来的东西（见 legendItems）。 */
+export function drawLegend(g: CanvasRenderingContext2D, world: World, T: number, cssW: number, cssH: number,
+  reserveBottom = 0, layers?: Record<string, boolean>, meta?: Meta): void {
+  const { facs, kinds, stats, certs } = legendItems(world, T, layers, meta);
   const rows: { label: string; draw: (x: number, y: number) => void }[] = [];
   for (const f of facs) rows.push({ label: f.名称 || f.id, draw: (x, y) => {
     g.fillStyle = f.color || "#888"; g.fillRect(x, y - 5, 14, 10);
@@ -33,9 +51,6 @@ export function drawLegend(g: CanvasRenderingContext2D, world: World, T: number,
   } });
   for (const s of stats) rows.push({ label: UNIT_STATUS[s].名, draw: (x, y) => drawStatusBadge(g, x + 7, y, s, UNIT_STATUS[s].color) });
   /* 可靠性（柱B）：图内真出现的档位才列——「诚实性」要在图上说得出，读图人才知道虚线不是别的意思 */
-  const certs = CERTAINTY_ORDER.filter(k =>
-    (world.nodes || []).some(n => n.certainty === k && activeAt(n, T)) ||
-    (world.edges || []).some(e => e.certainty === k && activeAt(e, T)));
   for (const k of certs) rows.push({ label: CERTAINTY[k].名, draw: (x, y) => {
     g.save();
     g.globalAlpha = CERTAINTY[k].alpha;

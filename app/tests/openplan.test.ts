@@ -84,3 +84,20 @@ describe("启动分流：深链判定与选图", () => {
     assert.equal(pickBootEntry([], "任意", "任意"), null, "空库 null");
   });
 });
+
+describe("开图缩放：只认有限正数", () => {
+  it("负/零/NaN 的 degPerPx 一律回落，不把镜像拉伸的视角当成合法快照", () => {
+    const snap = (dpp: unknown) => planOpen({ meta: {}, nodes: [] },
+      { view: { lon0: 108, lat0: 36, degPerPx: dpp as number }, year: 3100 }, { urlYear: false, urlView: false });
+    assert.strictEqual(snap(-0.06).view!.degPerPx, 0.06, "负数曾能通过 `|| 0.06`");
+    assert.strictEqual(snap(0).view!.degPerPx, 0.06);
+    assert.strictEqual(snap(NaN).view!.degPerPx, 0.06);
+    assert.strictEqual(snap(0.12).view!.degPerPx, 0.12, "合法值原样");
+  });
+  it("档内 meta.view.degPerPx0 同规：坏值＝当没给（null＝沿用当前缩放）", () => {
+    const p = (dpp: unknown) => planOpen({ meta: { view: { lon0: 108, lat0: 36, degPerPx0: dpp } }, nodes: [] },
+      null, { urlYear: false, urlView: false });
+    assert.strictEqual(p(-0.06).view!.degPerPx, null);
+    assert.strictEqual(p(0.09).view!.degPerPx, 0.09);
+  });
+});

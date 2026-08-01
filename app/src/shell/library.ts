@@ -389,7 +389,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
         const reserve = layersSig.peek().notes !== false
           ? pinnedStackH(w, T, "se", s && s.kind === "node" ? s.id : null) : 0;
         g2.save(); g2.scale(ctx.DPR, ctx.DPR);
-        drawLegend(g2, w, T, off.width / ctx.DPR, off.height / ctx.DPR, reserve);
+        drawLegend(g2, w, T, off.width / ctx.DPR, off.height / ctx.DPR, reserve, layersSig.peek(), ctx.meta);
         g2.restore();
       }
     }

@@ -21,6 +21,8 @@ import { blankTacticalWorld, createTacticalWorld, tacDiaDeg } from "../src/core/
 import { paintStep, resamplePaintCells, territoryLoops } from "../src/core/territory.ts";
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { drawDecor, pickDecor } from "../src/render/decor.ts";
+import { legendItems } from "../src/render/legend.ts";
+import { poolInsert } from "../src/ui/stamps.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 import { validateWorld } from "../src/core/validate.ts";
 import { readFileSync } from "node:fs";
@@ -1212,5 +1214,67 @@ describe("战术图生成（快照烘焙）", () => {
     assert.ok(Math.abs(s.lonSpan - s.latSpan / Math.cos(30 * Math.PI / 180)) < 1e-9);
     const f = tacDiaDeg({ worldModel: "flat", kmPerDeg: 100 }, 200, 30);
     assert.ok(Math.abs(f.lonSpan - 2) < 1e-9 && Math.abs(f.latSpan - 2) < 1e-9);
+  });
+});
+
+/* —— 出图图例：内容＝「这一帧真出现的」（2026-08 补测：修过一次相位口径，此前只有 CDP 锁） —— */
+describe("出图图例条目 legendItems", () => {
+  const W = {
+    meta: { mapKind: "tactical" as const },
+    factions: [{ id: "f1", 名称: "秦", color: "#000" }, { id: "f2", 名称: "赵", color: "#fff", since: 200 }],
+    nodes: [{ id: "n1", type: "city", lon: 1, lat: 1, certainty: "inferred" },
+            { id: "n2", type: "city", lon: 2, lat: 2, certainty: "legend", since: 200 }],
+    edges: [{ from: "n1", to: "n2", type: "road", certainty: "legend" },
+            { from: "n1", to: "n2", type: "wall", certainty: "inferred" }],
+    units: [{ id: "u1", kind: "linf", track: [{ t: 0, lon: 1, lat: 1, st: "battle" }] },
+            { id: "u2", kind: "lcav", track: [{ t: 300, lon: 2, lat: 2 }] }],
+    decor: [], terrainOverrides: []
+  } as unknown as Parameters<typeof legendItems>[0];
+
+  it("当刻不在场的不列（派系时段、未入场的部队、当刻无该状态）", () => {
+    const at0 = legendItems(W, 0);
+    assert.deepStrictEqual(at0.facs.map(f => f.id), ["f1"], "f2 的时段还没开始");
+    assert.deepStrictEqual(at0.kinds, ["linf"], "u2 在 t=300 才入场");
+    assert.deepStrictEqual(at0.stats, ["battle"]);
+    const at300 = legendItems(W, 300);
+    assert.deepStrictEqual(at300.facs.map(f => f.id), ["f1", "f2"]);
+    assert.deepStrictEqual(at300.kinds.sort(), ["lcav", "linf"]);
+  });
+
+  it("关掉的层不列：部队层关＝兵种与状态行一并消失（原先关了层仍照列）", () => {
+    const off = legendItems(W, 0, { units: false });
+    assert.deepStrictEqual([off.kinds, off.stats], [[], []]);
+    assert.deepStrictEqual(off.facs.map(f => f.id), ["f1"], "派系还由地点/涂域撑着，不该跟着消失");
+  });
+
+  it("派系行三层任一开着就列，全关才收（涂域/地点/部队都看不见时才谈不上「出现」）", () => {
+    assert.deepStrictEqual(legendItems(W, 0, { politics: false, nodes: false }).facs.map(f => f.id), ["f1"]);
+    assert.deepStrictEqual(legendItems(W, 0, { politics: false, nodes: false, units: false }).facs, []);
+  });
+
+  it("可靠性档按各自的层收：关地点只剩连线那档，关掉线型层则该边不算", () => {
+    assert.deepStrictEqual(legendItems(W, 0).certs.sort(), ["inferred", "legend"]);
+    assert.deepStrictEqual(legendItems(W, 0, { nodes: false }).certs.sort(), ["inferred", "legend"], "两条边各带一档");
+    assert.deepStrictEqual(legendItems(W, 0, { nodes: false, wall: false }).certs, ["legend"], "只剩 road 边的传说档");
+    assert.deepStrictEqual(legendItems(W, 0, { nodes: false, wall: false, road: false }).certs, []);
+  });
+
+  it("战术专属层在战略图上不算「出现」（同 layerOn 的 tacOnly 门）", () => {
+    const strat = { ...W, meta: {} } as typeof W;
+    assert.deepStrictEqual(legendItems(strat, 0).kinds, ["linf"], "units 不是 tacOnly，战略图照列");
+  });
+});
+
+/* —— 印章池：头注早写着「纯逻辑 poolInsert 走 node:test」，而 tests 里一直零引用 —— */
+describe("自定义印章池 poolInsert", () => {
+  const A = (id: string) => ({ id, src: "data:" + id }) as Parameters<typeof poolInsert>[1];
+  it("新章插到最前；同 id 去重（重传一张即置顶而非留两份）", () => {
+    assert.deepStrictEqual(poolInsert([A("a"), A("b")], A("c")).map(x => x.id), ["c", "a", "b"]);
+    assert.deepStrictEqual(poolInsert([A("a"), A("b")], A("b")).map(x => x.id), ["b", "a"]);
+  });
+  it("满容量按 cap 截尾（最老的挤掉），不改入参", () => {
+    const pool = ["a", "b", "c"].map(A);
+    assert.deepStrictEqual(poolInsert(pool, A("d"), 3).map(x => x.id), ["d", "a", "b"]);
+    assert.deepStrictEqual(pool.map(x => x.id), ["a", "b", "c"], "入参须原样");
   });
 });

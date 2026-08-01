@@ -10,7 +10,7 @@ import { fmtStrength, unitArm, unitFacingAt, unitFireKm, unitFootKm, unitInherit
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm, tget } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
-import { clearOpSel, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
+import { clearOpSel, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
 import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
@@ -295,7 +295,13 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
                     key={i + ":" + key + (q[key] ?? "")}
                     style={{ width: "4.6em", display: "inline-block", padding: "1px 3px", margin: 0 }}
                     placeholder={cur != null ? String(cur) : "—"} defaultValue={q[key] != null ? String(q[key]) : ""}
-                    onChange={e => { const v = (e.currentTarget as HTMLInputElement).value; mutateWorld(w => { setUnitWaypointNum(w, u.id, q.t, key, v); }); }} />
+                    onChange={e => {
+                      const el = e.currentTarget as HTMLInputElement, v = el.value;
+                      /* 静默变形要报回执（同 UnitForm 之规）：type=number 打不进合法值时 .value 恒为空串，
+                         而空＝删键＝这一航点悄悄回到「沿用上一次声明」，全程无声。 */
+                      if (el.validity?.badInput) noteFormWarn(`${名}不是数值　该航点已回到沿用`);
+                      mutateWorld(w => { setUnitWaypointNum(w, u.id, q.t, key, v); });
+                    }} />
                 </span>
               ))}
             </div>}

@@ -44,6 +44,10 @@ export function pickBootEntry<T extends { id: string; name?: string }>(
     || entries.find(e => e.id === last) || entries[0] || null;
 }
 
+/** 缩放只认有限正数：`|| 0.06` 兜得住 NaN 却**放行负数**——手编/损坏档带 degPerPx0: -0.06
+    会让地图镜像并拉伸，而顶栏「复位」读的是同一个坏值，复位也出不来。 */
+const posDpp = (v: unknown): number | null => (typeof v === "number" && isFinite(v) && v > 0 ? v : null);
+
 export function planOpen(raw: unknown, snap: OpenSnap | null | undefined,
   dl: { urlYear: boolean; urlView: boolean }): OpenPlan {
   const world = normalizeWorld(raw);
@@ -52,10 +56,10 @@ export function planOpen(raw: unknown, snap: OpenSnap | null | undefined,
   let view: OpenPlan["view"] = null;
   if (snap && !dl.urlView && snap.view && isFinite(snap.view.lon0)) {
     const c = clampView({ lon0: snap.view.lon0, lat0: snap.view.lat0 }, meta);
-    view = { lon0: c.lon0, lat0: c.lat0, degPerPx: snap.view.degPerPx || 0.06 };
+    view = { lon0: c.lon0, lat0: c.lat0, degPerPx: posDpp(snap.view.degPerPx) ?? 0.06 };
   } else if (!dl.urlView && meta.view && isFinite(meta.view.lon0)) {
     const c = clampView({ lon0: meta.view.lon0, lat0: meta.view.lat0 }, meta);
-    view = { lon0: c.lon0, lat0: c.lat0, degPerPx: meta.view.degPerPx0 || null };
+    view = { lon0: c.lon0, lat0: c.lat0, degPerPx: posDpp(meta.view.degPerPx0) };
   }
   return { world, year, view };
 }

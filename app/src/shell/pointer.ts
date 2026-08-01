@@ -274,7 +274,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const w0 = worldSig.peek();
     const tp = linkTypeSig.peek();
     if (w0 && w0.edges.some(ed => ed.type === tp && ((ed.from === from && ed.to === to) || (ed.from === to && ed.to === from)))) {
-      showToast(`两地已有一条${(tget(EDGE_STYLE, tp) || { 名: tp }).名}，未重复新建`);
+      showToast(`两地已有一条${(tget(EDGE_STYLE, tp) || { 名: tp }).名}，未重复新增`);
       return;
     }
     mutateWorld(w => { const ed = addEdge(w, from, to, tp); if (ed) applyEra(ed, eraNewSig.peek()); });
