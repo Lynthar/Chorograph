@@ -6,8 +6,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { openLibrary, newMapId, type Library } from "../src/data/library.ts";
 import { migrateFromLocalStorage, migrateFolderHandle, type LSLike } from "../src/data/migrate.ts";
-import { fcachePatch, fcacheRemove, folderCreate, folderList, folderReadWorld, folderRemove,
-  folderUniqueFilename, folderWriteWorld, type DirHandleLike, type FolderCache, type FolderCacheEntry } from "../src/data/folder.ts";
+import { fcachePatch, fcacheRemove, folderCreate, folderList, folderMtime, folderReadWorld, folderRemove,
+  folderReadWorldAt, folderUniqueFilename, folderWriteWorld, type DirHandleLike, type FolderCache, type FolderCacheEntry } from "../src/data/folder.ts";
+import { isStaleError, staleError, staleWrite } from "../src/data/guard.ts";
 import { openDB, reqP, txDone } from "../src/data/idb.ts";
 import { createTabSync, tabMapKey, TAB_WARN_OPEN, TAB_WARN_SAVED, type TabMsg } from "../src/data/tabsync.ts";
 
@@ -247,7 +248,7 @@ describe("文件夹图库", () => {
   it("读写往返：写入 1 空格缩进 JSON；非世界形状读回 null", async () => {
     const dir = memDir();
     const w = { meta: { 名称: "写" }, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] };
-    assert.strictEqual(await folderWriteWorld(dir, "写.json", w as never), true);
+    assert.strictEqual((await folderWriteWorld(dir, "写.json", w as never)).ok, true);
     assert.strictEqual(dir._files["写.json"], JSON.stringify(w, null, 1));
     assert.deepStrictEqual(await folderReadWorld(dir, "写.json"), w);
     assert.strictEqual(await folderReadWorld(dir, "没有.json"), null);
@@ -410,5 +411,133 @@ describe("多标签提醒（tabsync 协议）", () => {
     assert.strictEqual(tabMapKey("browser", "m1"), "browser:m1");
     assert.strictEqual(tabMapKey("folder", "m1"), "folder:m1");
     assert.strictEqual(tabMapKey("browser", null), null);
+  });
+});
+
+/* —— 陈旧写入守卫（多标签提醒之外的真闸门：对方标签已关闭时的覆盖也拦得住） —— */
+describe("陈旧写入守卫（guard）", () => {
+  const mkWorld = (名称: string) =>
+    ({ meta: { 名称 }, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] }) as never;
+
+  it("判据：无基准或读不到当前版本一律放行，读到且不同才算陈旧", () => {
+    assert.strictEqual(staleWrite(null, 5), false, "不知情不该拦");
+    assert.strictEqual(staleWrite(undefined, 5), false);
+    assert.strictEqual(staleWrite(5, null), false, "没有「别人写过」的证据就放行");
+    assert.strictEqual(staleWrite(5, 5), false);
+    assert.strictEqual(staleWrite(5, 6), true);
+  });
+
+  it("浏览器库：基准过期＝中止且一字不写（world 与条目都保持对方那一版）", async () => {
+    const lib = await freshLib();
+    const e = await lib.create(mkWorld("甲"));
+    const base = e.updatedAt;
+    const cur = await lib.save(e.id, mkWorld("乙"), {}, base + 1000);      // 另一处写入
+    await assert.rejects(
+      () => lib.save(e.id, mkWorld("丙"), {}, undefined, base),            // 本标签拿旧基准写
+      (err: unknown) => isStaleError(err) && err.stale.base === base && err.stale.cur === cur);
+    assert.strictEqual((await lib.getWorld(e.id))!.meta.名称, "乙", "world 不得被写");
+    assert.strictEqual((await lib.getEntry(e.id))!.name, "乙", "条目不得被写");
+  });
+
+  it("浏览器库：save 返回的新版本可直接当基准，连续保存不会自己拦自己", async () => {
+    const lib = await freshLib();
+    const e = await lib.create(mkWorld("甲"));
+    let v = e.updatedAt;
+    for (let i = 0; i < 3; i++) v = await lib.save(e.id, mkWorld("甲" + i), {}, v + 10, v);
+    assert.strictEqual((await lib.getEntry(e.id))!.updatedAt, v);
+    assert.strictEqual((await lib.getEntry(e.id))!.name, "甲2");
+  });
+
+  it("浏览器库：条目已被删则连条目一并重建（原先只写 maps＝列表里看不见的孤儿）", async () => {
+    const lib = await freshLib();
+    const e = await lib.create(mkWorld("甲"));
+    await lib.remove(e.id);
+    const v = await lib.save(e.id, mkWorld("甲"), {}, undefined, e.updatedAt);   // 带基准也放行
+    const ent = await lib.getEntry(e.id);
+    assert.ok(ent, "条目须被重建");
+    assert.strictEqual(ent!.name, "甲");
+    assert.strictEqual(ent!.updatedAt, v);
+    assert.strictEqual((await lib.list()).length, 1, "图须回到列表里");
+  });
+
+  it("文件夹库：mtime 变过即中止且不写盘；拿当前版本作基准即可写入", async () => {
+    const dir = memDir();
+    const r1 = await folderWriteWorld(dir, "甲.json", mkWorld("甲"));
+    assert.strictEqual(r1.ok, true);
+    const base = r1.mtime!;
+    dir._touch("甲.json", JSON.stringify({ meta: { 名称: "别处写的" } }));       // 另一处写过
+    await assert.rejects(() => folderWriteWorld(dir, "甲.json", mkWorld("丙"), base), isStaleError);
+    assert.match(dir._files["甲.json"], /别处写的/, "一字不写");
+    const cur = await folderMtime(dir, "甲.json");
+    const r2 = await folderWriteWorld(dir, "甲.json", mkWorld("丙"), cur);
+    assert.strictEqual(r2.ok, true);
+    assert.notStrictEqual(r2.mtime, cur, "落盘后须返回新版本，否则下次守卫拿旧值比新文件＝自己拦自己");
+  });
+
+  it("文件夹库：文件已不存在＝读不到版本→放行并写回（把内存里的图恢复回图库）", async () => {
+    const dir = memDir();
+    const r = await folderWriteWorld(dir, "乙.json", mkWorld("乙"), 12345);
+    assert.strictEqual(r.ok, true);
+    assert.match(dir._files["乙.json"], /乙/);
+  });
+
+  /* 自动保存的错误分流全押在 isStaleError 上：判错一次，一次普通的存储故障就会被路由进一个
+     不可关闭、且三个动作全都答非所问的弹层。实现稳但没测就没锁。 */
+  it("isStaleError 负例：存储故障/普通异常/杂值一律不得当成守卫拦下", () => {
+    for (const e of [new Error("QuotaExceededError"), null, undefined, "stale", 42, {},
+                     { stale: null }, { stale: {} }, { stale: { base: 1 } }, { stale: { base: "1", cur: 2 } }])
+      assert.strictEqual(isStaleError(e), false, JSON.stringify(e));
+    assert.strictEqual(isStaleError(staleError({ base: 1, cur: 2 })), true);
+  });
+
+  it("文件夹库：写成功但版本读不回＝{ok:true,mtime:null}（守卫自愿下岗，不能报成写失败）", async () => {
+    const dir = memDir();
+    const orig = dir.getFileHandle.bind(dir);
+    let wrote = false;
+    // 写入照常成功，写完之后的那次读 mtime 失败（权限在写后被收回是真会发生的一类）
+    (dir as unknown as Record<string, unknown>).getFileHandle = async (fn: string, opts?: { create?: boolean }) => {
+      if (wrote) throw new Error("NotAllowedError");
+      const h = await orig(fn, opts);
+      if (opts?.create) wrote = true;
+      return h;
+    };
+    const r = await folderWriteWorld(dir, "丁.json", mkWorld("丁"));
+    assert.strictEqual(r.ok, true, "写成功就是写成功——不能因为读不回版本而报失败");
+    assert.strictEqual(r.mtime, null, "版本未知须如实为 null，下次即不做守卫");
+    assert.match(dir._files["丁.json"], /丁/);
+  });
+
+  it("浏览器库：守卫中止过一次后，同一个 lib 实例仍能正常读写（abort 不得毒化连接）", async () => {
+    const lib = await freshLib();
+    const e = await lib.create(mkWorld("甲"));
+    await lib.save(e.id, mkWorld("乙"), {}, e.updatedAt + 1000);
+    await assert.rejects(() => lib.save(e.id, mkWorld("丙"), {}, undefined, e.updatedAt), isStaleError);
+    const cur = (await lib.getEntry(e.id))!.updatedAt;                       // 拦下后照样读得到
+    const v = await lib.save(e.id, mkWorld("丁"), {}, cur + 1000, cur);      // 接受新基准后照样写得进
+    assert.strictEqual((await lib.getWorld(e.id))!.meta.名称, "丁");
+    assert.strictEqual((await lib.getEntry(e.id))!.updatedAt, v);
+  });
+
+  it("浏览器库：getWorldAt 一趟读出世界与条目（守卫基准与内存快照同源）", async () => {
+    const lib = await freshLib();
+    const e = await lib.create(mkWorld("甲"));
+    const got = await lib.getWorldAt(e.id);
+    assert.strictEqual(got.world!.meta.名称, "甲");
+    assert.strictEqual(got.entry!.updatedAt, e.updatedAt);
+    const miss = await lib.getWorldAt("没这张");
+    assert.deepStrictEqual([miss.world, miss.entry], [null, null], "缺图＝两样都 null＝基准落 null＝放行");
+  });
+
+  it("文件夹库：folderReadWorldAt 的内容与 mtime 出自同一个 File", async () => {
+    const dir = memDir();
+    const w1 = await folderWriteWorld(dir, "戊.json", mkWorld("戊"));
+    const got = await folderReadWorldAt(dir, "戊.json");
+    assert.strictEqual(got.world!.meta.名称, "戊");
+    assert.strictEqual(got.mtime, w1.mtime);
+    dir._touch("戊.json", JSON.stringify(mkWorld("别处写的")));
+    const got2 = await folderReadWorldAt(dir, "戊.json");
+    assert.strictEqual(got2.world!.meta.名称, "别处写的");
+    assert.notStrictEqual(got2.mtime, got.mtime, "读到新内容就该读到新版本，绝不能配成旧版本");
+    assert.deepStrictEqual(await folderReadWorldAt(dir, "没这个.json"), { world: null, mtime: null });
   });
 });

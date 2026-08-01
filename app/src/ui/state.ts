@@ -89,6 +89,25 @@ export interface LibActions {
 }
 export const libActionsSig = signal<LibActions | null>(null);
 
+/* —— 陈旧写入冲突（守卫判据在 data/guard.ts）：库里这张图已被别处改过，本标签的写入被拦下。
+   动作放进信号里（同 toast 的 action 之规）——组件只渲染与派发，库 IO 全留外壳。
+   置位期间自动保存不再尝试写入（否则每 600ms 撞一次库），底栏保持●未保存。 —— */
+export interface SaveConflict {
+  /** 图名（弹层正文用） */
+  name: string;
+  /** 本标签上次见到的版本（＝打开/上次落盘的时刻） */
+  base: number;
+  /** 库里现在的版本（＝别处那一版的写入时刻）；版本号即时间戳，弹层直接显示 */
+  cur: number;
+  /** 仍然覆盖：接受库里的版本号为新基准，守卫自然放行——不必给 save 开 force 旗标 */
+  onOverwrite(): void;
+  /** 另存为副本：把内存里这一份写成新图并切过去，两边改动都不丢 */
+  onCopy(): void;
+  /** 先导出 JSON 备份（辅助动作，不关闭弹层——导完仍要在上面两条里选一条） */
+  onExport(): void;
+}
+export const saveConflictSig = signal<SaveConflict | null>(null);
+
 /* —— 弹层：帮助 / 设置（v0.14 .ovl；设置分 app=改当前世界参数 / create=新建地图）—— */
 export const helpOpenSig = signal(false);
 export type SettingsMode = "app" | "create";

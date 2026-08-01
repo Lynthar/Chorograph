@@ -6,8 +6,9 @@ import { createAutosave, type Autosave } from "../data/autosave.ts";
 import { createTabSync, tabMapKey } from "../data/tabsync.ts";
 import { openLibrary } from "../data/library.ts";
 import { migrateFromLocalStorage, migrateFolderHandle } from "../data/migrate.ts";
-import { fsSupported, folderList, folderReadWorld, folderWriteWorld, folderCreate, folderRemove, fcachePatch, fcacheRemove }
+import { fsSupported, folderList, folderReadWorldAt, folderWriteWorld, folderCreate, folderRemove, folderMtime, fcachePatch, fcacheRemove }
   from "../data/folder.ts";
+import { isStaleError, staleError, type StaleInfo } from "../data/guard.ts";
 import { countsOf, normalizeWorld } from "../core/world.ts";
 import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues } from "../core/validate.ts";
@@ -22,7 +23,7 @@ import { calOf, fmtT, fmtWhen } from "../core/calendar.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewSig, libActionsSig,
   playingSig, togglePlay, stopPlay, closeSettings, mutateWorld, pushHistoryOnce, clearOpSel, cancelOpDraw,
   routePtsSig, routeResSig, linkFromSig, unitLegsSig, uiPrefsSig,
-  gridVerSig, editVerSig, showToast, loadStageSig, type LibActions }
+  gridVerSig, editVerSig, showToast, loadStageSig, saveConflictSig, type LibActions }
   from "../ui/state.ts";
 import type { ShellCtx, FolderHandle } from "./ctx.ts";
 import type { DeepLink } from "./deeplink.ts";
@@ -35,6 +36,10 @@ declare global {
   /** File System Access API 目录选择器（Edge/Chrome；调用前先 fsSupported() 探测） */
   function showDirectoryPicker(opts?: { mode?: "read" | "readwrite"; id?: string }): Promise<FolderHandle>;
 }
+
+/** 异常文本：配额超限 / structured-clone 失败 / 事务中止各是一回事，归成一句无信息的
+    「失败」等于什么都没说——凡把异常报给用户的地方都带上它。 */
+const errText = (e: unknown): string => String((e as { message?: unknown } | null)?.message || e || "未知错误");
 
 /** 仓库根样例世界的未校验 JSON（入库/normalizeWorld 前的原料） */
 type SampleWorld = { meta?: Meta } & Record<string, unknown>;
@@ -77,19 +82,26 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   const autosave = createAutosave(async () => {
     const w = worldSig.peek();
     if (!ctx.lib || !ctx.mapId || !w) return;
+    /* 未决冲突：不再撞库（每 600ms 白跑一次往返没意义）。⚠ 只能抛不能 return——
+       return＝pending 归零＝顶栏谎报「已自动保存」，而改动其实还困在内存里。 */
+    const pend = saveConflictSig.peek();
+    if (pend) throw staleError({ base: pend.base, cur: pend.cur });
     const snapV = { view: { lon0: ctx.view.lon0, lat0: ctx.view.lat0, degPerPx: ctx.view.degPerPx }, year: yearSig.peek() };
     if (ctx.source === "folder" && ctx.folderDir) {
-      // 写失败（返回 false）不再静默：抛给 autosave 的失败路径→底栏红字+保持●未保存（审计「假已保存」修复）
-      if (!(await folderWriteWorld(ctx.folderDir, ctx.mapId, w))) throw new Error("写入文件夹失败（权限失效或磁盘）");
-      fcachePatch(ctx.fcache, ctx.folderDir.name, ctx.mapId, { name: (w.meta || ({} as Meta)).名称 || ctx.mapId, counts: countsOf(w), mtime: Date.now(), ...snapV });
+      // 写失败不再静默：抛给 autosave 的失败路径→底栏红字+保持●未保存（审计「假已保存」修复）
+      const r = await folderWriteWorld(ctx.folderDir, ctx.mapId, w, ctx.baseVer);
+      if (!r.ok) throw new Error("写入文件夹失败（权限失效或磁盘）");
+      ctx.baseVer = r.mtime;   // 不更新基准＝下次守卫拿旧 mtime 比新文件，会自己拦自己
+      fcachePatch(ctx.fcache, ctx.folderDir.name, ctx.mapId, { name: (w.meta || ({} as Meta)).名称 || ctx.mapId, counts: countsOf(w), mtime: r.mtime ?? Date.now(), ...snapV });
       ctx.lib.kvSet("foldercache", ctx.fcache).catch(() => {});
       ctx.savedAt = new Date(); ctx.saveErr = null;
     } else {
-      await ctx.lib.save(ctx.mapId, w, snapV);
+      ctx.baseVer = await ctx.lib.save(ctx.mapId, w, snapV, undefined, ctx.baseVer);
       ctx.savedAt = new Date(); ctx.saveErr = null;
     }
     tabs.saved();   // 落盘成功才广播（失败路径在上面就抛了）
   }, 600, e => {
+    if (isStaleError(e)) { noteConflict(e.stale); return; }   // 守卫拦下≠存储故障，走冲突弹层
     /* 首次失败给 toast 逃生门（导出 JSON）；持续失败只保持顶栏 savest 朱点，不刷屏 */
     const first = !ctx.saveErr;
     ctx.saveErr = e as { message?: unknown };
@@ -97,6 +109,66 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       err: true, action: { label: "导出 JSON", run: () => libActions.exportCurrent() }
     });
   });
+
+  /* 守卫拦下写入：弹冲突弹层让用户决断。底栏同时保持●未保存＋红字——改动确实还在内存里，
+     不许显示成已保存。弹层置位期间自动保存不再尝试写入（见上面的短路）。 */
+  function noteConflict(info: StaleInfo): void {
+    ctx.saveErr = { message: "与另一处的改动冲突——保存已暂停" };
+    if (saveConflictSig.peek()) return;   // 已在待决：不重复弹（同 tabsync「每张图只提醒一次」之规）
+    const w = worldSig.peek();
+    saveConflictSig.value = {
+      name: (w && (w.meta || ({} as Meta)).名称) || "未命名",
+      base: info.base, cur: info.cur,
+      onOverwrite() {
+        /* 「仍然覆盖」＝接受库里现在的版本号作为本标签的新基准，守卫自然放行。
+           不给 save 开 force 旗标：少一个特例，也少一条能被误用的路径。 */
+        ctx.baseVer = info.cur;
+        saveConflictSig.value = null; ctx.saveErr = null;
+        autosave.flush();
+      },
+      onCopy() { saveAsCopy(); },
+      onExport() { libActions.exportCurrent(); }
+    };
+  }
+
+  /* 「另存为副本」：把内存里这一份写成新图并切过去——两边改动都不丢，是这个局面里唯一零损失的出口。
+     正因为是唯一的零损失出口，它的失败路径要比别处更实：**建副本之前一律不动内存**（改名只改到
+     交给 create 的浅拷贝上），于是任何一步失败时内存一字未动——不留幽灵撤销步，也不会让随后的
+     「仍然覆盖」把一个改过名的世界写回原图（冲突未决时 pointer 的 keydown 整段让位，Ctrl+Z
+     根本撤不掉那次改名，遮罩也盖住了顶栏撤销钮）。
+     副本建成之后才改内存名，好让 openMapById 开头那次 flush 落在副本上时内容与库里逐字一致。 */
+  let copying = false;   // 重入闸：弹层按钮无 disabled 态，在一个「卡住了」的不可关闭弹层上双击很常见
+  async function saveAsCopy(): Promise<void> {
+    const w0 = worldSig.peek();
+    if (!w0 || !ctx.lib || copying) return;
+    copying = true;
+    const 副本名 = ((w0.meta || ({} as Meta)).名称 || "未命名") + "（副本）";
+    const named = { ...w0, meta: { ...(w0.meta || ({} as Meta)), 名称: 副本名 } } as World;
+    let id: string | null = null, ver: number | null = null;
+    try {   // ── 第一段：建副本。到这一段结束为止，失败＝内存与两张图都原封不动 ──
+      if (ctx.source === "folder" && ctx.folderDir) {
+        const fn = await folderCreate(ctx.folderDir, named, (f, p) => { fcachePatch(ctx.fcache, ctx.folderDir!.name, f, p); });
+        ctx.lib.kvSet("foldercache", ctx.fcache).catch(() => {});
+        if (!fn) { showToast("另存副本失败（权限或磁盘问题）", { err: true }); return; }
+        id = fn; ver = await folderMtime(ctx.folderDir, fn);
+      } else {
+        const en = await ctx.lib.create(named);
+        id = en.id; ver = en.updatedAt;
+      }
+    } catch (e) {
+      // 配额超限 / structured-clone 失败 / 事务中止各是一回事，归成一句无信息的「失败」等于没说
+      showToast("另存副本失败：" + errText(e), { err: true });
+      return;
+    } finally { copying = false; }
+    /* ── 第二段：切图。副本**已经建成**，用户的数据从这里起就是安全的——这一段再出错也不许
+       报「另存副本失败」（那是假话），而且弹层已关、三选一的界面回不去了。 ── */
+    mutateWorld(w => { w.meta.名称 = 副本名; });   // 内存跟上副本名（可撤销；此时冲突已可清）
+    ctx.mapId = id; ctx.baseVer = ver;
+    saveConflictSig.value = null; ctx.saveErr = null;
+    const ok = await openMapById(id).catch(() => false);
+    showToast(ok ? "已另存为副本　对方的改动原样留在原图"
+                 : "副本已建好，但打开失败——请从图库里打开它", { err: !ok });
+  }
 
   async function fetchSample(file: string): Promise<SampleWorld | null> {
     try { const r = await fetch("../" + file, { cache: "no-store" }); if (r.ok) return await r.json() as SampleWorld; } catch (e) { /* file:// 等 */ }
@@ -121,6 +193,12 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   function setWorld(w: unknown, id: string | null, snap: OpenSnap | null | undefined): void {
     const p = planOpen(w, snap, dl);   // 年份/视角决策全在纯函数（openplan.test.ts 锁语义），此处只落地
     landWorld(ctx, p.world, id, p.year);   // 批落地（orchestrate.ts；重建计数护栏与此共用同一函数）
+    /* 换图＝旧基准作废。真值由各开图路径在本函数**之后**写入；漏写就退化成 null＝守卫放行，
+       失败方向落在「不拦」这一侧（误拦会把用户锁在存不进去的死局里，比漏拦更伤）。 */
+    ctx.baseVer = null;
+    /* 冲突同属「上一张图的事」：待决的 onOverwrite 闭包里记的是**旧图**的版本号，留到新图上
+       就会把它写进新图的基准。今天没有在冲突未决时切图的路径，但这条与清基准是同一个道理。 */
+    saveConflictSig.value = null;
     tabs.setMap(tabMapKey(ctx.source, ctx.mapId));   // 向别的标签打招呼（同图即互相提醒）
     if (p.view) {
       ctx.view.lon0 = p.view.lon0; ctx.view.lat0 = p.view.lat0;
@@ -169,12 +247,17 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     stageStep(0, (ent && ent.name) || "读取中");
     try {
       await autosave.flush();
-      const w = await ctx.lib!.getWorld(id);
+      /* ⚠ 世界与版本必须一趟读出（getWorldAt 同事务）：先读内容、再单独读版本，中间隔着
+         paintFrame 的一帧——另一处若恰在这段窗口里落盘，基准就比快照新，此后每次保存都过守卫，
+         把基于旧快照的内容整份写回去。偏差方向恒定落在「漏拦」这侧，正是守卫要拦的那类。 */
+      const got = await ctx.lib!.getWorldAt(id);
+      const w = got.world;
       if (!w) { alert("这张地图的数据无法读取（可能已损坏）。"); return false; }
       stageStep(1, (w.meta || ({} as Meta)).名称 || (ent && ent.name) || "未命名");
       await paintFrame();
       snapView();
-      setWorld(w, id, await ctx.lib!.getEntry(id));
+      setWorld(w, id, got.entry);
+      ctx.baseVer = got.entry ? got.entry.updatedAt : null;   // 与内容同源（须在 setWorld 之后，它会清空基准）
       ctx.lib!.kvSet("lastMap", id).catch(() => {});
       hideHome();
       await stageFinish(t0);
@@ -186,12 +269,14 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     stageStep(0, fn);
     try {
       await autosave.flush();
-      const w = await folderReadWorld(ctx.folderDir!, fn);
+      const got = await folderReadWorldAt(ctx.folderDir!, fn);   // 同一个 File 出内容与 mtime（同上之由）
+      const w = got.world;
       if (!w) { alert("无法读取该地图文件（可能已被移动、改名或损坏）。"); return false; }
       stageStep(1, (w.meta || ({} as Meta)).名称 || fn);
       await paintFrame();
       snapView();
       setWorld(w, fn, (ctx.fcache[ctx.folderDir!.name] || {})[fn]);
+      ctx.baseVer = got.mtime;   // 与内容同源（须在 setWorld 之后，它会清空基准）
       hideHome();
       await stageFinish(t0);
       return true;
@@ -410,14 +495,14 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       let perm: string = "prompt"; try { perm = await handle.requestPermission({ mode: "readwrite" }); } catch (e) {}
       if (perm !== "granted") { alert("未获得该文件夹的读写权限。"); return; }
       snapView();
-      ctx.folderDir = handle; ctx.source = "folder"; ctx.mapId = null;
+      ctx.folderDir = handle; ctx.source = "folder"; ctx.mapId = null; ctx.baseVer = null;   // 同 backToBrowser：换库＝旧基准作废
       ctx.lib!.kvSet("libDir", handle).catch(() => {});
       ctx.lib!.kvSet("librarySource", "folder").catch(() => {});
       refreshLib();
     },
     backToBrowser() {
       snapView();
-      ctx.source = "browser"; ctx.folderDir = null; ctx.mapId = null;
+      ctx.source = "browser"; ctx.folderDir = null; ctx.mapId = null; ctx.baseVer = null;
       ctx.lib!.kvSet("librarySource", "browser").catch(() => {});
       refreshLib();
     }

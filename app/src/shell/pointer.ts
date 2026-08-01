@@ -17,7 +17,7 @@ import { fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStrengthAt } from
 import { pickDecor, decorIdsInRadius, decorsInBox } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
-  inspEditSig, settingsSig, closeSettings, helpOpenSig, togglePlay, stopPlay,
+  inspEditSig, settingsSig, closeSettings, helpOpenSig, saveConflictSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
   addTypeSig, paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, eraNewSig,
@@ -793,14 +793,17 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     /* ⌘K / Ctrl+K：聚焦顶栏搜索框。
        须在输入框守卫之前（正在打字也能召唤）；弹层/图库打开时让位（焦点别落进被盖住的顶栏）。 */
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "k" || e.key === "K")
-      && !settingsSig.peek() && !helpOpenSig.peek() && !ctx.libOpen) {
+      && !settingsSig.peek() && !helpOpenSig.peek() && !saveConflictSig.peek() && !ctx.libOpen) {
       e.preventDefault();
       const sb = document.getElementById("searchBox") as HTMLInputElement | null;
       if (sb) { sb.focus(); sb.select(); }
       return;
     }
     if (/INPUT|TEXTAREA|SELECT/.test((e.target && (e.target as HTMLElement).tagName) || "")) return;
-    /* 弹层优先（v0.14 层级：设置 50 > 帮助 50 > 图库 45）：Esc 逐层退出 */
+    /* 弹层优先（层级：冲突 60 > 设置 50 > 帮助 50 > 图库 45）：Esc 逐层退出。
+       ⚠ 冲突弹层**有意不给 Esc**——待决断的数据完整性事件，关掉只会让人以为没事（见弹层头注）；
+       但仍在此整段让位，免得快捷键穿透到被遮罩盖住的地图上。 */
+    if (saveConflictSig.peek()) return;
     if (settingsSig.peek()) { if (e.key === "Escape") closeSettings(); return; }
     if (helpOpenSig.peek()) { if (e.key === "Escape" || e.key === "?") helpOpenSig.value = false; return; }
     if (ctx.libOpen) {   // 开始界面可见：屏蔽地图快捷键；Esc=回当前图（v0.14 homeVisible 分支）

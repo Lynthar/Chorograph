@@ -433,6 +433,8 @@ select.fld,button.fld{cursor:pointer}
    盒子不缩而只把字压小是最差组合；--fs-xs 还会掉到 11px（汉字地板 12px 的那条放宽只对密集 chrome）。
    故在弹层内把字号与控件尺寸恢复宽松档。 */
 #app[data-den="tight"] .scrim{--fs:13px;--fs-sm:12px;--fs-xs:12px;--pad:14px;--gap:10px;--r:10px;--r-sm:8px;--r-xs:6px;--ctl:32px}
+/* 陈旧写入冲突压在设置/帮助之上：它是待决断的数据完整性事件，不该被别的弹层盖住 */
+#saveConflict{z-index:60}
 .modal{width:640px;max-width:94vw;max-height:88vh;background:var(--q-pn);border:1px solid var(--q-ln2);border-radius:14px;box-shadow:0 24px 70px rgb(0 0 0/.55);display:flex;flex-direction:column;overflow:hidden;color:var(--q-tx)}
 /* 进场焦点落在 .modal[tabindex=-1] 上（读屏先读标题正文）——容器不是可操作控件，别画焦点环，
    否则按 ? 呼出帮助时基底的 [tabindex]:focus-visible 会给整个弹层套一圈金框 */

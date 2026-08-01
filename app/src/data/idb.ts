@@ -8,6 +8,10 @@ export function openDB(name: string, version: number,
     q.onupgradeneeded = e => upgrade(q.result, e.oldVersion);
     q.onsuccess = () => res(q.result);
     q.onerror = () => rej(q.error);
+    /* ⚠ 升版时老标签还握着旧连接＝blocked：不接这一条，promise 永不 settle，boot 就停在
+       `await openLibrary()` 上无声悬死——连「图库不可用，退回直读示例」的兜底都到不了。
+       拒绝掉才有话可说。（实测过一次真悬死：另一个标签持着连接时整页停在空白。） */
+    q.onblocked = () => rej(new Error("图库被其它标签页占用——请关掉本站的其它标签再打开"));
   });
 }
 

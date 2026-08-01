@@ -40,6 +40,10 @@ export interface ShellCtx {
   /* —— 图库+ 自动保存共享态 —— */
   lib: Library | null;
   mapId: string | null;
+  /** 当前图「本标签上次见到的版本」（浏览器库＝条目 updatedAt，文件夹库＝文件 mtime）：
+      开图时记下、每次落盘后更新，写入前据此做陈旧写入守卫（data/guard.ts）。
+      null＝不知情（迁移/读不到版本），守卫一律放行。 */
+  baseVer: number | null;
   source: "browser" | "folder";
   folderDir: FolderHandle | null;
   fcache: FolderCache;
@@ -58,7 +62,7 @@ export function createShellCtx(canvas: HTMLCanvasElement, ov: HTMLCanvasElement,
     meta: { terrain: "auto", genSeed: 1234, genStyle: "continent" },
     view: { lon0: 106, lat0: 38, degPerPx: 0.06 },
     grid: null, elevField: null, R: null, builtFor: null, repaint: null,
-    lib: null, mapId: null, source: "browser", folderDir: null, fcache: {},
+    lib: null, mapId: null, baseVer: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
   };
 }

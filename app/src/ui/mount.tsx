@@ -15,6 +15,7 @@ import { Toast } from "./Toast.tsx";
 import { HomePanel } from "./HomePanel.tsx";
 import { HelpOverlay } from "./HelpOverlay.tsx";
 import { SettingsOverlay } from "./SettingsOverlay.tsx";
+import { SaveConflictOverlay } from "./SaveConflictOverlay.tsx";
 
 export function mountUI(): void {
   const rail = document.getElementById("railMount");
@@ -40,5 +41,5 @@ export function mountUI(): void {
   const hm = document.getElementById("homeMount");
   if (hm) render(<HomePanel />, hm);
   const ovl = document.getElementById("ovlMount");
-  if (ovl) render(<><HelpOverlay /><SettingsOverlay /></>, ovl);
+  if (ovl) render(<><HelpOverlay /><SettingsOverlay /><SaveConflictOverlay /></>, ovl);
 }
