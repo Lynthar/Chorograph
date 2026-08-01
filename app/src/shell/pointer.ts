@@ -129,7 +129,13 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     } else tip.style.display = "none";
     if (modeSig.peek() === "browse") canvas.style.cursor = html ? "pointer" : "";
   };
-  canvas.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+  canvas.addEventListener("mouseleave", () => {
+    /* 光标离开画布：连指针瞬态一起清——只藏浮签时，笔刷环/橡皮筋会停在最后位置继续画，
+       hud 的悬停地名也一直挂着，看着像还停在图上。 */
+    tip.style.display = "none";
+    mxy = null;
+    if (hoverSig.peek()) hoverSig.value = null;
+  });
 
   let drag: PanDrag | null = null, nodeDrag: IdDrag | null = null,
     paintStroke: PaintStroke | null = null, opStroke: OpStroke | null = null,
@@ -816,8 +822,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (sb) { sb.focus(); sb.select(); }
       return;
     }
-    if (/INPUT|TEXTAREA|SELECT/.test((e.target && (e.target as HTMLElement).tagName) || "")) return;
+    /* 输入法组字中：Esc 是「取消候选」，一律让给 IME（同搜索框下拉的组字守卫之规） */
+    if (e.isComposing || e.keyCode === 229) return;
     /* 弹层优先（层级：冲突 60 > 设置 50 > 帮助 50 > 图库 45）：Esc 逐层退出。
+       ⚠ 这一段必须排在下面的输入框守卫**之前**——排在后面时，设置弹层里点进任何输入框后 Esc
+       就关不掉了（「刚打开时好使、打过字就失灵」）。Ctrl+K 正因为「打字时也要能召唤」而排在最前，
+       这是同一个理由的另一面。弹层开着时本就整段吞掉按键，输入框内外并无分别。
        ⚠ 冲突弹层**有意不给 Esc**——待决断的数据完整性事件，关掉只会让人以为没事（见弹层头注）；
        但仍在此整段让位，免得快捷键穿透到被遮罩盖住的地图上。 */
     if (saveConflictSig.peek()) return;
@@ -827,6 +837,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (e.key === "Escape" && ctx.mapId) hideHome();
       return;
     }
+    if (/INPUT|TEXTAREA|SELECT/.test((e.target && (e.target as HTMLElement).tagName) || "")) return;
     if (e.key === "?") { helpOpenSig.value = true; return; }
     if (e.key === "Escape") {
       if (opStroke && opStroke.free) { opStroke = null; return; }         // 先退在画河道/工事

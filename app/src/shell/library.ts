@@ -304,14 +304,24 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   async function importWorld(w: unknown, srcName: string): Promise<void> {
     const v = validateWorld(w);
     if (!v.ok) { alert(`「${srcName}」无法导入：\n` + formatIssues(v.fatal)); return; }
-    if (v.warnings.length) console.warn(`导入「${srcName}」有 ${v.warnings.length} 条提示：\n` + formatIssues(v.warnings));
+    /* 校验的 warning 此前只进 console——「兵力将移入说明」这类话是**专门写给写手看的**，
+       落在用户看不见的通道里等于没写。详情仍留控制台（多行不适合 toast），此处报个数与去处。 */
+    if (v.warnings.length) {
+      console.warn(`导入「${srcName}」有 ${v.warnings.length} 条提示：\n` + formatIssues(v.warnings));
+      showToast(`「${srcName}」有 ${v.warnings.length} 条数据提示　详情见浏览器控制台`);
+    }
     if (ctx.source === "folder") {
       const fn = await folderCreate(ctx.folderDir!, w, (f, p) => { fcachePatch(ctx.fcache, ctx.folderDir!.name, f, p); });
       ctx.lib!.kvSet("foldercache", ctx.fcache).catch(() => {});
       if (fn) await openFolderMap(fn); else alert("写入文件夹失败（权限或磁盘问题）。");
     } else {
-      const e = await ctx.lib!.create(w);
-      await openBrowserMap(e.id);
+      /* ⚠ 入库失败必须说话：此前直接 await create()，配额满时这条 promise 无人接——点「创建此地图」
+         「从内置示例新建」界面纹丝不动、零反馈，终结为一条 unhandledrejection；而文件夹分支同一
+         动作是有 alert 的。同一个动作在两个来源下响与不响不该不对称。 */
+      let id: string;
+      try { id = (await ctx.lib!.create(w)).id; }
+      catch (e) { alert(`「${srcName}」入库失败：${errText(e)}\n（浏览器存储可能已满——可先删掉几张地图，或改用「📁 链接文件夹」）`); return; }
+      await openBrowserMap(id);
     }
   }
 
@@ -407,7 +417,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       refreshLib();
     },
     /* 设置弹层「✔ 创建此地图」：blankWorld 由组件按表单生成，这里只负责入库并打开 */
-    createWorld(w) { importWorld(w, (w.meta || ({} as Meta)).名称 || "新地图"); },
+    createWorld(w) { importWorld(w, (w.meta || ({} as Meta)).名称 || "新地图").catch(e => alert("创建失败：" + errText(e))); },
     /* 设置弹层「📂 导入 JSON」：替换当前图内容（可撤销；对齐旧 importMode="current"） */
     replaceCurrent(json, srcName) {
       const w = worldSig.peek();
@@ -555,13 +565,24 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     return true;
   }
   async function boot(): Promise<void> {
+    /* ⚠ 三件事分开接：只有「库打不开」才算图库不可用。原先一个 try 罩住全部——一张大体量旧档
+       迁移时撞上配额，create 抛 QuotaExceeded，整个图库就被判死（已有地图全不可见不可开），
+       而迁移是幂等的，下次启动照样再炸一遍。迁移/缓存失败只该少一样东西，不该连库一起赔进去。 */
     try {
       ctx.lib = await openLibrary();
-      const mig = await migrateFromLocalStorage(ctx.lib, localStorage);
-      if (mig.imported || mig.updated) ctx.bootNote = `已从旧版存档迁移 ${mig.imported} 张、更新 ${mig.updated} 张`;
-      await migrateFolderHandle(ctx.lib);
-      ctx.fcache = (await ctx.lib.kvGet<FolderCacheState>("foldercache")) || {};
-    } catch (e) { console.warn("图库不可用，退回直读示例：", e); ctx.lib = null; }
+    } catch (e) { console.warn("图库打不开，退回直读示例：", e); ctx.lib = null; }
+    if (ctx.lib) {
+      try {
+        const mig = await migrateFromLocalStorage(ctx.lib, localStorage);
+        if (mig.imported || mig.updated) ctx.bootNote = `已从旧版存档迁移 ${mig.imported} 张、更新 ${mig.updated} 张`;
+        await migrateFolderHandle(ctx.lib);
+      } catch (e) {
+        console.warn("旧档迁移未完成（图库照常可用）：", e);
+        ctx.bootNote = "旧版存档迁移未完成——图库照常可用，详情见浏览器控制台";
+      }
+      try { ctx.fcache = (await ctx.lib.kvGet<FolderCacheState>("foldercache")) || {}; }
+      catch (e) { console.warn("文件夹缓存读取失败（按空缓存继续）：", e); ctx.fcache = {}; }
+    }
     if (!ctx.lib) {
       const s = dl.wantSample ? await fetchSample(dl.wantSample) : null;
       if (s) setWorld(s, null, null); else host.rebuild();

@@ -147,6 +147,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   };
   const changed = (a: unknown[], b: unknown[]): boolean => a.length !== b.length || a.some((x, i) => x !== b[i]);
 
+  let frameErr = false;   // 上一帧是否由本循环写了红条（只有自己写的才由自己撤，见 catch 旁注）
   (function frame() {
     try {   // 帧内异常：上报 #err、放弃本帧——续排在 finally，一帧出错不冻死画布（2026-07-12 P2）
     const t0 = performance.now();
@@ -193,7 +194,12 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       (selN ? `\n★ 选中 ${selN.名称 || selN.id}（Esc 取消）` : selE ? `\n★ 选中连线 ${selE.名称 || selE.from + "→" + selE.to}（Esc 取消）` : selU ? `\n⚔ 选中部队 ${selU.名称 || selU.id}（Esc 取消）` : "") +
       (hover ? `\n▸ ${hover.名称 || hover.id}` : "") +
       (ctx.bootNote ? `\n☂ ${ctx.bootNote}` : "");
+      /* 这一帧画成了：把上一帧留下的红条撤掉。⚠ 只撤**自己**写的那条——`#err` 也承载
+         启动失败与全局未处理异常，那些不该被一帧成功抹掉（错误条原先只写不清，一次瞬时的
+         帧内异常会把红条永久留在界面上，无任何路径清空）。 */
+      if (frameErr) { frameErr = false; try { const el = $("err"); if (el) el.textContent = ""; } catch {} }
     } catch (e) {
+      frameErr = true;
       try { const el = $("err"); if (el) el.textContent = "⚠ 渲染帧异常：" + String((e as Error).message || e); } catch {}
     } finally {
       requestAnimationFrame(frame);

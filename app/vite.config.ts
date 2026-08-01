@@ -31,7 +31,10 @@ const rootJsonMiddleware: Connect.NextHandleFunction = async (req, res, next) =>
   const u = new URL(req.url || "/", "http://localhost");
   if (!/^\/[^/]+\.json$/.test(u.pathname)) return next();
   // 解码后再校验落点仍在仓库根内：正则只挡字面斜杠，%2e%2e%2f 解码成 ../ 可逃逸（dev-only，仍防之）
-  const name = decodeURIComponent(u.pathname).replace(/^\/+/, "");
+  // ⚠ 坏 %编码（/%zz.json）会让 decodeURIComponent 抛 URIError——async 中间件的 rejection 无人接，
+  //   一条 curl 就能打崩 dev 服务器（同型防御 deeplink 的 dec() 早就做了）
+  let name: string;
+  try { name = decodeURIComponent(u.pathname).replace(/^\/+/, ""); } catch { return next(); }
   const abs = path.resolve(REPO_ROOT, name);
   if (path.dirname(abs) !== REPO_ROOT) return next();   // 只服务仓库根下的顶层 .json，拒绝越级
   try {
