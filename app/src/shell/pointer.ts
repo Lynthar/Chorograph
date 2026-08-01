@@ -9,7 +9,7 @@ import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { elevUnitM, elevSmooth } from "../core/elev.ts";
 import { distKm } from "../core/geo.ts";
-import { fmtKm } from "../core/util.ts";
+import { esc, fmtKm, tget } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
 import { pickEdge, pickNode, pickOp, nodesInBox, layerOn } from "../render/overlay.ts";
 import { pickUnit, pickRangeHandle, unitsInBox, type RingHit } from "../render/units.ts";
@@ -88,7 +88,6 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   /* 悬停速览提示（v0.14 #tip）：部队/地点/连线 hover 出小卡；拖动/绘制时隐藏。
      部队优先同 clickAt 之序（画在最上层者先答），故战术图上悬停部队即知可点。 */
   const tip = $("tip");
-  const escHtml = (s: unknown): string => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const updateTip = (x: number, y: number, nd: WorldNode | null): void => {
     const world = worldSig.value;
     if (!world) { tip.style.display = "none"; return; }
@@ -96,31 +95,31 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const un = unitPickable() ? pickUnit(cam(), ctx.meta, world, yearNow, x, y) : null;
     const ed = !un && !nd ? pickEdge(cam(), ctx.meta, world, yearNow, x, y, layers) : null;
     /* 可靠性后缀（柱B）：确证不出字（缺省无须声明），推断/传说才标——同检查器卡片之规 */
-    const certSuf = (v: unknown): string => (typeof v === "string" && CERTAINTY[v]) ? ` · ${CERTAINTY[v].名}` : "";
+    const certSuf = (v: unknown): string => { const c = tget(CERTAINTY, v); return c ? ` · ${esc(c.名)}` : ""; };
     let html = "";
     if (un) {
-      const k = UNIT_KINDS[un.kind], f = un.faction ? world.factions.find(q => q.id === un.faction) : null;
-      const st = UNIT_STATUS[unitStatusAt(un, yearNow) || ""];
+      const k = tget(UNIT_KINDS, un.kind), f = un.faction ? world.factions.find(q => q.id === un.faction) : null;
+      const st = tget(UNIT_STATUS, unitStatusAt(un, yearNow) || "");
       const sf = fmtStrength(unitStrengthAt(un, yearNow));
-      const str = sf ? ` · 兵力 ${escHtml(sf)}` : "";
+      const str = sf ? ` · 兵力 ${esc(sf)}` : "";
       const mo = unitMoraleAt(un, yearNow);
-      html = `<b>${escHtml(un.名称 || un.id)}</b> ${k ? `${k.glyph} ${k.名}` : "部队"}` +
-        `${f ? ` · ${escHtml(f.名称 || f.id)}` : ""}${str}${mo != null ? ` · 士气 ${mo}` : ""}${st ? ` · ${st.名}` : ""}`;
+      html = `<b>${esc(un.名称 || un.id)}</b> ${k ? `${esc(k.glyph)} ${esc(k.名)}` : "部队"}` +
+        `${f ? ` · ${esc(f.名称 || f.id)}` : ""}${str}${mo != null ? ` · 士气 ${mo}` : ""}${st ? ` · ${esc(st.名)}` : ""}`;
     } else if (nd) {
       const isEv = nd.type === "event";
-      const et = EVENT_TYPES[nd.evtype!] || EVENT_TYPES.battle;
-      const s = NODE_STYLE[nd.type] || NODE_STYLE.city;
+      const et = tget(EVENT_TYPES, nd.evtype) || EVENT_TYPES.battle;
+      const s = tget(NODE_STYLE, nd.type) || NODE_STYLE.city;
       const fid = ownerAt(nd, yearNow);
       const f = fid ? world.factions.find(q => q.id === fid) : null;
-      const pop = (!isEv && nd.字段 && nd.字段.人口) ? ` · 人口 ${escHtml(nd.字段.人口)}` : "";
-      html = `<b>${escHtml(nd.名称 || nd.id)}</b> ${isEv ? `${et.sym}${et.名}` : s.名}${isEv && nd.year != null ? ` · ${escHtml(fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", nd.year, true))}` : ""}` +
-        `${f ? ` · ${escHtml(f.名称 || f.id)}` : (isEv ? "" : " · 中立")}${pop}${certSuf(nd.certainty)}${isEv && nd.result ? `<br>${escHtml(nd.result)}` : ""}`;
+      const pop = (!isEv && nd.字段 && nd.字段.人口) ? ` · 人口 ${esc(nd.字段.人口)}` : "";
+      html = `<b>${esc(nd.名称 || nd.id)}</b> ${isEv ? `${esc(et.sym)}${esc(et.名)}` : esc(s.名)}${isEv && nd.year != null ? ` · ${esc(fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", nd.year, true))}` : ""}` +
+        `${f ? ` · ${esc(f.名称 || f.id)}` : (isEv ? "" : " · 中立")}${pop}${certSuf(nd.certainty)}${isEv && nd.result ? `<br>${esc(nd.result)}` : ""}`;
     } else if (ed) {
-      const st = EDGE_STYLE[ed.edge.type] || { 名: ed.edge.type };
+      const st = tget(EDGE_STYLE, ed.edge.type) || { 名: ed.edge.type };
       const a = world.nodes.find(q => q.id === ed.edge.from), b = world.nodes.find(q => q.id === ed.edge.to);
       const elen = Array.isArray(ed.edge.pts) && ed.edge.pts.length >= 2 ? polylineKm(ctx.meta, ed.edge.pts)
         : (a && b ? edgeLenKm(ctx.meta, a, b, ed.edge.type, (ed.edge.from || "") + (ed.edge.to || "")) : 0);
-      html = `<b>${escHtml(ed.edge.名称 || st.名)}</b> · ${st.名} ≈${fmtKm(elen)}${certSuf(ed.edge.certainty)}`;
+      html = `<b>${esc(ed.edge.名称 || st.名)}</b> · ${esc(st.名)} ≈${esc(fmtKm(elen))}${certSuf(ed.edge.certainty)}`;
     }
     if (html) {
       tip.innerHTML = html;
@@ -212,7 +211,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
      decor.size（视觉与旧自动点缀相当）。生态=无 → 不落章（该笔只改/清地面色调与代价）。 */
   const ecoStamp = (x: number, y: number): void => {
     if (!decorPickable()) return;                                   // 布景层隐藏＝不盲落
-    const spec = (ECO[parseComposite(paintTerrainSig.peek())[1]] || ECO.none).scatter;
+    const spec = ECO[parseComposite(paintTerrainSig.peek())[1]].scatter;
     if (!spec.length) return;
     const spacing = Math.max(10, 9 * brushSizeSig.peek());
     if (ecoSprayLast && Math.hypot(x - ecoSprayLast.x, y - ecoSprayLast.y) < spacing) return;   // 未到间距不重落
@@ -224,7 +223,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (Math.random() > Math.min(1, it.p * 1.15)) continue;     // 概率门（略提，画得密实些）
         const a = Math.random() * 6.2832, rr = Math.sqrt(Math.random()) * rPx;   // 盘内均匀散布
         const l2 = unproject(cam(), x + Math.cos(a) * rr, y + Math.sin(a) * rr);
-        const size = +(it.s / (DECOR_BASE[it.k] || 5) * (0.85 + Math.random() * 0.4)).toFixed(2);   // ±20% 尺寸抖动
+        const size = +(it.s / (tget(DECOR_BASE, it.k) || 5) * (0.85 + Math.random() * 0.4)).toFixed(2);   // ±20% 尺寸抖动
         applyEra(addDecor(w, l2[0], l2[1], it.k, size), eraNewSig.peek());
         any = true;
       }
@@ -269,7 +268,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const w0 = worldSig.peek();
     const tp = linkTypeSig.peek();
     if (w0 && w0.edges.some(ed => ed.type === tp && ((ed.from === from && ed.to === to) || (ed.from === to && ed.to === from)))) {
-      showToast(`两地已有一条${(EDGE_STYLE[tp] || { 名: tp }).名}，未重复新建`);
+      showToast(`两地已有一条${(tget(EDGE_STYLE, tp) || { 名: tp }).名}，未重复新建`);
       return;
     }
     mutateWorld(w => { const ed = addEdge(w, from, to, tp); if (ed) applyEra(ed, eraNewSig.peek()); });
@@ -746,7 +745,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         else {
           let nid: string | null = null;
           const tp = addTypeSig.peek();   // 类型 chips 预选（柱B）；默认名带类型便于检查器分辨
-          mutateWorld(w => { nid = applyEra(addNode(w, "新" + ((NODE_STYLE[tp] || NODE_STYLE.city).名 || "地点"), ll[0], ll[1], tp), eraNewSig.peek()).id; });
+          mutateWorld(w => { nid = applyEra(addNode(w, "新" + ((tget(NODE_STYLE, tp) || NODE_STYLE.city).名 || "地点"), ll[0], ll[1], tp), eraNewSig.peek()).id; });
           if (nid) selSig.value = { kind: "node", id: nid };   // 落默认名并选中→检查器改名（去 prompt）
         }
       } else if (mode === "edit" && editSubSig.value === "label") {
