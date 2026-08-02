@@ -4,9 +4,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildMarks, hourWindow, quantTime, subTicks } from "../src/ui/timedock.ts";
+import { evCurrentAt } from "../src/core/time.ts";
 import type { EvMark, TickMark, ClusterMark } from "../src/ui/timedock.ts";
 
-const sameSlot = (t: number, now: number): boolean => Math.floor(t) === Math.floor(now);
+/* 生产传的就是它（TimeDock.tsx）——用真实判据而非测试替身，免得同槽口径在两边各漂一份 */
+const sameSlot = evCurrentAt;
 
 describe("buildMarks：事件刻度与聚簇", () => {
   const evs: EvMark[] = [

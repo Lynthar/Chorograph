@@ -2,6 +2,8 @@
    标签贪心避让、当前时刻标签优先）、战术「时」细轨窗口（当前日 ±1）、时间量子化。
    纯函数无 DOM/信号——node:test 可测；组件 TimeDock.tsx 只做渲染与指针交互（截图目检）。 */
 
+import { evFutureAt } from "../core/time.ts";
+
 export interface EvMark { t: number; label: string }
 
 export interface TickMark { kind: "tick"; pct: number; t: number; fut: boolean; cur: boolean; label: string | null }
@@ -12,7 +14,8 @@ const GAP_PX = 10;    // 决议阈值：相邻事件刻度像素间距 < 10px �
 const CJK_PX = 13;    // 标签每字宽估算（--fs-xs 12px 字号 + .05em 字距；避让用，无需精确——改 .tlab 字号须同步）
 
 /** 主轨标记布局：范围内事件 → 刻度/「×N」聚簇 + 标签避让。
-    curOf=「当前时刻命中」判定（战略=同年、战术=同日）；widthPx≤0（未测得）时不聚簇不避让。 */
+    curOf=「当前时刻命中」判定（战略=同年、战术=同日）——生产传 core/time.evCurrentAt，
+    与画布红圈/览面金显同一真源；widthPx≤0（未测得）时不聚簇不避让。 */
 export function buildMarks(evs: EvMark[], min: number, max: number, now: number,
   widthPx: number, curOf: (t: number, now: number) => boolean): TrackMark[] {
   const span = max - min;
@@ -26,7 +29,7 @@ export function buildMarks(evs: EvMark[], min: number, max: number, now: number,
   }
   const marks: TrackMark[] = groups.map(g => {
     const cur = g.some(e => curOf(e.t, now));
-    const fut = !cur && g.every(e => e.t > now);
+    const fut = !cur && g.every(e => evFutureAt(e.t, now));   // 与 curOf 同粒度＝两态互斥（原 e.t>now 仅因 !cur 兜着才等价）
     if (g.length > 1) {
       const mid = (g[0].t + g[g.length - 1].t) / 2;
       return { kind: "cluster", pct: ((mid - min) / span) * 100, n: g.length, fut, cur };

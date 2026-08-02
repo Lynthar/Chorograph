@@ -9,7 +9,7 @@ import { useEffect, useRef } from "preact/hooks";
 import { signal } from "@preact/signals";
 import type { JSX } from "preact";
 import { calOf, cnDay, cnMonth, fmtHM, fmtShichen, fmtT, fmtYear, fromT, monthsOf, yearMonthOf, type CalendarSpec } from "../core/calendar.ts";
-import { phaseIndexAt, phasesOf } from "../core/time.ts";
+import { evCurrentAt, phaseIndexAt, phasesOf } from "../core/time.ts";
 import { isTacSig, playingSig, rangeSig, stopPlay, subDaySig, timeStep, togglePlay, toggleSubDay, worldSig, yearSig } from "./state.ts";
 import { buildMarks, hourWindow, quantTime, subTicks, type EvMark } from "./timedock.ts";
 
@@ -17,9 +17,6 @@ import { buildMarks, hourWindow, quantTime, subTicks, type EvMark } from "./time
 const trackW = signal(800);
 /** 时轨拖拽结束后 +1：强制重渲以解冻窗口 */
 const subBump = signal(0);
-
-/** 同槽判定：战略=同年、战术=同日（事件刻度 cur 高亮用） */
-const sameSlot = (t: number, now: number): boolean => Math.floor(t) === Math.floor(now);
 
 function dayShort(cal: CalendarSpec, T: number): string {
   const p = fromT(cal, T);
@@ -53,7 +50,7 @@ export function TimeDock() {
   const evs: EvMark[] = (worldSig.value ? worldSig.value.nodes : [])
     .filter(n => n.type === "event" && n.year != null)
     .map(n => ({ t: n.year as number, label: n.名称 || n.id }));
-  const marks = buildMarks(evs, min, max, y, trackW.value, sameSlot);
+  const marks = buildMarks(evs, min, max, y, trackW.value, evCurrentAt);   // 同槽判定＝画布红圈/览面金显同一真源
   /* 相位金标记（战术分帧命名时刻）：轨下带小金菱,点击即跳（金＝时间语义正当用途）。
      须 stopPropagation 否则按下会落进主轨 scrub。 */
   const phasesL = tac ? phasesOf(worldSig.value?.meta) : [];

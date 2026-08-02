@@ -3,7 +3,7 @@
    战术图另有「相位」节（分帧命名时刻的列表管理,与时间坞金菱标记同源）。 */
 import { EVENT_TYPES } from "../core/constants.ts";
 import { calOf, cnDay, cnMonth, fmtHM, fmtShichen, fmtT, fmtWhen, fromT, type CalendarSpec } from "../core/calendar.ts";
-import { phaseIndexAt, phasesOf } from "../core/time.ts";
+import { evCurrentAt, evFutureAt, phaseIndexAt, phasesOf } from "../core/time.ts";
 import { addPhaseAt, removePhaseAt, renamePhase } from "./editops.ts";
 import { clearOpSel, flyReqSig, isTacSig, mutateWorld, selSig, showToast, stopPlay, worldSig, yearSig } from "./state.ts";
 import type { World } from "../core/types.ts";
@@ -75,7 +75,7 @@ export function EventsPane() {
           const isSel = !!(sel && sel.kind === "node" && sel.id === ev.id);
           return (
             <button key={ev.id}
-              class={"ev tr" + (y > yearNow ? " fut" : y === yearNow ? " cur" : "") + (isSel ? " sel" : "")}
+              class={"ev tr" + (evFutureAt(y, yearNow) ? " fut" : evCurrentAt(y, yearNow) ? " cur" : "") + (isSel ? " sel" : "")}
               onClick={() => {
                 flyReqSig.value = { lon: ev.lon, lat: ev.lat };
                 clearOpSel();

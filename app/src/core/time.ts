@@ -21,10 +21,32 @@ export function ownerAt(n: Pick<WorldNode, "owners" | "faction">, yr: number): s
   return n.faction || null;
 }
 
+/* —— 事件三态（当刻/未发生/已过去）的**唯一判据**（2026-08-02）——
+   粒度恒为**粗档单位**：战略图＝同年、战术图＝同日，与时间轴当前是粗档还是细档无关。
+   ⚠ 这不是新语义，是把时间坞 `sameSlot` 早就写对的那一行抽出来收口：细粒度时间轴上
+   「精确相等」必然落空——战略图开月档后整年事件的红圈与无时段作战线全灭；反向更硬，
+   带月事件在年档下恒判「未发生」淡显，而切回粗档会 Math.floor 时刻，时间轴**再也回不到**
+   那个小数年＝该事件永久是灰的。战术图「时」档同构地坏着（这不是月粒度引入的，是「时」
+   档引入时就有的），故判据不分图种——floor 在战略图上就是年、在战术图上就是日，同
+   `activeAt` 那套「同一套逻辑」之规，于是全链一个签名都不必改。
+   ⚠ 两者**必须成对使用**：只改「当刻」不改「未发生」，年内靠后的事件会同时满足两边
+   ＝红圈亮着又淡显着的矛盾态（时间坞的 `fut = !cur && …` 保护正是为此）。
+   ⚠ 整年/整日数据上 `Math.floor(a)===Math.floor(b)` 与 `a===b` 逐位等价，故旧档零迁移。 */
+
+/** 事件当刻：战略图＝同年（月粒度下年内任意月都算当年）、战术图＝同日。无 year＝恒否 */
+export function evCurrentAt(evYear: number | undefined, yr: number): boolean {
+  return evYear != null && Math.floor(evYear) === Math.floor(yr);
+}
+
+/** 事件尚未发生：严格晚于当前所在的年/日；同年/同日一律不算未发生（与 evCurrentAt 互斥） */
+export function evFutureAt(evYear: number | undefined, yr: number): boolean {
+  return evYear != null && Math.floor(evYear) > Math.floor(yr);
+}
+
 /** 作战线显隐：带时段=[since,until) 判定（分相位箭头，独立于事件时刻）；
-    无时段=事件当年/当日精确相等（旧语义，旧档零迁移）。渲染与拾取共用同一规则 */
+    无时段=事件当刻（同年/同日，见上）。渲染与拾取共用同一规则 */
 export function opVisibleAt(ev: { year?: number }, op: Timed, yr: number): boolean {
-  return (op.since != null || op.until != null) ? activeAt(op, yr) : ev.year === yr;
+  return (op.since != null || op.until != null) ? activeAt(op, yr) : evCurrentAt(ev.year, yr);
 }
 
 /** 势力涂域：某年生效的涂绘层（可分时段/多层） */

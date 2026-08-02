@@ -6,7 +6,7 @@
    ⚠ nodeVisibleAt 是绘制与拾取（render/pick.ts）同源的可见门——改门先想两边；
    noteBox 同理是标注文本体的同源几何（画与点都由它出）。 */
 import { NODE_STYLE, RANK_ZOOM, certaintyStyle } from "../core/constants.ts";
-import { activeAt, ownerAt } from "../core/time.ts";
+import { activeAt, evCurrentAt, evFutureAt, ownerAt } from "../core/time.ts";
 import { project, type Camera } from "../core/projection.ts";
 import { kmPerDegLat, toRad } from "../core/geo.ts";
 import { hexA, tget } from "../core/util.ts";
@@ -218,7 +218,7 @@ export function drawNodes(
   /* 占位次序＝让位次序：标注最先（不让位）→ 当日事件（战场焦点，2026-07 提级）→ 地名按 rank；
      部队标签在 drawUnits（同场、更后）——部队让地名（用户拍板：地点语义上固定不动，标签该稳）。 */
   const keyOf = (n: WorldNode): number => n.type === "label" ? -2
-    : (n.type === "event" && n.year === yearNow ? -1 : ((tget(NODE_STYLE, n.type) || NODE_STYLE.city).rank || 0));
+    : (n.type === "event" && evCurrentAt(n.year, yearNow) ? -1 : ((tget(NODE_STYLE, n.type) || NODE_STYLE.city).rank || 0));
   const order = world.nodes.slice().sort((a, b) => keyOf(a) - keyOf(b));
   for (const n of order) {
     const selected = n.id === opts.selId || multiSet.has(n.id);
@@ -233,7 +233,7 @@ export function drawNodes(
     const [x, y] = project(cam, n.lon, n.lat);
     const s = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
     const isEv = n.type === "event";
-    if (isEv && n.year != null && n.year > yearNow) ctx.globalAlpha = 0.35;   // 未发生的事件淡显
+    if (isEv && evFutureAt(n.year, yearNow)) ctx.globalAlpha = 0.35;   // 未发生的事件淡显（与下方红圈同粒度＝互斥，勿改成精确比较）
     const cs = certaintyStyle(n.certainty, "node");   // 可靠性（柱B）：虚描/淡显/问号；确证＝逐位不变
     ctx.globalAlpha *= cs.alpha;                      // 记号与标签同淡（本轮迭代末统一复位 1）
     const fid = ownerAt(n, yearNow);
@@ -244,7 +244,7 @@ export function drawNodes(
       ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.strokeText("?", x + s.r + 3, y - s.r - 2);
       ctx.fillStyle = "#2c241b"; ctx.fillText("?", x + s.r + 3, y - s.r - 2); ctx.restore();
     }
-    if (isEv && n.year === yearNow) { ctx.beginPath(); ctx.arc(x, y, s.r + 4, 0, 7); ctx.lineWidth = 2; ctx.strokeStyle = "#b0202a"; ctx.stroke(); }
+    if (isEv && evCurrentAt(n.year, yearNow)) { ctx.beginPath(); ctx.arc(x, y, s.r + 4, 0, 7); ctx.lineWidth = 2; ctx.strokeStyle = "#b0202a"; ctx.stroke(); }
     if (selected) { ctx.beginPath(); ctx.arc(x, y, s.r + 5, 0, 7); ctx.lineWidth = 2.5; ctx.strokeStyle = "#c0392b"; ctx.stroke(); }
     if (on("labels")) {
       ctx.font = (n.type === "capital" ? "bold 14px" : "13px") + " KaiTi,楷体,serif"; ctx.textBaseline = "middle";

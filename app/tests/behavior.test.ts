@@ -6,7 +6,7 @@ import { calOf, cnDay, cnMonth, fmtShichen, fmtT, fmtWhenRange, fmtYMD, fmtYear,
 import { distKm, haversine, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm } from "../src/core/geometry.ts";
 import { genTerrainAt, seedTerrain } from "../src/core/terrain.ts";
-import { activeAt, opVisibleAt, ownerAt, yearRangeOf } from "../src/core/time.ts";
+import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, yearRangeOf } from "../src/core/time.ts";
 import { buildElevField, contourStepFor, elevBilinear, elevSmooth, elevUnitM } from "../src/core/elev.ts";
 import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
@@ -306,12 +306,72 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
   });
 });
 
+describe("事件三态判据（evCurrentAt / evFutureAt：细粒度时间轴上的当刻）", () => {
+  const cal = calOf(undefined), M = monthsOf(cal);
+  const mar = yearMonthT(cal, 3107, 3), jun = yearMonthT(cal, 3107, 6);
+
+  it("整年/整日数据与旧的精确相等逐位等价（旧档零迁移）", () => {
+    for (const [y, T] of [[3107, 3107], [3107, 3106], [3106, 3107], [-216, -216], [0, 0]] as const) {
+      assert.strictEqual(evCurrentAt(y, T), y === T, `当刻 ${y} vs ${T}`);
+      assert.strictEqual(evFutureAt(y, T), y > T, `未发生 ${y} vs ${T}`);
+    }
+  });
+
+  it("整年事件 + 时间轴在月格＝仍是当年（战略图开月档后红圈与无时段作战线不再全灭）", () => {
+    assert.strictEqual(evCurrentAt(3107, mar), true);
+    assert.strictEqual(evCurrentAt(3107, jun), true);
+    assert.strictEqual(evCurrentAt(3107, yearMonthT(cal, 3108, 1)), false, "跨到次年即不是当年");
+  });
+
+  it("带月事件 + 时间轴在整年＝当年且不淡显（粗档 Math.floor 后时间轴再也回不到那个小数年）", () => {
+    assert.strictEqual(evCurrentAt(jun, 3107), true);
+    assert.strictEqual(evFutureAt(jun, 3107), false, "同年不算未发生——否则永久灰着");
+    assert.strictEqual(evFutureAt(jun, 3106), true);
+    assert.strictEqual(evCurrentAt(jun, 3108), false);
+    assert.strictEqual(evFutureAt(jun, 3108), false, "已过去");
+  });
+
+  it("战术图同规：日戳整数 + 时档小数时刻＝同日", () => {
+    const D = 1118520;
+    assert.strictEqual(evCurrentAt(D, D + 0.25), true, "06:00 拨到时仍是当日");
+    assert.strictEqual(evCurrentAt(D + 0.25, D), true, "带时刻的事件在日档下也是当日");
+    assert.strictEqual(evFutureAt(D + 0.25, D), false, "同日不算未发生");
+    assert.strictEqual(evCurrentAt(D, D + 1), false);
+  });
+
+  it("两态互斥且三态闭合（当刻/未发生/已过去恰居其一）", () => {
+    const ys = [3106, 3107, 3108, mar, jun, -216.5, -216, 0, 1118520.25];
+    for (const y of ys) for (const T of ys) {
+      const c = evCurrentAt(y, T), f = evFutureAt(y, T);
+      assert.ok(!(c && f), `互斥失败 ${y} vs ${T}`);
+      assert.strictEqual(Number(c) + Number(f) + Number(Math.floor(y) < Math.floor(T)), 1, `三态未闭合 ${y} vs ${T}`);
+    }
+  });
+
+  it("无 year 恒否（未定时刻的事件既不当刻也不未发生）", () => {
+    assert.strictEqual(evCurrentAt(undefined, 3107), false);
+    assert.strictEqual(evFutureAt(undefined, 3107), false);
+  });
+
+  it("负年与全月遍历：月偏移恒为 [0,1) 非负分数，floor 取回原年", () => {
+    for (const y of [-3000, -216, -1, 0, 1, 1863, 3107]) {
+      for (let m = 1; m <= M; m++) {
+        assert.strictEqual(evCurrentAt(yearMonthT(cal, y, m), y), true, `${y} 年 ${m} 月`);
+        assert.strictEqual(evFutureAt(yearMonthT(cal, y, m), y), false, `${y} 年 ${m} 月不该判未发生`);
+      }
+    }
+  });
+});
+
 describe("作战线时间维度（opVisibleAt：分相位箭头）", () => {
   const ev = { year: 3107 };
-  it("无时段=事件当年/当日精确相等（旧语义，旧档零迁移）", () => {
+  it("无时段=事件当刻（同年/同日；整年整日数据与旧的精确相等逐位等价）", () => {
     assert.strictEqual(opVisibleAt(ev, {}, 3107), true);
     assert.strictEqual(opVisibleAt(ev, {}, 3106), false);
-    assert.strictEqual(opVisibleAt(ev, {}, 3107.5), false);   // 时粒度下拖过整日刻，无时段线不显示
+    /* ⚠ 有意的语义翻转（2026-08-02）：原断言为 false 且注为「时粒度下拖过整日刻，无时段线
+       不显示」——那正是要修的失真本身（战略图开月档／战术图开时档，无时段作战线整条消失）。
+       判据改走 evCurrentAt 后同年/同日恒显，改公式先过这一条。 */
+    assert.strictEqual(opVisibleAt(ev, {}, 3107.5), true);
   });
   it("带时段=[since,until) 区间显隐，独立于事件时刻", () => {
     const op = { since: 1118520, until: 1118523 };            // 战术图日戳三日相位
