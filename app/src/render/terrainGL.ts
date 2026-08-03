@@ -3,8 +3,19 @@
    本模块只做像素观感——高程双线性 + 细节噪声 + 晕渲 + 色阶 + 生态色调 + 海岸线 + 等高线。
    等高线例外地画在**无噪声数据面**上（细节噪声纯装饰，读数不含）：细曲线+计曲线（每第 4 条），
    等距由 core/elev.contourStepFor 随缩放 ×2 阶梯自适应、过渡档按 uCFade 淡入。
-   细节噪声用整数哈希 PCG2D（纯装饰、不入存档；sin-hash 在 fp32 下大参数失谐、不可移植）。 */
+   细节噪声用整数哈希 PCG2D（纯装饰、不入存档；sin-hash 在 fp32 下大参数失谐、不可移植）。
+
+   缩放自适应观感（2026-08 美化批，material.ts 是数值真源，CPU 兜底同构）：
+   - 类型/色调查找过**域扭曲**（波长≈1.3 格、幅度<半格，格空间标定=缩放稳定）+ 四角双线性软过渡
+     ——生态色斑从轴对齐方格变有机斑块；地形分类（游戏真源）与等高线不经扭曲。
+   - 高程细节分两层：**微八度**（世界锚定 ×2 阶梯接续宏观 fbm4 频谱，逐档按屏幕波长门控淡入，
+     整幅视角下全零=旧缩放档观感保持）；**材质纹理**（林冠/沙丘/棱脊/沼泽，屏幕波长锚定+双档
+     crossfade，只进光照法线，不进色阶/海岸/等高线判据——质感是示意不是地物）。
+   - 坡度岩化 + 帐篷差谷影（AO）+ 水域近岸带与静态波纹（无动画，尊重空闲降频）。
+   ⚠ 噪声坐标一律用图幅局部坐标（ll-网格原点），深放大高频档才不在 fp32 下失谐；
+   ⚠ fwidth 只喂 e/es 两个一致控制流值，材质分支里不得调用。 */
 import { ELEV, terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
+import { materialTable, MICRO_F0, MICRO_OCTAVES, FX } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
 
@@ -29,8 +40,11 @@ uniform vec3 uLight;
 uniform int uMode;                // 0=着色 1=诊断平色
 uniform int uContour;
 uniform int uWrap;                // 1=球面经度环绕（把片元经度折回世界本初域），0=平面
+uniform int uPaper;               // 1=图幅外铺宣纸色（战术图；色=出图垫纸色 #d9d2c0 同源）
 uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合诊断平色（G=lf*5+eco 索引）
 uniform vec3 uTint[${COMPOSITE_COUNT}];     // 各复合生态色调（无=vec3(-1)）
+uniform vec4 uMatA[${COMPOSITE_COUNT}];     // 材质纹理权重(canopy,dune,ridge,marsh)——render/material.ts 真源
+uniform vec4 uMatB[${COMPOSITE_COUNT}];     // (微起伏rough, 反照率抖动albVar, 岩化rock, 0)
 out vec4 fragColor;
 
 /* 细节噪声：整数哈希(PCG2D)值噪声 */
@@ -41,11 +55,97 @@ float vnoise2(vec2 x){ ivec2 i=ivec2(floor(x)); vec2 f=fract(x); vec2 u=f*f*(3.0
   float a=hashI(i),b=hashI(i+ivec2(1,0)),c=hashI(i+ivec2(0,1)),d=hashI(i+ivec2(1,1));
   return a+(b-a)*u.x+(c-a)*u.y+(a-b-c+d)*u.x*u.y; }
 float fbm4(vec2 x){ float s=0.0,a=0.5; for(int i=0;i<4;i++){ s+=a*vnoise2(x); x*=2.0; a*=0.5; } return s; }
+/* 梯度噪声（Perlin 型，±0.7）：棱脊/沙丘的 ridged 变换必须用它——值噪声的极值沿格线连通，
+   ridged 后是迷宫状蠕虫纹；梯度噪声的脊线才有自然山脊形态 */
+vec2 grad2(ivec2 p){ float a=hashI(p)*6.2831853; return vec2(cos(a),sin(a)); }
+float gnoise2(vec2 x){ ivec2 i=ivec2(floor(x)); vec2 f=fract(x); vec2 u=f*f*(3.0-2.0*f);
+  float a=dot(grad2(i),f), b=dot(grad2(i+ivec2(1,0)),f-vec2(1.0,0.0)),
+        c=dot(grad2(i+ivec2(0,1)),f-vec2(0.0,1.0)), d=dot(grad2(i+ivec2(1,1)),f-vec2(1.0,1.0));
+  return a+(b-a)*u.x+(c-a)*u.y+(a-b-c+d)*u.x*u.y; }
+float rg(float n){ return 1.0-min(1.0,abs(n)*1.9); }   // 梯度噪声 → 脊形（峰=1 谷=0）
+
+const float MF0=float(${MICRO_F0});   // 微八度基频（接续 fbm4 频谱下一档；material.ts 单一真源）
+/* 八度门控（同 material.octaveGate）：屏幕波长 3px 起淡入、8px 全强——整幅视角下恒 0=旧观感 */
+float gate(float f){ return smoothstep(3.0,8.0,uPXPD/f); }
+float ridged(float n){ return 1.0-abs(2.0*n-1.0); }
+/* 屏幕波长 tpx 锚定的两档世界频率 + crossfade（×2 阶梯嵌套，缩放连续无跳档） */
+vec3 lodF(float tpx){ float fi=max(MF0, uPXPD/tpx); float f=MF0*exp2(floor(log2(fi/MF0)));
+  return vec3(f, f*2.0, fract(log2(fi/MF0))); }
+/* 域扭曲（类型/色调查找用）：双频、幅度 <半格、格空间标定=缩放稳定 */
+vec2 warpOf(vec2 rel){
+  float wf=float(${FX.warpF})/uGridBB.z;
+  vec2 w1=vec2(vnoise2(rel*wf+vec2(13.7,91.2)), vnoise2(rel*wf+vec2(57.1,33.9)))-0.5;
+  vec2 w2=vec2(vnoise2(rel*wf*3.1+vec2(7.3,44.9)), vnoise2(rel*wf*3.1+vec2(99.1,5.7)))-0.5;
+  return (w1+w2*0.35)*(uGridBB.z*float(${FX.warpAmp}));
+}
+/* 微八度：世界锚定 ×2 阶梯，逐档门控；振幅由调用方乘材质 rough。break 只依 uniform=控制流一致。
+   持续度 <0.5=高频档法线贡献递减——0.5 时每档对坡面明暗等贡献，深放大十档叠出抓挠感。
+   逐档旋转 37°（ROT）打散值噪声的网格各向异性——不旋则多档叠加呈梳毛状流纹 */
+const mat2 ROT=mat2(0.7986,-0.6018,0.6018,0.7986);
+float micro(vec2 rel){
+  float s=0.0,a=0.5,f=MF0;
+  vec2 p=rel;
+  for(int k=0;k<${MICRO_OCTAVES};k++){
+    float g=gate(f); if(g<=0.0) break;
+    s+=a*g*(vnoise2(p*f+vec2(float(k)*19.7,float(k)*7.9))-0.5);
+    p=ROT*p; f*=2.0; a*=float(${FX.microPers});
+  }
+  return s;
+}
+/* 材质纹理（只进光照法线）：各类一对 lod 档 crossfade；权重为零的类整段跳过——
+   本函数产出不喂 fwidth，divergent 分支无害（e/es 的一致控制流纪律见 eAt/elevSmooth） */
+float texAt(vec2 rel, vec4 tw){
+  float h=0.0;
+  if(tw.x>0.003){ vec3 L=lodF(float(${FX.canopyPx})); float g=gate(L.x);
+    if(g>0.0){ float a=smoothstep(0.35,0.8,vnoise2(rel*L.x+vec2(7.7,3.1)));
+      float b=smoothstep(0.35,0.8,vnoise2(rel*L.y+vec2(3.3,8.9)));
+      h+=tw.x*float(${FX.canopyAmp})*g*mix(a,b,L.z); } }
+  if(tw.y>0.003){ vec3 L=lodF(float(${FX.dunePx})); float g=gate(L.x);
+    if(g>0.0){ float a=rg(gnoise2(vec2(rel.x*0.3,rel.y)*L.x+vec2(11.1,0.7)));
+      float b=rg(gnoise2(vec2(rel.x*0.3,rel.y)*L.y+vec2(0.9,17.3)));
+      h+=tw.y*float(${FX.duneAmp})*g*mix(a,b,L.z); } }
+  if(tw.z>0.003){ vec3 L=lodF(float(${FX.ridgePx})); float g=gate(L.x);   // 棱脊两级：主脉（×0.36 波长）调制支脉=山系层级感
+    if(g>0.0){ float m1=rg(gnoise2(rel*L.x*0.36+vec2(77.7,13.9)));
+      float a=rg(gnoise2(rel*L.x+vec2(23.1,9.3)));
+      float b=rg(gnoise2(rel*L.y+vec2(5.3,31.7)));
+      float r=mix(a,b,L.z);
+      h+=tw.z*float(${FX.ridgeAmp})*g*(0.55*m1*m1+0.45*m1*r); } }
+  if(tw.w>0.003){ vec3 L=lodF(float(${FX.marshPx})); float g=gate(L.x);
+    if(g>0.0){ float a=vnoise2(rel*L.x+vec2(41.3,2.9));
+      float b=vnoise2(rel*L.y+vec2(3.7,55.1));
+      h+=tw.w*float(${FX.marshAmp})*g*(mix(a,b,L.z)-0.5); } }
+  return h;
+}
+/* 域扭曲后的四角双线性材质/色调（tint 缺项按权归一；出格靠 clamp 取边缘格，与 cellAt 的钳制同规） */
+struct Mat { vec3 tint; float tintW; vec4 tw; float rough; float albVar; float rock; };
+Mat matAt(vec2 rw){   // rw=已扭曲的局部坐标（调用方算一次 warp，与晕渲共用）
+  vec2 f=rw/uGridBB.z-0.5;
+  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uGridDim-1);
+  ivec2 c1=min(c0+1, uGridDim-1);
+  vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
+  t=smoothstep(0.22,0.78,t);   // 过渡压窄到约半格：斑块边缘有机而不晕开
+  vec4 w=vec4((1.0-t.x)*(1.0-t.y), t.x*(1.0-t.y), (1.0-t.x)*t.y, t.x*t.y);
+  Mat m; m.tint=vec3(0.0); m.tintW=0.0; m.tw=vec4(0.0); m.rough=0.0; m.albVar=0.0; m.rock=0.0;
+  for(int i=0;i<4;i++){
+    ivec2 cc=ivec2((i==1||i==3)?c1.x:c0.x, (i>=2)?c1.y:c0.y);
+    int ti=int(texelFetch(uGrid,cc,0).g+0.5);
+    float wi=w[i];
+    vec3 tn=uTint[ti];
+    if(tn.x>=0.0){ m.tint+=tn*(wi/255.0); m.tintW+=wi; }
+    m.tw+=uMatA[ti]*wi;
+    vec4 mb=uMatB[ti];
+    m.rough+=mb.x*wi; m.albVar+=mb.y*wi; m.rock+=mb.z*wi;
+  }
+  if(m.tintW>0.0) m.tint/=m.tintW;
+  return m;
+}
 
 vec2 cellAt(vec2 ll){ // (双线性高程, 最近格类型索引)——语义对齐旧版 gridElevBilinear/nearestType
-  // 网格 bbox 之外=深海（对齐 CPU 兜底先铺深水的行为；用真实跨度而非 cols×step——后者 ceil 多出 <1 格边缘条带）
+  // 网格 bbox 之外=深海（对齐 CPU 兜底先铺深水的行为；用真实跨度而非 cols×step——后者 ceil 多出 <1 格边缘条带）。
+  // 纸模式（战术图）出界改走 clamp 延伸＝CPU elevBilinear 同语义：图幅外没有海，域扭曲把边缘采样点
+  // 推出图幅时不得掉进深水（否则图廓内侧随 warp 场亮出断续蓝斑）
   vec2 rel=ll-uGridBB.xy;
-  if(rel.x<0.0||rel.y<0.0||rel.x>uGridSpan.x||rel.y>uGridSpan.y) return vec2(SEA_E, SEA_T);
+  if(uPaper==0 && (rel.x<0.0||rel.y<0.0||rel.x>uGridSpan.x||rel.y>uGridSpan.y)) return vec2(SEA_E, SEA_T);
   vec2 f=(ll-uGridBB.xy)/uGridBB.z-0.5;
   ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uGridDim-1);
   ivec2 c1=min(c0+1, uGridDim-1);
@@ -56,10 +156,12 @@ vec2 cellAt(vec2 ll){ // (双线性高程, 最近格类型索引)——语义对
   ivec2 n=clamp(ivec2(floor((ll-uGridBB.xy)/uGridBB.z)), ivec2(0), uGridDim-1);
   return vec2(top+(bot-top)*t.y, texelFetch(uGrid,n,0).g);
 }
-float elevAt(vec2 ll){
+/* 高程细节场：双线性数据面 + 宏观 fbm4（旧式逐位）+ 微八度（材质 rough 调幅；整幅视角下为零） */
+float eAt(vec2 ll, float mrough){
   float e=cellAt(ll).x;
   float rough=e>0.4?0.24:(e>0.2?0.08:0.025);
-  return e+(fbm4(ll*1.1)-0.5)*rough*2.0;
+  e+=(fbm4(ll*1.1)-0.5)*rough*2.0;
+  return e+micro(ll-uGridBB.xy)*mrough*float(${FX.microAmp});
 }
 float elevSmooth(vec2 ll){ // 制图面：±半格 4 抽头帐篷平滑（与 core/elev.elevSmooth 同式——读数=线）
   float h=0.5*uGridBB.z;
@@ -83,29 +185,52 @@ void main(){
   vec2 ll=vec2(uViewBB.x+x/uPXPD, uViewBB.w-yTop/uPXPDY);
   // 球面环绕：经度折回以网格中心为轴的 ±180° 域——单次绘制即无缝跨越 ±180° 经线
   if(uWrap==1) ll.x-=360.0*floor((ll.x-uGridBB.w+180.0)/360.0);
-  vec2 cd=cellAt(ll);   // (双线性数据面高程, 最近格类型索引)：等高线/类型共用，晕渲另走带噪声的 elevAt
+  vec2 cd=cellAt(ll);   // (双线性数据面高程, 最近格类型索引)：等高线/诊断用，晕渲另走带噪声的 eAt
   if(uMode==1){ int ti=int(cd.y+0.5); fragColor=vec4(uTColor[ti],1.0); return; }
   float px=1.0/uPXPD, py=1.0/uPXPDY;
-  float e =elevAt(ll);
-  float eL=elevAt(ll+vec2(-px,0.0)), eR=elevAt(ll+vec2(px,0.0));
-  float eU=elevAt(ll+vec2(0.0, py)), eD=elevAt(ll+vec2(0.0,-py));
+  vec2 rel=ll-uGridBB.xy;
+  /* 域扭曲一次共用：色调/材质查找与晕渲高程同一形变（涂改方块的直角沟壑随之弯成有机走向）。
+     等高线/光标读数仍走未扭曲制图面 es——「晕渲是画、等高线是尺」，画可以形变，尺不动。
+     邻点采样共用中心 warp（波长≈1.3 格≫1px，雅可比≈常数，法线误差可忽略）。 */
+  vec2 wp=warpOf(rel);
+  vec2 llw=ll+wp;
+  Mat mt=matAt(rel+wp);         // 色调/材质权重中心取一次，五点采样共用（边界差 1px 可忽略）
+  float texW=float(${FX.texW})/uPXPD;   // 屏幕锚定纹理的幅度按 1/像素密度折算——晕渲里的明暗对比恒定不随缩放
+  float e  =eAt(llw, mt.rough);
+  float eL=eAt(llw+vec2(-px,0.0),mt.rough)+texAt(rel+vec2(-px,0.0),mt.tw)*texW;
+  float eR=eAt(llw+vec2( px,0.0),mt.rough)+texAt(rel+vec2( px,0.0),mt.tw)*texW;
+  float eU=eAt(llw+vec2(0.0, py),mt.rough)+texAt(rel+vec2(0.0, py),mt.tw)*texW;
+  float eD=eAt(llw+vec2(0.0,-py),mt.rough)+texAt(rel+vec2(0.0,-py),mt.tw)*texW;
   float nrm=4.5*(uPXPD/14.0);
   vec3 nv=vec3((eL-eR)*nrm,(eU-eD)*nrm,1.0);
   float sh=0.6+0.75*max(0.0, dot(normalize(nv), uLight));
+  float es=elevSmooth(ll);      // 制图面（帐篷平滑数据面，与光标读数同源）；导数须在一致控制流取（分支内 fwidth 未定义，软渲返 0）
+  float cav=clamp((es-cd.x)*float(${FX.cavAmp}), -0.10, 0.16);   // 帐篷差≈曲率：谷暗脊明（廉价 AO）
   vec3 col=elevRamp(e);
   if(e>=-0.02){
-    int ti=int(cd.y+0.5);
-    vec3 tint=uTint[ti];
-    if(tint.x>=0.0) col=col*0.55+(tint/255.0)*0.45;
-    col*=sh;
+    if(mt.tintW>0.0) col=mix(col, mt.tint, 0.45*mt.tintW);   // 软过渡；tintW=1 时与旧 55/45 直拼逐位同值
+    vec3 LA=lodF(float(${FX.albPx}));   // 反照率抖动：屏幕锚定低频，打破平色（整幅视角下门控为零）
+    float av=mix(vnoise2(rel*LA.x+vec2(19.9,7.1)), vnoise2(rel*LA.y+vec2(2.3,27.9)), LA.z)-0.5;
+    col*=1.0+av*mt.albVar*float(${FX.albAmp})*gate(LA.x);
+    float slp=length(nv.xy);    // 缩放无关坡度：陡处露岩（微八度让坡度随放大长细节，岩斑自然斑驳）
+    float rk=smoothstep(0.55,1.6,slp)*mt.rock;
+    vec3 rockC=mix(vec3(0.36,0.33,0.30), vec3(0.62,0.60,0.57), clamp(e*1.1,0.0,1.0));
+    col=mix(col, rockC, rk*float(${FX.rockMix}));
+    col*=sh*(1.0-cav);
+  } else {
+    float shore=smoothstep(-0.10,-0.02,e);       // 近岸浅水带
+    col=mix(col, vec3(0.55,0.72,0.75), shore*float(${FX.shoreMix}));
+    vec3 LW=lodF(float(${FX.wavePx}));  // 静态波纹（横向拉伸；无动画，尊重空闲降频）
+    float wv=mix(ridged(vnoise2(vec2(rel.x*0.35,rel.y)*LW.x+vec2(3.1,9.7))),
+                 ridged(vnoise2(vec2(rel.x*0.35,rel.y)*LW.y+vec2(21.3,1.1))), LW.z);
+    col*=1.0+(wv-0.5)*float(${FX.waveAmp})*gate(LW.x);
   }
   float aa=fwidth(e)+1e-6;
-  float es=elevSmooth(ll);      // 制图面（帐篷平滑数据面，与光标读数同源）；导数须在一致控制流取（分支内 fwidth 未定义，软渲返 0）
   float ad=fwidth(es)+1e-7;
   float coast=1.0-smoothstep(0.0, aa*1.4, abs(e+0.02));
   col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55);
-  vec2 rg=ll-uGridBB.xy;   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
-  if(uContour==1 && es>=-0.02 && rg.x>uGridBB.z && rg.y>uGridBB.z && rg.x<uGridSpan.x-uGridBB.z && rg.y<uGridSpan.y-uGridBB.z){
+  // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
+  if(uContour==1 && es>=-0.02 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
     // 等高线画在制图面 es（晕渲是画，等高线是尺）。细曲线=当前档整倍+半档奇数倍×uCFade 淡入；计曲线=每第 4 条。
     // 挤线抑制（真图规范）：线距不足数像素的陡坎处细曲线隐去；计曲线按自身 4× 线距评估而幸存。
     float eh=es+0.02;
@@ -114,6 +239,8 @@ void main(){
     float sup=smoothstep(2.5,6.0,uCMinor/ad), supIx=smoothstep(2.5,6.0,uCMinor*4.0/ad);
     col=mix(col, vec3(90.0,70.0,40.0)/255.0, max(mn*0.50*sup, ix*0.70*supIx));
   }
+  // 图幅外纸色最后覆盖（放在全部计算之后＝fwidth 的一致控制流不受此分支影响）；图廓线由 overlay 层描
+  if(uPaper==1 && (rel.x<0.0||rel.y<0.0||rel.x>uGridSpan.x||rel.y>uGridSpan.y)) col=vec3(217.0,210.0,192.0)/255.0;
   fragColor=vec4(col,1.0);
 }`;
 
@@ -179,6 +306,9 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     const comps = allComposites();   // 25 个复合，顺序与 compositeIndex 对齐（旧 8 类落在各自复合上、色/tint 逐位复现）
     gl.uniform3fv(U("uTColor[0]"), comps.flatMap(cc => hexV(terrainProps(cc).color)));
     gl.uniform3fv(U("uTint[0]"), comps.flatMap(cc => { const t = terrainProps(cc).tint; return t ? [t[0], t[1], t[2]] : [-1, -1, -1]; }));
+    const mats = materialTable();    // 渲染材质（同序；render/material.ts 真源，CPU 兜底同表）
+    gl.uniform4fv(U("uMatA[0]"), mats.flatMap(m => [m.canopy, m.dune, m.ridge, m.marsh]));
+    gl.uniform4fv(U("uMatB[0]"), mats.flatMap(m => [m.rough, m.albVar, m.rock, 0]));
     return true;
   }
   function doUpload(grid: Grid, elev?: Float32Array) {
@@ -226,6 +356,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.uniform1f(U("uCMinor"), opts.cMinor || 0.12);
       gl.uniform1f(U("uCFade"), opts.cFade || 0);
       gl.uniform1i(U("uWrap"), opts.wrap ? 1 : 0);
+      gl.uniform1i(U("uPaper"), opts.paper ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },
     rendererName() {

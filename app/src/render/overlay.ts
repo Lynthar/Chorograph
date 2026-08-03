@@ -82,6 +82,7 @@ export function drawOverlay(
         { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field });
     }
     if (on("graticule")) drawGraticule(ctx, cam, meta);   // 经纬网：拷贝循环外，屏幕空间一次绘制
+    if ((meta || {}).mapKind === "tactical" && (meta || {}).bbox) drawNeatline(ctx, cam, meta!);   // 图廓线：图幅外已铺纸色（terrain 的 paper 裁决），墨框把「图页」缝起来
     if (on("notes")) drawPinnedNotes(ctx, cam, world, yearNow, opts, fcolor);   // 屏幕角标注（帧标题/图注块）
     drawScaleBar(ctx, cam, meta);                          // 图形比例尺（左下，随 PNG 导出）
     drawTitle(ctx, meta, yearNow);                         // 图名 + 纪年（左上，随 PNG 导出）
@@ -146,6 +147,20 @@ function drawKmGrid(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta): voi
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cam.w, y); ctx.stroke();
     if (k >= 0) ctx.fillText(lab(k), 3, y - 3);
   }
+  ctx.restore();
+}
+
+/* 图廓线（neatline）：战术图幅界的双线墨框（内粗外细=地图集惯例）。随 PNG 导出;战略图不画 */
+function drawNeatline(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta): void {
+  const bb = meta.bbox!;
+  const [x0, y0] = project(cam, bb.lonMin, bb.latMax);
+  const [x1, y1] = project(cam, bb.lonMax, bb.latMin);
+  if (x1 < -8 || y1 < -8 || x0 > cam.w + 8 || y0 > cam.h + 8) return;
+  ctx.save();
+  ctx.strokeStyle = "rgba(90,74,38,.62)"; ctx.lineWidth = 1.5;
+  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  ctx.strokeStyle = "rgba(90,74,38,.28)"; ctx.lineWidth = 1;
+  ctx.strokeRect(x0 - 3.5, y0 - 3.5, (x1 - x0) + 7, (y1 - y0) + 7);
   ctx.restore();
 }
 

@@ -4,75 +4,178 @@
    高清不糊、深放大退场。调用方（drawOverlay）已按 dpr 缩放并按世界拷贝重投影。 */
 import { DECOR_BASE, DECOR_BASE_IMG } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
+import { fract } from "../core/noise.ts";
 import { activeAt } from "../core/time.ts";
 import { project, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import type { Asset, Decor, Meta, World } from "../core/types.ts";
 
 type C = CanvasRenderingContext2D;
 
-/* —— 印章基元（x/y=屏幕 CSS 像素，s=像素尺寸）—— */
-function drawPeak(g: C, x: number, y: number, h: number, snow: boolean): void {
-  const w = h * 0.82;
-  g.beginPath(); g.moveTo(x - w, y + h * 0.5); g.lineTo(x, y - h); g.lineTo(x + w, y + h * 0.5); g.closePath();
-  g.fillStyle = snow ? "rgba(104,86,68,.82)" : "rgba(126,116,84,.66)"; g.fill();
-  g.strokeStyle = "rgba(64,50,38,.4)"; g.lineWidth = 0.6; g.stroke();
-  g.beginPath(); g.moveTo(x, y - h); g.lineTo(x - w, y + h * 0.5); g.lineTo(x, y + h * 0.5); g.closePath();
-  g.fillStyle = "rgba(255,250,240,.16)"; g.fill();
+/** 印章屏幕尺寸（px）＝绘制/拾取/包络的单一来源。线性段与旧公式逐位一致；超过 KNEE 后对数缓增、
+    CAP 封顶（在 KNEE 处一阶连续）——旧「420px 深放大退场」改为永不消失：符号不该在你凑近看时
+    蒸发，但也不该无限膨胀盖住战场。传 id 则附 ±10% 确定性尺寸抖动（喷洒一片不再等大）。 */
+export const DECOR_KNEE = 46, DECOR_CAP = DECOR_KNEE * 2.2;
+export function decorSizePx(kind: string, size: number, step: number, degPerPx: number, id?: string): number {
+  const base = kind.startsWith("img:") ? DECOR_BASE_IMG : (tget(DECOR_BASE, kind) || 5);
+  let s = base * size * ((step / degPerPx) / 14);
+  if (id !== undefined) s *= 0.9 + 0.2 * fract(decorHash(id) * 5.7);
+  return s <= DECOR_KNEE ? s : Math.min(DECOR_CAP, DECOR_KNEE * (1 + Math.log(s / DECOR_KNEE)));
+}
+/** 确定性抖动（FNV-1a → [0,1)）：同 id 永远同抖动——零存档变化、出图逐次一致 */
+export function decorHash(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) / 4294967296;
+}
+
+/* —— 印章基元（x/y=屏幕 CSS 像素锚点，s=像素尺寸，j=decorHash(id) 确定性抖动）——
+   2026-08 重画：与地形晕渲同一光源（西北）下的体积符号——接地投影 + 受光/背光两面明暗；
+   j 驱动镜像与形参（峰尖偏斜/簇布局），同种印章不再整齐划一。⚠ 受光面恒朝屏幕左上，
+   镜像只翻轮廓形参不翻明暗。⚠ 形状须画进 PRIM_BOX 包络（拾取绘制同源）；投影是影子不入包络。 */
+const fr = fract;
+function ground(g: C, x: number, y: number, w: number): void {   // 接地投影：光西北 → 影偏东南
+  g.beginPath(); g.ellipse(x + w * 0.2, y, w, w * 0.3, 0, 0, 7);
+  g.fillStyle = "rgba(56,44,28,.14)"; g.fill();
+}
+function drawPeak(g: C, x: number, y: number, h: number, snow: boolean, j: number, round: boolean): void {
+  const mir = j > 0.5 ? 1 : -1;
+  const w = h * (0.78 + fr(j * 7.13) * 0.1);
+  const yb = y + h * 0.5;
+  const tx = x - mir * h * (0.03 + fr(j * 3.71) * 0.09), ty = y - h * (round ? 0.72 : 1);   // 主峰尖（偏斜=手绘感）
+  const sx = x + mir * w * 0.55, sy = y - h * (round ? 0.36 : 0.5);                         // 肩峰
+  const mx = (tx + sx) / 2, my = y - h * (round ? 0.2 : 0.26);                              // 鞍部
+  ground(g, x, yb, w * 1.05);
+  g.beginPath(); g.moveTo(x - mir * w, yb);
+  if (round) { g.quadraticCurveTo(tx - mir * h * 0.42, ty, tx, ty); g.quadraticCurveTo((tx + mx) / 2, ty + h * 0.05, mx, my); }
+  else { g.lineTo(tx, ty); g.lineTo(mx, my); }
+  g.lineTo(sx, sy); g.lineTo(x + mir * w, yb); g.closePath();
+  g.fillStyle = snow ? "rgba(112,96,78,.88)" : "rgba(128,114,86,.8)"; g.fill();
+  g.strokeStyle = "rgba(64,50,38,.42)"; g.lineWidth = Math.max(0.5, h * 0.03); g.stroke();
+  /* 受光面（恒左上）：左底沿主峰左棱到峰尖再垂落 */
+  g.beginPath(); g.moveTo(Math.min(x - mir * w, x + mir * w), yb);
+  if (round) g.quadraticCurveTo(tx - h * 0.42, ty, tx, ty); else g.lineTo(tx, ty);
+  g.lineTo(tx + h * 0.05, yb); g.closePath();
+  g.fillStyle = "rgba(255,250,238,.22)"; g.fill();
+  /* 背光面皴线（右坡两道短弧＝石纹） */
+  g.strokeStyle = "rgba(58,46,34,.34)"; g.lineWidth = Math.max(0.5, h * 0.028);
+  g.beginPath(); g.moveTo(tx + h * 0.1, ty + h * 0.42); g.quadraticCurveTo(tx + h * 0.24, y - h * 0.2, tx + h * 0.16, yb - h * 0.1);
+  g.moveTo(mx + h * 0.06, my + h * 0.14); g.quadraticCurveTo(mx + h * 0.18, my + h * 0.42, mx + h * 0.1, yb - h * 0.06); g.stroke();
   if (snow) {
-    g.beginPath(); g.moveTo(x - w * 0.36, y - h * 0.1); g.lineTo(x, y - h); g.lineTo(x + w * 0.36, y - h * 0.1);
-    g.lineTo(x + w * 0.12, y - h * 0.34); g.lineTo(x - w * 0.12, y - h * 0.3); g.closePath();
+    g.beginPath(); g.moveTo(tx - w * 0.3, ty + h * 0.74); g.lineTo(tx, ty); g.lineTo(tx + w * 0.32, ty + h * 0.72);
+    g.lineTo(tx + w * 0.1, ty + h * 0.5); g.lineTo(tx - w * 0.12, ty + h * 0.55); g.closePath();
     g.fillStyle = "rgba(249,249,253,.95)"; g.fill();
   }
 }
-function drawTree(g: C, x: number, y: number, h: number): void {
-  g.beginPath(); g.moveTo(x, y - h); g.lineTo(x - h * 0.58, y + h * 0.5); g.lineTo(x + h * 0.58, y + h * 0.5); g.closePath();
-  g.fillStyle = "rgba(50,90,52,.85)"; g.fill();
-  g.fillStyle = "rgba(80,58,36,.9)"; g.fillRect(x - h * 0.09, y + h * 0.5, Math.max(0.8, h * 0.18), h * 0.3);
+function drawTree(g: C, x: number, y: number, h: number, j: number): void {
+  const mir = j > 0.5 ? 1 : -1;
+  const r = h * 0.5, cy = y - h * 0.5;
+  ground(g, x, y + h * 0.78, h * 0.5);
+  g.strokeStyle = "rgba(84,60,38,.95)"; g.lineWidth = Math.max(0.9, h * 0.12);
+  g.beginPath(); g.moveTo(x + mir * h * 0.04, y + h * 0.78); g.lineTo(x, cy + r * 0.4); g.stroke();
+  g.fillStyle = "rgba(62,100,56,.94)";                          // 团冠：三圆叠
+  g.beginPath();
+  g.arc(x - r * 0.5, cy + r * 0.26, r * 0.56, 0, 7);
+  g.arc(x + r * 0.5, cy + r * 0.22, r * 0.6, 0, 7);
+  g.arc(x + mir * r * 0.06, cy - r * 0.34, r * 0.66, 0, 7);
+  g.fill();
+  g.fillStyle = "rgba(30,52,30,.5)";                            // 冠下暗部
+  g.beginPath(); g.ellipse(x + r * 0.1, cy + r * 0.48, r * 0.8, r * 0.34, 0, 0, 7); g.fill();
+  g.fillStyle = "rgba(212,230,162,.42)";                        // 受光斑（左上）
+  g.beginPath(); g.arc(x - r * 0.36, cy - r * 0.42, r * 0.34, 0, 7); g.fill();
 }
-function drawPine(g: C, x: number, y: number, h: number): void {
-  g.fillStyle = "rgba(38,78,52,.88)";
-  g.beginPath(); g.moveTo(x, y - h); g.lineTo(x - h * 0.5, y - h * 0.15); g.lineTo(x + h * 0.5, y - h * 0.15); g.closePath(); g.fill();
-  g.beginPath(); g.moveTo(x, y - h * 0.55); g.lineTo(x - h * 0.68, y + h * 0.5); g.lineTo(x + h * 0.68, y + h * 0.5); g.closePath(); g.fill();
+function drawPine(g: C, x: number, y: number, h: number, j: number): void {
+  const mir = j > 0.5 ? 1 : -1;
+  ground(g, x, y + h * 0.5, h * 0.5);
+  g.strokeStyle = "rgba(84,60,38,.95)"; g.lineWidth = Math.max(0.8, h * 0.1);
+  g.beginPath(); g.moveTo(x, y + h * 0.5); g.lineTo(x, y - h * 0.2); g.stroke();
+  const tier = (ty: number, by: number, w: number): void => {   // 一层塔檐：整层深绿 + 左缘受光
+    g.fillStyle = "rgba(32,66,44,.94)";
+    g.beginPath(); g.moveTo(x + mir * w * 0.08, ty); g.lineTo(x - w, by); g.lineTo(x + w, by); g.closePath(); g.fill();
+    g.fillStyle = "rgba(212,230,190,.26)";
+    g.beginPath(); g.moveTo(x + mir * w * 0.08, ty); g.lineTo(x - w, by); g.lineTo(x - w * 0.3, by); g.closePath(); g.fill();
+  };
+  tier(y - h, y - h * 0.42, h * 0.36);
+  tier(y - h * 0.6, y - h * 0.05, h * 0.52);
+  tier(y - h * 0.24, y + h * 0.32, h * 0.68);
 }
-function drawShrub(g: C, x: number, y: number, r: number): void {
-  g.fillStyle = "rgba(74,110,64,.8)";
-  for (const [ox, oy] of [[0, -r * 0.2], [-r * 0.65, r * 0.25], [r * 0.65, r * 0.25]]) { g.beginPath(); g.arc(x + ox, y + oy, r * 0.55, 0, 7); g.fill(); }
+function drawShrub(g: C, x: number, y: number, r: number, j: number): void {
+  ground(g, x, y + r * 0.6, r);
+  const n = 2 + Math.floor(fr(j * 11.3) * 3);                   // 2..4 簇（j 定布局）
+  for (let i = 0; i < n; i++) {
+    const a = fr(j * (13.7 + i * 7.9)), b = fr(j * (5.3 + i * 3.1));
+    const cx = x + (a - 0.5) * r * 1.1, cyy = y + (b - 0.5) * r * 0.5, cr = r * (0.42 + b * 0.2);
+    g.fillStyle = "rgba(74,110,64,.86)";
+    g.beginPath(); g.arc(cx, cyy, cr, 0, 7); g.fill();
+    g.fillStyle = "rgba(198,218,152,.4)";
+    g.beginPath(); g.arc(cx - cr * 0.3, cyy - cr * 0.34, cr * 0.5, 0, 7); g.fill();
+  }
 }
-function drawReed(g: C, x: number, y: number, h: number): void {
-  g.strokeStyle = "rgba(70,110,80,.85)"; g.lineWidth = Math.max(0.7, h * 0.14);
-  for (const i of [-1, 0, 1]) { g.beginPath(); g.moveTo(x + i * h * 0.35, y + h * 0.4); g.quadraticCurveTo(x + i * h * 0.35 + i * h * 0.12, y - h * 0.15, x + i * h * 0.55, y - h * 0.55); g.stroke(); }
+function drawReed(g: C, x: number, y: number, h: number, j: number): void {
+  const mir = j > 0.5 ? 1 : -1;
+  g.strokeStyle = "rgba(70,110,80,.9)"; g.lineWidth = Math.max(0.7, h * 0.13);
+  for (const i of [-1, 0, 1]) {   // 三笔左右分叉（i 向），镜像只作整束风向微倾——全带向一边就成斜杠了
+    g.beginPath(); g.moveTo(x + i * h * 0.32, y + h * 0.4);
+    g.quadraticCurveTo(x + i * h * 0.32 + i * h * 0.1 + mir * h * 0.05, y - h * 0.12,
+      x + i * h * 0.32 + i * h * 0.16 + mir * h * 0.09, y - h * 0.56);
+    g.stroke();
+  }
+  g.strokeStyle = "rgba(70,118,128,.5)"; g.lineWidth = Math.max(0.6, h * 0.08);   // 水面两笔（生境）
+  g.beginPath(); g.moveTo(x - h * 0.72, y + h * 0.44); g.lineTo(x - h * 0.16, y + h * 0.44);
+  g.moveTo(x + h * 0.1, y + h * 0.5); g.lineTo(x + h * 0.7, y + h * 0.5); g.stroke();
 }
-function drawDune(g: C, x: number, y: number, w: number): void {
-  g.strokeStyle = "rgba(150,120,70,.75)"; g.lineWidth = Math.max(0.8, w * 0.16);
-  g.beginPath(); g.moveTo(x - w, y); g.quadraticCurveTo(x - w * 0.3, y - w * 0.55, x, y);
-  g.moveTo(x, y + w * 0.25); g.quadraticCurveTo(x + w * 0.4, y - w * 0.3, x + w * 0.9, y + w * 0.2); g.stroke();
+function drawDune(g: C, x: number, y: number, w: number, j: number): void {
+  const mir = j > 0.5 ? 1 : -1;
+  ground(g, x, y + w * 0.22, w);
+  const crest = (cx: number, cw: number, ch: number): void => { // 月牙丘：迎光面亮、背风面暗
+    g.fillStyle = "rgba(218,194,142,.9)";
+    g.beginPath(); g.moveTo(cx - mir * cw, y + w * 0.22);
+    g.quadraticCurveTo(cx - mir * cw * 0.2, y - ch, cx + mir * cw * 0.55, y - ch * 0.6);
+    g.quadraticCurveTo(cx + mir * cw * 0.82, y - ch * 0.18, cx + mir * cw, y + w * 0.22);
+    g.closePath(); g.fill();
+    g.fillStyle = "rgba(150,116,66,.55)";
+    g.beginPath(); g.moveTo(cx + mir * cw * 0.55, y - ch * 0.6);
+    g.quadraticCurveTo(cx + mir * cw * 0.82, y - ch * 0.18, cx + mir * cw, y + w * 0.22);
+    g.lineTo(cx + mir * cw * 0.3, y + w * 0.22); g.closePath(); g.fill();
+  };
+  crest(x - mir * w * 0.16, w * 0.76, w * 0.5);
+  crest(x + mir * w * 0.56, w * 0.4, w * 0.28);
 }
-function drawRock(g: C, x: number, y: number, r: number): void {
-  g.fillStyle = "rgba(120,112,100,.85)"; g.strokeStyle = "rgba(60,54,46,.6)"; g.lineWidth = 0.8;
-  g.beginPath(); g.moveTo(x - r, y + r * 0.6); g.lineTo(x - r * 0.55, y - r * 0.5); g.lineTo(x + r * 0.15, y - r * 0.75);
-  g.lineTo(x + r, y + r * 0.1); g.lineTo(x + r * 0.6, y + r * 0.6); g.closePath(); g.fill(); g.stroke();
+function drawRock(g: C, x: number, y: number, r: number, j: number): void {
+  const mir = j > 0.5 ? 1 : -1;
+  ground(g, x, y + r * 0.55, r * 0.9);
+  g.beginPath(); g.moveTo(x - r, y + r * 0.55); g.lineTo(x - r * 0.6, y - r * 0.42);
+  g.lineTo(x + mir * r * 0.12 - r * 0.05, y - r * 0.72); g.lineTo(x + r * 0.62, y - r * 0.3);
+  g.lineTo(x + r, y + r * 0.16); g.lineTo(x + r * 0.55, y + r * 0.55); g.closePath();
+  g.fillStyle = "rgba(126,118,106,.9)"; g.fill();
+  g.strokeStyle = "rgba(60,54,46,.55)"; g.lineWidth = Math.max(0.6, r * 0.06); g.stroke();
+  g.beginPath(); g.moveTo(x - r, y + r * 0.55); g.lineTo(x - r * 0.6, y - r * 0.42);   // 受光左面
+  g.lineTo(x + mir * r * 0.12 - r * 0.05, y - r * 0.72); g.lineTo(x - r * 0.08, y + r * 0.55); g.closePath();
+  g.fillStyle = "rgba(238,232,220,.25)"; g.fill();
+  g.strokeStyle = "rgba(58,50,42,.5)"; g.lineWidth = Math.max(0.5, r * 0.05);          // 裂缝
+  g.beginPath(); g.moveTo(x + r * 0.2, y - r * 0.5); g.lineTo(x + r * 0.05, y - r * 0.05); g.lineTo(x + r * 0.26, y + r * 0.42); g.stroke();
 }
 /* 各基元的体包络 [半宽, 上伸, 下伸]（×s，逐条对应上面 draw* 的坐标，含描边半宽）：印章都「站」在
    锚点上、体主要在锚点【上方】，故拾取不能用以锚点为心的正圆——大印章点得中底座却点不中顶尖。
    改 draw* 的形状须同步改此表（拾取绘制同源；表就近放在基元旁即为此）。 */
 const PRIM_BOX: Record<string, [number, number, number]> = {
-  peak: [0.82, 1, 0.5], mount: [0.82, 1, 0.5], hillock: [0.82, 1, 0.5],
-  tree: [0.58, 1, 0.8], pine: [0.68, 1, 0.5], shrub: [1.2, 0.75, 0.8],
-  reed: [0.62, 0.62, 0.47], dune: [1.08, 0.63, 0.33], rock: [1, 0.75, 0.6]
+  peak: [0.92, 1, 0.5], mount: [0.92, 1, 0.5], hillock: [0.92, 0.78, 0.5],
+  tree: [0.62, 1.02, 0.8], pine: [0.7, 1, 0.5], shrub: [1.2, 0.9, 0.9],
+  reed: [0.78, 0.62, 0.55], dune: [1.08, 0.55, 0.33], rock: [1.02, 0.78, 0.6]
 };
-const PRIM_BOX_DEF: [number, number, number] = [1, 1, 0.6];   // 未知种类（旧档/未来基元）：取包络上界
+const PRIM_BOX_DEF: [number, number, number] = [1.2, 1.02, 0.9];   // 未知种类（旧档/未来基元）：取包络上界
 
-/** 按种类画一枚印章（手绘布景 + 自动生态共用） */
-export function drawPrim(g: C, kind: string, x: number, y: number, s: number): void {
+/** 按种类画一枚印章（手绘布景 + 生态笔刷共用）。j=decorHash(id)，缺省 0.5=无抖动的中性形 */
+export function drawPrim(g: C, kind: string, x: number, y: number, s: number, j = 0.5): void {
   switch (kind) {
-    case "peak": drawPeak(g, x, y, s, true); break;
-    case "mount": case "hillock": drawPeak(g, x, y, s, false); break;
-    case "tree": drawTree(g, x, y, s); break;
-    case "pine": drawPine(g, x, y, s); break;
-    case "shrub": drawShrub(g, x, y, s); break;
-    case "reed": drawReed(g, x, y, s); break;
-    case "dune": drawDune(g, x, y, s); break;
-    case "rock": drawRock(g, x, y, s); break;
+    case "peak": drawPeak(g, x, y, s, true, j, false); break;
+    case "mount": drawPeak(g, x, y, s, false, j, false); break;
+    case "hillock": drawPeak(g, x, y, s, false, j, true); break;
+    case "tree": drawTree(g, x, y, s, j); break;
+    case "pine": drawPine(g, x, y, s, j); break;
+    case "shrub": drawShrub(g, x, y, s, j); break;
+    case "reed": drawReed(g, x, y, s, j); break;
+    case "dune": drawDune(g, x, y, s, j); break;
+    case "rock": drawRock(g, x, y, s, j); break;
   }
 }
 
@@ -85,14 +188,13 @@ function assetImg(a: Asset): HTMLImageElement {
   return im;
 }
 
-/** 手绘布景层：遍历 world.decor[]（纪年过滤），投影后按 DECOR_BASE×size×缩放 落印章。
-    尺度按格距 step 标定（同 drawEco）：战略 1° 格观感不变，细网格战术图印章随格缩小——
-    旧固定按 1° 标定，0.006° 格上每枚印章巨大（自动生态 drawEco 已修，此为手绘层同款修正）。 */
+/** 手绘布景层：遍历 world.decor[]（纪年过滤），投影后按 decorSizePx（DECOR_BASE×size×缩放
+    →缓增封顶＋id 抖动）落印章。尺度按格距 step 标定（同 drawEco）：战略 1° 格观感不变，
+    细网格战术图印章随格缩小——旧固定按 1° 标定，0.006° 格上每枚印章巨大。 */
 export function drawDecor(ctx: C, cam: Camera, world: World, yearNow: number, step = 1,
   sel?: { id?: string | null; ids?: Set<string> | null }): void {
   const decor = world.decor || [];
   if (!decor.length) return;
-  const scale = (step / cam.degPerPx) / 14;
   const assets = world.assets;
   const byAsset = assets && assets.length ? new Map(assets.map(a => [a.id, a])) : null;
   const isSel = (id: string) => !!sel && (sel.id === id || (sel.ids ? sel.ids.has(id) : false));
@@ -102,8 +204,8 @@ export function drawDecor(ctx: C, cam: Camera, world: World, yearNow: number, st
     if (typeof d.kind === "string" && d.kind.startsWith("img:")) {   // 自定义印章：位图，底中锚定
       const a = byAsset && byAsset.get(d.kind.slice(4)); if (!a) continue;   // 悬空引用/无资产表=跳过
       const im = assetImg(a); if (!im.complete || !im.naturalWidth) continue;   // 未解码当帧跳过
-      const base = DECOR_BASE_IMG * (d.size || 1) * scale;
-      if (base > 420 || base < 1) continue;                  // 深放大退场 / 亚像素远景不画
+      const base = decorSizePx(d.kind, d.size || 1, step, cam.degPerPx, d.id);
+      if (base < 1) continue;                                // 亚像素远景不画（深放大由缓增封顶接管，永不退场）
       const ar = (a.w && a.h) ? a.w / a.h : 1;
       const dw = ar >= 1 ? base : base * ar, dh = ar >= 1 ? base / ar : base;
       const [x, y] = project(cam, d.lon, d.lat);
@@ -112,11 +214,11 @@ export function drawDecor(ctx: C, cam: Camera, world: World, yearNow: number, st
       if (isSel(d.id)) selBox(ctx, x - dw / 2, y - dh, x + dw / 2, y);
       continue;
     }
-    const s = (tget(DECOR_BASE, d.kind) || 5) * (d.size || 1) * scale;
-    if (s > 420) continue;                                   // 深放大退场
+    const s = decorSizePx(d.kind, d.size || 1, step, cam.degPerPx, d.id);
+    if (s < 1) continue;                                     // 亚像素远景不画
     const [x, y] = project(cam, d.lon, d.lat);
-    if (x < -50 - s || y < -50 - s || x > cam.w + 50 + s || y > cam.h + 50 + s) continue;
-    drawPrim(ctx, d.kind, x, y, s);
+    if (x < -50 - 1.3 * s || y < -50 - 1.1 * s || x > cam.w + 50 + 1.3 * s || y > cam.h + 50 + 1.1 * s) continue;
+    drawPrim(ctx, d.kind, x, y, s, decorHash(d.id));
     if (isSel(d.id)) { const [hw, up, dn] = tget(PRIM_BOX, d.kind) || PRIM_BOX_DEF; selBox(ctx, x - hw * s, y - up * s, x + hw * s, y + dn * s); }
   }
   ctx.restore();
@@ -148,12 +250,11 @@ export function decorsInBox(cam: Camera, meta: Meta | undefined, world: World, y
 
 /** 拾取最近的布景（取样/拖移/右键删共用）：命中＝点落在【所画的体】外扩 13px 余量内——两类印章
     同一套语义（体在锚点上方，点体即中），几何与 drawDecor 逐条同源：矢量印取 PRIM_BOX×s 包络、
-    自定义 img 印取底中锚定的 dw×dh 矩形；资产悬空/深放大退场时回退锚点 13px（没画出来的只按锚点拾取）。
-    step 须与 drawDecor 同源传 grid.step（缺省 1）。
+    自定义 img 印取底中锚定的 dw×dh 矩形；资产悬空/亚像素远景时回退锚点 13px（没画出来的只按锚点拾取）。
+    尺寸走 decorSizePx（含缓增封顶与 id 抖动＝绘制同源）；step 须与 drawDecor 同源传 grid.step（缺省 1）。
     多枚命中：先比到体的距离，体内并列（同为 0，密林/成岭常见）再比锚点距离取最近者。 */
 export function pickDecor(cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
   x: number, y: number, step = 1): Decor | null {
-  const scale = (step / cam.degPerPx) / 14;
   const assets = world.assets;
   const byAsset = assets && assets.length ? new Map(assets.map(a => [a.id, a])) : null;
   let best: Decor | null = null, bd = Infinity, ba = Infinity;
@@ -166,15 +267,15 @@ export function pickDecor(cam: Camera, meta: Meta | undefined, world: World, yea
       let dd = ad;
       if (typeof d.kind === "string" && d.kind.startsWith("img:")) {
         const a = byAsset && byAsset.get(d.kind.slice(4));
-        const base = DECOR_BASE_IMG * (d.size || 1) * scale;
-        if (a && base >= 1 && base <= 420) {
+        const base = decorSizePx(d.kind, d.size || 1, step, cam.degPerPx, d.id);
+        if (a && base >= 1) {
           const ar = (a.w && a.h) ? a.w / a.h : 1;
           const dw = ar >= 1 ? base : base * ar, dh = ar >= 1 ? base / ar : base;
           dd = boxDist(x, y, px - dw / 2, py - dh, px + dw / 2, py);
         }
       } else {
-        const s = (tget(DECOR_BASE, d.kind) || 5) * (d.size || 1) * scale;
-        if (s <= 420) {                        // 深放大退场者不给体（与绘制同门）
+        const s = decorSizePx(d.kind, d.size || 1, step, cam.degPerPx, d.id);
+        if (s >= 1) {                          // 亚像素远景不给体（与绘制同门）
           const [hw, up, dn] = tget(PRIM_BOX, d.kind) || PRIM_BOX_DEF;
           dd = boxDist(x, y, px - hw * s, py - up * s, px + hw * s, py + dn * s);
         }

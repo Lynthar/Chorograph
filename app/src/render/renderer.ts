@@ -6,8 +6,9 @@ import type { BBox } from "../core/types.ts";
 import { createTerrainGL } from "./terrainGL.ts";
 import { createTerrainCPU } from "./terrainCPU.ts";
 
-/** cMinor=细曲线等距（抽象单位，contourStepFor 产出）；cFade=下一细分档淡入 0..1（×2 阶梯嵌套过渡） */
-export interface TerrainRenderOpts { diag?: boolean; contour?: boolean; wrap?: boolean; cMinor?: number; cFade?: number }
+/** cMinor=细曲线等距（抽象单位，contourStepFor 产出）；cFade=下一细分档淡入 0..1（×2 阶梯嵌套过渡）；
+    paper=图幅外铺宣纸色（战术图裁决：内陆战场四周不该是汪洋，图页感；色=出图垫纸色 #d9d2c0 同源） */
+export interface TerrainRenderOpts { diag?: boolean; contour?: boolean; wrap?: boolean; cMinor?: number; cFade?: number; paper?: boolean }
 
 export interface TerrainRenderer {
   canvas: HTMLCanvasElement;

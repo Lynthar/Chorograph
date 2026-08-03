@@ -20,8 +20,10 @@ import { blankWorld, countsOf, normalizeWorld } from "../src/core/world.ts";
 import { blankTacticalWorld, createTacticalWorld, tacDiaDeg } from "../src/core/tactical.ts";
 import { paintStep, resamplePaintCells, territoryLoops } from "../src/core/territory.ts";
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
-import { drawDecor, pickDecor } from "../src/render/decor.ts";
+import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
+import { FX, MICRO_F0, materialFor, materialTable, octaveGate } from "../src/render/material.ts";
+import { allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/ui/stamps.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 import { validateWorld } from "../src/core/validate.ts";
@@ -1114,6 +1116,21 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     const hit = pickEdge(zoom, both.meta, both, 3107, 400, 294);
     assert.strictEqual(hit && hit.edge.type, "road", "重叠处取距中轴最近者");
   });
+  it("decorSizePx：线性段与旧公式逐位；KNEE 后缓增单调；深放大封顶 CAP；id 抖动 ±10% 有界", () => {
+    assert.strictEqual(decorSizePx("peak", 1, 0.02, 0.001), 11 * 1 * ((0.02 / 0.001) / 14), "线性段=旧公式（同结合序）");
+    assert.strictEqual(decorSizePx("没有这种", 1, 0.02, 0.001), 5 * 1 * ((0.02 / 0.001) / 14), "未知种类回退基准 5");
+    const atKnee = decorSizePx("peak", 1, 46 * 14 / 11 * 0.001, 0.001);
+    assert.ok(Math.abs(atKnee - 46) < 1e-9, "拐点处连续");
+    let prev = 0;
+    for (const st of [0.06, 0.1, 0.2, 0.5, 2, 10]) { const s = decorSizePx("peak", 1, st, 0.001); assert.ok(s >= prev, "缓增段单调不减（封顶后持平）"); prev = s; }
+    assert.ok(Math.abs(decorSizePx("peak", 1, 1e5, 0.001) - DECOR_CAP) < 1e-9, "深放大封顶（原 420px 退场语义已改：符号永不消失）");
+    const plain = decorSizePx("peak", 1, 0.02, 0.001);
+    for (const id of ["a", "d0", "任意-id"]) {
+      const s = decorSizePx("peak", 1, 0.02, 0.001, id);
+      assert.ok(s >= plain * 0.9 - 1e-9 && s <= plain * 1.1 + 1e-9, "id 抖动有界");
+      assert.strictEqual(s, decorSizePx("peak", 1, 0.02, 0.001, id), "同 id 恒同值（出图逐次一致）");
+    }
+  });
   it("pickDecor 命中所画的体（印章站在锚点上、体在其上方）：顶尖可点、体外 13px 余量、并列取锚点最近", () => {
     const cam: Camera = { lon0: 100, lat0: 30, degPerPx: 0.001, w: 800, h: 600, flat: true };
     const meta = { worldModel: "flat" as const };
@@ -1121,24 +1138,29 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
       meta, factions: [], nodes: [], edges: [], units: [], terrainOverrides: [],
       decor: lons.map((lon, i) => ({ id: "d" + i, kind: "peak", lon, lat: 30 }))
     });
-    // step .14／degPerPx .001 → scale 10 → 雪峰 s=110px：锚点(400,300)、体 x±90.2 / 上伸 110 / 下伸 55
+    // step .05／degPerPx .001 → 线性段：s=decorSizePx(含 d0 的 id 抖动)；体=PRIM_BOX.peak [0.92,1,0.5]×s。
+    // 期望按 decorSizePx 同源推出＝锁「拾取与绘制用同一几何」；尺寸函数自身另有精确值测试防同表自证。
     const w = mk(100);
-    const hit = (x: number, y: number) => pickDecor(cam, meta, w, 3107, x, y, 0.14);
-    assert.ok(hit(400, 300 - 105), "顶尖在体内＝可点（旧对称圆 r=max(13,.55s+4)=64.5 在此落空）");
-    assert.ok(hit(310, 300), "左缘在体内");
-    assert.ok(hit(400, 367), "体下缘外 12px 仍在余量内");
-    assert.ok(!hit(400, 369), "体下缘外 14px 出余量");
-    assert.ok(!hit(296, 300), "体左缘外 13.8px 出余量");
-    assert.ok(!hit(400, 300 - 124), "顶尖外 14px 出余量");
+    const s = decorSizePx("peak", 1, 0.05, 0.001, "d0");
+    assert.ok(s > 30 && s <= 46, "此机位落在线性段");
+    const hit = (x: number, y: number) => pickDecor(cam, meta, w, 3107, x, y, 0.05);
+    assert.ok(hit(400, 300 - s - 5), "顶尖上方 5px 在余量内（旧对称圆拾取在此落空）");
+    assert.ok(hit(400 - 0.92 * s - 8, 300), "左缘外 8px 在余量内");
+    assert.ok(hit(400, 300 + 0.5 * s + 12), "体下缘外 12px 仍在余量内");
+    assert.ok(!hit(400, 300 + 0.5 * s + 15), "体下缘外 15px 出余量");
+    assert.ok(!hit(400 - 0.92 * s - 15, 300), "体左缘外 15px 出余量");
+    assert.ok(!hit(400, 300 - s - 15), "顶尖外 15px 出余量");
     // 并列（两枚体重叠、点落在公共部分）：比锚点距离取最近者，不按数组序先到先得
-    const two = mk(100, 100.05);   // 锚点 400 与 450
-    const near = (x: number) => pickDecor(cam, meta, two, 3107, x, 300, 0.14);
-    assert.strictEqual(near(460)?.id, "d1", "点在两体内、离 d1 锚点近");
+    const two = mk(100, 100.02);   // 锚点 400 与 420
+    const near = (x: number) => pickDecor(cam, meta, two, 3107, x, 300, 0.05);
+    assert.strictEqual(near(428)?.id, "d1", "点在两体内、离 d1 锚点近");
     assert.strictEqual(near(400)?.id, "d0", "点在两体内、离 d0 锚点近");
-    // 深放大退场（s>420 不画）＝回退锚点 13px：没画出来的不该按体拾取
-    const gone = (x: number, y: number) => pickDecor(cam, meta, w, 3107, x, y, 0.6);   // scale 42.9 → s=471
-    assert.ok(gone(408, 300), "退场后锚点 8px 内仍可点（取样/删得掉）");
-    assert.ok(!gone(400, 280), "退场后不按体拾取");
+    // 深放大封顶（⚠ 期望有意翻转：原「s>420 退场＝不按体拾取」——缓增封顶后符号永不消失，体照拾）
+    const sBig = decorSizePx("peak", 1, 0.6, 0.001, "d0");
+    assert.ok(sBig > 46 && sBig <= DECOR_CAP + 1e-9, "深放大走缓增封顶");
+    const big = (x: number, y: number) => pickDecor(cam, meta, w, 3107, x, y, 0.6);
+    assert.ok(big(400, 300 - sBig + 2), "封顶后顶尖仍可点（符号不再蒸发）");
+    assert.ok(!big(400, 300 - sBig - 16), "封顶体之外仍拾不中");
   });
 });
 
@@ -1322,6 +1344,43 @@ describe("出图图例条目 legendItems", () => {
   it("战术专属层在战略图上不算「出现」（同 layerOn 的 tacOnly 门）", () => {
     const strat = { ...W, meta: {} } as typeof W;
     assert.deepStrictEqual(legendItems(strat, 0).kinds, ["linf"], "units 不是 tacOnly，战略图照列");
+  });
+});
+
+/* —— 渲染材质表与八度门控（render/material.ts；GL/CPU 观感同构的数值真源）—— */
+describe("渲染材质表", () => {
+  it("水域基底一律全零：任何生态叠上去都画不出地面质感", () => {
+    for (const eco of ["", "/forest", "/grassland", "/marsh", "/desert"]) {
+      const m = materialFor("water" + eco);
+      assert.deepStrictEqual([m.canopy, m.dune, m.ridge, m.marsh, m.rough, m.albVar, m.rock], [0, 0, 0, 0, 0, 0, 0], "water" + eco);
+    }
+  });
+  it("生态签名各归其位：森林=林冠、荒漠=沙丘且不岩化、沼泽=墩洼且不岩化、山地=棱脊最大", () => {
+    assert.ok(materialFor("plain/forest").canopy > 0);
+    assert.ok(materialFor("plain/desert").dune > 0);
+    assert.strictEqual(materialFor("plain/desert").rock, 0);
+    assert.ok(materialFor("plain/marsh").marsh > 0);
+    assert.strictEqual(materialFor("plain/marsh").rock, 0);
+    const ridges = allComposites().map(c => materialFor(c).ridge);
+    assert.strictEqual(Math.max(...ridges), materialFor("mountain").ridge, "纯山地的棱脊权重是全表最大");
+  });
+  it("旧 8 类与未知串走 parseComposite 回退：forest=plain/forest 同值、垃圾串=平原", () => {
+    assert.deepStrictEqual(materialFor("forest"), materialFor("plain/forest"));
+    assert.deepStrictEqual(materialFor("__proto__"), materialFor("plain"));
+  });
+  it("materialTable 与 allComposites 同序同长（GL uniform 数组按 compositeIndex 对齐）", () => {
+    assert.strictEqual(materialTable().length, allComposites().length);
+  });
+  it("八度门控：整幅视角（≈33px/度）恒零＝旧缩放档观感保持；放大单调增到 1", () => {
+    assert.strictEqual(octaveGate(33, MICRO_F0), 0, "fit 视角下微八度基频必须为零");
+    assert.strictEqual(octaveGate(14, MICRO_F0), 0, "更远视角同理");
+    assert.ok(octaveGate(120, MICRO_F0) > 0, "放大后淡入");
+    assert.strictEqual(octaveGate(8 * MICRO_F0 + 1, MICRO_F0), 1, "波长 ≥8px 全强");
+    let prev = -1;
+    for (const p of [30, 60, 90, 120, 150, 200]) { const g = octaveGate(p, MICRO_F0); assert.ok(g >= prev); prev = g; }
+  });
+  it("域扭曲总幅 <半格：主副频合成的最坏位移不吃掉相邻格（类型斑块不漂出本格邻域）", () => {
+    assert.ok((0.5 + 0.5 * 0.35) * FX.warpAmp < 0.5, "0.675×warpAmp 须 <0.5 格");
   });
 });
 

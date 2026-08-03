@@ -373,7 +373,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     const R = layersSig.peek().terrain ? ctx.R : null;
     if (R) {
       const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
-      R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat" });
+      R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical" });
     }
     const off = document.createElement("canvas");
     off.width = canvas.width; off.height = canvas.height;
@@ -528,7 +528,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       if (!canvas.width || !canvas.height) return null;
       if (layersSig.peek().terrain && ctx.R) {
         const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
-        ctx.R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat" });
+        ctx.R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical" });
       }
       const tw = 280, th = 175, off = document.createElement("canvas");
       off.width = tw; off.height = th;
