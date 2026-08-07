@@ -14,7 +14,7 @@ import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import { contourStepFor } from "../core/elev.ts";
-import { safeName } from "../core/util.ts";
+import { safeName, errText } from "../core/util.ts";
 import { drawLegend } from "../render/legend.ts";
 import { pinnedStackH } from "../render/overlay.ts";
 import { pickBootEntry, planOpen, wantsDeepStart, type OpenSnap } from "./openplan.ts";
@@ -36,10 +36,6 @@ declare global {
   /** File System Access API 目录选择器（Edge/Chrome；调用前先 fsSupported() 探测） */
   function showDirectoryPicker(opts?: { mode?: "read" | "readwrite"; id?: string }): Promise<FolderHandle>;
 }
-
-/** 异常文本：配额超限 / structured-clone 失败 / 事务中止各是一回事，归成一句无信息的
-    「失败」等于什么都没说——凡把异常报给用户的地方都带上它。 */
-const errText = (e: unknown): string => String((e as { message?: unknown } | null)?.message || e || "未知错误");
 
 /** 仓库根样例世界的未校验 JSON（入库/normalizeWorld 前的原料） */
 type SampleWorld = { meta?: Meta } & Record<string, unknown>;
@@ -187,7 +183,16 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       ctx.lib!.kvSet("foldercache", ctx.fcache).catch(() => {});
       return fn ? openFolderMap(fn) : false;
     }
-    const e = await ctx.lib!.create(s);
+    /* ⚠ 同 importWorld / genTactical 之规，这是同族的第四个入口。原先这条 await 裸奔：配额满时
+       它把 boot() 一起掀翻，由 main.ts 的兜底 try 接住——界面停在「启动中…」、红条只有一句
+       DOMException 原文、连图库都进不去（2026-08-07 CDP 实测）。返回 false 即优雅降级：
+       boot 自会往下走到 listMaps → showHome()，用户至少落回图库。 */
+    let e: Awaited<ReturnType<NonNullable<typeof ctx.lib>["create"]>>;
+    try { e = await ctx.lib!.create(s); }
+    catch (err) {
+      alert(`「${file}」入库失败：${errText(err)}\n（浏览器存储可能已满——可先删掉几张地图，或改用「📁 链接文件夹」）`);
+      return false;
+    }
     return openBrowserMap(e.id);
   }
   function setWorld(w: unknown, id: string | null, snap: OpenSnap | null | undefined): void {

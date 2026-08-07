@@ -5,7 +5,7 @@ import { project, projectSeq, unproject, visibleWorldCopies } from "../core/proj
 import { EDGE_STYLE } from "../core/constants.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { contourStepFor } from "../core/elev.ts";
-import { hexA } from "../core/util.ts";
+import { hexA, errText } from "../core/util.ts";
 import { drawOverlay, drawOp } from "../render/overlay.ts";
 import { drawAnalysis } from "../render/analysis.ts";
 import { drawPaintCells, drawBrushRing, drawSelectBox } from "../render/editHud.ts";
@@ -172,7 +172,9 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     const ftTxt = (saveConflictSig.value
       ? "⚠ 保存已暂停——这张图在别处被改过，请在弹层中选择处置"
       : ctx.saveErr
-      ? `⚠ 自动保存失败（${ctx.saveErr && ctx.saveErr.message ? ctx.saveErr.message : "存储异常"}——未落盘，随下次改动重试）`
+      /* ⚠ 走 errText 而非直读 .message：真配额下 QuotaExceededError 的 message 是空串，
+         直读会退成「存储异常」这句无信息的兜底（2026-08-07 CDP 实测撞出） */
+      ? `⚠ 自动保存失败（${errText(ctx.saveErr)}——未落盘，随下次改动重试）`
       : autosave.pending ? "未保存"
       : ctx.savedAt ? `已自动保存 ${String(ctx.savedAt.getHours()).padStart(2, "0")}:${String(ctx.savedAt.getMinutes()).padStart(2, "0")}`
       : srcShort)

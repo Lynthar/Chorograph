@@ -13,6 +13,15 @@ export function tget<T>(table: Record<string, T>, key: unknown): T | undefined {
   return typeof key === "string" && Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
+/** 异常文本：配额超限 / structured-clone 失败 / 事务中止各是一回事，归成一句无信息的
+    「失败」等于什么都没说——凡把异常报给用户的地方都过它，别在别处另写一份。
+    ⚠ 末尾那条 `|| e` 不是冗余：Chromium 真配额下 IDB 事务 abort 给出的
+    `QuotaExceededError` **message 是空串**（2026-08-07 实测），直读 `.message`
+    的地方会掉进自己的兜底文案（底栏那句「存储异常」即由此而来）。 */
+export function errText(e: unknown): string {
+  return String((e as { message?: unknown } | null)?.message || e || "未知错误");
+}
+
 /** HTML 转义：所有进入 innerHTML 的用户数据一律过它 */
 export function esc(s: unknown): string {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c =>

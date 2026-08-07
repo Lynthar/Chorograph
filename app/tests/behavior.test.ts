@@ -11,7 +11,7 @@ import { buildElevField, contourStepFor, elevBilinear, elevSmooth, elevUnitM } f
 import { buildGridCells, type Grid } from "../src/core/grid.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, project, unproject, type Camera } from "../src/core/projection.ts";
-import { esc, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
+import { esc, errText, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
 import { ARM_OPT_KINDS, EDGE_STYLE, LEGACY_KIND, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
 import { fmtStrength, parseStrength, unitInheritedAt, unitMoraleAt, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { wallTeeth } from "../src/render/edges.ts";
@@ -1395,5 +1395,22 @@ describe("自定义印章池 poolInsert", () => {
     const pool = ["a", "b", "c"].map(A);
     assert.deepStrictEqual(poolInsert(pool, A("d"), 3).map(x => x.id), ["d", "a", "b"]);
     assert.deepStrictEqual(pool.map(x => x.id), ["a", "b", "c"], "入参须原样");
+  });
+});
+
+describe("异常文本 errText（报错要说得出是哪一回事）", () => {
+  it("Chromium 真配额的 QuotaExceededError：message 是空串，仍须报出错误名", () => {
+    /* 形状取自 2026-08-07 的 CDP 实测：把配额压到 1KB 后写 3MB，事务 abort 给出的
+       t.error 就是这个——name 有、message 为空串。末尾那条 `|| e` 兜底正是为它而在，
+       删掉它这里就变成一句空话（底栏原先直读 .message，退成了「存储异常」）。 */
+    const quota = new DOMException("", "QuotaExceededError");
+    assert.strictEqual(quota.message, "", "前提：真配额的 message 就是空串");
+    assert.strictEqual(errText(quota), "QuotaExceededError");
+  });
+  it("有 message 的照常取 message；null/undefined 才回落「未知错误」", () => {
+    assert.strictEqual(errText(new Error("配额超限")), "配额超限");
+    assert.strictEqual(errText({ message: "与另一处的改动冲突——保存已暂停" }), "与另一处的改动冲突——保存已暂停");
+    assert.strictEqual(errText(null), "未知错误");
+    assert.strictEqual(errText(undefined), "未知错误");
   });
 });
