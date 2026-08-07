@@ -15,7 +15,7 @@ import { pickEdge, pickNode, pickOp, nodesInBox, layerOn } from "../render/overl
 import { pickUnit, pickRangeHandle, unitsInBox, type RingHit } from "../render/units.ts";
 import { fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStrengthAt } from "../core/units.ts";
 import { pickDecor, decorIdsInRadius, decorsInBox } from "../render/decor.ts";
-import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
+import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit, selMembers,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
   inspEditSig, settingsSig, closeSettings, helpOpenSig, saveConflictSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
@@ -166,6 +166,23 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   /* 部队可拾取＝与渲染同一道门（layerOn：开关 × tacOnly）。战略图 2026-07-31 起也画部队，
      故判据不再是「战术图 && 层开」——门在 LAYERS 标记上，改层属性即两边同步。 */
   const unitPickable = () => layerOn(layersSig.peek(), ctx.meta, "units");
+  /* 圈手柄的门＝与 drawRanges 同一道 layerOn（含 tacOnly）而不是生开关：ranges/vision 都标了
+     tacOnly，战略图上整体不画，用生开关就留下一圈看不见却拖得动的热区——按下即静默改写半径。
+     按下与悬停两处曾各写一份（同 unitPickable 收口时漏下的那条），此处收口。 */
+  const rangeGate = () => ({ fire: layerOn(layersSig.peek(), ctx.meta, "ranges"),
+                             vision: layerOn(layersSig.peek(), ctx.meta, "vision") });
+  /* 连线起点的唯一处置口：点到空处＝作废；无起点或点回起点自身＝设/保持起点；点到另一地点＝成线
+     并收起起点。返回是否成了线（调用点据此决定要不要起拖拽）。
+     ⚠ 这套状态机原先在三处各写一份并漂移过：点击-点击那份漏了成线后收起，于是 A→B 连成之后
+     提示仍写着「起点：A」、橡皮筋继续从 A 拖着，再点 C 实得 A→C（面板文案写的是「依次点击两地」，
+     没有连多条之说）。 */
+  const stepLink = (hitId: string | null): boolean => {
+    const from = linkFromSig.peek();
+    if (!hitId) { linkFromSig.value = null; return false; }
+    if (from && from !== hitId) { tryLink(from, hitId); linkFromSig.value = null; return true; }
+    linkFromSig.value = hitId;
+    return false;
+  };
   const paintDab = (x: number, y: number): void => {
     if (!paintStroke) return;
     const ll = unproject(cam(), x, y);
@@ -283,13 +300,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   const nudgeSel = (k: string): void => {
     const sel = selSig.peek();
     if (!worldSig.peek()) return;
-    const nodeIds = sel && sel.kind === "node" ? [sel.id] : sel && sel.kind === "multi" ? sel.ids : [];
-    const unitIds = sel && sel.kind === "multi" ? (sel.unitIds || []) : [];   // 框选含部队：与整组拖移一致，同步微调
-    /* 布景同理——整组的成员集合此处曾漏了它（startMultiDrag 的 dorig 与批删的 dids 都认），
-       症状两样：只圈了印章时方向键成死键（keydown 上一行已 preventDefault 吃掉平移，
-       于是既不微调也不平移、毫无反应），混选时则是地点部队动了而印章留在原地——
-       一次精调就把刚拖齐的一组拆散。 */
-    const decorIds = sel && sel.kind === "multi" ? (sel.decorIds || []) : [];
+    const { nodeIds, unitIds, decorIds } = selMembers(sel);   // 成员集合走单一真源（曾漏 decorIds，见 state.selMembers 头注）
     if (!nodeIds.length && !unitIds.length && !decorIds.length) return;
     const now = performance.now();
     if (now - nudgeT > 1200) pushHistoryOnce();
@@ -321,15 +332,15 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const world = worldSig.value!;
     const ll0 = unproject(cam(), e.offsetX, e.offsetY);
     const T = yearSig.peek();
+    const { nodeIds, unitIds, decorIds } = selMembers(sv);   // 同批删与方向键微调共用一份成员集合
+    const alive = (o: { id: string; lon0: number; lat0: number } | null): o is { id: string; lon0: number; lat0: number } => !!o;
     multiDrag = { sx: ll0[0], sy: ll0[1], t: T, pushed: false, x0: e.offsetX, y0: e.offsetY,
-      orig: sv.ids.map(id => { const nd = world.nodes.find(n => n.id === id); return nd ? { id, lon0: nd.lon, lat0: nd.lat } : null; })
-        .filter((o): o is { id: string; lon0: number; lat0: number } => !!o),
-      uorig: (sv.unitIds || []).map(id => {
+      orig: nodeIds.map(id => { const nd = world.nodes.find(n => n.id === id); return nd ? { id, lon0: nd.lon, lat0: nd.lat } : null; }).filter(alive),
+      uorig: unitIds.map(id => {
         const un = (world.units || []).find(x => x.id === id), p = un && unitPos(un, T);
         return p ? { id, lon0: p.lon, lat0: p.lat } : null;
-      }).filter((o): o is { id: string; lon0: number; lat0: number } => !!o),
-      dorig: (sv.decorIds || []).map(id => { const d = (world.decor || []).find(x => x.id === id); return d ? { id, lon0: d.lon, lat0: d.lat } : null; })
-        .filter((o): o is { id: string; lon0: number; lat0: number } => !!o) };
+      }).filter(alive),
+      dorig: decorIds.map(id => { const d = (world.decor || []).find(x => x.id === id); return d ? { id, lon0: d.lon, lat0: d.lat } : null; }).filter(alive) };
     canvas.style.cursor = "move";
     canvas.setPointerCapture(e.pointerId);
   };
@@ -431,9 +442,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const sv = selSig.value;
       const hu = sv && sv.kind === "unit" ? sv.id : null, hn = sv && sv.kind === "node" ? sv.id : null;
       if (hu || hn) {
-        const Lyr = layersSig.value;
-        const rh = pickRangeHandle(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, hu, hn,
-          { fire: layerOn(Lyr, ctx.meta, "ranges"), vision: layerOn(Lyr, ctx.meta, "vision") });
+        const rh = pickRangeHandle(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, hu, hn, rangeGate());
         if (rh) {
           stopPlay();   // 播放中拖半径：冻结时刻，圈心不随播放漂移
           rangeDrag = { ...rh, pushed: false, x0: e.offsetX, y0: e.offsetY };
@@ -504,18 +513,8 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (world && modeSig.value === "edit" && editSubSig.value === "link") {
       const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate());
       if (hit) {
-        const from = linkFromSig.peek();
-        if (from && from !== hit.id) {            // 第二点：成线（点击-点击路径）
-          tryLink(from, hit.id);
-          /* 成线即收起起点——同拖拽收笔与 clickAt 里那两份镜像实现。此处曾漏，而**这份才是
-             常跑的那份**（clickAt 的镜像只在 pointerdown 没拾到地点时才走，那时同坐标重拾通常
-             仍是空）：于是点 A→点 B 连出 A→B 后提示仍写着「起点：A」、橡皮筋继续从 A 拖着，
-             接着想连 B→C 点了 C，实得 A→C。面板文案写的是「依次点击两地」，没有连多条之说。 */
-          linkFromSig.value = null;
-          return;
-        }
-        linkFromSig.value = hit.id;               // 起点：可拖到另一地点成线（拖拽路径）
-        linkDrag = { fromId: hit.id, x: e.clientX, y: e.clientY, moved: false };
+        if (stepLink(hit.id)) return;             // 第二点：成线并收起起点（点击-点击路径）
+        linkDrag = { fromId: hit.id, x: e.clientX, y: e.clientY, moved: false };   // 起点：可拖到另一地点成线
         canvas.setPointerCapture(e.pointerId);
         return;
       }
@@ -635,12 +634,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (worldSig.value && modeSig.value === "edit" && ["select", "unit"].includes(editSubSig.value)) {
         const sv = selSig.value;
         const hu = sv && sv.kind === "unit" ? sv.id : null, hn = sv && sv.kind === "node" ? sv.id : null;
-        const Lyr = layersSig.value;
-        /* ⚠ 门必须走 layerOn（含 tacOnly）而不是生开关：ranges/vision 都标了 tacOnly，战略图上
-           drawRanges 整体不执行，用生开关就留下一圈看不见却拖得动的热区——按下即静默改写半径。
-           这正是同批把 unitPickable 收口到 layerOn 时修掉的同类病，圈手柄这条当时漏了。 */
-        const over = (hu || hn) && pickRangeHandle(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, hu, hn,
-          { fire: layerOn(Lyr, ctx.meta, "ranges"), vision: layerOn(Lyr, ctx.meta, "vision") });
+        const over = (hu || hn) && pickRangeHandle(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, hu, hn, rangeGate());
         if (over && canvas.style.cursor !== "ew-resize") canvas.style.cursor = "ew-resize";
         else if (!over && canvas.style.cursor === "ew-resize") canvas.style.cursor = "";
       }
@@ -690,10 +684,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (linkDrag) {   // 连线拖拽收笔：拖到另一地点=成线；拖到空处=取消起点；原地未动=保持起点（可再点第二点）
       const ld = linkDrag; linkDrag = null;
       const hit = world ? pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate()) : null;
-      if (hit && hit.id !== ld.fromId) {
-        tryLink(ld.fromId, hit.id);
-        linkFromSig.value = null;
-      } else if (ld.moved) linkFromSig.value = null;
+      /* 处置一律经 stepLink；调用点只决定「要不要处置」——原地未动＝保持起点是拖拽路径独有的 */
+      if (hit && hit.id !== ld.fromId) stepLink(hit.id);
+      else if (ld.moved) stepLink(null);
       return;
     }
     if (boxSel) {
@@ -785,12 +778,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
           if (nid) selSig.value = { kind: "node", id: nid };   // 落默认文本并选中→检查器改多行/字号（去 prompt）
         }
       } else if (mode === "edit" && editSubSig.value === "link") {
-        if (!hit) linkFromSig.value = null;
-        else if (!linkFromSig.value || linkFromSig.value === hit.id) linkFromSig.value = hit.id;
-        else {
-          tryLink(linkFromSig.value, hit.id);
-          linkFromSig.value = null;
-        }
+        stepLink(hit ? hit.id : null);
       } else if (mode === "edit" && editSubSig.value === "unit") {
         selSig.value = null;   // 军工具点击＝选择（空击清选）；新增走军面板「＋ 新增部队」→按住列表项拖入地图
       } else if (mode === "edit" && editSubSig.value === "delete") {
@@ -925,12 +913,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (os) { mutateWorld(w => { removeOp(w, os.evId, os.i); }); clearOpSel(); return; }   // 选中作战线=删线
       const sel = selSig.value;
       if (sel && sel.kind === "multi") {   // 框选=批量删除（地点+部队+布景）
-        const uids = sel.unitIds || [], dids = sel.decorIds || [];
-        const what = [sel.ids.length ? `${sel.ids.length} 个地点及其连线与关联引用` : "",
+        const { nodeIds, unitIds: uids, decorIds: dids } = selMembers(sel);   // 同微调与整组拖移共用一份成员集合
+        const what = [nodeIds.length ? `${nodeIds.length} 个地点及其连线与关联引用` : "",
           uids.length ? `${uids.length} 支部队及其全部动向` : "",
           dids.length ? `${dids.length} 枚布景` : ""].filter(Boolean).join("与");
         if (confirm(`删除框选的 ${what}？`)) {
-          const ids = sel.ids.slice(), us = uids.slice(), ds = dids.slice();
+          const ids = nodeIds.slice(), us = uids.slice(), ds = dids.slice();
           mutateWorld(w => { for (const id of ids) removeNode(w, id); for (const id of us) removeUnit(w, id); for (const id of ds) removeDecor(w, id); });
           selSig.value = null;
         }

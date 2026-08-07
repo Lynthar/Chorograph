@@ -47,6 +47,22 @@ export const selDecor = (w: World | null, s: Sel): Decor | null =>
 export const selMultiDecor = (w: World | null, s: Sel): Decor[] =>
   (w && s && s.kind === "multi" && s.decorIds) ? s.decorIds.map(id => (w.decor || []).find(d => d.id === id)).filter((d): d is Decor => !!d) : [];
 
+/** 这次选中都包含谁——**整组成员集合的单一真源**（批删 / 方向键微调 / 整组拖移三处共用）。
+    单选也按「一人成组」返回，好让三处不必各写一遍 kind 分支。
+    ⚠ 三处原先各写一份并**真的漂移过**：微调那份漏了 `decorIds`，于是只圈了印章时方向键成死键
+    （keydown 已 preventDefault 吃掉平移，既不微调也不平移），混选时则地点部队动了而印章留在原地
+    ——一次精调就把刚拖齐的一组拆散。
+    ⚠ 它只回答「谁在组里」，**不回答「谁能被这个操作动」**：方向键的门（仅 node/multi 可微调）
+    留在调用点，别并进来。 */
+export interface SelMembers { nodeIds: string[]; unitIds: string[]; decorIds: string[] }
+export const selMembers = (s: Sel): SelMembers =>
+  s == null ? { nodeIds: [], unitIds: [], decorIds: [] }
+    : s.kind === "multi" ? { nodeIds: s.ids, unitIds: s.unitIds || [], decorIds: s.decorIds || [] }
+    : s.kind === "node" ? { nodeIds: [s.id], unitIds: [], decorIds: [] }
+    : s.kind === "unit" ? { nodeIds: [], unitIds: [s.id], decorIds: [] }
+    : s.kind === "decor" ? { nodeIds: [], unitIds: [], decorIds: [s.id] }
+    : { nodeIds: [], unitIds: [], decorIds: [] };   // edge / faction 不是图面对象组
+
 /** 是否战术图（日戳时间轴 + 部队/射程层）——组件据此切换时间轴刻度、图层子集、编辑子工具 */
 export const isTacSig = computed(() => (worldSig.value?.meta || {}).mapKind === "tactical");
 /** 部队可达性预算缓存（外壳按网格/编辑版本重算填入；渲染层只读，帧内不算路）。键=部队 id */

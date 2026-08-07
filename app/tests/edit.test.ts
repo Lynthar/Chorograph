@@ -9,7 +9,7 @@ import { unitArm, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells } from "../src/core/grid.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
-  paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selSig, setWorldState, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
+  paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selMembers, selSig, setWorldState, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 
@@ -1020,5 +1020,24 @@ describe("相位（战术分帧命名时刻）", () => {
     assert.strictEqual(adjacentPhaseT(ph, 3, 1), null, "末相位无下一");
     assert.strictEqual(phasesOf(undefined).length, 0);
     assert.strictEqual(phasesOf({ phases: "垃圾" } as never).length, 0, "非数组防御");
+  });
+});
+
+describe("整组成员集合 selMembers（批删／方向键微调／整组拖移的单一真源）", () => {
+  it("框选：三种对象各就各位，缺席的可选键当空数组（旧档只有 ids）", () => {
+    assert.deepStrictEqual(selMembers({ kind: "multi", ids: ["n1", "n2"], unitIds: ["u1"], decorIds: ["d1", "d2"] }),
+      { nodeIds: ["n1", "n2"], unitIds: ["u1"], decorIds: ["d1", "d2"] });
+    /* ⚠ 这一条锁的是曾经真漂移过的那处：微调那份漏读 decorIds，只圈印章时方向键成死键 */
+    assert.deepStrictEqual(selMembers({ kind: "multi", ids: ["n1"] }),
+      { nodeIds: ["n1"], unitIds: [], decorIds: [] });
+  });
+  it("单选按「一人成组」归位；edge/faction/空选一律三空数组", () => {
+    assert.deepStrictEqual(selMembers({ kind: "node", id: "n1" }), { nodeIds: ["n1"], unitIds: [], decorIds: [] });
+    assert.deepStrictEqual(selMembers({ kind: "unit", id: "u1" }), { nodeIds: [], unitIds: ["u1"], decorIds: [] });
+    assert.deepStrictEqual(selMembers({ kind: "decor", id: "d1" }), { nodeIds: [], unitIds: [], decorIds: ["d1"] });
+    const empty = { nodeIds: [], unitIds: [], decorIds: [] };
+    assert.deepStrictEqual(selMembers({ kind: "edge", idx: 0 }), empty);
+    assert.deepStrictEqual(selMembers({ kind: "faction", id: "f1" }), empty);
+    assert.deepStrictEqual(selMembers(null), empty);
   });
 });

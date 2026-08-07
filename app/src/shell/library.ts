@@ -174,6 +174,13 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   async function bootSample(file: string): Promise<boolean> {
     const s = await fetchSample(file);
     if (!s) return false;
+    /* 与 importWorld 同一道闸——同一个入库动作原先有两套口径：这条路径直奔 create，
+       validate 的量级闸（数组长度 / bbox 跨度）与原型键闸全被绕过。
+       ⚠ 只拦 fatal：warning 在 importWorld 里出 toast 是**写给写手看的**，而这里是夹具/演示
+       入口，`#sample=` 载的多是旧档，逐条迁移提示每次开图弹一遍纯属噪音——故只进控制台。 */
+    const v = validateWorld(s);
+    if (!v.ok) { alert(`「${file}」无法载入：\n` + formatIssues(v.fatal)); return false; }
+    if (v.warnings.length) console.warn(`载入「${file}」有 ${v.warnings.length} 条提示：\n` + formatIssues(v.warnings));
     const nm = ((s.meta || ({} as Meta)).名称) || "";
     const es = await listMaps();
     const ex = nm && es.find(e => e.name === nm);
