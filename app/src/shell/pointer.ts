@@ -339,6 +339,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     // 中键=拖动地图（任何模式，v0.14）
     if (e.button === 1) {
       e.preventDefault();
+      /* ⚠ 先收干净一切进行中的拖/笔态再起平移（同 pointercancel 语义：换视角＝收笔，已落笔迹保留）。
+         缺这一句时链条是：中键按下不碰 paintStroke → 松开中键的 pointerup 撞上靠前的
+         `if (paintStroke) { …; return; }` 把笔画替收了，而清 drag 的分支在整个 handler 最末、
+         永远走不到 → 左键还按着，pointermove 里笔态已空、落进平移分支，**画布跟着鼠标漂**，
+         直到松开左键才停（`buttons===0` 的悬挂自愈守卫此时也不触发，因为左键没松）。 */
+      abortDrags();
       drag = { x: e.clientX, y: e.clientY, lon0: ctx.view.lon0, lat0: ctx.view.lat0, click: false };
       canvas.style.cursor = "grabbing";
       canvas.setPointerCapture(e.pointerId);

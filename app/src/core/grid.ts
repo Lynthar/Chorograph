@@ -41,7 +41,13 @@ export function buildGridCells(meta: Meta | undefined, overrides: TerrainOverrid
 
 /** 官道降低沿途寻路代价：当年生效的道路连线按 40 段插值标记所经格（"r,c"） */
 export function roadCellSet(nodes: WorldNode[], edges: Edge[], yearNow: number, grid: Grid): Set<string> {
-  const byId = (id: string) => nodes.find(n => n.id === id);
+  /* ⚠ 建索引而非 `nodes.find`：本函数在**每次网格重建与每次拨年**都跑（boot/host/orchestrate 三个调用点），
+     原先每条 road 边查两次、每次 O(N)——几千地点 + 上千官道即每次拨年千万次字符串比较，拖时间轴直接卡住。
+     ⚠ **必须首个命中优先**（`has` 后才 `set`）：`nodes.find` 取的是第一个同 id 者，而 `new Map(nodes.map(…))`
+     是后者覆盖前者——重复 id 的档上两者结果不同，这里是平价锁定模块，不能换语义。 */
+  const idx = new Map<string, WorldNode>();
+  for (const n of nodes) if (!idx.has(n.id)) idx.set(n.id, n);
+  const byId = (id: string) => idx.get(id);
   const s = new Set<string>();
   edges.filter(e => e.type === "road" && activeAt(e, yearNow)).forEach(e => {
     if (!e.from || !e.to) return;   // 道路必有两端；自由画河（pts、无 from/to）不入官道格

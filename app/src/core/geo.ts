@@ -4,9 +4,13 @@ import type { Meta } from "./types.ts";
 
 export const toRad = (d: number): number => d * Math.PI / 180;
 
-/** 大圆距离（km）。R 缺省 10000（与旧实现一致） */
-export function haversine(lon1: number, lat1: number, lon2: number, lat2: number, R?: number): number {
-  const r = +(R ?? 0) || 10000;
+/** 大圆距离（km）。R=行星半径，**必填**——原先是 `R?` 缺省 10000（旧实现读全局 meta 半径，移植时改成了参数）：
+    唯一调用方 `distKm` 一直显式传值，故从无现网 bug，但缺省分支是一颗哑雷——将来任何 core 代码
+    直接 `haversine(a,b,c,d)` 不传 R，对所有非 10000km 半径的世界（地球图 6371）都得系统性错误距离，
+    而**平价测试反而掩盖它**：用例全都显式传 6371，缺省分支零覆盖、改坏了也不变红。
+    改必填即让缺省这件事根本不存在，此后 tsc 保证漏不了；`+(R) || 10000` 仍留作 0/NaN 的兜底。 */
+export function haversine(lon1: number, lat1: number, lon2: number, lat2: number, R: number): number {
+  const r = +R || 10000;
   const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 2 * r * Math.asin(Math.min(1, Math.sqrt(a)));

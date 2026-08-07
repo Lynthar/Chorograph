@@ -338,7 +338,16 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       if (!fn) { alert("写入文件夹失败（权限或磁盘问题）。"); return false; }
       newId = fn; link = { file: fn, name: world.meta.名称 };
     } else {
-      const e = await ctx.lib.create(world);
+      /* ⚠ 入库失败必须说话（同 importWorld 之规）：此前这条 await 裸奔，配额满时 promise 无人接——
+         点「⚔ 生成战术图」界面纹丝不动、零反馈。而同一函数的文件夹分支上面就有 alert，
+         同一个动作在两个来源下响与不响不该不对称。全局 unhandledrejection 网虽兜得住，
+         但它只报得出原始 DOMException 措辞，给不出「删几张图或改用文件夹」这种可操作的出路。 */
+      let e: Awaited<ReturnType<typeof ctx.lib.create>>;
+      try { e = await ctx.lib.create(world); }
+      catch (err) {
+        alert(`战术图入库失败：${errText(err)}\n（浏览器存储可能已满——可先删掉几张地图，或改用「📁 链接文件夹」）`);
+        return false;
+      }
       newId = e.id; link = { id: e.id, name: world.meta.名称 };
     }
     // 双向链接写在父图的事件点（随父图自动保存；openMapById 会先 flush 落盘再切图）
