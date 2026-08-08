@@ -972,13 +972,17 @@ describe("新建战术战场 blankTacticalWorld（柱B）", () => {
     assert.strictEqual(w.meta.mapKind, "tactical");
     assert.deepStrictEqual(w.meta.tacSpan, yearSpanT(calOf(), 3000));
   });
-  it("直径钳 [20,2000]；纬度钳 ±85；缺省键不落盘（历法/起伏/等高距/kmPerDeg）", () => {
+  it("直径钳 [20,2000]；纬度钳 ±85；缺省键不落盘（历法/等高距/kmPerDeg）；起伏缺省 0.6（期望有意翻转）", () => {
     assert.deepStrictEqual(blankTacticalWorld({ ...S, diaKm: 1 }, "d").meta.bbox, blankTacticalWorld({ ...S, diaKm: 20 }, "d").meta.bbox, "过小直径钳到 20km");
     assert.deepStrictEqual(blankTacticalWorld({ ...S, diaKm: 9e9 }, "d").meta.bbox, blankTacticalWorld({ ...S, diaKm: 2000 }, "d").meta.bbox, "过大直径钳到 2000km");
     const polar = blankTacticalWorld({ ...S, lat: 89 }, "d");
     assert.ok(polar.meta.bbox!.latMax <= 85 && polar.meta.view!.lat0 === 85);
     const m = blankTacticalWorld(S, "d").meta;
-    for (const k of ["calendar", "relief", "contourM", "kmPerDeg", "genSeed", "parent"]) assert.ok(!(k in m), `${k} 缺省不该落盘`);
+    for (const k of ["calendar", "contourM", "kmPerDeg", "genSeed", "parent"]) assert.ok(!(k in m), `${k} 缺省不该落盘`);
+    // 2026-08-08 改判：新战场起伏缺省 0.6——没有起伏＝类型与手雕高程都渲成光滑圆包（河洛实证）；显式 0＝有意全平仍不落盘
+    assert.strictEqual(m.relief, 0.6, "起伏缺省 0.6 落盘");
+    assert.ok(!("relief" in blankTacticalWorld({ ...S, relief: 0 }, "d").meta), "显式 0＝有意全平，不落盘");
+    assert.strictEqual(blankTacticalWorld({ ...S, relief: 0.3 }, "d").meta.relief, 0.3, "显式值原样");
     const e = blankTacticalWorld({ ...S, calendar: { kind: "earth" }, contourM: 100, battleYear: -204 }, "d").meta;
     assert.deepStrictEqual(e.calendar, { kind: "earth" });
     assert.strictEqual(e.contourM, 100);

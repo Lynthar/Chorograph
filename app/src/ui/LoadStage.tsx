@@ -1,5 +1,6 @@
-/* 图库开图 · 整屏加载舞台：朱印「舆」+ 图名 + 金细进度 + 步骤行。
-   语法：进行中一律金、印章朱（品牌位）。library.ts 开图流程置 loadStageSig 步进
+/* 图库开图 · 整屏加载舞台：山河印 + 图名 + 金细进度 + 步骤行。
+   语法：进行中一律金、印章朱（品牌位；印分白文/朱文两态随主题，symbol 在 index.html）。
+   library.ts 开图流程置 loadStageSig 步进
    0 读取存档 → 1 地形烘焙(·渲染器) → 2 时段过滤 → 3 泥金落款；置 null 后本组件淡出再卸载。 */
 import { Fragment } from "preact";
 import { useEffect, useState } from "preact/hooks";
@@ -24,7 +25,7 @@ export function LoadStage() {
   return (
     <div class={"loadstage" + (closing ? " out" : "")}>
       <div class="ls-box">
-        <span class="ls-seal">舆</span>
+        <span class="ls-seal sealmark" aria-hidden="true"><svg class="v-solid"><use href="#mk-seal"/></svg><svg class="v-line"><use href="#mk-seal-line"/></svg></span>
         <b class="ls-name">{shown.name}</b>
         <div class="ls-bar"><i style={{ width: (closing ? 100 : STEP_W[step]) + "%" }}></i></div>
         <div class="ls-steps">{steps.map((s, i) => (

@@ -118,7 +118,7 @@ function TerrainCtx() {
   return (
     <>
       <div class="seg2">
-        <button aria-pressed={axis === "lf"} title="只改地貌（平原/丘陵/山地…），生态保留" onClick={() => { terrainAxisSig.value = "lf"; }}>地貌</button>
+        <button aria-pressed={axis === "lf"} title="只改地貌（平原/丘陵/山地…），生态保留；涂到之处的手雕高程一并复位" onClick={() => { terrainAxisSig.value = "lf"; }}>地貌</button>
         <button aria-pressed={axis === "eco"} title="只改生态：地面色调/寻路代价 + 随笔落下真实布景印章（可单独选中调整）" onClick={() => { terrainAxisSig.value = "eco"; }}>生态</button>
         <button aria-pressed={axis === "height"} title="抬升/下切地势（只改高程观感与等高线，不改类型/寻路）" onClick={() => { terrainAxisSig.value = "height"; }}>⛰ 高程</button>
       </div>
@@ -132,7 +132,7 @@ function TerrainCtx() {
               </button>
             ))}
           </div>
-          <div class="hint">只涂地貌基底（平原/丘陵/山地/水域/沿海），格内生态保留——如给森林格换地貌＝<b>森林覆盖的丘陵</b>。<kbd>E</kbd>切橡皮＝恢复初稿 · <kbd>Alt</kbd>+点取样该格</div>
+          <div class="hint">只涂地貌基底（平原/丘陵/山地/水域/沿海），格内生态保留——如给森林格换地貌＝<b>森林覆盖的丘陵</b>；涂到之处的<b>手雕高程一并复位</b>（涂平原＝真的变平）。<kbd>E</kbd>切橡皮＝恢复初稿 · <kbd>Alt</kbd>+点取样该格</div>
         </>
       ) : axis === "eco" ? (
         <>

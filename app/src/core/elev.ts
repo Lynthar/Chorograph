@@ -28,6 +28,65 @@ export function coarseField(grid: FieldGeom, data: Float32Array): ElevField {
   return { bb: grid.bb, step: grid.step, cols: grid.cols, rows: grid.rows, data, shadow: null };
 }
 
+/** 侵蚀落地渐变的一帧：display = from + (to − from)·t，几何不同（首次落地：粗格→细分）时
+    from 先按 to 的细格中心双线性重采样。落地若一帧硬切，笔下区域从平滑预演跳成刻好的真形，
+    读感像「出错了自己纠正」（用户实报「不可靠感」）——渐变把结算变成有意的「沉降定形」。
+    远处两场逐位相同＝渐变只发生在真正变了的区域；**t≥1 返回 to 本身**（末帧＝真场引用，
+    与直接换场逐位一致）。shadow 同插（from 无 shadow 按 0＝烘焙阴影淡入）。 */
+export function fieldMix(from: ElevField, to: ElevField, t: number): ElevField {
+  if (t >= 1) return to;
+  const n = to.cols * to.rows;
+  const same = from.cols === to.cols && from.rows === to.rows && from.step === to.step;
+  const data = new Float32Array(n), shadow = to.shadow ? new Float32Array(n) : null;
+  for (let r = 0; r < to.rows; r++) {
+    const lat = to.bb.latMin + (r + 0.5) * to.step;
+    for (let c = 0; c < to.cols; c++) {
+      const i = r * to.cols + c;
+      const f0 = same ? from.data[i] : elevBilinear(from.data, from, to.bb.lonMin + (c + 0.5) * to.step, lat);
+      data[i] = f0 + (to.data[i] - f0) * t;
+      if (shadow) {
+        const s0 = !from.shadow ? 0 : same ? from.shadow[i] : elevBilinear(from.shadow, from, to.bb.lonMin + (c + 0.5) * to.step, lat);
+        shadow[i] = s0 + (to.shadow![i] - s0) * t;
+      }
+    }
+  }
+  return { bb: to.bb, step: to.step, cols: to.cols, rows: to.rows, data, shadow };
+}
+
+/** 侵蚀等待窗的显示合成：细分场 + 粗格增量（now − base）按细格中心双线性上采样叠加。
+    重建到侵蚀单落地之间隔着 150ms 防抖 + 数百 ms Worker 计算，这段空窗若直接换回粗格场，
+    笔刷按下的每次重建都让全图闪回粗格观感、侵蚀落地又闪回来（「一按全图变、松开又变回」，
+    河洛实证）。此函数把「本次粗格场相对细分场所出世界的增量」羽化进旧细分场——未改动格
+    增量恒 0＝远处原位不动，笔下格即时起落；羽化与 erodeField 并基座同派（同一 elevBilinear
+    同一粗格几何），侵蚀算好即整场换真。base/now 须同出 buildElevField 且几何同 geom；
+    **无增量时返回 fine 本身**（引用不变＝帧指纹不动、渲染零重传）。
+    补丁只写双线性支撑域所及的细格（笔刷增量天然局部）；正确性由测试拿全量暴力合成作神谕锁。 */
+export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32Array, geom: FieldGeom): ElevField {
+  const { cols, rows } = geom;
+  let c0 = cols, c1 = -1, r0 = rows, r1 = -1;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    if (now[r * cols + c] !== base[r * cols + c]) {
+      if (c < c0) c0 = c; if (c > c1) c1 = c;
+      if (r < r0) r0 = r; if (r > r1) r1 = r;
+    }
+  }
+  if (c1 < 0) return fine;
+  const diff = new Float32Array(rows * cols);
+  for (let i = 0; i < rows * cols; i++) diff[i] = now[i] - base[i];
+  /* 补丁窗＝变化粗格 [c0..c1]×[r0..r1] 的双线性支撑域折到细格（k=粗细步长比），外留 1 格余量；
+     出界钳到边缘格＝边缘章的支撑域自然含边界细格 */
+  const k = geom.step / fine.step;
+  const fc0 = Math.max(0, Math.floor(k * (c0 - 0.5) - 0.5) - 1), fc1 = Math.min(fine.cols - 1, Math.ceil(k * (c1 + 1.5) - 0.5) + 1);
+  const fr0 = Math.max(0, Math.floor(k * (r0 - 0.5) - 0.5) - 1), fr1 = Math.min(fine.rows - 1, Math.ceil(k * (r1 + 1.5) - 0.5) + 1);
+  const data = fine.data.slice();
+  for (let r = fr0; r <= fr1; r++) {
+    const lat = fine.bb.latMin + (r + 0.5) * fine.step;
+    for (let c = fc0; c <= fc1; c++)
+      data[r * fine.cols + c] += elevBilinear(diff, geom, fine.bb.lonMin + (c + 0.5) * fine.step, lat);
+  }
+  return { bb: fine.bb, step: fine.step, cols: fine.cols, rows: fine.rows, data, shadow: fine.shadow };
+}
+
 /** 程序化起伏（约 -0.5..0.5）：种子移相 + 三倍频跨尺度 */
 export function reliefNoise(lon: number, lat: number, seed: number): number {
   const sx = (seed % 233) * 0.517 + 21.3, sy = (Math.floor(seed / 233) % 233) * 0.731 + 11.7;

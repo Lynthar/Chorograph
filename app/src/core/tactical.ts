@@ -64,7 +64,10 @@ export function blankTacticalWorld(s: BlankTacSpec, today: string): World {
   if (s.kmPerDeg != null) meta.kmPerDeg = s.kmPerDeg;
   if (s.calendar) meta.calendar = s.calendar;             // 历法创建时定死（改 kind 会重释一切已存日戳）
   if (s.terrain === "auto") { meta.genSeed = s.genSeed; meta.genStyle = s.genStyle; }
-  if (s.relief != null && s.relief > 0) meta.relief = s.relief;
+  /* 起伏缺省 0.6：新战场没有起伏＝类型与手雕高程都渲成光滑圆包（2026-08-08 实证——侵蚀与
+     微地形全系于此系数；三张示例战术图均取 0.7 同档）。显式给 0 仍尊重＝有意全平，不落盘 */
+  const relief = s.relief ?? 0.6;
+  if (relief > 0) meta.relief = relief;
   if (s.contourM != null && s.contourM > 0) meta.contourM = s.contourM;
   if (s.vault) meta.vault = s.vault;
   return { meta, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] };

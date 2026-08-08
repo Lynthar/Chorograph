@@ -87,7 +87,10 @@ vec2 warpOf(vec2 rel){
    有意超过半格——warpOf 守半格是为晕渲高程服务的，此形变不进高程，等高线/晕渲不受它影响 */
 vec2 warp2Of(vec2 rel){
   float wf=float(${FX.warp2F})/uGridBB.z;
-  return (vec2(vnoise2(rel*wf+vec2(3.9,71.3)), vnoise2(rel*wf+vec2(41.7,9.1)))-0.5)*(uGridBB.z*float(${FX.warp2Amp}));
+  vec2 lo=(vec2(vnoise2(rel*wf+vec2(3.9,71.3)), vnoise2(rel*wf+vec2(41.7,9.1)))-0.5)*(uGridBB.z*float(${FX.warp2Amp}));
+  float hf=float(${FX.warp3F})/uGridBB.z;   // 边缘碎化：高频小幅，见 FX.warp3F 头注
+  vec2 hi=(vec2(vnoise2(rel*hf+vec2(17.1,53.7)), vnoise2(rel*hf+vec2(88.3,25.9)))-0.5)*(uGridBB.z*float(${FX.warp3Amp}));
+  return lo+hi;
 }
 /* 微八度：世界锚定 ×2 阶梯，逐档门控；振幅由调用方乘材质 rough。break 只依 uniform=控制流一致。
    持续度 <0.5=高频档法线贡献递减——0.5 时每档对坡面明暗等贡献，深放大十档叠出抓挠感。
@@ -219,23 +222,37 @@ void main(){
   vec2 wp=warpOf(rel);
   vec2 llw=ll+wp;
   Mat mt=matAt(rel+wp+warp2Of(rel));   // 色调/材质权重中心取一次，五点采样共用（边界差 1px 可忽略）
-  float texW=float(${FX.texW})/uPXPD;   // 屏幕锚定纹理的幅度按 1/像素密度折算——晕渲里的明暗对比恒定不随缩放
-  float e  =eAt(llw, mt.rough);
-  float eL=eAt(llw+vec2(-px,0.0),mt.rough)+texAt(rel+vec2(-px,0.0),mt.tw)*texW;
-  float eR=eAt(llw+vec2( px,0.0),mt.rough)+texAt(rel+vec2( px,0.0),mt.tw)*texW;
-  float eU=eAt(llw+vec2(0.0, py),mt.rough)+texAt(rel+vec2(0.0, py),mt.tw)*texW;
-  float eD=eAt(llw+vec2(0.0,-py),mt.rough)+texAt(rel+vec2(0.0,-py),mt.tw)*texW;
+  /* 宏观场坡先行（±1 格、无噪声）：①光照里再计一份基础坡，压低噪声皱纹话语权；
+     ②陡处按坡度补糙度/棱脊——手雕高山常落在平原类型上，材质只认类型＝草地质感的光滑圆包 */
+  vec2 mgv=vec2(cellAt(llw+vec2(-uGridBB.z,0.0)).x-cellAt(llw+vec2(uGridBB.z,0.0)).x,
+                cellAt(llw+vec2(0.0,uGridBB.z)).x-cellAt(llw+vec2(0.0,-uGridBB.z)).x);
+  float smac=length(mgv)/(2.0*uGridBB.z);   // |∇e| 每度
+  float roughEff=max(mt.rough, min(float(${FX.slopeRoughMax}), smac*float(${FX.slopeRough})));
+  vec4 twEff=vec4(mt.tw.xy, max(mt.tw.z, min(1.0, smac*float(${FX.slopeRidge}))), mt.tw.w);
+  // 屏幕锚定纹理的幅度按 1/像素密度折算（明暗对比恒定不随缩放）× 陡坡增纹（见 FX.texSlope 头注）
+  float texW=float(${FX.texW})/uPXPD*(1.0+min(float(${FX.texSlopeMax}), max(0.0, smac-float(${FX.texSlopeLo}))*float(${FX.texSlope})));
+  float e  =eAt(llw, roughEff);
+  float eL=eAt(llw+vec2(-px,0.0),roughEff)+texAt(rel+vec2(-px,0.0),twEff)*texW;
+  float eR=eAt(llw+vec2( px,0.0),roughEff)+texAt(rel+vec2( px,0.0),twEff)*texW;
+  float eU=eAt(llw+vec2(0.0, py),roughEff)+texAt(rel+vec2(0.0, py),twEff)*texW;
+  float eD=eAt(llw+vec2(0.0,-py),roughEff)+texAt(rel+vec2(0.0,-py),twEff)*texW;
   float nrm=4.5*(uPXPD/14.0);
   vec3 nv=vec3((eL-eR)*nrm,(eU-eD)*nrm,1.0);
-  /* 宏观场法线（±1 格、无噪声）：基础地貌的坡在光照里再计一份，压低噪声皱纹的话语权——
-     只有皱纹坡时整图挤中灰、山无体量。0.3214=nrm 对基础坡度的响应系数之半（2·nrm/uPXPD ÷2），
-     两套法线同量纲可直接相加 */
+  /* 0.3214=nrm 对基础坡度的响应系数之半（2·nrm/uPXPD ÷2），两套法线同量纲可直接相加 */
   float mnk=0.3214/uGridBB.z*float(${FX.macroW});
-  vec2 mn=vec2(cellAt(llw+vec2(-uGridBB.z,0.0)).x-cellAt(llw+vec2(uGridBB.z,0.0)).x,
-               cellAt(llw+vec2(0.0,uGridBB.z)).x-cellAt(llw+vec2(0.0,-uGridBB.z)).x)*mnk;
+  vec2 mn=mgv*mnk;
   /* 暖冷晕渲（Imhof）：受光面暖、背光面冷紫，软肩响应拉开明暗——旧 0.6+0.75·d 线性乘法
-     最亮:最暗仅 2.2:1，整图无深度 */
-  float dn=dot(normalize(vec3(nv.xy+mn,1.0)), uLight);
+     最亮:最暗仅 2.2:1，整图无深度。总坡度过陡坡软压（见 FX.slopeKnee 注）再进光照 */
+  /* ⚠ 别把「细节从软压里摘出来单独叠」当成救药（2026-08-08 试过并撤回）：软压是**径向重标定**
+     sv=f(|v|)·v̂，细节与宏观被同一系数缩放＝比例不变，它并不偏向压制细节；(soft/(soft+sx))²
+     只是**径向**扰动的衰减率，而纹理扰动几乎全是切向的。摘出来反而使 |sv| 小于 slc＝全局对比塌，
+     实拍各机位全频段一致降 3~30%（河洛高章区最重）。陡坡纹理看不见的真因是宏观坡本身 90/度
+     而细节量级≈1，比例悬殊 90:1——那是数据侧的类型台阶，要治得去治台阶，不是在光照里补 */
+  vec2 sv=nv.xy+mn;
+  float sl=length(sv);
+  float sx2=max(0.0,sl-float(${FX.slopeKnee}));
+  float slc=float(${FX.slopeKnee})+sx2*float(${FX.slopeSoft})/(float(${FX.slopeSoft})+sx2);
+  float dn=dot(normalize(vec3(sv*(sl>1e-6? slc/sl : 1.0),1.0)), uLight);
   float lt=smoothstep(float(${FX.shadeKnee}),1.0,dn);
   lt*=1.0-occAt(llw)*float(${FX.shadowK});   // 烘焙投影阴影：背光谷底连同暖冷响应一起压暗（粗格全零）
   float sh=mix(float(${FX.shadeLo}),float(${FX.shadeHi}),lt);

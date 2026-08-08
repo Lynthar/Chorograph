@@ -12,7 +12,7 @@ import { yearRangeOf } from "../src/core/time.ts";
 import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
 import { erodeField, erodeInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
-import { reliefNoise, elevBilinear, LAND_FLOOR } from "../src/core/elev.ts";
+import { reliefNoise, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
 /* 全平原世界：语义可手推 */
@@ -402,7 +402,7 @@ describe("寻路 Worker 协议", () => {
 
 describe("侵蚀真形（core/erode）", () => {
   /* 4×4 粗格试验场：西一列水域＝侵蚀基准面，往东平原→丘陵→山地（数值取自 LANDFORM 表） */
-  const mk = (hov: ErodeInput["hov"] = []): ErodeInput => {
+  const mk = (hovGrid?: Float32Array): ErodeInput => {
     const cols = 4, rows = 4;
     const elevCol = [-0.35, 0.16, 0.5, 0.9], reliefCol = [0, 0.05, 0.14, 0.30];
     const elev0 = new Float32Array(rows * cols), relief0 = new Float32Array(rows * cols), water = new Uint8Array(rows * cols);
@@ -410,7 +410,7 @@ describe("侵蚀真形（core/erode）", () => {
       elev0[r * cols + c] = elevCol[c]; relief0[r * cols + c] = reliefCol[c]; water[r * cols + c] = c === 0 ? 1 : 0;
     }
     return { bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 1, cols, rows,
-      elev0, relief0, water, amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hov };
+      elev0, relief0, water, amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: hovGrid || new Float32Array(rows * cols) };
   };
   it("确定性：同输入两跑逐位同输出（Worker 与主线程回退必须可互换）", () => {
     const a = erodeField(mk()), b = erodeField(mk());
@@ -429,12 +429,19 @@ describe("侵蚀真形（core/erode）", () => {
     const inp = mk(), f = erodeField(inp), sx = f.cols / 4;
     const geo = { bb: inp.bb, step: 1, cols: 4, rows: 4 };
     for (let r = 0; r < f.rows; r++) for (let c = 0; c < f.cols; c++) {
-      const pc = Math.min(3, (c / sx) | 0), h = f.data[r * f.cols + c];
+      const pc = Math.min(3, (c / sx) | 0), pr = Math.min(3, (r / sx) | 0), h = f.data[r * f.cols + c];
       const b = elevBilinear(inp.elev0, geo, 100 + (c + 0.5) * f.step, 30 + (r + 0.5) * f.step);
       if (pc === 0) {
         if (c + 0.5 <= sx / 2) assert.strictEqual(h, Math.fround(-0.35), "远岸水面恒定");
         else assert.ok(Math.abs(h - b) < 1e-6, "近岸水＝双线性基面（旧管线的海岸缓坡）");
-      } else assert.ok(h >= Math.min(LAND_FLOOR, b) - 1e-6, "陆地地板随基面收敛");
+      } else {
+        /* 期望有意放宽（批6）：钳制参照系是**域扭曲+羽化后**的基面（台阶圈揉山缘），逐点双线性
+           下界不再成立——改用邻域最小（±2 粗格覆盖扭曲 ≤1.8 格 + 羽化 0.6 + 双线性支撑） */
+        let bm = Infinity;
+        for (let rr = Math.max(0, pr - 2); rr <= Math.min(3, pr + 2); rr++)
+          for (let cc = Math.max(0, pc - 2); cc <= Math.min(3, pc + 2); cc++) bm = Math.min(bm, inp.elev0[rr * 4 + cc]);
+        assert.ok(h >= Math.min(LAND_FLOOR, bm) - 1e-6, "陆地地板随（扭过的）基面邻域收敛");
+      }
     }
   });
   it("侵蚀真的发生：山地起伏面上至少有细格被下切（相对未侵蚀基座）", () => {
@@ -447,14 +454,17 @@ describe("侵蚀真形（core/erode）", () => {
     }
     assert.ok(carved > 0, "山地列须有真实下切");
   });
-  it("高程涂改＝权威：侵蚀之后原封叠加，界外逐位不动", () => {
+  it("高程涂改并入侵蚀基座：章处显著隆起、边缘羽化无整章陡坎（手雕的山吃水系，2026-08-08 改判）", () => {
     const base = erodeField(mk());
-    const f = erodeField(mk([{ lon: 102.5, lat: 32.5, dh: 0.3, bs: 1 }]));   // 盖 (102..103,32..33) 一个粗格
+    const hg = new Float32Array(16); hg[2 * 4 + 1] = 0.5;   // 平原列 (r2,c1) 雕一格 +0.5
+    const f = erodeField(mk(hg));
     const sx = f.cols / 4;
-    const inside = (2.5 * sx | 0) + ((2.5 * sx | 0) * f.cols);   // 该格中心附近的细格
-    assert.ok(Math.abs(f.data[inside] - (base.data[inside] + 0.3)) < 1e-6, "章内=未涂+dh");
-    const outside = 2 * f.cols + (sx + 2);   // 平原列远离盖章处的陆地细格
-    assert.strictEqual(f.data[outside], base.data[outside], "章外逐位不动");
+    const ri = Math.floor(2.5 * sx), ci = Math.floor(1.5 * sx);   // 章心细格
+    const d = f.data[ri * f.cols + ci] - base.data[ri * f.cols + ci];
+    assert.ok(d > 0.25, "章心隆起须在侵蚀与钳制后仍显著：" + d);
+    let mx = 0;   // 旧「侵蚀后叠平台」语义＝章边一步 0.5 的细格陡坎；并入基座后双线性羽化+侵蚀切割
+    for (let c = 0; c < f.cols - 1; c++) { const i = ri * f.cols + c; mx = Math.max(mx, Math.abs(f.data[i + 1] - f.data[i])); }
+    assert.ok(mx < 0.4, "行内最大相邻差须远小于整章高度：" + mx);
   });
   it("遮蔽通道：值域 [0,1]、水域恒 0", () => {
     const f = erodeField(mk()), sx = f.cols / 4;
@@ -464,20 +474,105 @@ describe("侵蚀真形（core/erode）", () => {
       if (((i % f.cols) / sx | 0) === 0) assert.strictEqual(f.shadow![i], 0, "水域无遮蔽");
     }
   });
+  it("山系结构随系数渐入：山地档的起伏跨度远大于平原档、平原不吃结构带（批6）", () => {
+    const flat = (relief: number): ErodeInput => {
+      const cols = 6, rows = 6, n2 = cols * rows;
+      return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
+        elev0: new Float32Array(n2).fill(0.5), relief0: new Float32Array(n2).fill(relief),
+        water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2) };
+    };
+    const span = (f: { data: Float32Array }): number => {
+      const a = Float32Array.from(f.data).sort();
+      return a[Math.floor(a.length * 0.95)] - a[Math.floor(a.length * 0.05)];
+    };
+    const mtn = span(erodeField(flat(0.30))), pln = span(erodeField(flat(0.05)));
+    assert.ok(mtn > pln * 3, `山地跨度须数倍于平原（结构+起伏 vs 纯低幅噪声）：${mtn} vs ${pln}`);
+  });
   it("协议：erode 消息不依赖 ctx，未设上下文照样应答且与直调一致", () => {
     const inp = mk();
     assert.deepStrictEqual(handleRouteMsg({}, { t: "erode", id: 9, ...inp }),
       { t: "erode", id: 9, f: erodeField(inp) });
   });
-  it("erodeInput 门与几何：relief=0 返 null＝旧粗格路径契约；单格章对齐格心", () => {
+  it("erodeInput 门与栅格：「relief=0 且无涂改」＝null 旧路径；有涂改即侵蚀且按格累加（期望有意翻转）", () => {
     const { grid } = mkGrid(plainWorld());
-    assert.strictEqual(erodeInput({ terrain: "plain" }, [{ lon: 100.2, lat: 30.7, dh: 0.2 }], grid, 3100), null, "relief 缺省=0 走旧路径");
-    const inp = erodeInput({ terrain: "plain", relief: 0.5 }, [{ lon: 100.2, lat: 30.7, dh: 0.2 }], grid, 3100);
-    assert.ok(inp, "relief>0 才侵蚀");
+    assert.strictEqual(erodeInput({ terrain: "plain" }, [], grid, 3100), null, "全关＝旧粗格路径逐位契约");
+    // 2026-08-08 改判：此前 relief=0 一刀切走旧路径（含 hov-only），手雕战术图全渲成糊边方块——涂改即侵蚀
+    const inp = erodeInput({ terrain: "plain" }, [{ lon: 100.2, lat: 30.7, dh: 0.2 }, { lon: 100.2, lat: 30.7, dh: 0.1 }], grid, 3100);
+    assert.ok(inp, "有高程涂改即侵蚀（relief 缺省也走）");
     assert.strictEqual(inp!.cols, grid.cols);
     const c = Math.floor((100.2 - grid.bb.lonMin) / grid.step), r = Math.floor((30.7 - grid.bb.latMin) / grid.step);
-    assert.strictEqual(inp!.hov[0].lon, grid.bb.lonMin + (c + 0.5) * grid.step, "单格章发格心＝buildElevField 同几何");
-    assert.strictEqual(inp!.hov[0].lat, grid.bb.latMin + (r + 0.5) * grid.step);
-    assert.strictEqual(inp!.hov[0].bs, grid.step);
+    assert.ok(Math.abs(inp!.hovGrid[r * grid.cols + c] - 0.3) < 1e-6, "同格两章累加＝buildElevField 同几何");
+    let sum = 0; for (const v of inp!.hovGrid) sum += v;
+    assert.ok(Math.abs(sum - 0.3) < 1e-6, "只落这一格");
+    const inp2 = erodeInput({ terrain: "plain", relief: 0.5 }, undefined, grid, 3100);
+    assert.ok(inp2 && inp2.hovGrid.every(v => v === 0), "relief>0 无涂改＝零栅格照样侵蚀");
+  });
+});
+
+describe("侵蚀落地渐变（core/elev.fieldMix）", () => {
+  const mkF = (cols: number, rows: number, step: number, v: number, shadow?: number): ElevField => ({
+    bb: { lonMin: 100, lonMax: 100 + cols * step, latMin: 30, latMax: 30 + rows * step },
+    step, cols, rows, data: new Float32Array(cols * rows).fill(v),
+    shadow: shadow == null ? null : new Float32Array(cols * rows).fill(shadow)
+  });
+  it("t≥1 返回 to 本身（末帧＝真场引用，与硬切逐位一致）", () => {
+    const a = mkF(4, 4, 1, 0.2), b = mkF(4, 4, 1, 0.6);
+    assert.strictEqual(fieldMix(a, b, 1), b);
+  });
+  it("同几何中点插值；两场相同处恒不动（渐变只发生在真变了的区域）", () => {
+    const a = mkF(4, 4, 1, 0.2), b = mkF(4, 4, 1, 0.6, 0.4);
+    a.data[5] = 0.6;   // 此格 from===to＝远处不动
+    const m = fieldMix(a, b, 0.5);
+    assert.strictEqual(m.data[0], Math.fround(0.4));
+    assert.strictEqual(m.data[5], Math.fround(0.6), "两场同值处逐位稳定");
+    assert.strictEqual(m.shadow![0], Math.fround(0.2), "from 无遮蔽＝烘焙阴影按 t 淡入");
+    assert.notStrictEqual(m, b);
+  });
+  it("几何不同（首次落地粗→细）按 to 细格中心双线性重采样再插", () => {
+    const a = mkF(4, 4, 1, 0.2), b = mkF(8, 8, 0.5, 0.6);
+    const m = fieldMix(a, b, 0.5);
+    for (let i = 0; i < 64; i++) assert.ok(Math.abs(m.data[i] - 0.4) < 1e-6, "常数场重采样仍是常数：" + m.data[i]);
+  });
+});
+
+describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
+  /* 4×4 粗格 × 5 倍细分（k 取奇数＝细格中心能恰落粗格中心，「章心恰抬 dh」可整验） */
+  const geom = { bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 1, cols: 4, rows: 4 };
+  const mkFine = (): ElevField => {
+    const cols = 20, rows = 20, data = new Float32Array(rows * cols), shadow = new Float32Array(rows * cols);
+    for (let i = 0; i < rows * cols; i++) { data[i] = Math.fround(0.1 + (i % 7) * 0.03); shadow[i] = (i % 5) * 0.1; }
+    return { bb: geom.bb, step: 0.2, cols, rows, data, shadow };
+  };
+  it("零增量＝返回原场引用（帧指纹不动、渲染零重传）", () => {
+    const fine = mkFine(), base = new Float32Array(16), now = new Float32Array(16);
+    base[5] = now[5] = 0.4;   // 同值≠增量
+    assert.strictEqual(fieldPlusDelta(fine, base, now, geom), fine);
+  });
+  it("补丁窗与全量暴力合成逐位一致（含边角章的支撑域钳制）；纯函数、shadow 引用透传", () => {
+    for (const [r, c] of [[1, 2], [0, 0], [3, 3]] as const) {
+      const fine = mkFine(), keep = fine.data.slice();
+      const base = new Float32Array(16), now = new Float32Array(16);
+      now[r * 4 + c] = 0.6;
+      const out = fieldPlusDelta(fine, base, now, geom);
+      const diff = new Float32Array(16);
+      for (let i = 0; i < 16; i++) diff[i] = now[i] - base[i];
+      const want = fine.data.slice();   // 神谕＝逐细格全量双线性叠加（不带补丁窗）
+      for (let fr = 0; fr < 20; fr++) for (let fc = 0; fc < 20; fc++)
+        want[fr * 20 + fc] += elevBilinear(diff, geom, 100 + (fc + 0.5) * 0.2, 30 + (fr + 0.5) * 0.2);
+      assert.deepStrictEqual(out.data, want, `章(${r},${c})：补丁窗裁掉了支撑域`);
+      assert.deepStrictEqual(fine.data, keep, "纯函数：原场不被改写");
+      assert.strictEqual(out.shadow, fine.shadow, "遮蔽通道引用透传（等待窗沿用旧烘焙）");
+      assert.notStrictEqual(out, fine);
+    }
+  });
+  it("羽化几何：章心细格恰抬 dh、支撑域外纹丝不动、邻格介于其间", () => {
+    const fine = mkFine(), base = new Float32Array(16), now = new Float32Array(16);
+    now[1 * 4 + 2] = 0.6;   // 粗格 (r1,c2) 中心 (102.5, 31.5) ＝细格 (r7,c12) 中心
+    const out = fieldPlusDelta(fine, base, now, geom);
+    assert.ok(Math.abs(out.data[7 * 20 + 12] - fine.data[7 * 20 + 12] - 0.6) < 1e-6, "章心恰抬 dh");
+    assert.strictEqual(out.data[0], fine.data[0], "远角原位不动");
+    assert.strictEqual(out.data[19 * 20 + 19], fine.data[19 * 20 + 19], "对角亦不动");
+    const d = out.data[7 * 20 + 13] - fine.data[7 * 20 + 13];
+    assert.ok(d > 0 && d < 0.6, "邻格羽化介于 (0, dh)：" + d);
   });
 });

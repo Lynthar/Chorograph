@@ -164,8 +164,11 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const w1x = vnoise(rx * wf + 13.7, ry * wf + 91.2) - 0.5, w1y = vnoise(rx * wf + 57.1, ry * wf + 33.9) - 0.5;
     const w2x = vnoise(rx * wf * 3.1 + 7.3, ry * wf * 3.1 + 44.9) - 0.5, w2y = vnoise(rx * wf * 3.1 + 99.1, ry * wf * 3.1 + 5.7) - 0.5;
     const w2f = FX.warp2F / step;   // 长波扭曲（同 GL warp2Of）：只喂色调/材质查找，有意超半格
-    const rwx = rx + (w1x + w2x * 0.35) * step * FX.warpAmp + (vnoise(rx * w2f + 3.9, ry * w2f + 71.3) - 0.5) * step * FX.warp2Amp;
-    const rwy = ry + (w1y + w2y * 0.35) * step * FX.warpAmp + (vnoise(rx * w2f + 41.7, ry * w2f + 9.1) - 0.5) * step * FX.warp2Amp;
+    const w3f = FX.warp3F / step;   // 边缘碎化：高频小幅（同 GL），见 FX.warp3F 头注
+    const rwx = rx + (w1x + w2x * 0.35) * step * FX.warpAmp + (vnoise(rx * w2f + 3.9, ry * w2f + 71.3) - 0.5) * step * FX.warp2Amp
+      + (vnoise(rx * w3f + 17.1, ry * w3f + 53.7) - 0.5) * step * FX.warp3Amp;
+    const rwy = ry + (w1y + w2y * 0.35) * step * FX.warpAmp + (vnoise(rx * w2f + 41.7, ry * w2f + 9.1) - 0.5) * step * FX.warp2Amp
+      + (vnoise(rx * w3f + 88.3, ry * w3f + 25.9) - 0.5) * step * FX.warp3Amp;
     const fx = rwx / step - 0.5, fy = rwy / step - 0.5;
     const c0 = Math.max(0, Math.min(cols - 1, Math.floor(fx))), r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy)));
     const c1 = Math.min(cols - 1, c0 + 1), r1 = Math.min(rows - 1, r0 + 1);
@@ -200,7 +203,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
        高程采样过同一域扭曲（同 GL：晕渲是画可形变，等高线是尺不动——ed 用未扭曲坐标）。 */
     const lonMin = grid!.bb.lonMin, latMin = grid!.bb.latMin, step = grid!.step;
     const microOn = octaveGate(pxpd, MICRO_F0) > 0;   // 整幅视角＝全部新增细节为零，趟一退化为旧管线成本
-    const texW = FX.texW / pxpd;
+    const texW0 = FX.texW / pxpd;   // 陡坡增纹逐像素乘（见 FX.texSlope 头注），故基值在外、系数在内
     const elev = new Float32Array(W * H), esh = new Float32Array(W * H), ed = new Float32Array(W * H), cav = new Float32Array(W * H);
     const mgx = new Float32Array(W * H), mgy = new Float32Array(W * H);   // 宏观场坡（±1 格、无噪声；同 GL mn）
     const occ = new Float32Array(W * H);   // 烘焙遮蔽（侵蚀场 shadow 通道；粗格恒 0）
@@ -216,11 +219,16 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const e0 = elevBil(lonW, latW);
       mgx[i] = elevBil(lonW - step, latW) - elevBil(lonW + step, latW);
       mgy[i] = elevBil(lonW, latW + step) - elevBil(lonW, latW - step);
+      /* 坡度补材质（同 GL：山的质感跟着坡走，与类型取大——手雕高山落在平原类型也有岩理） */
+      const smac = Math.hypot(mgx[i], mgy[i]) / (2 * step);
+      const roughEff = Math.max(MT.rough, Math.min(FX.slopeRoughMax, smac * FX.slopeRough));
+      const twrEff = Math.max(MT.r, Math.min(1, smac * FX.slopeRidge));
       const rough = e0 > 0.4 ? 0.24 : (e0 > 0.2 ? 0.08 : 0.025);
       let e = e0 + (fbm(lonW * 1.1, latW * 1.1) - 0.5) * rough * 2;
-      if (microOn) e += micro(rx + wx, ry + wy, pxpd) * MT.rough * FX.microAmp;
+      if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp;
       elev[i] = e;
-      esh[i] = microOn ? e + texAt(rx, ry, MT.c, MT.d, MT.r, MT.m, pxpd) * texW : e;
+      const texW = texW0 * (1 + Math.min(FX.texSlopeMax, Math.max(0, smac - FX.texSlopeLo) * FX.texSlope));
+      esh[i] = microOn ? e + texAt(rx, ry, MT.c, MT.d, twrEff, MT.m, pxpd) * texW : e;
       const es = elevSmooth(field!.data, field!, p[0], p[1]);
       ed[i] = es;
       cav[i] = Math.max(-0.10, Math.min(0.16, (es - elevBil(p[0], p[1])) * FX.cavAmp));
@@ -234,9 +242,14 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const eL = esh[y * W + Math.max(0, x - 1)], eR = esh[y * W + Math.min(W - 1, x + 1)];
       const eU = esh[Math.max(0, y - 1) * W + x], eD = esh[Math.min(H - 1, y + 1) * W + x];
       const nx = (eL - eR) * nrm, ny = (eU - eD) * nrm;
-      /* 宏观场法线 + 暖冷晕渲（同 GL：0.3214=nrm 对基础坡度响应系数之半，两套法线同量纲相加） */
+      /* 宏观场法线 + 陡坡软压 + 暖冷晕渲（同 GL：0.3214=nrm 对基础坡度响应系数之半）。
+         ⚠ 「把细节从软压里摘出来单独叠」试过并撤回，理由见 GL 版同处头注 */
       const mnk = 0.3214 / step * FX.macroW;
-      const n2x = nx + mgx[i] * mnk, n2y = ny + mgy[i] * mnk, nl = Math.hypot(n2x, n2y, 1);
+      let n2x = nx + mgx[i] * mnk, n2y = ny + mgy[i] * mnk;
+      const sl = Math.hypot(n2x, n2y), sxc = Math.max(0, sl - FX.slopeKnee);
+      const slc = FX.slopeKnee + sxc * FX.slopeSoft / (FX.slopeSoft + sxc);
+      if (sl > 1e-6) { n2x *= slc / sl; n2y *= slc / sl; }
+      const nl = Math.hypot(n2x, n2y, 1);
       const dn = (n2x / nl) * light[0] + (n2y / nl) * light[1] + (1 / nl) * light[2];
       const lt = sstep(FX.shadeKnee, 1, dn) * (1 - occ[i] * FX.shadowK);   // 投影阴影连同暖冷响应一起压暗（同 GL）
       const sh = FX.shadeLo + (FX.shadeHi - FX.shadeLo) * lt;

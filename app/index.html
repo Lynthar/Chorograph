@@ -140,9 +140,23 @@
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- 山河印两态（单一真源，顶栏/开图舞台 <use> 引用）：v-solid=白文（亮主题）、v-line=朱文（暗主题），
+       主题切换由 .sealmark 的 CSS 按 #app[data-theme] 显隐（tokens.css） -->
+  <symbol id="mk-seal" viewBox="0 0 100 100">
+    <rect width="100" height="100" rx="24" fill="var(--q-zhu)"/>
+    <path d="M16 62 L37 30 L51 49 L64 33 L84 62" fill="none" stroke="var(--q-zhuink)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M15 78 C27 71 36 85 50 78 C62 72 72 84 85 77" fill="none" stroke="var(--q-zhuink)" stroke-width="8" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="mk-seal-line" viewBox="0 0 100 100">
+    <rect x="5" y="5" width="90" height="90" rx="21" fill="none" stroke="var(--q-zhu)" stroke-width="7"/>
+    <path d="M16 62 L37 30 L51 49 L64 33 L84 62" fill="none" stroke="var(--q-zhu)" stroke-width="8.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M15 78 C27 71 36 85 50 78 C62 72 72 84 85 77" fill="none" stroke="var(--q-zhu)" stroke-width="8" stroke-linecap="round"/>
+  </symbol>
+</svg>
 <div id="app" data-theme="light" data-den="loose">
   <header class="topbar">
-    <div class="brand"><span class="seal">舆</span><span class="word">舆图</span></div>
+    <div class="brand"><span class="seal sealmark" aria-hidden="true"><svg class="v-solid"><use href="#mk-seal"/></svg><svg class="v-line"><use href="#mk-seal-line"/></svg></span><span class="word">舆图</span></div>
     <div class="crumb">
       <button type="button" class="up tr" id="btnParent" style="display:none" title="返回上级战略图（当前战术图自动保存）">⬆ 战略图</button>
       <span class="nm" id="crumbName">—</span>

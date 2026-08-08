@@ -217,6 +217,12 @@ export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: numbe
   const R = size - 1, prec = step >= 0.05 ? 2 : 4, tol = step * 0.4;
   const [brLf, brEco] = parseComposite(t);   // 笔刷复合的两轴分量（单轴模式各取其一并入现格）
   let ovs = w.terrainOverrides || [];
+  /* 地貌笔＝重定基面：涂到的格子把**当刻生效的手雕高程一并复位**（同粒度或更细，同类型涂改
+     移除之规）——雕痕存在独立的 heightOverrides 层，地貌笔不清它时「涂平原盖不掉雕出的山」，
+     且雕痕下的格子往往本就是平原类型＝涂平原零改动、字面意义的「刷不动」（2026-08-08 用户实报）。
+     只在**落笔**时清（橡皮各轴自守）；生态轴不清——林可以长在雕出的山上。 */
+  const wipeHov = !erase && axis !== "eco";
+  let hovs = w.heightOverrides;
   let changed = false;
   for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
     if (dr * dr + dc * dc > R * R + 0.5) continue;
@@ -227,6 +233,12 @@ export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: numbe
     ovs = ovs.filter(o => !(Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
       && (+(o.step as number) || step) <= step * 1.001 && activeAt(o, yearNow)));
     if (ovs.length !== n) changed = true;
+    if (wipeHov && hovs && hovs.length) {
+      const nh = hovs.length;
+      hovs = hovs.filter(o => !(Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
+        && (+(o.step as number) || step) <= step * 1.001 && activeAt(o, yearNow)));
+      if (hovs.length !== nh) changed = true;
+    }
     if (!erase) {
       // 单轴笔刷：并入现格值的对应轴（地貌笔改地貌留生态、生态笔改生态留地貌）——现格=cells 已含旧涂改+初稿
       let cellT = t;
@@ -241,6 +253,7 @@ export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: numbe
     }
   }
   w.terrainOverrides = ovs;
+  if (hovs !== w.heightOverrides) w.heightOverrides = hovs;   // 只在真过滤时赋回（缺键不落盘之约）
   return changed;
 }
 

@@ -274,6 +274,31 @@ describe("编辑操作内核", () => {
     assert.strictEqual(w.heightOverrides!.length, 5);
     assert.ok(w.heightOverrides!.every(o => o.dh === -0.02));
   });
+  it("地貌笔＝重定基面：涂到之处清当刻手雕高程；生态轴不清、橡皮不清、时段外不清（2026-08-08）", async () => {
+    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    const M = { worldModel: "sphere", terrain: "plain", bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;
+    const g = buildGridCells(M, [], 3000);
+    const mk = () => {
+      const w = { meta: M, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] } as never as import("../src/core/types.ts").World;
+      paintHeightAt(w, g, 101.5, 31.5, 0.5, 1, null);                       // 雕一格
+      paintHeightAt(w, g, 103.5, 33.5, 0.5, 1, null);                       // 远处对照雕痕
+      return w;
+    };
+    const w1 = mk();
+    paintTerrainAt(w1, g, 3000, 101.5, 31.5, "plain", 1, false, null, "lf");
+    assert.strictEqual(w1.heightOverrides!.length, 1, "地貌轴落笔＝笔下雕痕复位");
+    assert.strictEqual(w1.heightOverrides![0].lat, 33.5, "笔外雕痕原样");
+    const w2 = mk();
+    paintTerrainAt(w2, g, 3000, 101.5, 31.5, "plain/forest", 1, false, null, "eco");
+    assert.strictEqual(w2.heightOverrides!.length, 2, "生态轴不清雕痕（林可以长在雕出的山上）");
+    const w3 = mk();
+    paintTerrainAt(w3, g, 3000, 101.5, 31.5, "plain", 1, true, null, "lf");
+    assert.strictEqual(w3.heightOverrides!.length, 2, "橡皮各轴自守＝不清雕痕");
+    const w4 = mk();
+    w4.heightOverrides![0].since = 3100;                                    // 笔下雕痕改成未来时段
+    paintTerrainAt(w4, g, 3000, 101.5, 31.5, "plain", 1, false, null, "lf");
+    assert.strictEqual(w4.heightOverrides!.length, 2, "当刻不生效的雕痕不清（时段层语义）");
+  });
   it("涂改块尺寸 ov.step：战术图涂改记录自身步长（对齐旧 paintAt·存档格式兼容）、战略图不写键", async () => {
     const { paintTerrainAt } = await import("../src/ui/editops.ts");
     // 战略图（step=1）：不写 step——与 v0.14 存档形状逐字节同构
