@@ -6,6 +6,8 @@ import { handleRouteMsg, type RouteCtx, type RouteReply, type RouteRequest } fro
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Grid } from "../core/grid.ts";
+import type { ErodeInput } from "../core/erode.ts";
+import type { ElevField } from "../core/elev.ts";
 import type { Arm, Meta, Unit, World } from "../core/types.ts";
 
 export interface RouteContext { meta: Meta | undefined; grid: Grid; roads: Set<string>; world: World; yearNow: number }
@@ -15,6 +17,8 @@ export interface RouteClient {
   setContext(ctx: RouteContext): void;
   route(A: RoutePoint, B: RoutePoint, arm: Arm): Promise<ComputedRoute | null>;
   legs(unit: Unit): Promise<Leg[] | null>;
+  /** 侵蚀重铸（自带输入不依赖 setContext；Worker 挂掉时返 null——调用方保持粗格） */
+  erode(input: ErodeInput): Promise<ElevField | null>;
   dispose(): void;
 }
 
@@ -59,6 +63,10 @@ export function createRouteClient(): RouteClient {
     async legs(unit) {
       const r = await ask({ t: "legs", id: ++seq, unit });
       return r.t === "legs" ? r.legs : null;
+    },
+    async erode(input) {
+      const r = await ask({ t: "erode", id: ++seq, ...input });   // Worker 死时 killWorker 以 route 型收场→此处判型返 null
+      return r.t === "erode" ? r.f : null;
     },
     dispose() { killWorker(); }
   };

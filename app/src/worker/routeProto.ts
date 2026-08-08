@@ -1,8 +1,11 @@
 /* 寻路 Worker 协议（纯函数）：ctx=一次性上下文（换图/重建网格/换年时重发），
-   route/legs=按 id 应答。协议层不碰 Worker API——node:test 直接测；
+   route/legs=按 id 应答；erode=侵蚀重铸（自带全部输入、不依赖 ctx——纯函数直测，
+   且程序化预览无 world 时照样可算）。协议层不碰 Worker API——node:test 直接测；
    入口(routeWorker.ts)与客户端(routeClient.ts)只做消息搬运。 */
 import { computeRoute, type ComputedRoute, type RoutePoint } from "../core/route.ts";
 import { unitLegs, type Leg } from "../core/units.ts";
+import { erodeField, type ErodeInput } from "../core/erode.ts";
+import type { ElevField } from "../core/elev.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Meta, Unit, World } from "../core/types.ts";
 
@@ -11,11 +14,13 @@ export interface RouteCtx { meta?: Meta; grid?: Grid; roads?: Set<string>; world
 export type RouteRequest =
   | { t: "ctx"; meta: Meta | undefined; grid: Grid; roads: Set<string> | string[]; world: World; yearNow: number }
   | { t: "route"; id: number; A: RoutePoint; B: RoutePoint; arm: Arm }
-  | { t: "legs"; id: number; unit: Unit };
+  | { t: "legs"; id: number; unit: Unit }
+  | ({ t: "erode"; id: number } & ErodeInput);
 
 export type RouteReply =
   | { t: "route"; id: number; res: ComputedRoute | null }
-  | { t: "legs"; id: number; legs: Leg[] | null };
+  | { t: "legs"; id: number; legs: Leg[] | null }
+  | { t: "erode"; id: number; f: ElevField };
 
 export function handleRouteMsg(st: RouteCtx, msg: RouteRequest): RouteReply | null {
   if (msg.t === "ctx") {
@@ -23,6 +28,7 @@ export function handleRouteMsg(st: RouteCtx, msg: RouteRequest): RouteReply | nu
     st.roads = msg.roads instanceof Set ? msg.roads : new Set(msg.roads);
     return null;
   }
+  if (msg.t === "erode") return { t: "erode", id: msg.id, f: erodeField(msg) };
   if (!st.grid || !st.world) {
     return msg.t === "route" ? { t: "route", id: msg.id, res: null } : { t: "legs", id: msg.id, legs: null };
   }

@@ -7,7 +7,7 @@
    性能策略沿袭旧版：**世界锚定瓦片 + 30% 余量**——平移只重贴图，视口越出余量或缩放变档才重渲。 */
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps } from "../core/constants.ts";
-import { elevBilinear, elevSmooth } from "../core/elev.ts";
+import { elevBilinear, elevSmooth, coarseField, type ElevField } from "../core/elev.ts";
 import { materialFor, octaveGate, MICRO_F0, MICRO_OCTAVES, FX } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
@@ -123,17 +123,18 @@ const oddK = (eh: number, itv: number): number => Math.round(eh / itv) % 2 === 0
 
 function elevRamp(e: number): [number, number, number] {
   if (e < -0.02) { const t = Math.max(0, Math.min(1, (e + 0.35) / 0.33)); return [40 + t * 60, 90 + t * 70, 132 + t * 66]; }
-  if (e < 0.09) return [224, 216, 172];
+  if (e < 0.09) return [214, 205, 168];   // 滩带压灰半档（同 GL）
   if (e < 0.30) { const t = (e - 0.09) / 0.21; return [132 + t * 38, 174 - t * 2, 98 + t * 12]; }
   if (e < 0.55) { const t = (e - 0.30) / 0.25; return [170 + t * 8, 166 - t * 12, 110 - t * 4]; }
   if (e < 0.82) { const t = (e - 0.55) / 0.27; return [178 - t * 28, 152 - t * 24, 118 - t * 22]; }
-  const t = Math.min(1, (e - 0.82) / 0.18); return [140 + t * 100, 132 + t * 104, 124 + t * 118];
+  // 顶带收灰岩（同 GL：白色归雪、按米另落）
+  const t = Math.min(1, (e - 0.82) / 0.30); return [140 + t * 62, 132 + t * 66, 124 + t * 70];
 }
 
 export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   const ctx = canvas.getContext("2d")!;
   let grid: Grid | null = null;
-  let field: Float32Array | null = null;   // 每格高程场（buildElevField；缺省=ELEV[类型] 旧行为）
+  let field: ElevField | null = null;   // 高程场含几何（粗格或侵蚀细分；缺省=按 ELEV[类型] 合成粗格,旧行为）
   let tile: { cv: HTMLCanvasElement; bb: BBox; pxpd: number; key: string } | null = null;
   /* 逐格材质/色调（uploadGrid 预算；7 浮点=canopy,dune,ridge,marsh,rough,albVar,rock + tint 3 通道与有无） */
   let cellMat: Float32Array | null = null;
@@ -146,7 +147,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) f[r * g.cols + c] = terrainProps(g.cells[r][c]).elev;
     return f;
   };
-  const elevBil = (lon: number, lat: number): number => elevBilinear(field!, grid!, lon, lat);
+  const elevBil = (lon: number, lat: number): number => elevBilinear(field!.data, field!, lon, lat);
   function nearestT(lon: number, lat: number) {
     const g = grid!;
     const r = Math.max(0, Math.min(g.rows - 1, Math.floor((lat - g.bb.latMin) / g.step)));
@@ -162,7 +163,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const wf = FX.warpF / step;   // 同 GL warpOf：双频、幅度 <半格
     const w1x = vnoise(rx * wf + 13.7, ry * wf + 91.2) - 0.5, w1y = vnoise(rx * wf + 57.1, ry * wf + 33.9) - 0.5;
     const w2x = vnoise(rx * wf * 3.1 + 7.3, ry * wf * 3.1 + 44.9) - 0.5, w2y = vnoise(rx * wf * 3.1 + 99.1, ry * wf * 3.1 + 5.7) - 0.5;
-    const rwx = rx + (w1x + w2x * 0.35) * step * FX.warpAmp, rwy = ry + (w1y + w2y * 0.35) * step * FX.warpAmp;
+    const w2f = FX.warp2F / step;   // 长波扭曲（同 GL warp2Of）：只喂色调/材质查找，有意超半格
+    const rwx = rx + (w1x + w2x * 0.35) * step * FX.warpAmp + (vnoise(rx * w2f + 3.9, ry * w2f + 71.3) - 0.5) * step * FX.warp2Amp;
+    const rwy = ry + (w1y + w2y * 0.35) * step * FX.warpAmp + (vnoise(rx * w2f + 41.7, ry * w2f + 9.1) - 0.5) * step * FX.warp2Amp;
     const fx = rwx / step - 0.5, fy = rwy / step - 0.5;
     const c0 = Math.max(0, Math.min(cols - 1, Math.floor(fx))), r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy)));
     const c1 = Math.min(cols - 1, c0 + 1), r1 = Math.min(rows - 1, r0 + 1);
@@ -199,6 +202,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const microOn = octaveGate(pxpd, MICRO_F0) > 0;   // 整幅视角＝全部新增细节为零，趟一退化为旧管线成本
     const texW = FX.texW / pxpd;
     const elev = new Float32Array(W * H), esh = new Float32Array(W * H), ed = new Float32Array(W * H), cav = new Float32Array(W * H);
+    const mgx = new Float32Array(W * H), mgy = new Float32Array(W * H);   // 宏观场坡（±1 格、无噪声；同 GL mn）
+    const occ = new Float32Array(W * H);   // 烘焙遮蔽（侵蚀场 shadow 通道；粗格恒 0）
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = y * W + x, p = L2P(x, y);
       const rx = p[0] - lonMin, ry = p[1] - latMin;
@@ -209,14 +214,17 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const wx = (w1x + w2x * 0.35) * step * FX.warpAmp, wy = (w1y + w2y * 0.35) * step * FX.warpAmp;
       const lonW = p[0] + wx, latW = p[1] + wy;
       const e0 = elevBil(lonW, latW);
+      mgx[i] = elevBil(lonW - step, latW) - elevBil(lonW + step, latW);
+      mgy[i] = elevBil(lonW, latW + step) - elevBil(lonW, latW - step);
       const rough = e0 > 0.4 ? 0.24 : (e0 > 0.2 ? 0.08 : 0.025);
       let e = e0 + (fbm(lonW * 1.1, latW * 1.1) - 0.5) * rough * 2;
       if (microOn) e += micro(rx + wx, ry + wy, pxpd) * MT.rough * FX.microAmp;
       elev[i] = e;
       esh[i] = microOn ? e + texAt(rx, ry, MT.c, MT.d, MT.r, MT.m, pxpd) * texW : e;
-      const es = elevSmooth(field!, grid!, p[0], p[1]);
+      const es = elevSmooth(field!.data, field!, p[0], p[1]);
       ed[i] = es;
       cav[i] = Math.max(-0.10, Math.min(0.16, (es - elevBil(p[0], p[1])) * FX.cavAmp));
+      occ[i] = field!.shadow ? elevBilinear(field!.shadow, field!, lonW, latW) : 0;   // 烘焙遮蔽（同 GL occAt(llw)）
     }
     const light = [-0.6, -0.6, 0.9], ll = Math.hypot(...light); light[0] /= ll; light[1] /= ll; light[2] /= ll;
     const nrm = 4.5 * (pxpd / 14);
@@ -225,8 +233,14 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const rx = p[0] - lonMin, ry = p[1] - latMin;
       const eL = esh[y * W + Math.max(0, x - 1)], eR = esh[y * W + Math.min(W - 1, x + 1)];
       const eU = esh[Math.max(0, y - 1) * W + x], eD = esh[Math.min(H - 1, y + 1) * W + x];
-      const nx = (eL - eR) * nrm, ny = (eU - eD) * nrm, nl = Math.hypot(nx, ny, 1);
-      let sh = (nx / nl) * light[0] + (ny / nl) * light[1] + (1 / nl) * light[2]; sh = 0.6 + 0.75 * Math.max(0, sh);
+      const nx = (eL - eR) * nrm, ny = (eU - eD) * nrm;
+      /* 宏观场法线 + 暖冷晕渲（同 GL：0.3214=nrm 对基础坡度响应系数之半，两套法线同量纲相加） */
+      const mnk = 0.3214 / step * FX.macroW;
+      const n2x = nx + mgx[i] * mnk, n2y = ny + mgy[i] * mnk, nl = Math.hypot(n2x, n2y, 1);
+      const dn = (n2x / nl) * light[0] + (n2y / nl) * light[1] + (1 / nl) * light[2];
+      const lt = sstep(FX.shadeKnee, 1, dn) * (1 - occ[i] * FX.shadowK);   // 投影阴影连同暖冷响应一起压暗（同 GL）
+      const sh = FX.shadeLo + (FX.shadeHi - FX.shadeLo) * lt;
+      const shR = FX.cool[0] + (FX.warm[0] - FX.cool[0]) * lt, shG = FX.cool[1] + (FX.warm[1] - FX.cool[1]) * lt, shB = FX.cool[2] + (FX.warm[2] - FX.cool[2]) * lt;
       let col = elevRamp(e);
       if (e >= -0.02) {
         matAt(rx, ry);   // 趟二重取材质（色调/反照率/岩化）——省四条逐像素缓存数组的内存
@@ -249,8 +263,11 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
           const rc = [(0.36 + 0.26 * t) * 255, (0.33 + 0.27 * t) * 255, (0.30 + 0.27 * t) * 255];
           col = [col[0] * (1 - a) + rc[0] * a, col[1] * (1 - a) + rc[1] * a, col[2] * (1 - a) + rc[2] * a];
         }
+        const snE = opts.snowE ?? 1e9;   // 雪按米落（同 GL；陡坡挂不住雪打六折）
+        const sn = sstep(snE, snE + FX.snowBand, e) * (1 - 0.6 * sstep(0.9, 1.8, slp));
+        if (sn > 0) col = [col[0] + (237.15 - col[0]) * sn, col[1] + (239.7 - col[1]) * sn, col[2] + (246.075 - col[2]) * sn];
         const s2 = sh * (1 - cav[i]);
-        col = [col[0] * s2, col[1] * s2, col[2] * s2];
+        col = [col[0] * s2 * shR, col[1] * s2 * shG, col[2] * s2 * shB];
         if (opts.contour && ed[i] >= -0.02
           && p[0] > grid!.bb.lonMin + grid!.step && p[0] < grid!.bb.lonMax - grid!.step
           && p[1] > grid!.bb.latMin + grid!.step && p[1] < grid!.bb.latMax - grid!.step) {
@@ -264,7 +281,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
           col = [col[0] + (90 - col[0]) * k, col[1] + (70 - col[1]) * k, col[2] + (40 - col[2]) * k];
         }
       } else {
-        const shore = sstep(-0.10, -0.02, e);   // 近岸浅水带（同 GL）
+        const shore = sstep(-0.10, -0.02, e) * sstep(FX.shoreLo, FX.shoreHi, pxpd);   // 近岸浅水带随缩放渐隐（同 GL）
         const sc = [0.55 * 255, 0.72 * 255, 0.75 * 255], sa = shore * FX.shoreMix;
         col = [col[0] * (1 - sa) + sc[0] * sa, col[1] * (1 - sa) + sc[1] * sa, col[2] * (1 - sa) + sc[2] * sa];
         if (microOn) {   // 静态波纹（同 GL：值噪声 ridged + 横向拉伸 + 门控）
@@ -292,8 +309,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
 
   return {
     canvas, kind: "cpu",
-    uploadGrid(g: Grid, elev?: Float32Array) {
-      grid = g; field = elev || fieldOfTypes(g); tile = null;
+    uploadGrid(g: Grid, f?: ElevField) {
+      grid = g; field = f || coarseField(g, fieldOfTypes(g)); tile = null;
       const n = g.rows * g.cols;   // 逐格材质/色调预算（renderTile 每像素四角查表）
       cellMat = new Float32Array(n * 7); cellTint = new Float32Array(n * 3); cellTintHas = new Uint8Array(n);
       for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {

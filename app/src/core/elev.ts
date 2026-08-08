@@ -10,13 +10,23 @@ import { flatKmPerDeg } from "./geo.ts";
 import { terrainProps } from "./constants.ts";
 import { activeAt } from "./time.ts";
 import type { Grid } from "./grid.ts";
-import type { HeightOverride, Meta } from "./types.ts";
+import type { BBox, HeightOverride, Meta } from "./types.ts";
 
 /* 起伏/涂改后的钳制：陆地不跌成海滩之下、水面不浮出海（类型才是真源，观感须与类型自洽）。
    地板/天花随类型收敛（2026-07 裁决）：地板=min(0.10, 类型基础)、天花=max(-0.06, 类型基础)——
    基础值天然合规 ⇒ 未涂改格永不因开起伏/涂高程而被钳动；否则沿海(0.06)/沼泽复合(0.03/-0.07)
    这些设计低地会在特性开启瞬间被全图统一抬到 0.10（局部动一笔、远处海岸线等高线堆聚）。 */
-const LAND_FLOOR = 0.10, WATER_CEIL = -0.06;
+export const LAND_FLOOR = 0.10, WATER_CEIL = -0.06;
+
+/** 场几何（采样只需这四样——Grid 与细分 ElevField 都满足，结构子型） */
+export interface FieldGeom { bb: BBox; step: number; cols: number; rows: number }
+/** 高程场（含几何）：粗格=coarseField 包装 buildElevField 产出；细分=core/erode.erodeField。
+    shadow=定向天光遮蔽 0..1（烘焙产物，粗格恒 null；只进光照，不进色阶/等高线/读数）。 */
+export interface ElevField extends FieldGeom { data: Float32Array; shadow: Float32Array | null }
+/** 粗格场包装（旧 buildElevField 产出 + 网格几何；relief=0 契约路径） */
+export function coarseField(grid: FieldGeom, data: Float32Array): ElevField {
+  return { bb: grid.bb, step: grid.step, cols: grid.cols, rows: grid.rows, data, shadow: null };
+}
 
 /** 程序化起伏（约 -0.5..0.5）：种子移相 + 三倍频跨尺度 */
 export function reliefNoise(lon: number, lat: number, seed: number): number {
@@ -90,15 +100,16 @@ export function buildElevField(meta: Meta | undefined, hov: HeightOverride[] | u
 
 /** 制图分析面：双线性场再做 ±半格 4 抽头帐篷平滑（GIS 出等高线前的标准预平滑）。
     跨类型的单格陡坎被摊成两格缓坡——等高线在类型边界从"糊成一条带"展开为可读的线扇。
-    光标读数与等高线同源于此面（读数=线，勿一个平滑一个不平滑）。 */
-export function elevSmooth(field: Float32Array, grid: Grid, lon: number, lat: number): number {
+    光标读数与等高线同源于此面（读数=线，勿一个平滑一个不平滑）。
+    细分场（侵蚀）下 grid 传 ElevField 本身＝半细格帐篷——谷线细节不被粗格平滑抹掉。 */
+export function elevSmooth(field: Float32Array, grid: FieldGeom, lon: number, lat: number): number {
   const h = grid.step * 0.5;
   return 0.25 * (elevBilinear(field, grid, lon - h, lat - h) + elevBilinear(field, grid, lon + h, lat - h)
     + elevBilinear(field, grid, lon - h, lat + h) + elevBilinear(field, grid, lon + h, lat + h));
 }
 
 /** 高程场双线性采样（elevSmooth 的底层；渲染端晕渲同一插值）。lon 须已折回网格经度域；出格钳到边缘格。 */
-export function elevBilinear(field: Float32Array, grid: Grid, lon: number, lat: number): number {
+export function elevBilinear(field: Float32Array, grid: FieldGeom, lon: number, lat: number): number {
   const { bb, step, cols, rows } = grid;
   const fx = (lon - bb.lonMin) / step - 0.5, fy = (lat - bb.latMin) / step - 0.5;
   const c0 = Math.max(0, Math.min(cols - 1, Math.floor(fx))), r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy)));

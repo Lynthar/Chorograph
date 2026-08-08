@@ -22,7 +22,7 @@ import { paintStep, resamplePaintCells, territoryLoops } from "../src/core/terri
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
-import { FX, MICRO_F0, materialFor, materialTable, octaveGate } from "../src/render/material.ts";
+import { FX, MICRO_F0, materialFor, materialTable, octaveGate, snowEOf } from "../src/render/material.ts";
 import { allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/ui/stamps.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
@@ -1381,6 +1381,14 @@ describe("渲染材质表", () => {
   });
   it("域扭曲总幅 <半格：主副频合成的最坏位移不吃掉相邻格（类型斑块不漂出本格邻域）", () => {
     assert.ok((0.5 + 0.5 * 0.35) * FX.warpAmp < 0.5, "0.675×warpAmp 须 <0.5 格");
+  });
+  it("雪线按米折算：战术图标定 900m 时高于全部可及高程＝秋季战场不再画成雪山；缺省标定只剩最高峰挂雪", () => {
+    // 井陉 elevUnitM=900：山地 0.9 + 起伏噪声(0.30×amp×2×±0.5) + 宏观 fbm(±0.24) 也够不着 → 无雪
+    assert.ok(snowEOf({ elevUnitM: 900 }) > 0.9 + 0.30 + 0.24, "900m 标定下雪线不可及");
+    // 缺省 2000m：只有山地起伏峰顶（>1.0）越线——旧 0.82 起整片发白的病由此根除
+    const e = snowEOf(undefined);
+    assert.ok(e > 0.95 && e < 1.2, "缺省标定下雪线落在 0.95..1.2（仅最高峰）：" + e);
+    assert.strictEqual(snowEOf({ elevUnitM: 2000 }), snowEOf(undefined), "显式 2000 与缺省同值");
   });
 });
 

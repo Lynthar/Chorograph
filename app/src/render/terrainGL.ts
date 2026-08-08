@@ -17,6 +17,7 @@
 import { ELEV, terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
 import { materialTable, MICRO_F0, MICRO_OCTAVES, FX } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
+import type { ElevField } from "../core/elev.ts";
 import type { BBox } from "../core/types.ts";
 
 const VS = `#version 300 es
@@ -26,9 +27,12 @@ const FS = `#version 300 es
 precision highp float; precision highp int;
 const float SEA_E=float(${ELEV.water});                        // 深海高程（构建期注入，与 core 常量同源）
 const float SEA_T=float(${compositeIndex("water")});           // water 复合索引（G 通道）
-uniform sampler2D uGrid;          // RG32F: R=格高程 G=复合索引(lf*5+eco)
+uniform sampler2D uGrid;          // RG32F: R=弃用(恒 0) G=复合索引(lf*5+eco)——类型仍粗格最近取
+uniform sampler2D uField;         // RG32F: R=高程场 G=定向遮蔽 0..1（粗格=coarseField 全零；细分=erode 产出）
 uniform vec4 uGridBB;             // lonMin,latMin,step,wrap中心经度
-uniform ivec2 uGridDim;           // cols,rows
+uniform ivec2 uGridDim;           // cols,rows（类型粗格）
+uniform ivec2 uFDim;              // 高程场维度（侵蚀细分后 ≠ uGridDim）
+uniform float uFStep;             // 度/场格
 uniform vec2 uGridSpan;           // 网格真实跨度(lonMax-lonMin,latMax-latMin)：出界判定用，对齐 CPU/旧版 bbox
 uniform vec4 uViewBB;             // lonMin,latMin,lonMax,latMax
 uniform vec2 uRes;                // 画布像素
@@ -41,6 +45,7 @@ uniform int uMode;                // 0=着色 1=诊断平色
 uniform int uContour;
 uniform int uWrap;                // 1=球面经度环绕（把片元经度折回世界本初域），0=平面
 uniform int uPaper;               // 1=图幅外铺宣纸色（战术图；色=出图垫纸色 #d9d2c0 同源）
+uniform float uSnowE;             // 雪线抽象高程（material.snowEOf 按米折算；不落雪=1e9）
 uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合诊断平色（G=lf*5+eco 索引）
 uniform vec3 uTint[${COMPOSITE_COUNT}];     // 各复合生态色调（无=vec3(-1)）
 uniform vec4 uMatA[${COMPOSITE_COUNT}];     // 材质纹理权重(canopy,dune,ridge,marsh)——render/material.ts 真源
@@ -77,6 +82,12 @@ vec2 warpOf(vec2 rel){
   vec2 w1=vec2(vnoise2(rel*wf+vec2(13.7,91.2)), vnoise2(rel*wf+vec2(57.1,33.9)))-0.5;
   vec2 w2=vec2(vnoise2(rel*wf*3.1+vec2(7.3,44.9)), vnoise2(rel*wf*3.1+vec2(99.1,5.7)))-0.5;
   return (w1+w2*0.35)*(uGridBB.z*float(${FX.warpAmp}));
+}
+/* 长波扭曲（只喂色调/材质查找；λ≈6 格、幅≈±0.85 格）：把多格涂改色块的直边揉出有机走向。
+   有意超过半格——warpOf 守半格是为晕渲高程服务的，此形变不进高程，等高线/晕渲不受它影响 */
+vec2 warp2Of(vec2 rel){
+  float wf=float(${FX.warp2F})/uGridBB.z;
+  return (vec2(vnoise2(rel*wf+vec2(3.9,71.3)), vnoise2(rel*wf+vec2(41.7,9.1)))-0.5)*(uGridBB.z*float(${FX.warp2Amp}));
 }
 /* 微八度：世界锚定 ×2 阶梯，逐档门控；振幅由调用方乘材质 rough。break 只依 uniform=控制流一致。
    持续度 <0.5=高频档法线贡献递减——0.5 时每档对坡面明暗等贡献，深放大十档叠出抓挠感。
@@ -140,21 +151,33 @@ Mat matAt(vec2 rw){   // rw=已扭曲的局部坐标（调用方算一次 warp�
   return m;
 }
 
-vec2 cellAt(vec2 ll){ // (双线性高程, 最近格类型索引)——语义对齐旧版 gridElevBilinear/nearestType
+vec2 cellAt(vec2 ll){ // (双线性高程, 最近格类型索引)——高程走细分场纹理、类型仍粗格最近取
   // 网格 bbox 之外=深海（对齐 CPU 兜底先铺深水的行为；用真实跨度而非 cols×step——后者 ceil 多出 <1 格边缘条带）。
   // 纸模式（战术图）出界改走 clamp 延伸＝CPU elevBilinear 同语义：图幅外没有海，域扭曲把边缘采样点
   // 推出图幅时不得掉进深水（否则图廓内侧随 warp 场亮出断续蓝斑）
   vec2 rel=ll-uGridBB.xy;
   if(uPaper==0 && (rel.x<0.0||rel.y<0.0||rel.x>uGridSpan.x||rel.y>uGridSpan.y)) return vec2(SEA_E, SEA_T);
-  vec2 f=(ll-uGridBB.xy)/uGridBB.z-0.5;
-  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uGridDim-1);
-  ivec2 c1=min(c0+1, uGridDim-1);
+  vec2 f=rel/uFStep-0.5;
+  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uFDim-1);
+  ivec2 c1=min(c0+1, uFDim-1);
   vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
-  float e00=texelFetch(uGrid,ivec2(c0.x,c0.y),0).r, e10=texelFetch(uGrid,ivec2(c1.x,c0.y),0).r;
-  float e01=texelFetch(uGrid,ivec2(c0.x,c1.y),0).r, e11=texelFetch(uGrid,ivec2(c1.x,c1.y),0).r;
+  float e00=texelFetch(uField,ivec2(c0.x,c0.y),0).r, e10=texelFetch(uField,ivec2(c1.x,c0.y),0).r;
+  float e01=texelFetch(uField,ivec2(c0.x,c1.y),0).r, e11=texelFetch(uField,ivec2(c1.x,c1.y),0).r;
   float top=e00+(e10-e00)*t.x, bot=e01+(e11-e01)*t.x;
-  ivec2 n=clamp(ivec2(floor((ll-uGridBB.xy)/uGridBB.z)), ivec2(0), uGridDim-1);
+  ivec2 n=clamp(ivec2(floor(rel/uGridBB.z)), ivec2(0), uGridDim-1);
   return vec2(top+(bot-top)*t.y, texelFetch(uGrid,n,0).g);
+}
+float occAt(vec2 ll){ // 烘焙遮蔽双线性（uField G；粗格全零＝无影响；出幅=0）
+  vec2 rel=ll-uGridBB.xy;
+  if(rel.x<0.0||rel.y<0.0||rel.x>uGridSpan.x||rel.y>uGridSpan.y) return 0.0;
+  vec2 f=rel/uFStep-0.5;
+  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uFDim-1);
+  ivec2 c1=min(c0+1, uFDim-1);
+  vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
+  float o00=texelFetch(uField,ivec2(c0.x,c0.y),0).g, o10=texelFetch(uField,ivec2(c1.x,c0.y),0).g;
+  float o01=texelFetch(uField,ivec2(c0.x,c1.y),0).g, o11=texelFetch(uField,ivec2(c1.x,c1.y),0).g;
+  float top=o00+(o10-o00)*t.x, bot=o01+(o11-o01)*t.x;
+  return top+(bot-top)*t.y;
 }
 /* 高程细节场：双线性数据面 + 宏观 fbm4（旧式逐位）+ 微八度（材质 rough 调幅；整幅视角下为零） */
 float eAt(vec2 ll, float mrough){
@@ -163,8 +186,8 @@ float eAt(vec2 ll, float mrough){
   e+=(fbm4(ll*1.1)-0.5)*rough*2.0;
   return e+micro(ll-uGridBB.xy)*mrough*float(${FX.microAmp});
 }
-float elevSmooth(vec2 ll){ // 制图面：±半格 4 抽头帐篷平滑（与 core/elev.elevSmooth 同式——读数=线）
-  float h=0.5*uGridBB.z;
+float elevSmooth(vec2 ll){ // 制图面：±半场格 4 抽头帐篷平滑（与 core/elev.elevSmooth 同式——读数=线；细分场即半细格）
+  float h=0.5*uFStep;
   return 0.25*(cellAt(ll+vec2(-h,-h)).x+cellAt(ll+vec2(h,-h)).x+cellAt(ll+vec2(-h,h)).x+cellAt(ll+vec2(h,h)).x);
 }
 /* 等高线助手：d=到最近整倍等值面的像素距（数值 +1e-6 防零梯度平台整面刷线）。
@@ -174,11 +197,12 @@ float cwIndex(float eh,float itv,float aa){ float u=eh/itv; float d=(abs(u-round
 float oddK(float eh,float itv){ return mod(round(eh/itv),2.0); }
 vec3 elevRamp(float e){
   if(e<-0.02){ float t=clamp((e+0.35)/0.33,0.0,1.0); return vec3(40.0+t*60.0,90.0+t*70.0,132.0+t*66.0)/255.0; }
-  if(e<0.09) return vec3(224.0,216.0,172.0)/255.0;
+  if(e<0.09) return vec3(214.0,205.0,168.0)/255.0;   // 滩带压灰半档（原 224,216,172 在整幅下发白光）
   if(e<0.30){ float t=(e-0.09)/0.21; return vec3(132.0+t*38.0,174.0-t*2.0,98.0+t*12.0)/255.0; }
   if(e<0.55){ float t=(e-0.30)/0.25; return vec3(170.0+t*8.0,166.0-t*12.0,110.0-t*4.0)/255.0; }
   if(e<0.82){ float t=(e-0.55)/0.27; return vec3(178.0-t*28.0,152.0-t*24.0,118.0-t*22.0)/255.0; }
-  float t=min(1.0,(e-0.82)/0.18); return vec3(140.0+t*100.0,132.0+t*104.0,124.0+t*118.0)/255.0;
+  // 顶带收灰岩（原顶带冲到 240,236,242 的雪白＝雪与岩混为一谈；雪自此按米另落，见 uSnowE）
+  float t=min(1.0,(e-0.82)/0.30); return vec3(140.0+t*62.0,132.0+t*66.0,124.0+t*70.0)/255.0;
 }
 void main(){
   float x=gl_FragCoord.x-0.5, yTop=uRes.y-gl_FragCoord.y-0.5;   // 与 CPU 版角点采样对齐
@@ -194,7 +218,7 @@ void main(){
      邻点采样共用中心 warp（波长≈1.3 格≫1px，雅可比≈常数，法线误差可忽略）。 */
   vec2 wp=warpOf(rel);
   vec2 llw=ll+wp;
-  Mat mt=matAt(rel+wp);         // 色调/材质权重中心取一次，五点采样共用（边界差 1px 可忽略）
+  Mat mt=matAt(rel+wp+warp2Of(rel));   // 色调/材质权重中心取一次，五点采样共用（边界差 1px 可忽略）
   float texW=float(${FX.texW})/uPXPD;   // 屏幕锚定纹理的幅度按 1/像素密度折算——晕渲里的明暗对比恒定不随缩放
   float e  =eAt(llw, mt.rough);
   float eL=eAt(llw+vec2(-px,0.0),mt.rough)+texAt(rel+vec2(-px,0.0),mt.tw)*texW;
@@ -203,7 +227,19 @@ void main(){
   float eD=eAt(llw+vec2(0.0,-py),mt.rough)+texAt(rel+vec2(0.0,-py),mt.tw)*texW;
   float nrm=4.5*(uPXPD/14.0);
   vec3 nv=vec3((eL-eR)*nrm,(eU-eD)*nrm,1.0);
-  float sh=0.6+0.75*max(0.0, dot(normalize(nv), uLight));
+  /* 宏观场法线（±1 格、无噪声）：基础地貌的坡在光照里再计一份，压低噪声皱纹的话语权——
+     只有皱纹坡时整图挤中灰、山无体量。0.3214=nrm 对基础坡度的响应系数之半（2·nrm/uPXPD ÷2），
+     两套法线同量纲可直接相加 */
+  float mnk=0.3214/uGridBB.z*float(${FX.macroW});
+  vec2 mn=vec2(cellAt(llw+vec2(-uGridBB.z,0.0)).x-cellAt(llw+vec2(uGridBB.z,0.0)).x,
+               cellAt(llw+vec2(0.0,uGridBB.z)).x-cellAt(llw+vec2(0.0,-uGridBB.z)).x)*mnk;
+  /* 暖冷晕渲（Imhof）：受光面暖、背光面冷紫，软肩响应拉开明暗——旧 0.6+0.75·d 线性乘法
+     最亮:最暗仅 2.2:1，整图无深度 */
+  float dn=dot(normalize(vec3(nv.xy+mn,1.0)), uLight);
+  float lt=smoothstep(float(${FX.shadeKnee}),1.0,dn);
+  lt*=1.0-occAt(llw)*float(${FX.shadowK});   // 烘焙投影阴影：背光谷底连同暖冷响应一起压暗（粗格全零）
+  float sh=mix(float(${FX.shadeLo}),float(${FX.shadeHi}),lt);
+  vec3 shT=mix(vec3(${FX.cool.join(",")}),vec3(${FX.warm.join(",")}),lt);
   float es=elevSmooth(ll);      // 制图面（帐篷平滑数据面，与光标读数同源）；导数须在一致控制流取（分支内 fwidth 未定义，软渲返 0）
   float cav=clamp((es-cd.x)*float(${FX.cavAmp}), -0.10, 0.16);   // 帐篷差≈曲率：谷暗脊明（廉价 AO）
   vec3 col=elevRamp(e);
@@ -216,9 +252,13 @@ void main(){
     float rk=smoothstep(0.55,1.6,slp)*mt.rock;
     vec3 rockC=mix(vec3(0.36,0.33,0.30), vec3(0.62,0.60,0.57), clamp(e*1.1,0.0,1.0));
     col=mix(col, rockC, rk*float(${FX.rockMix}));
-    col*=sh*(1.0-cav);
+    // 雪按米落（uSnowE=material.snowEOf 折算；陡坡挂不住雪打六折）——色阶顶带只剩灰岩，白色归雪
+    float sn=smoothstep(uSnowE,uSnowE+float(${FX.snowBand}),e)*(1.0-0.6*smoothstep(0.9,1.8,slp));
+    col=mix(col, vec3(0.93,0.94,0.965), sn);
+    col*=sh*shT*(1.0-cav);
   } else {
-    float shore=smoothstep(-0.10,-0.02,e);       // 近岸浅水带
+    // 近岸浅水带：随缩放渐隐（px/° 区间见 FX.shoreLo/Hi）——整幅视角下固定高程区间摊成贴纸大光环
+    float shore=smoothstep(-0.10,-0.02,e)*smoothstep(float(${FX.shoreLo}),float(${FX.shoreHi}),uPXPD);
     col=mix(col, vec3(0.55,0.72,0.75), shore*float(${FX.shoreMix}));
     vec3 LW=lodF(float(${FX.wavePx}));  // 静态波纹（横向拉伸；无动画，尊重空闲降频）
     float wv=mix(ridged(vnoise2(vec2(rel.x*0.35,rel.y)*LW.x+vec2(3.1,9.7))),
@@ -290,9 +330,10 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   const gl = glMaybe;   // 固化非空绑定，供下方闭包捕获（避免联合类型收窄不传入闭包）
 
   let pr: WebGLProgram | null = null;
-  let tex: WebGLTexture | null = null;
+  let tex: WebGLTexture | null = null;    // 类型粗格纹理（TEXTURE0）
+  let ftex: WebGLTexture | null = null;   // 高程场+遮蔽纹理（TEXTURE1；侵蚀细分后维度 ≠ 粗格）
   let g: Grid | null = null;
-  let lastElev: Float32Array | undefined;   // 存最近高程场：上下文丢失恢复时重传
+  let lastField: ElevField | undefined;   // 存最近高程场：上下文丢失恢复时重传
   const U = (n: string) => gl.getUniformLocation(pr!, n);
 
   /* 建程序 + 设常量 uniform（创建时 + webglcontextrestored 后重跑）。 */
@@ -301,6 +342,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     if (!pr) return false;
     gl.useProgram(pr);
     gl.uniform1i(U("uGrid"), 0);
+    gl.uniform1i(U("uField"), 1);
     const light = [-0.6, -0.6, 0.9], ll = Math.hypot(...light);
     gl.uniform3f(U("uLight"), light[0] / ll, light[1] / ll, light[2] / ll);
     const comps = allComposites();   // 25 个复合，顺序与 compositeIndex 对齐（旧 8 类落在各自复合上、色/tint 逐位复现）
@@ -311,13 +353,15 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform4fv(U("uMatB[0]"), mats.flatMap(m => [m.rough, m.albVar, m.rock, 0]));
     return true;
   }
-  function doUpload(grid: Grid, elev?: Float32Array) {
+  function doUpload(grid: Grid, field?: ElevField) {
     if (!pr) return;
     if (tex) gl.deleteTexture(tex);
+    if (ftex) gl.deleteTexture(ftex);
+    /* 类型粗格纹理：G=复合索引 lf*5+eco（R 弃用恒 0——高程自此一律走场纹理） */
     const data = new Float32Array(grid.cols * grid.rows * 2);
     for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++) {
-      const t = grid.cells[r][c], i = (r * grid.cols + c) * 2, k = r * grid.cols + c;
-      data[i] = elev ? elev[k] : terrainProps(t).elev; data[i + 1] = compositeIndex(t);   // R=高程场(缺省示意常数)；G=复合索引 lf*5+eco
+      const i = (r * grid.cols + c) * 2;
+      data[i + 1] = compositeIndex(grid.cells[r][c]);
     }
     tex = gl.createTexture();
     gl.activeTexture(gl.TEXTURE0);
@@ -326,8 +370,26 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, grid.cols, grid.rows, 0, gl.RG, gl.FLOAT, data);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    /* 高程场纹理：R=高程 G=遮蔽（未传场＝按类型合成粗格，旧行为；遮蔽全零） */
+    const fc = field ? field.cols : grid.cols, fr = field ? field.rows : grid.rows;
+    const fd = new Float32Array(fc * fr * 2);
+    if (field) {
+      for (let k = 0; k < fc * fr; k++) { fd[k * 2] = field.data[k]; fd[k * 2 + 1] = field.shadow ? field.shadow[k] : 0; }
+    } else {
+      for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++) fd[(r * grid.cols + c) * 2] = terrainProps(grid.cells[r][c]).elev;
+    }
+    ftex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, ftex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, fc, fr, 0, gl.RG, gl.FLOAT, fd);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.activeTexture(gl.TEXTURE0);   // 常规活动纹理还原到 0 号（后续 doUpload 的类型纹理绑定预期）
     gl.uniform4f(U("uGridBB"), grid.bb.lonMin, grid.bb.latMin, grid.step, (grid.bb.lonMin + grid.bb.lonMax) / 2);
     gl.uniform2i(U("uGridDim"), grid.cols, grid.rows);
+    gl.uniform2i(U("uFDim"), fc, fr);
+    gl.uniform1f(U("uFStep"), field ? field.step : grid.step);
     gl.uniform2f(U("uGridSpan"), grid.bb.lonMax - grid.bb.lonMin, grid.bb.latMax - grid.bb.latMin);
   }
 
@@ -337,13 +399,13 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
      preventDefault 才有 restored；恢复后 program/纹理全失效，重建并重传网格——
      下一帧 rAF 自动出图，外壳零改动。缺此则地形永久空白（审计）。 */
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; if (initProgram() && g) doUpload(g, lastElev); };
+  const onRestored = () => { tex = null; ftex = null; if (initProgram() && g) doUpload(g, lastField); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
   return {
     canvas, kind: "webgl2",
-    uploadGrid(grid: Grid, elev?: Float32Array) { g = grid; lastElev = elev; doUpload(grid, elev); },
+    uploadGrid(grid: Grid, field?: ElevField) { g = grid; lastField = field; doUpload(grid, field); },
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
       if (!g || !pr) return;
       gl.viewport(0, 0, canvas.width, canvas.height);
@@ -357,6 +419,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.uniform1f(U("uCFade"), opts.cFade || 0);
       gl.uniform1i(U("uWrap"), opts.wrap ? 1 : 0);
       gl.uniform1i(U("uPaper"), opts.paper ? 1 : 0);
+      gl.uniform1f(U("uSnowE"), opts.snowE ?? 1e9);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },
     rendererName() {
@@ -367,6 +430,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);
       if (tex) gl.deleteTexture(tex);
+      if (ftex) gl.deleteTexture(ftex);
       if (pr) gl.deleteProgram(pr);
     }
   };

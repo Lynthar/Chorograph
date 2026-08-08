@@ -4,6 +4,7 @@
    普通对象直读；低频 UI 态才走 signals。 */
 import type { Meta } from "../core/types.ts";
 import type { Grid } from "../core/grid.ts";
+import type { ElevField } from "../core/elev.ts";
 import type { ViewState } from "../core/projection.ts";
 import type { TerrainRenderer } from "../render/renderer.ts";
 import type { Library } from "../data/library.ts";
@@ -28,8 +29,9 @@ export interface ShellCtx {
   /** 相机（对象身份稳定，各模块原地改字段） */
   readonly view: ViewState;
   grid: Grid | null;
-  /** 每格高程场（起伏+高程涂改；底栏光标高程共用） */
-  elevField: Float32Array | null;
+  /** 高程场（含几何；底栏光标高程/等高线/晕渲同源）。rebuild 先落粗格（同步、旧行为），
+      relief>0 的图随后由 Worker 侵蚀重铸成细分场换入（core/erode，异步细化） */
+  elevField: ElevField | null;
   /** 地形渲染器（boot 创建；无 WebGL2 自动退 CPU 瓦片） */
   R: TerrainRenderer | null;
   /** `${mapId}@${year}@${gridVer}`——年份/换图/地形改动重建网格的去重键 */

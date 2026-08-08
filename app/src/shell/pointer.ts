@@ -540,9 +540,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const dec = ctx.view.degPerPx < 0.002 ? 4 : 2;
       let hTxt = "";
       if (ctx.grid && ctx.elevField) {
-        const g = ctx.grid, lonD = dataLon(ctx.meta, ll[0]);
+        const g = ctx.grid, f = ctx.elevField, lonD = dataLon(ctx.meta, ll[0]);
         if (lonD >= g.bb.lonMin && lonD <= g.bb.lonMax && ll[1] >= g.bb.latMin && ll[1] <= g.bb.latMax)
-          hTxt = ` ｜ 高程≈${Math.round(elevSmooth(ctx.elevField, g, lonD, ll[1]) * elevUnitM(ctx.meta))}m`;
+          hTxt = ` ｜ 高程≈${Math.round(elevSmooth(f.data, f, lonD, ll[1]) * elevUnitM(ctx.meta))}m`;   // 场自带几何（侵蚀细分后读数带谷线细节）
       }
       $("ftCoord").textContent = `经纬度 ${dataLon(ctx.meta, ll[0]).toFixed(dec)}°, ${ll[1].toFixed(dec)}°${hTxt}`;
     }

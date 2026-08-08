@@ -3,7 +3,7 @@
    有意的功能增长需在此处上调限值（连同原因一并入提交说明）。 */
 import { statSync } from "node:fs";
 
-const LIMIT_KB = 400;   // 2026-07 柱B 三批后基线 ~357KB，留 ~10% 余量（原 360 系 ~326KB 时代所定，已只剩 3KB）
+const LIMIT_KB = 415;   // 2026-08 侵蚀真形批后基线 ~404KB（+13KB＝erode 核心/场纹理/暖冷晕渲两端），留 ~11KB 余量（前值 400 系柱B 时代所定）
 const file = new URL("../dist/index.html", import.meta.url);
 
 let size;

@@ -11,6 +11,8 @@ import { project, type Camera } from "../src/core/projection.ts";
 import { yearRangeOf } from "../src/core/time.ts";
 import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
+import { erodeField, erodeInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
+import { reliefNoise, elevBilinear, LAND_FLOOR } from "../src/core/elev.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
 /* 全平原世界：语义可手推 */
@@ -395,5 +397,87 @@ describe("寻路 Worker 协议", () => {
     const u: Unit = { id: "u", kind: "cav", track: [{ t: 0, lon: 100.5, lat: 30.5 }, { t: 3, lon: 104.5, lat: 30.5 }] };
     assert.deepStrictEqual(handleRouteMsg(st, { t: "legs", id: 8, unit: u }),
       { t: "legs", id: 8, legs: unitLegs(META, grid, roads, u) });
+  });
+});
+
+describe("侵蚀真形（core/erode）", () => {
+  /* 4×4 粗格试验场：西一列水域＝侵蚀基准面，往东平原→丘陵→山地（数值取自 LANDFORM 表） */
+  const mk = (hov: ErodeInput["hov"] = []): ErodeInput => {
+    const cols = 4, rows = 4;
+    const elevCol = [-0.35, 0.16, 0.5, 0.9], reliefCol = [0, 0.05, 0.14, 0.30];
+    const elev0 = new Float32Array(rows * cols), relief0 = new Float32Array(rows * cols), water = new Uint8Array(rows * cols);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      elev0[r * cols + c] = elevCol[c]; relief0[r * cols + c] = reliefCol[c]; water[r * cols + c] = c === 0 ? 1 : 0;
+    }
+    return { bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 1, cols, rows,
+      elev0, relief0, water, amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hov };
+  };
+  it("确定性：同输入两跑逐位同输出（Worker 与主线程回退必须可互换）", () => {
+    const a = erodeField(mk()), b = erodeField(mk());
+    assert.deepStrictEqual(a.data, b.data);
+    assert.deepStrictEqual(a.shadow, b.shadow);
+  });
+  it("细分几何：倍率按预算取、场步长=粗步长/倍率、bb 原样", () => {
+    const f = erodeField(mk()), sx = upscaleOf(4, 4);
+    assert.ok(sx > 1, "小网格必须真的细分");
+    assert.strictEqual(f.cols, 4 * sx);
+    assert.strictEqual(f.rows, 4 * sx);
+    assert.strictEqual(f.step, 1 / sx);
+    assert.deepStrictEqual(f.bb, mk().bb);
+  });
+  it("水域＝基准面（远岸恒 -0.35、近岸随双线性基面，不侵蚀不加噪）；陆地不穿透类型地板", () => {
+    const inp = mk(), f = erodeField(inp), sx = f.cols / 4;
+    const geo = { bb: inp.bb, step: 1, cols: 4, rows: 4 };
+    for (let r = 0; r < f.rows; r++) for (let c = 0; c < f.cols; c++) {
+      const pc = Math.min(3, (c / sx) | 0), h = f.data[r * f.cols + c];
+      const b = elevBilinear(inp.elev0, geo, 100 + (c + 0.5) * f.step, 30 + (r + 0.5) * f.step);
+      if (pc === 0) {
+        if (c + 0.5 <= sx / 2) assert.strictEqual(h, Math.fround(-0.35), "远岸水面恒定");
+        else assert.ok(Math.abs(h - b) < 1e-6, "近岸水＝双线性基面（旧管线的海岸缓坡）");
+      } else assert.ok(h >= Math.min(LAND_FLOOR, b) - 1e-6, "陆地地板随基面收敛");
+    }
+  });
+  it("侵蚀真的发生：山地起伏面上至少有细格被下切（相对未侵蚀基座）", () => {
+    const inp = mk(), f = erodeField(inp), sx = f.cols / 4;
+    let carved = 0;
+    for (let r = 0; r < f.rows; r++) for (let c = Math.ceil(3.5 * sx); c < f.cols; c++) {   // 山地列右半＝双线性纯区
+      const lon = 100 + (c + 0.5) * f.step, lat = 30 + (r + 0.5) * f.step;
+      const base = 0.9 + 0.30 * 0.7 * 2 * reliefNoise(lon, lat, 1234);
+      if (f.data[r * f.cols + c] < base - 0.01) carved++;
+    }
+    assert.ok(carved > 0, "山地列须有真实下切");
+  });
+  it("高程涂改＝权威：侵蚀之后原封叠加，界外逐位不动", () => {
+    const base = erodeField(mk());
+    const f = erodeField(mk([{ lon: 102.5, lat: 32.5, dh: 0.3, bs: 1 }]));   // 盖 (102..103,32..33) 一个粗格
+    const sx = f.cols / 4;
+    const inside = (2.5 * sx | 0) + ((2.5 * sx | 0) * f.cols);   // 该格中心附近的细格
+    assert.ok(Math.abs(f.data[inside] - (base.data[inside] + 0.3)) < 1e-6, "章内=未涂+dh");
+    const outside = 2 * f.cols + (sx + 2);   // 平原列远离盖章处的陆地细格
+    assert.strictEqual(f.data[outside], base.data[outside], "章外逐位不动");
+  });
+  it("遮蔽通道：值域 [0,1]、水域恒 0", () => {
+    const f = erodeField(mk()), sx = f.cols / 4;
+    assert.ok(f.shadow, "侵蚀场必带遮蔽通道");
+    for (let i = 0; i < f.shadow!.length; i++) {
+      assert.ok(f.shadow![i] >= 0 && f.shadow![i] <= 1);
+      if (((i % f.cols) / sx | 0) === 0) assert.strictEqual(f.shadow![i], 0, "水域无遮蔽");
+    }
+  });
+  it("协议：erode 消息不依赖 ctx，未设上下文照样应答且与直调一致", () => {
+    const inp = mk();
+    assert.deepStrictEqual(handleRouteMsg({}, { t: "erode", id: 9, ...inp }),
+      { t: "erode", id: 9, f: erodeField(inp) });
+  });
+  it("erodeInput 门与几何：relief=0 返 null＝旧粗格路径契约；单格章对齐格心", () => {
+    const { grid } = mkGrid(plainWorld());
+    assert.strictEqual(erodeInput({ terrain: "plain" }, [{ lon: 100.2, lat: 30.7, dh: 0.2 }], grid, 3100), null, "relief 缺省=0 走旧路径");
+    const inp = erodeInput({ terrain: "plain", relief: 0.5 }, [{ lon: 100.2, lat: 30.7, dh: 0.2 }], grid, 3100);
+    assert.ok(inp, "relief>0 才侵蚀");
+    assert.strictEqual(inp!.cols, grid.cols);
+    const c = Math.floor((100.2 - grid.bb.lonMin) / grid.step), r = Math.floor((30.7 - grid.bb.latMin) / grid.step);
+    assert.strictEqual(inp!.hov[0].lon, grid.bb.lonMin + (c + 0.5) * grid.step, "单格章发格心＝buildElevField 同几何");
+    assert.strictEqual(inp!.hov[0].lat, grid.bb.latMin + (r + 0.5) * grid.step);
+    assert.strictEqual(inp!.hov[0].bs, grid.step);
   });
 });

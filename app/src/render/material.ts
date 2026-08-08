@@ -3,7 +3,8 @@
    八度门控——两端观感同构的判据收在这里，别在渲染器里各写一份数值。
    ⚠ 另立一张表、不给 LANDFORM/ECO/terrainProps 加字段（它们是平价逐位比对对象，同 NODE_CATS 之例）。 */
 import { parseComposite, allComposites } from "../core/constants.ts";
-import type { Landform } from "../core/types.ts";
+import { elevUnitM } from "../core/elev.ts";
+import type { Landform, Meta } from "../core/types.ts";
 
 export interface Material {
   /** 四类材质纹理权重（只进光照法线，不进色阶/海岸判据）：林冠鼓包 / 沙丘波纹 / 山地棱脊 / 沼泽墩洼 */
@@ -40,6 +41,12 @@ export function materialFor(cell: string): Material {
 /** 全 25 复合的材质，顺序与 compositeIndex 对齐（GL 填 uniform 数组用） */
 export function materialTable(): Material[] { return allComposites().map(materialFor); }
 
+/** 雪的起始海拔（米）。雪线按真实米数经 elevUnitM 折算成抽象高程（渲染端 uSnowE）——
+    旧色阶 0.82 抽象档起发白，在标定 900m 的战术图上≈740m 即成雪山（井陉秋季 38°N 战场实证之病）；
+    按米定雪线后战术图自然无雪，战略图（标定 2000m）只剩最高峰挂雪。 */
+export const SNOW_M = 2050;
+export function snowEOf(meta: Meta | undefined): number { return SNOW_M / elevUnitM(meta); }
+
 /** 微八度基频（1/度）：接续宏观 fbm4 频谱（1.1×2³=8.8/度）的下一档 */
 export const MICRO_F0 = 17.6;
 /** 微八度档数上限（世界锚定 ×2 阶梯；fp32 下噪声坐标以图幅原点为局部原点，12 档内不失谐） */
@@ -69,5 +76,15 @@ export const FX = {
   wavePx: 38,   waveAmp: 0.07,    // 水面静态波纹
   shoreMix: 0.28,   // 近岸浅水带混入
   rockMix: 0.55,    // 坡度岩化最大混入
-  cavAmp: 6.0       // 谷影幅度（帐篷差 × 此系数，钳 [-0.10, 0.16]）
+  cavAmp: 6.0,      // 谷影幅度（帐篷差 × 此系数，钳 [-0.10, 0.16]）
+  /* —— 2026-08 光照与色彩批 —— */
+  shadeLo: 0.50, shadeHi: 1.22,   // 光照响应两端（旧 0.6+0.75·d 最亮:最暗仅 2.2:1＝整图挤中灰）
+  shadeKnee: -0.55,               // 响应软肩（smoothstep 下界；上界恒 1.0）
+  cool: [0.83, 0.88, 1.03], warm: [1.05, 1.0, 0.92],   // 暖冷晕渲（Imhof：受光面暖、背光面冷紫）
+  macroW: 0.8,      // 宏观场法线权重（±1 格、无噪声的地貌坡再计一份——压低噪声皱纹在光照里的话语权）
+  snowBand: 0.22,   // 雪线过渡带宽（抽象高程；起点见 SNOW_M/snowEOf）
+  warp2F: 0.16, warp2Amp: 1.7,    // 长波扭曲（λ≈6 格、幅≈±0.85 格）——只喂色调/材质查找，把多格
+                                  //   涂改色块的直边揉出有机走向；有意超半格（warpOf 守半格是为晕渲高程）
+  shoreLo: 35, shoreHi: 120,      // 近岸浅水带渐隐区间（px/°）：整幅视角的贴纸大光环由此归零
+  shadowK: 0.42      // 烘焙遮蔽（erode 定向天光通道）压暗上限——背光谷底连同暖冷响应一起走 lt
 } as const;

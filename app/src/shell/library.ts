@@ -14,6 +14,7 @@ import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import { contourStepFor } from "../core/elev.ts";
+import { snowEOf } from "../render/material.ts";
 import { safeName, errText } from "../core/util.ts";
 import { drawLegend } from "../render/legend.ts";
 import { pinnedStackH } from "../render/overlay.ts";
@@ -394,7 +395,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     const R = layersSig.peek().terrain ? ctx.R : null;
     if (R) {
       const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
-      R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical" });
+      R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical", snowE: snowEOf(ctx.meta) });
     }
     const off = document.createElement("canvas");
     off.width = canvas.width; off.height = canvas.height;
@@ -549,7 +550,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       if (!canvas.width || !canvas.height) return null;
       if (layersSig.peek().terrain && ctx.R) {
         const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
-        ctx.R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical" });
+        ctx.R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical", snowE: snowEOf(ctx.meta) });
       }
       const tw = 280, th = 175, off = document.createElement("canvas");
       off.width = tw; off.height = th;

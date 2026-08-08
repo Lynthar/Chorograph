@@ -7,6 +7,7 @@ import { calOf, fmtWhen } from "../core/calendar.ts";
 import { contourStepFor } from "../core/elev.ts";
 import { hexA, errText } from "../core/util.ts";
 import { drawOverlay, drawOp } from "../render/overlay.ts";
+import { snowEOf } from "../render/material.ts";
 import { drawAnalysis } from "../render/analysis.ts";
 import { drawPaintCells, drawBrushRing, drawSelectBox } from "../render/editHud.ts";
 import { paintStep } from "../core/territory.ts";
@@ -36,7 +37,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
     if (layers.terrain) {
       const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);   // 等高距随缩放（×2 阶梯+过渡淡入）
-      ctx.R!.render(viewBB(), { contour: layers.contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical" });
+      ctx.R!.render(viewBB(), { contour: layers.contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical", snowE: snowEOf(ctx.meta) });
     }
     if (world) {
       const octx = ov.getContext("2d")!;
@@ -133,8 +134,8 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       paintFactionSig.value, paintLayerSig.value,
       brushSizeSig.value, brushEraseSig.value, brushSmoothSig.value,
       routePtsSig.value, routeResSig.value, unitLegsSig.value,
-      // 外壳可变态（非 signal，只能逐帧比）
-      ctx.grid, ctx.R, ctx.DPR, ctx.canvas.width, ctx.canvas.height,
+      // 外壳可变态（非 signal，只能逐帧比）；elevField=侵蚀细化异步换入（引用比较有效）
+      ctx.grid, ctx.elevField, ctx.R, ctx.DPR, ctx.canvas.width, ctx.canvas.height,
       v.lon0, v.lat0, v.degPerPx,
       // 指针瞬态（画线笔迹/框选/光标位）
       m ? m[0] : -1, m ? m[1] : -1,

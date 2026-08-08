@@ -1,7 +1,8 @@
 /* 画布宿主：画布尺寸、相机取景、地形网格/高程场重建。
    全部经 ctx 共享态工作；rebuild 同步把寻路上下文送进 Worker（官道格按当年连线重算）。 */
 import { buildGridCells, roadCellSet } from "../core/grid.ts";
-import { buildElevField } from "../core/elev.ts";
+import { buildElevField, coarseField } from "../core/elev.ts";
+import { erodeInput } from "../core/erode.ts";
 import { worldSig, yearSig, gridVerSig } from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -46,19 +47,47 @@ export function createHost(ctx: ShellCtx): Host {
   }
   const cosk = (): number => Math.cos(ctx.view.lat0 * Math.PI / 180);
 
+  /* 侵蚀细化的并发闸：150ms 防抖（同拍的 legs/route 先进同一 Worker 队列、连续拨年/连笔只算
+     最后一帧）+ 同一时刻至多一单在 Worker 里；飞行中再来重建只记「还有活」，回来后按最新网格
+     补一单（最新一次为准，旧结果按 builtFor 令牌丢弃）。 */
+  let eroding = false, erodeDirty = false, erodeTimer: ReturnType<typeof setTimeout> | undefined;
+  function requestErode(): void {
+    clearTimeout(erodeTimer);
+    erodeTimer = setTimeout(fireErode, 150);
+  }
+  function fireErode(): void {
+    if (!ctx.grid) return;
+    const w = worldSig.value;
+    const inp = erodeInput(ctx.meta, w ? w.heightOverrides : undefined, ctx.grid, yearSig.value);
+    if (!inp) return;   // relief=0＝旧粗格路径逐位不变（含 hov-only 图，盖章锐边不磨圆）
+    if (eroding) { erodeDirty = true; return; }
+    eroding = true;
+    const token = ctx.builtFor;
+    ctx.routeClient.erode(inp).then(f => {
+      eroding = false;
+      if (f && ctx.builtFor === token && ctx.grid) {   // 网格没换才换场（换了＝结果过期作废）
+        ctx.elevField = f;
+        ctx.R!.uploadGrid(ctx.grid, f);
+        if (ctx.repaint) ctx.repaint();
+      }
+      if (erodeDirty) { erodeDirty = false; fireErode(); }
+    });
+  }
+
   function rebuild(): void {
     const w = worldSig.value;
     /* 无世界（程序化预览）时的 genSeed/genStyle 直接用 ctx.meta——它有出厂默认
        （createShellCtx: auto/1234/continent），深链 #seed=/#style= 也已落在同一处。 */
     const t0 = performance.now();
     ctx.grid = buildGridCells(ctx.meta, w ? w.terrainOverrides : [], yearSig.value);
-    ctx.elevField = buildElevField(ctx.meta, w ? w.heightOverrides : undefined, ctx.grid, yearSig.value);
+    ctx.elevField = coarseField(ctx.grid, buildElevField(ctx.meta, w ? w.heightOverrides : undefined, ctx.grid, yearSig.value));
     const ms = performance.now() - t0;
     ctx.R!.uploadGrid(ctx.grid, ctx.elevField);   // rebuild 只在渲染器就绪后发生（boot 先建 R）；缺 R=启动即错
     ctx.builtFor = ctx.mapId + "@" + yearSig.value + "@" + gridVerSig.value;
     $("hud").dataset.grid = `${ctx.grid.cols}×${ctx.grid.rows} 网格 ${ms.toFixed(0)} ms`;
     // 寻路上下文随网格重建同步进 Worker（官道格按当年连线重算）
     if (w) ctx.routeClient.setContext({ meta: ctx.meta, grid: ctx.grid, roads: roadCellSet(w.nodes, w.edges, yearSig.value, ctx.grid), world: w, yearNow: yearSig.value });
+    requestErode();   // relief>0 的图异步细化：先出粗格帧（旧观感），谷网算好即换入重画
   }
   function rebuildIfNeeded(): void {
     if (!ctx.R) return;
