@@ -22,7 +22,7 @@ import { paintStep, resamplePaintCells, territoryLoops } from "../src/core/terri
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
-import { FX, MICRO_F0, materialFor, materialTable, octaveGate, snowEOf } from "../src/render/material.ts";
+import { FX, MICRO_F0, decoGate, materialFor, materialTable, octaveGate, snowEOf } from "../src/render/material.ts";
 import { allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/ui/stamps.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
@@ -1385,6 +1385,17 @@ describe("渲染材质表", () => {
   });
   it("域扭曲总幅 <半格：主副频合成的最坏位移不吃掉相邻格（类型斑块不漂出本格邻域）", () => {
     assert.ok((0.5 + 0.5 * 0.35) * FX.warpAmp < 0.5, "0.675×warpAmp 须 <0.5 格");
+  });
+  it("装饰噪声门（批7 下半）：平坦低地关死、真坡与丘/山类型恒 1、水域与粗格场恒 1＝旧观感", () => {
+    const plain = materialFor("plain").rough, hill = materialFor("hill").rough, mtn = materialFor("mountain").rough;
+    assert.strictEqual(decoGate(0.3, plain, 1, 1), 0, "平原内部平地（smac p50 0.1~0.4）＝装饰归零");
+    assert.strictEqual(decoGate(6, plain, 1, 1), 1, "平原上的真坡（沟壁 smac≥4）＝装饰全强");
+    assert.strictEqual(decoGate(0, hill, 1, 1), 1, "丘陵类型 rough 兜底恒 1＝已验收观感不动");
+    assert.strictEqual(decoGate(0, mtn, 1, 1), 1, "山地同理");
+    assert.strictEqual(decoGate(0.3, plain, 0, 1), 1, "水域(land=0)恒 1＝水面观感逐位");
+    assert.strictEqual(decoGate(0.3, plain, 1, 0), 1, "粗格场(fine=0)恒 1＝relief=0 旧图逐位契约");
+    const mid = decoGate(2.5, plain, 1, 1);
+    assert.ok(mid > 0 && mid < 1, "渐入区间内连续过渡：" + mid);
   });
   it("雪线按米折算：战术图标定 900m 时高于全部可及高程＝秋季战场不再画成雪山；缺省标定只剩最高峰挂雪", () => {
     // 井陉 elevUnitM=900：山地 0.9 + 起伏噪声(0.30×amp×2×±0.5) + 宏观 fbm(±0.24) 也够不着 → 无雪

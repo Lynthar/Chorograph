@@ -488,6 +488,28 @@ describe("侵蚀真形（core/erode）", () => {
     const mtn = span(erodeField(flat(0.30))), pln = span(erodeField(flat(0.05)));
     assert.ok(mtn > pln * 3, `山地跨度须数倍于平原（结构+起伏 vs 纯低幅噪声）：${mtn} vs ${pln}`);
   });
+  it("平原静场（批7）：36/度 高频档与表面细节的系数渐入带下限——纯平原逐格糙度近零，山地照旧带糙", () => {
+    /* 正比例渐入曾给平原留 15~29% 细带幅＝±1~3m 摊在百米波长上就是 3~8° 坡，坡度型光照满地显影
+       （「几米的高度差也都显示出来」，河洛/井陉实证）；坡度键不受带下限影响＝沟壁雕崖照旧嶙峋 */
+    const flat = (relief: number): ErodeInput => {
+      const cols = 6, rows = 6, n2 = cols * rows;
+      return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
+        elev0: new Float32Array(n2).fill(0.5), relief0: new Float32Array(n2).fill(relief),
+        water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2) };
+    };
+    const rough = (f: { data: Float32Array; cols: number; rows: number }): number => {
+      const a: number[] = [];
+      for (let r = 2; r < f.rows - 2; r++) for (let c = 2; c < f.cols - 2; c++) {
+        const i = r * f.cols + c;
+        a.push(Math.abs(f.data[i] - 0.25 * (f.data[i - 1] + f.data[i + 1] + f.data[i - f.cols] + f.data[i + f.cols])));
+      }
+      a.sort((x, y) => x - y);
+      return a[Math.floor(a.length * 0.95)];
+    };
+    const pln = rough(erodeField(flat(0.05))), mtn = rough(erodeField(flat(0.30)));
+    assert.ok(pln < 0.002, `平原逐格糙度须近零（带下限后实测 0.00099）：${pln}`);
+    assert.ok(mtn > pln * 3, `山地细节不吃带下限（实测约 7×）：${mtn} vs ${pln}`);
+  });
   it("协议：erode 消息不依赖 ctx，未设上下文照样应答且与直调一致", () => {
     const inp = mk();
     assert.deepStrictEqual(handleRouteMsg({}, { t: "erode", id: 9, ...inp }),

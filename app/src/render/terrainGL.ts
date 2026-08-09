@@ -182,12 +182,12 @@ float occAt(vec2 ll){ // 烘焙遮蔽双线性（uField G；粗格全零＝无�
   float top=o00+(o10-o00)*t.x, bot=o01+(o11-o01)*t.x;
   return top+(bot-top)*t.y;
 }
-/* 高程细节场：双线性数据面 + 宏观 fbm4（旧式逐位）+ 微八度（材质 rough 调幅；整幅视角下为零） */
-float eAt(vec2 ll, float mrough){
+/* 高程细节场：双线性数据面 + 宏观 fbm4（旧式逐位）+ 微八度；dk=装饰噪声门（判据见 material.decoGate） */
+float eAt(vec2 ll, float mrough, float dk){
   float e=cellAt(ll).x;
   float rough=e>0.4?0.24:(e>0.2?0.08:0.025);
-  e+=(fbm4(ll*1.1)-0.5)*rough*2.0;
-  return e+micro(ll-uGridBB.xy)*mrough*float(${FX.microAmp});
+  e+=(fbm4(ll*1.1)-0.5)*rough*2.0*dk;
+  return e+micro(ll-uGridBB.xy)*mrough*float(${FX.microAmp})*dk;
 }
 float elevSmooth(vec2 ll){ // 制图面：±半场格 4 抽头帐篷平滑（与 core/elev.elevSmooth 同式——读数=线；细分场即半细格）
   float h=0.5*uFStep;
@@ -231,11 +231,16 @@ void main(){
   vec4 twEff=vec4(mt.tw.xy, max(mt.tw.z, min(1.0, smac*float(${FX.slopeRidge}))), mt.tw.w);
   // 屏幕锚定纹理的幅度按 1/像素密度折算（明暗对比恒定不随缩放）× 陡坡增纹（见 FX.texSlope 头注）
   float texW=float(${FX.texW})/uPXPD*(1.0+min(float(${FX.texSlopeMax}), max(0.0, smac-float(${FX.texSlopeLo}))*float(${FX.texSlope})));
-  float e  =eAt(llw, roughEff);
-  float eL=eAt(llw+vec2(-px,0.0),roughEff)+texAt(rel+vec2(-px,0.0),twEff)*texW;
-  float eR=eAt(llw+vec2( px,0.0),roughEff)+texAt(rel+vec2( px,0.0),twEff)*texW;
-  float eU=eAt(llw+vec2(0.0, py),roughEff)+texAt(rel+vec2(0.0, py),twEff)*texW;
-  float eD=eAt(llw+vec2(0.0,-py),roughEff)+texAt(rel+vec2(0.0,-py),twEff)*texW;
+  // 装饰噪声门（decoGate 同式；land 平滑过渡防岸线阶跃；fine 纯 uniform=一致控制流,粗格恒 1）
+  float fine=uFStep<uGridBB.z*0.999?1.0:0.0;
+  float dk0=max(smoothstep(float(${FX.decoSlopeLo}),float(${FX.decoSlopeHi}),smac),
+                smoothstep(float(${FX.decoRoughLo}),float(${FX.decoRoughHi}),mt.rough));
+  float decoK=1.0+(dk0-1.0)*smoothstep(-0.02,0.02,cd.x)*fine;
+  float e  =eAt(llw, roughEff, decoK);
+  float eL=eAt(llw+vec2(-px,0.0),roughEff,decoK)+texAt(rel+vec2(-px,0.0),twEff)*texW;
+  float eR=eAt(llw+vec2( px,0.0),roughEff,decoK)+texAt(rel+vec2( px,0.0),twEff)*texW;
+  float eU=eAt(llw+vec2(0.0, py),roughEff,decoK)+texAt(rel+vec2(0.0, py),twEff)*texW;
+  float eD=eAt(llw+vec2(0.0,-py),roughEff,decoK)+texAt(rel+vec2(0.0,-py),twEff)*texW;
   float nrm=4.5*(uPXPD/14.0);
   vec3 nv=vec3((eL-eR)*nrm,(eU-eD)*nrm,1.0);
   /* 0.3214=nrm 对基础坡度的响应系数之半（2·nrm/uPXPD ÷2），两套法线同量纲可直接相加 */

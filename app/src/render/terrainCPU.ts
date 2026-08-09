@@ -8,7 +8,7 @@
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps } from "../core/constants.ts";
 import { elevBilinear, elevSmooth, coarseField, type ElevField } from "../core/elev.ts";
-import { materialFor, octaveGate, MICRO_F0, MICRO_OCTAVES, FX } from "./material.ts";
+import { materialFor, octaveGate, decoGate, MICRO_F0, MICRO_OCTAVES, FX } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
 import type { TerrainRenderer, TerrainRenderOpts } from "./renderer.ts";
@@ -204,6 +204,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const lonMin = grid!.bb.lonMin, latMin = grid!.bb.latMin, step = grid!.step;
     const microOn = octaveGate(pxpd, MICRO_F0) > 0;   // 整幅视角＝全部新增细节为零，趟一退化为旧管线成本
     const texW0 = FX.texW / pxpd;   // 陡坡增纹逐像素乘（见 FX.texSlope 头注），故基值在外、系数在内
+    const fine = field!.step < grid!.step * 0.999 ? 1 : 0;   // 装饰噪声门只在细分场生效（粗格=旧图逐位契约）
     const elev = new Float32Array(W * H), esh = new Float32Array(W * H), ed = new Float32Array(W * H), cav = new Float32Array(W * H);
     const mgx = new Float32Array(W * H), mgy = new Float32Array(W * H);   // 宏观场坡（±1 格、无噪声；同 GL mn）
     const occ = new Float32Array(W * H);   // 烘焙遮蔽（侵蚀场 shadow 通道；粗格恒 0）
@@ -224,8 +225,10 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const roughEff = Math.max(MT.rough, Math.min(FX.slopeRoughMax, smac * FX.slopeRough));
       const twrEff = Math.max(MT.r, Math.min(1, smac * FX.slopeRidge));
       const rough = e0 > 0.4 ? 0.24 : (e0 > 0.2 ? 0.08 : 0.025);
-      let e = e0 + (fbm(lonW * 1.1, latW * 1.1) - 0.5) * rough * 2;
-      if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp;
+      /* 装饰噪声门（同 GL：material.decoGate 单一真源）：平坦低地不再画假起伏，坡上与丘/山类型照旧 */
+      const decoK = decoGate(smac, MT.rough, sstep(-0.02, 0.02, e0), fine);
+      let e = e0 + (fbm(lonW * 1.1, latW * 1.1) - 0.5) * rough * 2 * decoK;
+      if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp * decoK;
       elev[i] = e;
       const texW = texW0 * (1 + Math.min(FX.texSlopeMax, Math.max(0, smac - FX.texSlopeLo) * FX.texSlope));
       esh[i] = microOn ? e + texAt(rx, ry, MT.c, MT.d, twrEff, MT.m, pxpd) * texW : e;

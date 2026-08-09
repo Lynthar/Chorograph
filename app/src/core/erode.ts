@@ -80,6 +80,14 @@ const DETAIL_AMP = 0.15;            // 侵蚀后表面细节幅（λ≈3 细格�
    高而缓的丘顶该平滑（河洛岸崖 h4 实拍：键只挂雕体高度时低崖依旧软）。坡度取**侵蚀后**的
    最终场（沟壁天然带糙），逐格中央差读快照防次序依赖。 */
 const DETAIL_SLOPE_K = 12, DETAIL_SLOPE_CAP = 0.45;   // 每细格抽象坡 → 键（0.03/格≈45° 崖 → 0.36）
+/* 平原静场（2026-08-08 批7）：两条细带（36/度 高频档、λ≈3 细格表面细节）的系数渐入改「带下限」
+   ——正比例渐入把平原系数(0.017~0.035)按比例缩噪，但 ±1~3m 摊在 0.1~1km 波长上就是 3~8° 坡，
+   坡度型光照照章显影＝「几米的高度差也都显示出来」（河洛/井陉平原实证，探针见评审归档）。
+   低起伏区该给的画面是安静的，故 smoothstep 下限渐入：平原恒 0，丘陵(0.098)/山地(0.21)恰在
+   上限外＝逐位不变；DETAIL 只压系数键、**坡度键原样**（沟壁/雕崖照旧嶙峋＝批6 老实判据不动）。
+   ⚠ 36/度 档上限取 0.12＝「coef≥0.12 逐位===reliefNoise」的既有契约保持。 */
+const HF_LO = 0.03;                          // 36/度 高频档渐入下限（上限恒 0.12）
+const DET_LO = 0.02, DET_HI = 0.08;          // 表面细节系数键的渐入区间
 /* 雕体支脉带（格锚定 λ≈14 细格，只随膨胀雕体系数）：世界锚定四带对一座几十细格的雕体全是
    「看不见的倾斜」，唯一合波长的带只占 0.18 权重（手雕晕渲三轮不变实拍）——雕体的支脉肌理
    必须锚定它自身的尺度。类型地形不吃这条（sCoef 的类型分量不进来），战略图不受扰。 */
@@ -177,10 +185,11 @@ export function erodeField(inp: ErodeInput): ElevField {
   const sx1 = (seed % 97) * 1.31 + 41.7, sy1 = (seed % 89) * 0.97 + 13.9;   // 种子移相（与起伏噪声相位独立）
   /* 起伏噪声＝reliefNoise 同式同相位，唯 36/度 高频档按局部起伏系数渐入（coef≥0.12 时 ===reliefNoise）：
      细分场把高频档完整解析出来后，平原（系数小）的低幅高频起伏在坡度型光照里渲成满地褶皱棱角
-     （用户实证「杂乱」）——旧粗格路径等于替平原做了带限，此处把带限找回来；山地细节不受影响 */
+     （用户实证「杂乱」）——旧粗格路径等于替平原做了带限，此处把带限找回来；山地细节不受影响。
+     渐入带下限 HF_LO（批7）：正比例渐入在平原仍留 15~29% 幅＝±1~2m 细斑照样显影，见 HF_LO 头注 */
   const sxr = (seed % 233) * 0.517 + 21.3, syr = (Math.floor(seed / 233) % 233) * 0.731 + 11.7;
   const rNoise = (lon: number, lat: number, coef: number): number => {
-    const hf = Math.min(1, coef / 0.12);
+    const hf = Math.max(0, Math.min(1, (coef - HF_LO) / (0.12 - HF_LO)));
     return 0.5 * fbm(lon * 0.8 + sxr, lat * 0.8 + syr)
       + 0.35 * fbm(lon * 6 + sxr * 1.3 + 60, lat * 6 + syr + 60)
       + 0.15 * (hf * fbm(lon * 36 + sxr + 140, lat * 36 + syr + 140) + (1 - hf) * 0.47) - 0.5;
@@ -366,7 +375,9 @@ export function erodeField(inp: ErodeInput): ElevField {
         if (wat[i]) continue;
         const gx = (h2[i + (c < FC - 1 ? 1 : 0)] - h2[i - (c > 0 ? 1 : 0)]) * 0.5;
         const gy = (h2[(r < FR - 1 ? r + 1 : r) * FC + c] - h2[(r > 0 ? r - 1 : r) * FC + c]) * 0.5;
-        const k = Math.max(dcoef[i], Math.min(DETAIL_SLOPE_CAP, Math.hypot(gx, gy) * DETAIL_SLOPE_K));
+        /* 系数键带下限渐入（批7，见 DET_LO 头注）：平原不再吃 ±2m speckle；坡度键原样＝沟壁照旧带糙 */
+        const dt = Math.max(0, Math.min(1, (dcoef[i] - DET_LO) / (DET_HI - DET_LO)));
+        const k = Math.max(dcoef[i] * dt * dt * (3 - 2 * dt), Math.min(DETAIL_SLOPE_CAP, Math.hypot(gx, gy) * DETAIL_SLOPE_K));
         if (k > 0.02) h[i] += k * DETAIL_AMP * (fbm((bb.lonMin + (c + 0.5) * fstep) * dF + dx2, lat * dF + dy2) - 0.47);
       }
     }

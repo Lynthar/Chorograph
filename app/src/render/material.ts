@@ -107,5 +107,24 @@ export const FX = {
   /* 陡坡软压（光照响应用的总坡度：膝点内原样，超出部分渐近压缩到 +slopeSoft）——手雕悬崖
      坡度动辄 8..16，法线归一化后 dot 饱和在响应区间外＝整面纯暗/纯亮，微地形隐形（河洛实证：
      「光滑圆包」其实是剪裁）。膝点 1.4 保住缓坡观感逐位（战略图/井陉大部分坡 <1.4） */
-  slopeKnee: 1.4, slopeSoft: 1.3
+  slopeKnee: 1.4, slopeSoft: 1.3,
+  /* 装饰高程噪声跟坡走（2026-08-08 批7 下半，见 decoGate）：fbm4 宏观档与微八度不进读数/等高线
+     却进晕渲法线，在平坦低地画出 ±15~35m 的假起伏——「读数只差几米、图上褶皱十几米/几十米、
+     零高差处也有褶皱」（用户真机实证）。坡门=宏观坡 smac 渐入（平原内部平地 p50 0.1~0.4、
+     真坡 4.5 起，实测三图）；rough 门=丘(0.14)/山(0.24) 类型兜底恒 1＝已验收的山地观感不动 */
+  decoSlopeLo: 1.5, decoSlopeHi: 4.0,
+  decoRoughLo: 0.06, decoRoughHi: 0.12
 } as const;
+
+const sstep01 = (a: number, b: number, x: number): number => {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+/** 装饰噪声门（CPU 兜底直接调用；GL 经着色器模板注入同一组 FX 常数，两端同式）。
+    细分场（侵蚀）的陆地上，装饰按「真坡或粗糙类型」渐入；水域(land=0)与粗格场(fine=0)恒 1
+    ＝旧图/水面观感逐位。land/fine 取 [0,1]（land 由调用方按数据面高程 smoothstep 出连续过渡——
+    硬分支会在岸线处给 e 造出阶跃，fwidth 海岸带即出毛边）。 */
+export function decoGate(smac: number, matRough: number, land: number, fine: number): number {
+  const dk = Math.max(sstep01(FX.decoSlopeLo, FX.decoSlopeHi, smac), sstep01(FX.decoRoughLo, FX.decoRoughHi, matRough));
+  return 1 + (dk - 1) * land * fine;
+}
