@@ -2,7 +2,7 @@
    与手绘印章共用同一 decor[] 与本层——完全同质，可单独拾取/选中/调整/删除。
    印章基元 drawPrim（8 种手绘符号）；坐标经相机 project 投影，尺度随缩放 (step/degPerPx)/14——
    高清不糊、深放大退场。调用方（drawOverlay）已按 dpr 缩放并按世界拷贝重投影。 */
-import { DECOR_BASE, DECOR_BASE_IMG } from "../core/constants.ts";
+import { DECOR_BASE, DECOR_BASE_IMG, ECO_SCATTER_KINDS } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
 import { fract } from "../core/noise.ts";
 import { activeAt } from "../core/time.ts";
@@ -301,6 +301,23 @@ export function decorIdsInRadius(cam: Camera, meta: Meta | undefined, world: Wor
       const c2: Camera = { ...cam, lonShift: shift };
       const [px, py] = project(c2, d.lon, d.lat);
       if (Math.hypot(px - x, py - y) <= r) { ids.push(d.id); break; }
+    }
+  }
+  return ids;
+}
+
+/** 生态笔替换语义的清扫（2026-08-09，用户实报「给森林刷荒漠，树留在原地」）：盘内属于
+    **别的生态**散布的印章 id。盘=世界度空间圆（几何与 paintTerrainAt 的格盘同域——涂到哪扫到哪，
+    不用屏幕 px 圈：缩放不同两者可差一个量级）；keep=当前生态自己的 kind 集（刷森林不扫自家树）；
+    并集外的种类（山峰/丘/自定义图章…）永不入选＝手摆的地物不遭殃；时段外的印章不动（同雕痕之规）。 */
+export function ecoForeignIdsInDisc(cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
+  lon: number, lat: number, rDeg: number, keep: ReadonlySet<string>): string[] {
+  const ids: string[] = [];
+  for (const d of world.decor || []) {
+    if (!ECO_SCATTER_KINDS.has(d.kind) || keep.has(d.kind) || !activeAt(d, yearNow)) continue;
+    for (const shift of visibleWorldCopies(cam, meta)) {
+      const dx = d.lon + shift - lon, dy = d.lat - lat;
+      if (dx * dx + dy * dy <= rDeg * rDeg) { ids.push(d.id); break; }
     }
   }
   return ids;

@@ -267,6 +267,18 @@ void main(){
   vec3 col=elevRamp(e);
   if(e>=-0.02){
     if(mt.tintW>0.0) col=mix(col, mt.tint, 0.45*mt.tintW);   // 软过渡；tintW=1 时与旧 55/45 直拼逐位同值
+    // 生态辨识度：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重 tw.y/tw.w，详见 material.ts）
+    col=mix(col, vec3(${FX.sandC.join(",")}), mt.tw.y*float(${FX.sandMix}));
+    if(mt.tw.w>0.003){
+      col=mix(col, vec3(${FX.marshC.join(",")}), mt.tw.w*float(${FX.marshMix}));
+      float pg=smoothstep(float(${FX.poolLo}),float(${FX.poolHi}),uPXPD)*mt.tw.w;
+      if(pg>0.003){
+        float pn=vnoise2(rel*(float(${FX.poolF})/uGridBB.z)+vec2(7.3,3.9));
+        float pw=smoothstep(0.58,0.68,pn);
+        col=mix(col, vec3(${FX.mudC.join(",")}), smoothstep(0.40,0.58,pn)*(1.0-pw)*pg*float(${FX.mudMix}));
+        col=mix(col, vec3(${FX.poolC.join(",")}), pw*pg*float(${FX.poolMix}));
+      }
+    }
     vec3 LA=lodF(float(${FX.albPx}));   // 反照率抖动：屏幕锚定低频，打破平色（整幅视角下门控为零）
     float av=mix(vnoise2(rel*LA.x+vec2(19.9,7.1)), vnoise2(rel*LA.y+vec2(2.3,27.9)), LA.z)-0.5;
     col*=1.0+av*mt.albVar*float(${FX.albAmp})*gate(LA.x);

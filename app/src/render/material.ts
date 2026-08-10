@@ -34,7 +34,7 @@ export function materialFor(cell: string): Material {
   if (eco === "forest") { b.canopy = 0.85; b.ridge *= 0.5; b.rough *= 0.6; b.albVar = 0.05; b.rock *= 0.5; }
   if (eco === "grassland") { b.albVar = 0.09; }
   if (eco === "marsh") { b.marsh = 0.75; b.ridge = 0; b.rough = 0.02; b.rock = 0; }
-  if (eco === "desert") { b.dune = 0.8; b.ridge *= 0.4; b.rough = 0.05; b.rock = 0; }
+  if (eco === "desert") { b.dune = 0.8; b.ridge *= 0.4; b.rough = 0.05; b.albVar = 0.09; b.rock = 0; }   // albVar 抬档＝沙面明暗斑驳
   return b;
 }
 
@@ -113,7 +113,17 @@ export const FX = {
      零高差处也有褶皱」（用户真机实证）。坡门=宏观坡 smac 渐入（平原内部平地 p50 0.1~0.4、
      真坡 4.5 起，实测三图）；rough 门=丘(0.14)/山(0.24) 类型兜底恒 1＝已验收的山地观感不动 */
   decoSlopeLo: 1.5, decoSlopeHi: 4.0,
-  decoRoughLo: 0.06, decoRoughHi: 0.12
+  decoRoughLo: 0.06, decoRoughHi: 0.12,
+  /* —— 生态辨识度（2026-08-09，用户点单「荒漠更像沙漠、沼泽要浅水滩和泥泞」）——
+     键＝材质签名权重（dune 只随荒漠、marsh 只随沼泽，tw 现成，不另立字段）；只动地表色，
+     不进色阶/海岸/等高线判据；水洼静态无动画（空闲降频之约）。定调项不随缩放＝战略图同样一眼可辨；
+     水洼/湿泥按 px/° 渐显（整幅视角斑点读不出、徒增噪）。 */
+  sandMix: 0.42, sandC: [0.855, 0.745, 0.52],    // 荒漠暖沙定调
+  marshMix: 0.30, marshC: [0.44, 0.54, 0.47],    // 沼泽湿绿定调（比 tint 更沉的水草绿）
+  poolLo: 30, poolHi: 110,                        // 水洼随 px/° 渐显区间
+  poolF: 0.4,                                     // 水洼斑块频率（周期/格＝格锚定；0.8 时屏上 ~8px 斑点=细碎噪点而非浅水滩，放宽成 ~2.5 格的塘）
+  poolMix: 0.62, poolC: [0.36, 0.50, 0.50],       // 积水色（青灰，近岸带同族更沉）
+  mudMix: 0.30, mudC: [0.40, 0.37, 0.29]          // 洼间湿泥压暗
 } as const;
 
 const sstep01 = (a: number, b: number, x: number): number => {

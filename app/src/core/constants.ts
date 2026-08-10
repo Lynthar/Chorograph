@@ -360,6 +360,10 @@ export function terrainProps(cell: string): TerrainProps {
 /* GPU G 通道编码：复合 → 整数索引 lf*5+eco（0–24），shader 据此查 uTColor/uTint（25 项）。 */
 export const LANDFORM_ORDER: Landform[] = ["plain", "coast", "hill", "mountain", "water"];
 export const ECO_ORDER: Ecotype[] = ["none", "forest", "grassland", "marsh", "desert"];
+
+/** 全部生态散布 kind 的并集（生态笔替换语义的清扫范围：刷别的生态时扫掉这些；
+    手放的山峰/丘/自定义图章不在并集里＝永不被生态笔扫掉）。派生量、不动平价表。 */
+export const ECO_SCATTER_KINDS: ReadonlySet<string> = new Set(Object.values(ECO).flatMap(e => e.scatter.map(s => s.k)));
 export const COMPOSITE_COUNT = LANDFORM_ORDER.length * ECO_ORDER.length;   // 25
 export function compositeIndex(cell: string): number {
   const [lf, eco] = parseComposite(cell);

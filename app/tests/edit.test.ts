@@ -748,6 +748,25 @@ describe("布景 + 框选", () => {
     assert.deepStrictEqual(decorsInBox(cam as never, meta, w, 3107, 380, 280, 420, 320).sort(), ["a"], "小框只圈 a（z 未到时段被排除）");
     assert.deepStrictEqual(decorsInBox(cam as never, meta, w, 3107, 380, 180, 520, 320).sort(), ["a", "b", "c"], "大框圈 a/b/c");
   });
+  it("ecoForeignIdsInDisc：生态笔替换语义——盘内异生态印章入选、自家与手摆地物豁免、时段外不动", async () => {
+    const { ecoForeignIdsInDisc } = await import("../src/render/decor.ts");
+    const cam = { lon0: 100, lat0: 30, degPerPx: 0.01, w: 800, h: 600, flat: true };
+    const meta = { worldModel: "flat" as const };
+    const w = mkWorld({ meta: meta as never });
+    w.decor = [
+      { id: "t1", kind: "tree", lon: 100.1, lat: 30.1 },     // 异生态·盘内
+      { id: "r1", kind: "reed", lon: 100.2, lat: 29.9 },     // 异生态·盘内
+      { id: "d1", kind: "dune", lon: 100.1, lat: 29.95 },    // 当前生态自家·豁免
+      { id: "pk", kind: "peak", lon: 100.05, lat: 30.05 },   // 手摆地物（不在生态散布并集）·豁免
+      { id: "t2", kind: "tree", lon: 103, lat: 30 },         // 异生态·盘外
+      { id: "tz", kind: "tree", lon: 100.1, lat: 30.05, since: 5000 }   // 异生态·盘内但时段外
+    ] as never;
+    const keepDesert = new Set(["dune", "rock"]);   // 刷荒漠
+    assert.deepStrictEqual(ecoForeignIdsInDisc(cam as never, meta, w, 3107, 100, 30, 0.5, keepDesert).sort(),
+      ["r1", "t1"], "只扫盘内异生态；自家/手摆/盘外/时段外全豁免");
+    assert.deepStrictEqual(ecoForeignIdsInDisc(cam as never, meta, w, 3107, 100, 30, 0.5, new Set()).sort(),
+      ["d1", "r1", "t1"], "生态=无（keep 空）＝盘内生态散布全扫，山峰仍豁免");
+  });
   it("selMulti：按 id 顺序取回地点、缺失跳过", async () => {
     const { selMulti } = await import("../src/ui/state.ts");
     const w = mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }, { id: "b", type: "city", lon: 3, lat: 4 }] });

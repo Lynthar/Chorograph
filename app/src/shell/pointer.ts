@@ -14,7 +14,7 @@ import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
 import { pickEdge, pickNode, pickOp, nodesInBox, layerOn } from "../render/overlay.ts";
 import { pickUnit, pickRangeHandle, unitsInBox, type RingHit } from "../render/units.ts";
 import { fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStrengthAt } from "../core/units.ts";
-import { pickDecor, decorIdsInRadius, decorsInBox } from "../render/decor.ts";
+import { pickDecor, decorIdsInRadius, decorsInBox, ecoForeignIdsInDisc } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit, selMembers,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
   inspEditSig, settingsSig, closeSettings, helpOpenSig, saveConflictSig, togglePlay, stopPlay,
@@ -211,8 +211,24 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     });
     if (changed) rebuild();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）
     if (axis === "eco") {     // 生态轴：改地面之外随笔落/擦真实印章（橡皮＝抹地面同时擦附近印章）
-      if (brushEraseSig.peek()) decorEraseSweep(x, y); else ecoStamp(x, y);
+      if (brushEraseSig.peek()) decorEraseSweep(x, y); else { ecoForeignSweep(x, y); ecoStamp(x, y); }
     }
+  };
+  /* 生态笔＝替换语义（2026-08-09，用户实报「给森林刷荒漠，树留在原地」）：落笔盘内属于**别的
+     生态**散布的印章一并清掉（tree/pine/shrub/reed/dune/rock 并集减当前生态自家的；手放的
+     山峰/丘/自定义图章不在并集里，永不被生态笔扫掉）。生态=无 也扫＝刷成裸地即植被清空
+     （只清地面不落新章之约不变；要连山峰图章一起清用生态橡皮）。每 move 都扫（不吃播撒的
+     间距节流——快速拖动不能在簇间留下漏网的树）；半径外扩半格罩住盘缘格与播撒毛边。 */
+  const ecoForeignSweep = (x: number, y: number): void => {
+    if (!decorPickable()) return;   // 布景层藏着不盲删（同橡皮之规）
+    const w0 = worldSig.peek(), grid = ctx.grid;
+    if (!w0 || !w0.decor || !w0.decor.length || !grid) return;
+    const eco = parseComposite(paintTerrainSig.peek())[1];
+    const keep = new Set(ECO[eco].scatter.map(s => s.k));
+    const ll = unproject(cam(), x, y);
+    const ids = ecoForeignIdsInDisc(cam(), ctx.meta, w0, yearSig.peek(), ll[0], ll[1],
+      (brushSizeSig.peek() + 0.5) * grid.step, keep);
+    if (ids.length) mutateWorldLive(w => { for (const id of ids) removeDecor(w, id); });
   };
   const decorPlace = (x: number, y: number): void => {
     const ll = unproject(cam(), x, y);

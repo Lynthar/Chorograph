@@ -264,6 +264,25 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
           const a = 0.45 * MT.tintW;
           col = [col[0] * (1 - a) + MT.tr * a, col[1] * (1 - a) + MT.tg * a, col[2] * (1 - a) + MT.tb * a];
         }
+        // 生态辨识度（同 GL）：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重）
+        if (MT.d > 0.003) {
+          const a = MT.d * FX.sandMix;
+          col = [col[0] * (1 - a) + FX.sandC[0] * 255 * a, col[1] * (1 - a) + FX.sandC[1] * 255 * a, col[2] * (1 - a) + FX.sandC[2] * 255 * a];
+        }
+        if (MT.m > 0.003) {
+          const a = MT.m * FX.marshMix;
+          col = [col[0] * (1 - a) + FX.marshC[0] * 255 * a, col[1] * (1 - a) + FX.marshC[1] * 255 * a, col[2] * (1 - a) + FX.marshC[2] * 255 * a];
+          const pg = sstep(FX.poolLo, FX.poolHi, pxpd) * MT.m;
+          if (pg > 0.003) {
+            const pf = FX.poolF / (grid ? grid.step : 1);
+            const pn = vnoise(rx * pf + 7.3, ry * pf + 3.9);
+            const pw = sstep(0.58, 0.68, pn);
+            const mw = sstep(0.40, 0.58, pn) * (1 - pw) * pg * FX.mudMix;
+            col = [col[0] * (1 - mw) + FX.mudC[0] * 255 * mw, col[1] * (1 - mw) + FX.mudC[1] * 255 * mw, col[2] * (1 - mw) + FX.mudC[2] * 255 * mw];
+            const pa = pw * pg * FX.poolMix;
+            col = [col[0] * (1 - pa) + FX.poolC[0] * 255 * pa, col[1] * (1 - pa) + FX.poolC[1] * 255 * pa, col[2] * (1 - pa) + FX.poolC[2] * 255 * pa];
+          }
+        }
         if (microOn && MT.albVar > 0) {   // 反照率抖动（同 GL：屏幕锚定低频 × 门控）
           const [f1, f2, fr] = lodF(pxpd, FX.albPx), g = octaveGate(pxpd, f1);
           if (g > 0) {
