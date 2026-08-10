@@ -20,8 +20,12 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
   const box = useRef<HTMLDivElement>(null);
   useModalFocus(box);   // 卡片按 key={token} 每次打开重挂＝进场收焦点、关闭时还原（父件 st 为 null 时整件卸载）
   const fileRef = useRef<HTMLInputElement>(null);
-  /* 地形初稿联动（对齐旧 syncTerrDraftUI）：仅 auto 显示生成参数行；旧初稿只有正用时显形 */
-  const [terr, setTerr] = useState<string>(create ? "auto" : (m.terrain || "sample"));
+  /* 地形初稿联动（对齐旧 syncTerrDraftUI）：仅 auto 显示生成参数行；旧初稿只有正用时显形。
+     ⚠ 未知/旧 id（如改名前的示例大陆）一律归 "sample"＝与 seedTerrain 的兜底分派同判——
+     否则四个单选无一命中，readSettings 落回 "auto"，「打开设置只调起伏点应用」就把整块大陆
+     静默换成随机种子的程序化地形（真实存档踩到，同 sw_relief 首项抹值之症） */
+  const [terr, setTerr] = useState<string>(create ? "auto"
+    : (["auto", "plain", "island", "sample"].includes(m.terrain as string) ? m.terrain as string : "sample"));
   /* 纪年历法（双轨）：create 可选 架空自定义/真实地球；既有图锁定（改 kind/月长会错位已存日戳），纪元前缀可改 */
   const [calKind, setCalKind] = useState<string>("custom");
   /* 新建的图种（柱B）：战略图（世界/疆域，按年）／战术战场（一场战役，按日与时辰）——
