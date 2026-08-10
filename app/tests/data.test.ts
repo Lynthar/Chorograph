@@ -541,3 +541,57 @@ describe("陈旧写入守卫（guard）", () => {
     assert.deepStrictEqual(await folderReadWorldAt(dir, "没这个.json"), { world: null, mtime: null });
   });
 });
+
+/* —— 侵蚀场缓存（data/fieldcache）：内容寻址、LRU 封顶、换代清场 —— */
+import { fieldCacheGet, fieldCachePut, FIELD_CACHE_CAP } from "../src/data/fieldcache.ts";
+import { ERODE_VER } from "../src/core/erode.ts";
+import type { ElevField } from "../src/core/elev.ts";
+
+describe("侵蚀场缓存（data/fieldcache）", () => {
+  const mkField = (tag: number): ElevField => ({
+    bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 0.25, cols: 16, rows: 16,
+    data: new Float32Array(256).fill(tag), shadow: new Float32Array(256).fill(tag / 2)
+  });
+
+  /* ⚠ 本测须最先触碰缓存模块（open 是模块级记忆化，换代清场只在首开时跑一次）：
+     先用同名同版的裸 IDB 预埋一条旧代键与一条当代键，再经模块首开触发清场。 */
+  it("换代清场：键前缀非当代的存货首开即清，当代键保留（清完才放行 get）", async () => {
+    const raw = await openDB("yutu2-fieldcache", 1, d => {
+      if (!d.objectStoreNames.contains("fields")) d.createObjectStore("fields", { keyPath: "key" }).createIndex("t", "t");
+    });
+    const f = mkField(7);
+    const t = raw.transaction("fields", "readwrite");
+    t.objectStore("fields").put({ key: "e旧代-xx-yy", t: 1, ...f });
+    t.objectStore("fields").put({ key: ERODE_VER + "-keep-1", t: 2, ...f });
+    await txDone(t);
+    raw.close();
+    const kept = await fieldCacheGet(ERODE_VER + "-keep-1");
+    assert.ok(kept, "当代键必须活过清场");
+    assert.strictEqual(await fieldCacheGet("e旧代-xx-yy"), null, "旧算法代的场绝不可再命中（观感还魂）");
+  });
+
+  it("存取往返：场逐位一致（数据/遮蔽/几何），未命中＝null", async () => {
+    const f = mkField(3);
+    f.data[5] = 0.123; f.shadow![9] = 0.9;
+    await fieldCachePut(ERODE_VER + "-rt", f);
+    const got = await fieldCacheGet(ERODE_VER + "-rt");
+    assert.ok(got);
+    assert.deepStrictEqual(got!.data, f.data);
+    assert.deepStrictEqual(got!.shadow, f.shadow);
+    assert.deepStrictEqual([got!.cols, got!.rows, got!.step, got!.bb], [f.cols, f.rows, f.step, f.bb]);
+    assert.strictEqual(await fieldCacheGet(ERODE_VER + "-没存过"), null);
+  });
+
+  it("LRU 封顶：超 CAP 按 lastUsed 淘汰最旧、新条与近用条保留", async () => {
+    const over = 3;
+    for (let i = 0; i < FIELD_CACHE_CAP + over; i++)
+      await fieldCachePut(ERODE_VER + "-lru-" + i, mkField(i), 10_000 + i);   // now 注入＝次序确定
+    for (let i = 0; i < FIELD_CACHE_CAP + over; i++) {
+      const got = await fieldCacheGet(ERODE_VER + "-lru-" + i);
+      /* 前面「换代清场/往返」两测留下的当代条目更旧＝先被顶掉，故此处只断言相对次序：
+         最旧的 over 批次里至少头一条已被淘汰、最新的恒在 */
+      if (i === 0) assert.strictEqual(got, null, "最旧一条必被淘汰");
+      if (i >= over + 2) assert.ok(got, `近用条不该被淘汰：lru-${i}`);
+    }
+  });
+});

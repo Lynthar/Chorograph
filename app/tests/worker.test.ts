@@ -11,7 +11,8 @@ import { project, type Camera } from "../src/core/projection.ts";
 import { yearRangeOf } from "../src/core/time.ts";
 import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
-import { erodeField, erodeInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
+import { ERODE_VER, erodeField, erodeInput, erodeKey, rowFbm, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
+import { fbm } from "../src/core/noise.ts";
 import { reliefNoise, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
@@ -510,6 +511,37 @@ describe("侵蚀真形（core/erode）", () => {
     assert.ok(pln < 0.002, `平原逐格糙度须近零（带下限后实测 0.00099）：${pln}`);
     assert.ok(mtn > pln * 3, `山地细节不吃带下限（实测约 7×）：${mtn} vs ${pln}`);
   });
+  it("rowFbm：与 core/noise.fbm 逐位同值（顺行滑动/跳档/换行/回退全形态）", () => {
+    /* 提速批的行滑动 fbm 是 erode 基座/细节噪声的实际取值路径——与真源 fbm 的位级等价是
+       「提速不换观感」承诺的一半（另一半是 erode 神谕哈希）。Object.is 级比较（strictEqual）。 */
+    const rf = rowFbm();
+    for (let r = 0; r < 5; r++) for (let cc = 0; cc < 400; cc++) {
+      const x = 3.1 + cc * 0.37 + (cc % 17 === 0 ? 5.5 : 0), y = 7.9 + r * 0.83;   // 滑动+周期性跳档+换行
+      assert.strictEqual(rf(x, y), fbm(x, y), `(${x},${y})`);
+    }
+  });
+  it("erodeKey：同输入同键、键带算法代前缀；任一分量（单个格值/种子/幅度/bb/量纲）变即换键", () => {
+    /* 键是场缓存（data/fieldcache）的全部正确性来源：漏进键的分量变了而键没变＝按键取回
+       一整幅错误地形。逐分量各变一处，键必须跟着变。 */
+    const k0 = erodeKey(mk());
+    assert.strictEqual(erodeKey(mk()), k0, "同输入两算必同键");
+    assert.ok(k0.startsWith(ERODE_VER + "-"), "键前缀＝算法代号（换代清场的判据）");
+    const vary: [string, (i: ErodeInput) => void][] = [
+      ["elev0 单格", i => { i.elev0[7] += 0.001; }],
+      ["relief0 单格", i => { i.relief0[3] = 0.99; }],
+      ["water 单格", i => { i.water[5] = 1 - i.water[5]; }],
+      ["hovGrid 单格", i => { i.hovGrid[2] = 0.25; }],
+      ["seed", i => { i.seed = 4321; }],
+      ["amp", i => { i.amp = 0.69; }],
+      ["bb", i => { i.bb = { ...i.bb, lonMax: 104.001 }; }],
+      ["kmx", i => { i.kmx = 97; }],
+      ["step", i => { i.step = 0.5; }],
+    ];
+    for (const [what, v] of vary) {
+      const i = mk(); v(i);
+      assert.notStrictEqual(erodeKey(i), k0, `${what} 变了键必须变`);
+    }
+  });
   it("协议：erode 消息不依赖 ctx，未设上下文照样应答且与直调一致", () => {
     const inp = mk();
     assert.deepStrictEqual(handleRouteMsg({}, { t: "erode", id: 9, ...inp }),
@@ -596,5 +628,24 @@ describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
     assert.strictEqual(out.data[19 * 20 + 19], fine.data[19 * 20 + 19], "对角亦不动");
     const d = out.data[7 * 20 + 13] - fine.data[7 * 20 + 13];
     assert.ok(d > 0 && d < 0.6, "邻格羽化介于 (0, dh)：" + d);
+  });
+  it("带格表钳制：大负增量不穿海平面、涂水压进水面、零增量与合法低地原位不动（笔刷闪水之修）", () => {
+    /* 渲染端陆/水配色纯按显示高程判（terrainGL e>=-0.02）：涂平原盖掉雕山＝增量 −2 级，
+       叠上被侵蚀刻低的谷底穿透海平面＝陆地闪成水域、侵蚀落地才回正（用户实报）。 */
+    const g2 = { bb: { lonMin: 0, lonMax: 4, latMin: 0, latMax: 1 }, step: 1, cols: 4, rows: 1 };
+    const cells = [["plain", "plain", "plain", "water"]];        // 落笔后的格表：c0 涂平原（原雕山）、c3 涂水（原陆地）
+    const base = Float32Array.of(2.5, 0.16, 0.16, 0.16);         // 旧粗格：c0 是雕出的高山
+    const now = Float32Array.of(0.16, 0.16, 0.16, -0.35);
+    const colV = [0.6, 0.6, 0.2, 0.2, 0.01, 0.01, 0.5, 0.5];     // c2 上 0.01＝海岸坡合法低于类型地板
+    const fine: ElevField = { bb: g2.bb, step: 0.5, cols: 8, rows: 2, data: new Float32Array(16), shadow: null };
+    for (let r = 0; r < 2; r++) for (let c = 0; c < 8; c++) fine.data[r * 8 + c] = colV[c];
+    const naive = fieldPlusDelta(fine, base, now, g2);           // 旧语义（不传格表）＝病根复现
+    const out = fieldPlusDelta(fine, base, now, g2, cells);
+    assert.ok(naive.data[0] < -0.02, "未钳制时涂平原处确实穿海平面（闪水病根）：" + naive.data[0]);
+    assert.ok(out.data[0] >= 0.1 - 1e-6, "涂平原处钳回类型地板：" + out.data[0]);
+    assert.ok(naive.data[6] > -0.02, "未钳制时新水面上残留干斑：" + naive.data[6]);
+    assert.ok(out.data[6] <= -0.06 + 1e-6, "涂水处压进水面（容差＝Float32Array 存储圆整）：" + out.data[6]);
+    assert.strictEqual(out.data[3], fine.data[3], "零增量细格原位不动（钳制恒等）");
+    assert.strictEqual(out.data[4], fine.data[4], "合法低于类型地板的细格（海岸坡）不被人为抬高");
   });
 });

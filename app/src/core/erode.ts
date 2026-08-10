@@ -8,7 +8,7 @@
    ⚠ 等高线与光标读数与晕渲同走本场（「画尺一致」，2026-08-07 用户拍板）：等高线自此沿真实
      谷线走，旧档（relief>0）读数会移动；战略图与其战术烘焙在同一位置的起伏也从逐位一致降为
      近似一致（侵蚀依赖网格分辨率，噪声输入仍同锚）。 */
-import { fbm } from "./noise.ts";
+import { hash2 as sinHash2 } from "./noise.ts";   // ⚠ 本文件另有 gnoise 的整数 hash2（三参），故取别名
 import { elevBilinear, LAND_FLOOR, WATER_CEIL, type ElevField } from "./elev.ts";
 import { terrainProps } from "./constants.ts";
 import { flatKmPerDeg } from "./geo.ts";
@@ -105,6 +105,49 @@ export function upscaleOf(cols: number, rows: number): number {
   return sx;
 }
 
+/* —— 结果缓存的键（2026-08-09）：侵蚀是纯函数（同输入逐位同输出，worker.test 确定性用例锁着），
+   结果按「算法指纹＋输入内容」寻址缓存（data/fieldcache，host 消费）——开图/撤销/拨回看过的
+   年份免去 1~2s 重算，「先粗后细」的可见换场（用户实报读感像「还在施工/出错了」）就不再发生。
+   指纹自动涵盖上方全部旋钮值；⚠ 改**公式/流程**而不动旋钮的数值行为变更须 EALGO+1，
+   否则旧缓存会以旧观感还魂。 */
+const EALGO = 1;
+const KNOB_FP = [EALGO, MAX_FINE, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF,
+  RIDGE_F, RIDGE_W, RIDGE_AMP, RIDGE_MEAN, WARP1, WARP2, TYPE_FEATHER, DETAIL_AMP,
+  DETAIL_SLOPE_K, DETAIL_SLOPE_CAP, HF_LO, DET_LO, DET_HI, RIDGE5_AMP, EPS,
+  SLOPE_SCR, TAN_SUN, OCC_GAIN, SHADOW_STEPS].join("|");
+
+/** 算法代号（指纹的 36 进制缩写）：erodeKey 的前缀；fieldcache 开库时清掉不同代的存货 */
+export const ERODE_VER: string = (() => {
+  let h = 0x811c9dc5 | 0;
+  for (let i = 0; i < KNOB_FP.length; i++) h = Math.imul(h ^ KNOB_FP.charCodeAt(i), 16777619);
+  return "e" + (h >>> 0).toString(36);
+})();
+
+/** 侵蚀输入的内容键：FNV-1a 双流 64 位＋算法代前缀。同键＝同输出（纯函数）；
+    单流 32 位在「按键取错一整幅地形」的后果面前碰撞余量不够，双流异参并拼。
+    ⚠ 输入的典型体量 ~200KB（粗格四场），按 32 位字折叠约 1~2ms——只该在发侵蚀单时算一次。 */
+export function erodeKey(inp: ErodeInput): string {
+  let a = 0x811c9dc5 | 0, b = 0x6c62272e | 0;
+  const mix = (x: number): void => {
+    a = Math.imul(a ^ (x & 0xffff), 16777619);
+    a = Math.imul(a ^ (x >>> 16), 16777619);
+    b = Math.imul(b ^ (x >>> 16), 0x85ebca6b);
+    b = Math.imul(b ^ (x & 0xffff), 0x85ebca6b);
+  };
+  const mixA = (u: Uint32Array | Uint8Array): void => {
+    mix(u.length);
+    for (let i = 0; i < u.length; i++) mix(u[i]);
+  };
+  const head = new Float64Array([inp.bb.lonMin, inp.bb.latMin, inp.bb.lonMax, inp.bb.latMax,
+    inp.step, inp.cols, inp.rows, inp.amp, inp.seed, inp.kmx, inp.kmy]);
+  mixA(new Uint32Array(head.buffer));
+  mixA(new Uint32Array(inp.elev0.buffer, inp.elev0.byteOffset, inp.elev0.length));   // 整段独立分配＝偏移恒 4 对齐
+  mixA(new Uint32Array(inp.relief0.buffer, inp.relief0.byteOffset, inp.relief0.length));
+  mixA(inp.water);
+  mixA(new Uint32Array(inp.hovGrid.buffer, inp.hovGrid.byteOffset, inp.hovGrid.length));
+  return ERODE_VER + "-" + (a >>> 0).toString(36) + "-" + (b >>> 0).toString(36);
+}
+
 /** 组装侵蚀输入（主线程侧）。「relief=0 且无高程涂改」返 null＝旧粗格路径逐位不变契约；
     有涂改即侵蚀——手涂高程正是最该被水系切出真形的地方（2026-08-08 改判，此前 relief=0
     一刀切走旧路径，纯手雕的战术图 800 章全渲成糊边方块）。 */
@@ -165,6 +208,30 @@ const ridged = (x: number, y: number, seed: number): number => {
   return r * r;   // 平方锐化：脊线尖、谷底宽（单次 1−|g| 是软枕头，撑不起山系读感）
 };
 
+/* —— 行滑动值噪声/fbm（2026-08-09 提速批）：erodeField 全部按行扫描——y 不变时 xi+1 的新四角
+   恰是旧四角右移（新a=旧b、新c=旧d），补两次 sin 哈希即可；跳档/换行整组重算＝任何访问形态
+   都正确。与 core/noise 的 vnoise/fbm **同式**（八度权/频与求和序逐项对照；x*1===x、0+x===x
+   皆位级恒等），返回值逐位同（worker.test 直比 + 提速神谕锁）。⚠ 每个调用位各持一套滑窗态
+   （rowFbm() 工厂），共享实例＝交替采样互相冲掉滑窗、退化为全重算。 */
+const rowNoise = (): ((x: number, y: number) => number) => {
+  let cxi = NaN, cyi = NaN, a = 0, b = 0, c = 0, d = 0;
+  return (x, y) => {
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    if (xi !== cxi || yi !== cyi) {
+      if (yi === cyi && xi === cxi + 1) { a = b; c = d; b = sinHash2(xi + 1, yi); d = sinHash2(xi + 1, yi + 1); }
+      else { a = sinHash2(xi, yi); b = sinHash2(xi + 1, yi); c = sinHash2(xi, yi + 1); d = sinHash2(xi + 1, yi + 1); }
+      cxi = xi; cyi = yi;
+    }
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  };
+};
+/** 行滑动 fbm（导出仅供测试直比 core/noise.fbm） */
+export const rowFbm = (): ((x: number, y: number) => number) => {
+  const o0 = rowNoise(), o1 = rowNoise(), o2 = rowNoise(), o3 = rowNoise();
+  return (x, y) => 0.5 * o0(x, y) + 0.25 * o1(x * 2, y * 2) + 0.125 * o2(x * 4, y * 4) + 0.0625 * o3(x * 8, y * 8);
+};
+
 /** 侵蚀重铸：细分基础场（起伏噪声按细格中心重采样——reliefNoise 锚经纬度，上采样即免费细节；
     ＋ridged 山系结构按系数渐入、类型基面域扭曲揉台阶圈）
     → 填洼 → N 轮（受水者/汇流面积/隐式下切/扩散）→ 侵蚀后表面细节 → 类型钳制 → 遮蔽烘焙。 */
@@ -181,6 +248,26 @@ export function erodeField(inp: ErodeInput): ElevField {
      中心重采样（reliefNoise 锚经纬度，上采样即免费细节；幅度亦双线性=岸边平滑归零）。
      sx=1 时双线性恰落格心＝逐点还原粗格值。水域不加噪＝侵蚀基准面。 */
   const geo = { bb, step, cols, rows };
+  /* 无雕痕快路（提速批）：类型驱动的图（战略图/纯涂类型的战术图）hovGrid 全零——全零场的双线性
+     恒为 +0、e=b+0===b、各系数键随之恒 0，故跳过逐细格的两次 hov 采样与膨胀块＝逐位同值（神谕锁） */
+  let noHov = true;
+  for (let k = 0; k < inp.hovGrid.length && noHov; k++) if (inp.hovGrid[k] !== 0) noHov = false;
+  /* 双场同点双线性（提速批）：elev0/relief0（及 hovGrid/hovMax）恒在同一采样点取值——权重与
+     角标只算一遍，两场各自的插值表达式与 elevBilinear 完全同式＝逐位同值；结果经 bl2A/bl2B 带出 */
+  let bl2A = 0, bl2B = 0;
+  const bl2 = (fa: Float32Array, fb: Float32Array, lon: number, lat: number): void => {
+    const fx = (lon - bb.lonMin) / step - 0.5, fy = (lat - bb.latMin) / step - 0.5;
+    const c0 = Math.max(0, Math.min(cols - 1, Math.floor(fx))), r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy)));
+    const c1 = Math.min(cols - 1, c0 + 1), r1 = Math.min(rows - 1, r0 + 1);
+    const tx = Math.max(0, Math.min(1, fx - c0)), ty = Math.max(0, Math.min(1, fy - r0));
+    const i00 = r0 * cols + c0, i01 = r0 * cols + c1, i10 = r1 * cols + c0, i11 = r1 * cols + c1;
+    const a00 = fa[i00], a01 = fa[i01], a10 = fa[i10], a11 = fa[i11];
+    const at = a00 + (a01 - a00) * tx, ab = a10 + (a11 - a10) * tx;
+    bl2A = at + (ab - at) * ty;
+    const b00 = fb[i00], b01 = fb[i01], b10 = fb[i10], b11 = fb[i11];
+    const bt = b00 + (b01 - b00) * tx, bbt = b10 + (b11 - b10) * tx;
+    bl2B = bt + (bbt - bt) * ty;
+  };
   const fnF = 1 / (5 * fstep);   // 涂改细噪声频率：波长≈5 细格（fbm 内含 4 倍频＝再往下细三档）
   const sx1 = (seed % 97) * 1.31 + 41.7, sy1 = (seed % 89) * 0.97 + 13.9;   // 种子移相（与起伏噪声相位独立）
   /* 起伏噪声＝reliefNoise 同式同相位，唯 36/度 高频档按局部起伏系数渐入（coef≥0.12 时 ===reliefNoise）：
@@ -188,18 +275,21 @@ export function erodeField(inp: ErodeInput): ElevField {
      （用户实证「杂乱」）——旧粗格路径等于替平原做了带限，此处把带限找回来；山地细节不受影响。
      渐入带下限 HF_LO（批7）：正比例渐入在平原仍留 15~29% 幅＝±1~2m 细斑照样显影，见 HF_LO 头注 */
   const sxr = (seed % 233) * 0.517 + 21.3, syr = (Math.floor(seed / 233) % 233) * 0.731 + 11.7;
+  /* 三带各持一套行滑窗；hf=0（平原大宗）时高频带整只跳过——0×非负 fbm===+0，位级等价 */
+  const fA = rowFbm(), fB = rowFbm(), fC = rowFbm();
   const rNoise = (lon: number, lat: number, coef: number): number => {
     const hf = Math.max(0, Math.min(1, (coef - HF_LO) / (0.12 - HF_LO)));
-    return 0.5 * fbm(lon * 0.8 + sxr, lat * 0.8 + syr)
-      + 0.35 * fbm(lon * 6 + sxr * 1.3 + 60, lat * 6 + syr + 60)
-      + 0.15 * (hf * fbm(lon * 36 + sxr + 140, lat * 36 + syr + 140) + (1 - hf) * 0.47) - 0.5;
+    return 0.5 * fA(lon * 0.8 + sxr, lat * 0.8 + syr)
+      + 0.35 * fB(lon * 6 + sxr * 1.3 + 60, lat * 6 + syr + 60)
+      + 0.15 * ((hf > 0 ? hf * fC(lon * 36 + sxr + 140, lat * 36 + syr + 140) : 0) + (1 - hf) * 0.47) - 0.5;
   };
+  const fH = rowFbm();   // 涂改细噪声带
   /* 类型基面域扭曲（两八度）、羽化半距与 ridged 山系带的别名门控（细格/波长 <2.5 淡出）在循环外定死 */
   const fw1 = 1 / (9 * step), fw2 = 1 / (3.5 * step), wA1 = WARP1 * step, wA2 = WARP2 * step, ft = TYPE_FEATHER * step;
   /* 雕体幅 5×5 膨胀（两趟可分离 max）：结构强度按**整座雕体**给——点态 |hb| 在雕体侧翼早已衰减，
      结构恰好在可见坡面上缺席（首版实拍踩过）；噪声幅仍用点态（「按局部雕高成比例」之约不变） */
   const hovMax = new Float32Array(rows * cols);
-  {
+  if (!noHov) {
     const t = new Float32Array(rows * cols);
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
       let m = 0;
@@ -228,19 +318,21 @@ export function erodeField(inp: ErodeInput): ElevField {
       /* 类型基面按域扭曲采样＋4 抽头帐篷羽化＝涂改块的台阶圈揉成有机的山前缓坡（涂山场景晕渲
          实拍原是「平顶+两圈方齿台阶」）；水域不扭不羽（基准面逐位）、雕痕 hovGrid 不扭（落在
          用户画的地方，读数可循） */
-      let b: number, ra: number;
+      let b: number, ra: number, hb: number, hovMaxV = 0;
       if (!wat[i]) {
         const sl = lon + wA1 * gnoise(lon * fw1, lat * fw1, seed + 101) + wA2 * gnoise(lon * fw2, lat * fw2, seed + 303);
         const sa = lat + wA1 * gnoise(lon * fw1 + 53.7, lat * fw1 + 17.3, seed + 202) + wA2 * gnoise(lon * fw2 + 11.9, lat * fw2 + 41.2, seed + 404);
-        b = 0.25 * (elevBilinear(elev0, geo, sl - ft, sa - ft) + elevBilinear(elev0, geo, sl + ft, sa - ft)
-          + elevBilinear(elev0, geo, sl - ft, sa + ft) + elevBilinear(elev0, geo, sl + ft, sa + ft));
-        ra = 0.25 * (elevBilinear(relief0, geo, sl - ft, sa - ft) + elevBilinear(relief0, geo, sl + ft, sa - ft)
-          + elevBilinear(relief0, geo, sl - ft, sa + ft) + elevBilinear(relief0, geo, sl + ft, sa + ft));
+        bl2(elev0, relief0, sl - ft, sa - ft); let sb = bl2A, sra = bl2B;
+        bl2(elev0, relief0, sl + ft, sa - ft); sb += bl2A; sra += bl2B;
+        bl2(elev0, relief0, sl - ft, sa + ft); sb += bl2A; sra += bl2B;
+        bl2(elev0, relief0, sl + ft, sa + ft); sb += bl2A; sra += bl2B;
+        b = 0.25 * sb; ra = 0.25 * sra;
+        if (noHov) hb = 0;
+        else { bl2(inp.hovGrid, hovMax, lon, lat); hb = bl2A; hovMaxV = bl2B; }
       } else {
-        b = elevBilinear(elev0, geo, lon, lat);
-        ra = elevBilinear(relief0, geo, lon, lat);
+        bl2(elev0, relief0, lon, lat); b = bl2A; ra = bl2B;
+        hb = noHov ? 0 : elevBilinear(inp.hovGrid, geo, lon, lat);
       }
-      const hb = elevBilinear(inp.hovGrid, geo, lon, lat);
       let e = b + hb;
       /* 微地形系数：「类型起伏×全图 relief」与「涂改自带起伏」取大——手雕的山按**雕体高度成比例**
          获得质感（|hb|×0.35 封 0.7：dh=2 的巨雕要 ±0.5 级扰动才读得出山系；±0.05 摊在高 2 的
@@ -251,7 +343,7 @@ export function erodeField(inp: ErodeInput): ElevField {
         if (coef > 0) e += coef * 2 * rNoise(lon, lat, coef);
         /* ridged 山系结构按强度渐入：均匀 fbm 给不了连贯脊谷，预设山地曾渲成纯平台面。
            键用 sCoef（类型档与**膨胀后**雕体幅取大）＝整座雕体连同侧翼共享结构 */
-        const hovS = Math.min(0.7, elevBilinear(hovMax, geo, lon, lat) * 0.35);
+        const hovS = Math.min(0.7, hovMaxV * 0.35);   // hovMax 双线性已随 hovGrid 同点取回（bl2）
         const sCoef = Math.max(amp > 0 ? ra * amp : 0, hovS);
         const st = Math.max(0, Math.min(1, (sCoef - 0.05) / 0.13));
         if (st > 0 && gwSum > 0) {
@@ -266,7 +358,7 @@ export function erodeField(inp: ErodeInput): ElevField {
            （对战术细格≈常数），手雕的山没有它就是光滑圆包——细噪声给侵蚀当沟槽种子，也直接成
            微地形。只随 hovCoef（类型驱动的地形有材质纹理兜着，战略图不受此项影响）。
            增益 3.2：fbm 方差集中在均值 ±0.12 附近，还要再被坡面扩散磨掉约一半 */
-        if (hovCoef > 0) e += hovCoef * 3.2 * (fbm(lon * fnF + sx1, lat * fnF + sy1) - 0.47);
+        if (hovCoef > 0) e += hovCoef * 3.2 * (fH(lon * fnF + sx1, lat * fnF + sy1) - 0.47);
         dcoef[i] = coef;
       }
       base[i] = b; h[i] = e;
@@ -277,73 +369,106 @@ export function erodeField(inp: ErodeInput): ElevField {
   const NB = [-FC - 1, -FC, -FC + 1, -1, 1, FC - 1, FC, FC + 1];
   const dxs = [1, 0, 1, 1, 1, 1, 0, 1], dys = [1, 1, 1, 0, 0, 1, 1, 1];
   const DK: number[] = NB.map((_, i) => Math.hypot(dxs[i] * fstep * kmx, dys[i] * fstep * kmy));
-  const inGrid = (c: number, i: number): boolean => {
-    const x = c % FC, nb = c + NB[i];
-    if (nb < 0 || nb >= n) return false;
-    const dx = (nb % FC) - x;
-    return dx >= -1 && dx <= 1;   // 行不回绕
-  };
+  const DXNB = [-1, 0, 1, -1, 1, -1, 0, 1];   // NB 各邻的 Δ列（行回绕判据；配合 0≤nb<n＝旧 inGrid 同一接受集）
 
-  /* 二叉堆（h 升序、平手按索引＝确定性） */
-  const heap = new Int32Array(n + 1); let hn = 0;
-  const less = (a: number, b: number): boolean => h[a] < h[b] || (h[a] === h[b] && a < b);
-  const push = (v: number): void => { let i = ++hn; heap[i] = v; while (i > 1 && less(heap[i], heap[i >> 1])) { const t = heap[i]; heap[i] = heap[i >> 1]; heap[i >> 1] = t; i >>= 1; } };
-  const pop = (): number => {
-    const top = heap[1]; heap[1] = heap[hn--];
-    let i = 1;
-    for (;;) { let m = i; const l = i * 2, r = l + 1; if (l <= hn && less(heap[l], heap[m])) m = l; if (r <= hn && less(heap[r], heap[m])) m = r; if (m === i) break; const t = heap[i]; heap[i] = heap[m]; heap[m] = t; i = m; }
-    return top;
-  };
+  /* 4 叉堆（h 升序、平手按索引＝确定性；0 基，父=(i-1)>>2）。键随堆携带（push 时快照 h——
+     flood 里格子只在 close 前被抬升、close 即 push，此后 h 不再动＝快照恒有效），省掉 sift 里对
+     h 的间接读；4 叉深度减半、下滤比较有局部性。⚠ 逐位安全的依据：严格全序（h 同则索引分
+     胜负，重复索引不存在）下每次弹出都是当前集合的**唯一**最小元，任何正确的优先队列弹出序
+     都相同——堆的叉数/形状不进输出（2026-08-09 提速批，神谕哈希三输入逐位核过）。 */
+  const heap = new Int32Array(n), heapK = new Float64Array(n); let hn = 0;
 
   /* 洼地填平（priority flood + ε 排水坡）：边界=水域与图幅边缘。侵蚀会再挖新洼，每轮重填 */
   const closed = new Uint8Array(n);
   const flood = (): void => {
     closed.fill(0); hn = 0;
-    for (let i = 0; i < n; i++) {
-      const x = i % FC, y = (i / FC) | 0;
-      if (wat[i] || x === 0 || y === 0 || x === FC - 1 || y === FR - 1) { closed[i] = 1; push(i); }
+    const push = (v: number, key: number): void => {
+      let i = hn++;
+      while (i > 0) {
+        const p = (i - 1) >> 2, pk = heapK[p];
+        if (key < pk || (key === pk && v < heap[p])) { heap[i] = heap[p]; heapK[i] = pk; i = p; }
+        else break;
+      }
+      heap[i] = v; heapK[i] = key;
+    };
+    for (let r = 0; r < FR; r++) for (let c = 0; c < FC; c++) {
+      const i = r * FC + c;
+      if (wat[i] || c === 0 || r === 0 || c === FC - 1 || r === FR - 1) { closed[i] = 1; push(i, h[i]); }
     }
     while (hn > 0) {
-      const c = pop();
-      for (let i = 0; i < 8; i++) {
-        if (!inGrid(c, i)) continue;
-        const nb = c + NB[i];
-        if (closed[nb]) continue;
+      const c = heap[0], ck = heapK[0];   // 顶＝当前最小；ck===h[c]（close 后 h 不动）
+      const lv = heap[--hn], lk = heapK[hn];   // 末元下滤补位
+      let i = 0;
+      for (;;) {
+        const c0 = i * 4 + 1;
+        if (c0 >= hn) break;
+        let m = c0, mk = heapK[c0];
+        const ce = c0 + 4 < hn ? c0 + 4 : hn;
+        for (let j = c0 + 1; j < ce; j++) {
+          const jk = heapK[j];
+          if (jk < mk || (jk === mk && heap[j] < heap[m])) { m = j; mk = jk; }
+        }
+        if (mk < lk || (mk === lk && heap[m] < lv)) { heap[i] = heap[m]; heapK[i] = mk; i = m; }
+        else break;
+      }
+      heap[i] = lv; heapK[i] = lk;
+      const x = c % FC;
+      for (let k = 0; k < 8; k++) {
+        const dx = DXNB[k];
+        if (dx < 0 ? x === 0 : dx > 0 && x === FC - 1) continue;
+        const nb = c + NB[k];
+        if (nb < 0 || nb >= n || closed[nb]) continue;
         closed[nb] = 1;
-        if (!wat[nb] && h[nb] <= h[c]) h[nb] = h[c] + EPS;
-        push(nb);
+        if (!wat[nb] && h[nb] <= ck) h[nb] = ck + EPS;
+        push(nb, h[nb]);
       }
     }
   };
 
   const rcv = new Int32Array(n), rdist = new Float32Array(n);
   const A = new Float32Array(n);
-  const stack = new Int32Array(n), ndon = new Int32Array(n), don = new Int32Array(n), donPos = new Int32Array(n);
+  const stack = new Int32Array(n), ndon = new Int32Array(n), don = new Int32Array(n), donPos = new Int32Array(n), fillBuf = new Int32Array(n);
   const cellKm2 = (fstep * kmx) * (fstep * kmy);
   const Acrit = Math.min(ACRIT_CELLS, n / 64) * cellKm2;   // 封顶见 ACRIT_CELLS 头注
   const h2 = new Float32Array(n);
 
   for (let it = 0; it < ITERS; it++) {
     flood();
-    /* 受水者：最陡下坡邻格；水域与无下坡＝自身（基准面/汇口） */
-    for (let c = 0; c < n; c++) {
-      rcv[c] = c; rdist[c] = 1;
-      if (wat[c]) continue;
-      let bs = 0, bi = -1;
-      for (let i = 0; i < 8; i++) {
-        if (!inGrid(c, i)) continue;
-        const nb = c + NB[i];
-        if (h[nb] < h[c]) { const s = (h[c] - h[nb]) / DK[i]; if (s > bs) { bs = s; bi = i; } }   // 平手取先遇邻＝邻序确定性
+    /* 受水者：最陡下坡邻格；水域与无下坡＝自身（基准面/汇口）。内域（四边内缩一格）八邻恒
+       有效＝免逐邻越界/回绕判（此段是 6 迭代 × 全格 × 8 邻的热路，原 inGrid 每邻两次取模）；
+       边缘格走带判分支。邻序 0..7 两支不变＝「平手取先遇邻」逐位保持。 */
+    for (let c = 0; c < n; c++) { rcv[c] = c; rdist[c] = 1; }
+    for (let r = 0; r < FR; r++) {
+      const rEdge = r === 0 || r === FR - 1;
+      for (let x = 0; x < FC; x++) {
+        const c = r * FC + x;
+        if (wat[c]) continue;
+        let bs = 0, bi = -1;
+        const hc = h[c];
+        if (rEdge || x === 0 || x === FC - 1) {
+          for (let i = 0; i < 8; i++) {
+            const dx = DXNB[i];
+            if (dx < 0 ? x === 0 : dx > 0 && x === FC - 1) continue;
+            const nb = c + NB[i];
+            if (nb < 0 || nb >= n) continue;
+            if (h[nb] < hc) { const s = (hc - h[nb]) / DK[i]; if (s > bs) { bs = s; bi = i; } }
+          }
+        } else {
+          for (let i = 0; i < 8; i++) {
+            const nb = c + NB[i];
+            if (h[nb] < hc) { const s = (hc - h[nb]) / DK[i]; if (s > bs) { bs = s; bi = i; } }
+          }
+        }
+        if (bi >= 0) { rcv[c] = c + NB[bi]; rdist[c] = DK[bi]; }
       }
-      if (bi >= 0) { rcv[c] = c + NB[bi]; rdist[c] = DK[bi]; }
     }
     /* Braun-Willett 栈序：汇口起、供水者深搜 */
     ndon.fill(0);
     for (let c = 0; c < n; c++) if (rcv[c] !== c) ndon[rcv[c]]++;
     donPos[0] = 0;
     for (let c = 1; c < n; c++) donPos[c] = donPos[c - 1] + ndon[c - 1];
-    const fill = donPos.slice();
-    for (let c = 0; c < n; c++) if (rcv[c] !== c) don[fill[rcv[c]]++] = c;
+    fillBuf.set(donPos);   // 复用缓冲（原每迭代 slice 一份 1.3MB）
+    for (let c = 0; c < n; c++) if (rcv[c] !== c) don[fillBuf[rcv[c]]++] = c;
     let sp = 0;
     for (let c = 0; c < n; c++) if (rcv[c] === c) {
       let top = sp; stack[sp++] = c;
@@ -367,6 +492,7 @@ export function erodeField(inp: ErodeInput): ElevField {
      平原近零、水域恒 0。在钳制之前＝地板天花之约不破。 */
   if (DETAIL_AMP > 0) {
     const dF = 1 / (3 * fstep), dx2 = (seed % 83) * 1.7 + 9.1, dy2 = (seed % 79) * 1.13 + 27.4;
+    const fD = rowFbm();   // 本段自己的行滑窗（按行扫描）
     h2.set(h);   // 坡度读快照（h 正被逐格改写）
     for (let r = 0; r < FR; r++) {
       const lat = bb.latMin + (r + 0.5) * fstep;
@@ -378,7 +504,7 @@ export function erodeField(inp: ErodeInput): ElevField {
         /* 系数键带下限渐入（批7，见 DET_LO 头注）：平原不再吃 ±2m speckle；坡度键原样＝沟壁照旧带糙 */
         const dt = Math.max(0, Math.min(1, (dcoef[i] - DET_LO) / (DET_HI - DET_LO)));
         const k = Math.max(dcoef[i] * dt * dt * (3 - 2 * dt), Math.min(DETAIL_SLOPE_CAP, Math.hypot(gx, gy) * DETAIL_SLOPE_K));
-        if (k > 0.02) h[i] += k * DETAIL_AMP * (fbm((bb.lonMin + (c + 0.5) * fstep) * dF + dx2, lat * dF + dy2) - 0.47);
+        if (k > 0.02) h[i] += k * DETAIL_AMP * (fD((bb.lonMin + (c + 0.5) * fstep) * dF + dx2, lat * dF + dy2) - 0.47);
       }
     }
   }
@@ -404,14 +530,17 @@ export function erodeField(inp: ErodeInput): ElevField {
   /* 定向天光遮蔽（朝光源西南向行进采样；量纲与着色器屏幕坡度一致）——帧时零成本的投影阴影 */
   const shadow = new Float32Array(n);
   const dirC = -0.7071, dirR = -0.7071;
+  /* 逐步距常量外提（同式同值：乘积/被除数逐位同，除法照旧是除法——换成乘倒数会漂位） */
+  const offC = SHADOW_STEPS.map(s => dirC * s), offR = SHADOW_STEPS.map(s => dirR * s);
+  const dDen = SHADOW_STEPS.map(s => s * fstep * 1.4142);
   for (let r = 0; r < FR; r++) for (let c = 0; c < FC; c++) {
     const i = r * FC + c;
     if (wat[i]) continue;
     let occ = 0;
-    for (const s of SHADOW_STEPS) {
-      const sc = Math.max(0, Math.min(FC - 1, Math.round(c + dirC * s)));
-      const sr = Math.max(0, Math.min(FR - 1, Math.round(r + dirR * s)));
-      const t = (h[sr * FC + sc] - h[i]) / (s * fstep * 1.4142) * SLOPE_SCR - TAN_SUN;
+    for (let k = 0; k < SHADOW_STEPS.length; k++) {
+      const sc = Math.max(0, Math.min(FC - 1, Math.round(c + offC[k])));
+      const sr = Math.max(0, Math.min(FR - 1, Math.round(r + offR[k])));
+      const t = (h[sr * FC + sc] - h[i]) / dDen[k] * SLOPE_SCR - TAN_SUN;
       if (t > occ) occ = t;
     }
     shadow[i] = Math.min(1, occ * OCC_GAIN);

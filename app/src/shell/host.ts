@@ -2,7 +2,8 @@
    全部经 ctx 共享态工作；rebuild 同步把寻路上下文送进 Worker（官道格按当年连线重算）。 */
 import { buildGridCells, roadCellSet, type Grid } from "../core/grid.ts";
 import { buildElevField, coarseField, fieldMix, fieldPlusDelta, type ElevField } from "../core/elev.ts";
-import { erodeInput, type ErodeInput } from "../core/erode.ts";
+import { erodeInput, erodeKey, type ErodeInput } from "../core/erode.ts";
+import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { worldSig, yearSig, gridVerSig } from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -56,15 +57,20 @@ export function createHost(ctx: ShellCtx): Host {
      的重建走 fieldPlusDelta＝旧细分场+粗格增量补丁，远处纹丝不动、笔下即时起落；细分场与它的
      增量基准（fineBase＝该场所出世界的粗格场）+ 几何键三件同担、随侵蚀落地一起换，门关或几何
      变（换图/改图幅）即弃场回粗格。侵蚀输入在 rebuild 里同拍组装（pendInp）——门的判定与显示
-     分支必须同源，fireErode 只消费不再自判。 */
+     分支必须同源，fireErode 只消费不再自判。结果按输入内容寻址缓存（fireErode 头注：命中免
+     重算），几何刚换的重建免防抖立即发单。 */
   let eroding = false, erodeDirty = false, erodeTimer: ReturnType<typeof setTimeout> | undefined, buildN = 0;
   let pendInp: ErodeInput | null = null, pendCoarse: Float32Array | null = null;   // 最近一次重建的侵蚀单与粗格场
   let fine: ElevField | null = null, fineBase: Float32Array | null = null, fineKey = "";   // 已落地细分场 + 增量基准 + 几何键
+  let lastBuiltKey = "", coarseAt = 0;   // 上次重建的几何键（换几何＝免防抖立即发单）+ 本几何粗格首帧时刻（缓存「早到」判据）
   const geomKey = (g: Grid): string =>
     `${ctx.mapId}@${g.bb.lonMin},${g.bb.latMin},${g.bb.lonMax},${g.bb.latMax}@${g.step}@${g.cols}x${g.rows}`;
   function requestErode(): void {
     clearTimeout(erodeTimer);
-    erodeTimer = setTimeout(fireErode, 150);
+    /* 60ms（2026-08-09 提速批，原 150）：防抖唯一职责是归并连发（笔刷 move/拨年/播放帧间隔
+       8~33ms，60 足以吞并），收笔到重算启动的纯等待随之 -90ms；中途误发的单会被 buildN 令牌
+       作废＝语义不变，只是侵蚀 worker 白算（它已独占一线，不再堵路由/腿账） */
+    erodeTimer = setTimeout(fireErode, 60);
   }
   /* 落地渐变（fieldMix 注有病历：硬切读感像「出错了自己纠正」）：约 0.4s 六帧缓动换场。
      远处两场逐位相同＝渐变只在真变了的区域发生；帧间任何重建（buildN 变）即中止——
@@ -94,18 +100,45 @@ export function createHost(ctx: ShellCtx): Host {
     };
     tick();
   }
+  /* 先问缓存（data/fieldcache 按 erodeKey 内容寻址；侵蚀确定性纯函数＝命中即逐位同重算结果）：
+     开图/撤销/拨回看过的年份免 1~2s 重算——「先粗后细」的可见换场正是用户读作「还在施工/
+     出错了」的那一下。几何刚换（开图/改图幅）时的命中落在粗帧上屏后数十毫秒内，直接硬换
+     真形（粗帧至多闪一两帧＝「加载完成」的读感）；中途命中（拨年/撤销，粗帧已看了一阵）仍走
+     渐变——fieldMix 的「硬切读感像出错了自己纠正」病历只适用于**看久了的画面**被结算的场合。 */
   function fireErode(): void {
     if (!ctx.grid || !pendInp) return;   // 无单＝「relief=0 且无涂改」旧粗格路径逐位不变
     if (eroding) { erodeDirty = true; return; }
     eroding = true;
-    const token = buildN, baseC = pendCoarse!, key = geomKey(ctx.grid);
-    ctx.routeClient.erode(pendInp).then(f => {
-      eroding = false;
-      if (f && buildN === token && ctx.grid) {   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
-        fine = f; fineBase = baseC; fineKey = key;
-        startFade(f);
+    const token = buildN, baseC = pendCoarse!, key = geomKey(ctx.grid), inp = pendInp;
+    const ck = erodeKey(inp);
+    const done = (): void => { if (erodeDirty) { erodeDirty = false; fireErode(); } };
+    fieldCacheGet(ck).then(hit => {
+      if (buildN !== token || !ctx.grid) { eroding = false; done(); return; }   // 其间已重建＝这单作废（新单已在防抖/dirty 里）
+      if (hit) {
+        eroding = false;
+        /* 「早到」窗 1s：!fine 已把此分支限定在「刚换几何（开图/改图幅）」，窗只防「IDB 罕见
+           卡死数秒后才命中」时硬换用户已看熟的粗帧；真机磁盘上取 3MB 条目偶尔要几百 ms，
+           300ms 的窗曾让这类命中退化成渐变＝仍有一次可见换场（初版踩过） */
+        const early = !fine && performance.now() - coarseAt < 1000;
+        fine = hit; fineBase = baseC; fineKey = key;
+        if (early) {
+          clearTimeout(fadeTimer);
+          ctx.elevField = hit;
+          ctx.R!.uploadGrid(ctx.grid, hit);
+          if (ctx.repaint) ctx.repaint();
+        } else startFade(hit);
+        done();
+        return;
       }
-      if (erodeDirty) { erodeDirty = false; fireErode(); }
+      ctx.routeClient.erode(inp).then(f => {
+        eroding = false;
+        if (f && buildN === token && ctx.grid) {   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
+          fine = f; fineBase = baseC; fineKey = key;
+          startFade(f);
+          void fieldCachePut(ck, f);   // 背拍入缓存（尽力而为；失败＝下次照旧重算）
+        }
+        done();
+      });
     });
   }
 
@@ -123,14 +156,21 @@ export function createHost(ctx: ShellCtx): Host {
        （开图先出粗帧、门关的旧契约路径、换图/改图幅弃场） */
     const key = geomKey(ctx.grid);
     if (!pendInp || fineKey !== key) { fine = null; fineBase = null; fineKey = ""; }
-    ctx.elevField = fine && fineBase ? fieldPlusDelta(fine, fineBase, coarse, ctx.grid) : coarseField(ctx.grid, coarse);
+    ctx.elevField = fine && fineBase ? fieldPlusDelta(fine, fineBase, coarse, ctx.grid, ctx.grid.cells) : coarseField(ctx.grid, coarse);
     const ms = performance.now() - t0;
     ctx.R!.uploadGrid(ctx.grid, ctx.elevField);   // rebuild 只在渲染器就绪后发生（boot 先建 R）；缺 R=启动即错
     ctx.builtFor = ctx.mapId + "@" + yearSig.value + "@" + gridVerSig.value;
     $("hud").dataset.grid = `${ctx.grid.cols}×${ctx.grid.rows} 网格 ${ms.toFixed(0)} ms`;
     // 寻路上下文随网格重建同步进 Worker（官道格按当年连线重算）
     if (w) ctx.routeClient.setContext({ meta: ctx.meta, grid: ctx.grid, roads: roadCellSet(w.nodes, w.edges, yearSig.value, ctx.grid), world: w, yearNow: yearSig.value });
-    requestErode();   // 有单的图异步细化：谷网算好即整场换真（无细分场在屏时先出的是粗格帧）
+    /* 有单的图异步细化：谷网算好即整场换真（无细分场在屏时先出的是粗格帧）。
+       几何刚换（开图/改图幅）＝这一单不欠防抖债，立即发——缓存命中时数十毫秒内即上真形；
+       150ms 防抖只为连笔/连续拨年归并（同几何的后续重建照旧走它）。 */
+    if (key !== lastBuiltKey) {
+      lastBuiltKey = key; coarseAt = performance.now();
+      clearTimeout(erodeTimer);
+      fireErode();
+    } else requestErode();
   }
   function rebuildIfNeeded(): void {
     if (!ctx.R) return;

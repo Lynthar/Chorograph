@@ -3,7 +3,7 @@
    有意的功能增长需在此处上调限值（连同原因一并入提交说明）。 */
 import { statSync } from "node:fs";
 
-const LIMIT_KB = 415;   // 2026-08 侵蚀真形批后基线 ~404KB（+13KB＝erode 核心/场纹理/暖冷晕渲两端），留 ~11KB 余量（前值 400 系柱B 时代所定）
+const LIMIT_KB = 426;   // 2026-08-09 侵蚀缓存批+内核提速批 ~421KB（缓存 +3KB＝fieldcache/erodeKey/host；提速 +3KB＝行滑动 fbm/4 叉堆/侵蚀专用 Worker），留 ~5KB 余量（前值 415 系侵蚀真形批所定）
 const file = new URL("../dist/index.html", import.meta.url);
 
 let size;

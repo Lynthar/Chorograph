@@ -60,8 +60,16 @@ export function fieldMix(from: ElevField, to: ElevField, t: number): ElevField {
     增量恒 0＝远处原位不动，笔下格即时起落；羽化与 erodeField 并基座同派（同一 elevBilinear
     同一粗格几何），侵蚀算好即整场换真。base/now 须同出 buildElevField 且几何同 geom；
     **无增量时返回 fine 本身**（引用不变＝帧指纹不动、渲染零重传）。
-    补丁只写双线性支撑域所及的细格（笔刷增量天然局部）；正确性由测试拿全量暴力合成作神谕锁。 */
-export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32Array, geom: FieldGeom): ElevField {
+    补丁只写双线性支撑域所及的细格（笔刷增量天然局部）；正确性由测试拿全量暴力合成作神谕锁。
+    ⚠ 传 cells 时补丁窗按格类型钳制（2026-08-09）：渲染端陆/水配色**纯按显示高程判**（terrainGL
+    `e>=-0.02`），而「细分场＋大负增量」会穿透海平面——地貌笔落笔连清雕痕（重定基面），涂平原
+    盖掉雕出的高山时增量可达 −2 以上，叠上被侵蚀刻低的谷底＝陆地闪成水域、侵蚀落地才回正
+    （用户实报「平原和海岸笔刷刷完出现水域地形」）。钳制与 buildElevField 同一脉：
+    陆地格地板=min(类型地板, **该细格原细分值**)——海岸旁合法低于类型地板的细格（erode 的钳制
+    参照是扭曲基面邻域）不许被人为抬高，增量为零的细格因此恒等于 fine=原位不动之约保持；
+    水域格天花=max(WATER_CEIL, 类型基础)——涂水后残留的陆高须压进水面，否则新画的水面上
+    浮着旧地形的干斑。 */
+export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][]): ElevField {
   const { cols, rows } = geom;
   let c0 = cols, c1 = -1, r0 = rows, r1 = -1;
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
@@ -81,8 +89,19 @@ export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32
   const data = fine.data.slice();
   for (let r = fr0; r <= fr1; r++) {
     const lat = fine.bb.latMin + (r + 0.5) * fine.step;
-    for (let c = fc0; c <= fc1; c++)
-      data[r * fine.cols + c] += elevBilinear(diff, geom, fine.bb.lonMin + (c + 0.5) * fine.step, lat);
+    const pr = cells ? Math.max(0, Math.min(rows - 1, Math.floor((lat - geom.bb.latMin) / geom.step))) : 0;
+    for (let c = fc0; c <= fc1; c++) {
+      const i = r * fine.cols + c;
+      const lon = fine.bb.lonMin + (c + 0.5) * fine.step;
+      let v = fine.data[i] + elevBilinear(diff, geom, lon, lat);
+      if (cells) {
+        const pc = Math.max(0, Math.min(cols - 1, Math.floor((lon - geom.bb.lonMin) / geom.step)));
+        const p = terrainProps(cells[pr][pc]);
+        v = p.lf === "water" ? Math.min(v, Math.max(WATER_CEIL, p.elev))
+          : Math.max(v, Math.min(Math.min(LAND_FLOOR, p.elev), fine.data[i]));
+      }
+      data[i] = v;
+    }
   }
   return { bb: fine.bb, step: fine.step, cols: fine.cols, rows: fine.rows, data, shadow: fine.shadow };
 }
