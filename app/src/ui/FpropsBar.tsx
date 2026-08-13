@@ -3,7 +3,8 @@
    数值与抽屉/快捷键（[ ] E Alt+滚轮）同信号联动；军属性条随 再议。 */
 import { measureLegs } from "../core/route.ts";
 import { fmtKm } from "../core/util.ts";
-import { brushEraseSig, brushSizeSig, brushSmoothSig, decorSizeSig, editSubSig, modeSig, routePtsSig, routeResSig, terrainAxisSig, worldSig } from "./state.ts";
+import { BRUSH_NOTCHES, brushActualKm, brushRadiusCells, fmtBrushKm } from "../core/brush.ts";
+import { brushEraseSig, brushSizeSig, brushSmoothSig, decorEraseSig, decorSizeSig, editSubSig, modeSig, routePtsSig, routeResSig, terrainAxisSig, worldSig } from "./state.ts";
 
 export function FpropsBar() {
   const mode = modeSig.value, sub = editSubSig.value;
@@ -24,6 +25,10 @@ export function FpropsBar() {
   }
   if (!(mode === "edit" && (sub === "paint" || sub === "terrain" || sub === "decor"))) return null;
   const erase = brushEraseSig.value, size = brushSizeSig.value, smooth = brushSmoothSig.value, scale = decorSizeSig.value;
+  /* 读数报**实际**涂宽与格数（2026-08-12 物理档位批）：档位是名义尺度，落到图上恒是奇数格——
+     名义不足一格时退化成单格。报实际＝滑杆推不动时一眼看得出是格粒度封着（战略图地形格恒
+     1°≈111km，前十余档必然同落一格），不必猜是不是坏了。 */
+  const R = brushRadiusCells(world.meta, sub, size), across = 2 * R + 1;
   return (
     <div class="fprops" id="fprops">
       <span class="fl">{sub === "terrain" ? ({ lf: "地貌", eco: "生态", height: "高程" } as Record<string, string>)[terrainAxisSig.value] : ({ paint: "涂域", decor: "布景" } as Record<string, string>)[sub]}</span>
@@ -32,9 +37,9 @@ export function FpropsBar() {
         erase ? (
           <>
             <span class="fl">橡皮半径</span>
-            <input type="range" min={1} max={12} step={1} value={size}
-              onInput={e => { brushSizeSig.value = +(e.currentTarget as HTMLInputElement).value; }} />
-            <output class="fk">{size}</output>
+            <input type="range" min={1} max={12} step={1} value={decorEraseSig.value}
+              onInput={e => { decorEraseSig.value = +(e.currentTarget as HTMLInputElement).value; }} />
+            <output class="fk">{decorEraseSig.value}</output>
           </>
         ) : (
           <>
@@ -47,9 +52,10 @@ export function FpropsBar() {
       ) : (
         <>
           <span class="fl">笔刷</span>
-          <input type="range" min={1} max={12} step={1} value={size}
+          <input type="range" min={1} max={BRUSH_NOTCHES} step={1} value={size}
             onInput={e => { brushSizeSig.value = +(e.currentTarget as HTMLInputElement).value; }} />
-          <output class="fk">{size}</output>
+          <output class="fk">{fmtBrushKm(brushActualKm(world.meta, sub, R))}</output>
+          <span class="fl">{across} 格</span>
           {sub === "paint" && (
             <>
               <span class="fl">平滑</span>

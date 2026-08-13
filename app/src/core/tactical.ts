@@ -55,7 +55,7 @@ export function blankTacticalWorld(s: BlankTacSpec, today: string): World {
   const meta: Meta = {
     名称: s.名称 || "新战场",
     说明: `战术战场（${fmtYear(cs, s.battleYear)}，直径≈${d}km）：时间轴细化到日与时辰。`,
-    mapKind: "tactical", worldModel: base.worldModel, planetRadiusKm: s.planetRadiusKm,
+    mapKind: "tactical", gridN: 280, worldModel: base.worldModel, planetRadiusKm: s.planetRadiusKm,   // 新战场缺省「极细」网格（2026-08-10 精度批；旧图缺键=140 不动）
     terrain: s.terrain || "plain", battleYear: s.battleYear,
     tacSpan: yearSpanT(cs, s.battleYear),
     view: { lon0: s.lon, lat0: lat, degPerPx0: Math.max(0.0004, (bbox.lonMax - bbox.lonMin) / 900) },
@@ -137,7 +137,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   const meta: Meta = {
     名称: (ev.名称 || "战役") + "·战术",
     说明: `「${ev.名称 || ""}」战术图（${fmtYear(cs, yr)}，直径≈${d}km），自「${m.名称 || ""}」生成：地形/地点/派系为当年快照；时间轴细化到日。`,
-    mapKind: "tactical", worldModel: m.worldModel || "sphere", planetRadiusKm: m.planetRadiusKm,
+    mapKind: "tactical", gridN: 280, worldModel: m.worldModel || "sphere", planetRadiusKm: m.planetRadiusKm,   // 同 blankTacticalWorld：新生成的战术图缺省「极细」网格
     terrain: m.terrain || "sample", battleYear: yr, calendar: cal,
     tacSpan: yearSpanT(cs, yr),
     parent: { map: opts.parentMapId || undefined, mapName: m.名称 || "", event: ev.id, eventName: ev.名称 || "" },

@@ -8,6 +8,7 @@ import { blankTacticalWorld, type BlankTacSpec } from "../core/tactical.ts";
 import { calOf, parseYearForm } from "../core/calendar.ts";
 import type { CalendarCfg, GenStyle, TerrainMode, WorldModel } from "../core/types.ts";
 import { closeSettings, flyReqSig, isTacSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, uiPrefsSig, worldSig, type SettingsMode } from "./state.ts";
+import { splitOverridesToStep } from "./editops.ts";
 import { useModalFocus } from "./modal.ts";
 
 const randSeed = () => Math.floor(Math.random() * 99999) + 1;
@@ -34,6 +35,8 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
   const curCal = calOf(m.calendar);
   /* 地势起伏的当前档：新建缺省 0.7、既有图取存档值（缺键=0=无）——档位落在 option 的 selected 上 */
   const relCur = create ? 0.7 : (m.relief != null ? +m.relief : 0);
+  /* 战术网格密度当前档（缺键=140＝旧图标准档）；同 relief：初值落 option selected、档外值另立一项 */
+  const gnCur = Math.round(+(m.gridN as number)) || 140;
   const bb = m.bbox || { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 };
   const d = create
     ? { 名称: "新地图", model: "sphere", radius: 10000, kmdeg: "", lonMin: 82, lonMax: 130, latMin: 22, latMax: 54,
@@ -91,6 +94,19 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
       if (s.terrain === "auto") { mm.genSeed = s.genSeed; mm.genStyle = s.genStyle; } else { delete mm.genSeed; delete mm.genStyle; }
       if (s.vault) mm.vault = s.vault; else delete mm.vault;
       if (s.relief != null) { if (s.relief > 0) mm.relief = s.relief; else delete mm.relief; }   // 地势起伏（渲染层，可随时改）
+      /* 网格密度（仅战术图渲染此行；q() 会崩故走可空 querySelector）：提档＝把上一密度的涂改
+         拆成新格（见 splitOverridesToStep 头注），降档免迁移；缺省 140 不落盘 */
+      const gnEl = box.current!.querySelector<HTMLSelectElement>("#sw_gridn");
+      if (gnEl) {
+        const gnNew = Math.min(400, Math.max(60, parseInt(gnEl.value, 10) || 140));
+        const gnOld = Math.round(+(mm.gridN as number)) || 140;
+        if (gnNew !== gnOld) {
+          const oldStep = Math.max(0.001, (bb.lonMax - bb.lonMin) / gnOld);         // 旧密度按旧 bbox（涂改是在旧网格上落的）
+          const newStep = Math.max(0.001, (s.bbox.lonMax - s.bbox.lonMin) / gnNew);
+          if (newStep < oldStep) splitOverridesToStep(w, s.bbox, newStep, oldStep);
+        }
+        if (gnNew === 140) delete mm.gridN; else mm.gridN = gnNew;
+      }
       /* 纪元前缀（custom 既有图可改，纯显示层；kind/月长锁定不动）。默认 SE 不落盘 */
       const eraEl = box.current!.querySelector<HTMLInputElement>("#sw_era_app");
       if (eraEl) {
@@ -243,6 +259,18 @@ function SettingsCard({ mode }: { mode: SettingsMode }) {
         </select>
         <span class="sub">山有高低、等高线成形；编辑→地形→⛰高程 可再手工雕琢。随时可改，不动数据。</span>
       </div>
+      {/* 网格密度（仅既有战术图；新建战场恒「极细」）：提档时 apply 把上一密度的涂改块拆成新格
+          ——否则「同粒度或更细」的移除规则认不得旧笔迹＝擦不掉/压不掉（「刷不动」之症的密度版） */}
+      {!create && m.mapKind === "tactical" && (
+        <div class="setrow"><label>网格密度</label>
+          <select id="sw_gridn">
+            {![140, 280].includes(gnCur) && <option value={String(gnCur)} selected>{gnCur}（自定义）</option>}
+            <option value="140" selected={gnCur === 140}>标准（跨度/140 格）</option>
+            <option value="280" selected={gnCur === 280}>极细（跨度/280 格＝笔刷细一倍）</option>
+          </select>
+          <span class="sub">提档后旧涂改自动拆细、可照常涂改擦除；地形定形与寻路稍费时。</span>
+        </div>
+      )}
       <div class="setrow"><label>纪年历法</label>
         {create ? (
           <>

@@ -27,6 +27,16 @@ export interface ErodeInput {
   /** meta.relief（0..1；纯涂改图可为 0——涂改自带微地形，见 hovGrid） */
   amp: number;
   seed: number;
+  /** 细分格预算（战略 40 万 / 战术 140 万，erodeInput 按 mapKind 定；4K 静置精修经 ultraInput
+      提到主机给的精修预算）——随输入走＝Worker 不看 ctx、erodeKey 自然分流；必填（可选+兜底
+      会盖住缺省分支，同 upscaleOf cap 之训） */
+  cap: number;
+  /** 单轴细分上限（工作档 8 / 精修档 16）；必填同 cap 之规 */
+  axisMax: number;
+  /** 河道起始阈值（**当前分辨率的细格数**）：工作档恒 ACRIT_CELLS=300；精修档经 ultraInput
+      按 (sxU/sxW)² 放大＝**物理集水面积与工作档一致**——不归一则精修档沟壑密度凭空三倍、
+      换档瞬间「换了张图」（Acrit=min(acrit,n/64)×cellKm2，格数×更小的格面积＝更小的 km² 阈值） */
+  acrit: number;
   /** 经/纬向 km/度（经向已含中央纬度 cos 折算；细格距离度量用） */
   kmx: number; kmy: number;
   /** 高程涂改栅到粗格的累加场（erodeInput 按 buildElevField 同几何盖章）。
@@ -37,7 +47,13 @@ export interface ErodeInput {
 }
 
 /* —— 调参旋钮（观感层；改幅度看 CDP 截图，别背公式）—— */
-const MAX_FINE = 400_000;   // 细分格总数上限（内存与耗时预算；540×740 战术图约 0.4s/次）
+/* 细分格总数预算按图种分档（2026-08-10 精度批）：战略维持 40 万＝黄金基准与已验收观感逐位不变；
+   战术提到 140 万——280 密度新图 ×5＝1400×940≈132 万，旧 140 密度图靠单轴 8× 顶格＝1120×752，
+   不重涂也自动更锐。代价＝战术侵蚀单 0.7s→约 2~3s（等待窗有 fieldPlusDelta 预览盖住）、
+   缓存单条 3.2→约 10.6MB（fieldcache CAP 随之 20→8）。挑哪档由 erodeInput 按 mapKind 定，
+   随输入进 ErodeInput.cap 与 erodeKey＝Worker 不看 ctx、缓存键自然分流。 */
+const MAX_FINE = 400_000;
+const MAX_FINE_TAC = 1_400_000;
 const ITERS = 6;            // 侵蚀迭代数（隐式解无条件稳定；批6 自 5 上调＝切割深度的老实杠杆）
 const KDT = 0.04;           // 河蚀强度 ×dt（f=KDT·√A/dist；A 单位 km²、dist 单位 km）；批6 自 0.022 上调＝
                             //   让谷网切透涂改块的类型缓坡带与雕体侧翼（「珊瑚项圈」要靠径向切割破环，
@@ -98,10 +114,12 @@ const EPS = 1e-5;           // 洼地填平的单调排水梯度（抽象高程/
 const SLOPE_SCR = 0.3214, TAN_SUN = 1.0607, OCC_GAIN = 1.15;
 const SHADOW_STEPS = [1, 2, 3, 5, 8, 12, 17, 24];
 
-/** 细分倍率：总格数不超预算、单轴最多 8×（48×32 战略→8×；140×94 战术→5×） */
-export function upscaleOf(cols: number, rows: number): number {
+/** 细分倍率：总格数不超预算 cap、单轴不超 axisMax（48×32 战略@40万,8→8×；140×94 战术@140万,8→8×、
+    280×188 战术@140万,8→5×；精修档 axisMax=16：240×161@1050万→16×＝3840×2576）。
+    cap/axisMax 必填——「可选参数+内部兜底常数」会让平价测试盖住缺省分支（haversine R 之训）。 */
+export function upscaleOf(cols: number, rows: number, cap: number, axisMax: number): number {
   let sx = 1;
-  while (sx < 8 && cols * (sx + 1) * rows * (sx + 1) <= MAX_FINE) sx++;
+  while (sx < axisMax && cols * (sx + 1) * rows * (sx + 1) <= cap) sx++;
   return sx;
 }
 
@@ -110,8 +128,8 @@ export function upscaleOf(cols: number, rows: number): number {
    年份免去 1~2s 重算，「先粗后细」的可见换场（用户实报读感像「还在施工/出错了」）就不再发生。
    指纹自动涵盖上方全部旋钮值；⚠ 改**公式/流程**而不动旋钮的数值行为变更须 EALGO+1，
    否则旧缓存会以旧观感还魂。 */
-const EALGO = 1;
-const KNOB_FP = [EALGO, MAX_FINE, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF,
+const EALGO = 3;   // 2026-08-11：4K 静置精修（axisMax/acrit 入输入与键，键头 12→14 元）；前代 2=预算分档，均未发布
+const KNOB_FP = [EALGO, MAX_FINE, MAX_FINE_TAC, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF,
   RIDGE_F, RIDGE_W, RIDGE_AMP, RIDGE_MEAN, WARP1, WARP2, TYPE_FEATHER, DETAIL_AMP,
   DETAIL_SLOPE_K, DETAIL_SLOPE_CAP, HF_LO, DET_LO, DET_HI, RIDGE5_AMP, EPS,
   SLOPE_SCR, TAN_SUN, OCC_GAIN, SHADOW_STEPS].join("|");
@@ -139,7 +157,7 @@ export function erodeKey(inp: ErodeInput): string {
     for (let i = 0; i < u.length; i++) mix(u[i]);
   };
   const head = new Float64Array([inp.bb.lonMin, inp.bb.latMin, inp.bb.lonMax, inp.bb.latMax,
-    inp.step, inp.cols, inp.rows, inp.amp, inp.seed, inp.kmx, inp.kmy]);
+    inp.step, inp.cols, inp.rows, inp.amp, inp.seed, inp.kmx, inp.kmy, inp.cap, inp.axisMax, inp.acrit]);
   mixA(new Uint32Array(head.buffer));
   mixA(new Uint32Array(inp.elev0.buffer, inp.elev0.byteOffset, inp.elev0.length));   // 整段独立分配＝偏移恒 4 对齐
   mixA(new Uint32Array(inp.relief0.buffer, inp.relief0.byteOffset, inp.relief0.length));
@@ -180,7 +198,18 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
   }
   const kmy = m.worldModel === "flat" ? flatKmPerDeg(m) : 2 * Math.PI * (+(m.planetRadiusKm ?? 0) || 10000) / 360;
   const kmx = m.worldModel === "flat" ? kmy : kmy * Math.cos((bb.latMin + bb.latMax) / 2 * Math.PI / 180);
-  return { bb, step, cols, rows, elev0, relief0, water, amp, seed: ((m.genSeed as number) | 0) || 1, kmx, kmy, hovGrid };
+  const cap = m.mapKind === "tactical" ? MAX_FINE_TAC : MAX_FINE;
+  return { bb, step, cols, rows, elev0, relief0, water, amp, seed: ((m.genSeed as number) | 0) || 1, kmx, kmy, hovGrid,
+    cap, axisMax: 8, acrit: ACRIT_CELLS };
+}
+
+/** 精修档输入（4K 静置精修，2026-08-11）：同一份工作档输入换预算——数组共享引用（Worker 侧
+    postMessage 自会克隆）、axisMax 提到 16、acrit 按 (sxU/sxW)² 放大＝物理集水阈值与工作档
+    一致（见 ErodeInput.acrit 注）。ultraCap 由主机按 deviceMemory 分档传入。 */
+export function ultraInput(inp: ErodeInput, ultraCap: number): ErodeInput {
+  const sxW = upscaleOf(inp.cols, inp.rows, inp.cap, inp.axisMax);
+  const sxU = upscaleOf(inp.cols, inp.rows, ultraCap, 16);
+  return { ...inp, cap: ultraCap, axisMax: 16, acrit: inp.acrit * (sxU / sxW) * (sxU / sxW) };
 }
 
 /* —— 结构噪声：整数哈希 8 向梯度噪声（确定性、无三角函数；与 core/noise 的 sin-hash 无关＝不入平价）。
@@ -237,7 +266,7 @@ export const rowFbm = (): ((x: number, y: number) => number) => {
     → 填洼 → N 轮（受水者/汇流面积/隐式下切/扩散）→ 侵蚀后表面细节 → 类型钳制 → 遮蔽烘焙。 */
 export function erodeField(inp: ErodeInput): ElevField {
   const { bb, step, cols, rows, elev0, relief0, water, amp, seed, kmx, kmy } = inp;
-  const sx = upscaleOf(cols, rows);
+  const sx = upscaleOf(cols, rows, inp.cap, inp.axisMax);
   const FC = cols * sx, FR = rows * sx, n = FC * FR, fstep = step / sx;
   const h = new Float32Array(n);
   const base = new Float32Array(n);   // 结构基面（无噪声）：钳制参照，同旧「类型基础值」之职
@@ -429,7 +458,7 @@ export function erodeField(inp: ErodeInput): ElevField {
   const A = new Float32Array(n);
   const stack = new Int32Array(n), ndon = new Int32Array(n), don = new Int32Array(n), donPos = new Int32Array(n), fillBuf = new Int32Array(n);
   const cellKm2 = (fstep * kmx) * (fstep * kmy);
-  const Acrit = Math.min(ACRIT_CELLS, n / 64) * cellKm2;   // 封顶见 ACRIT_CELLS 头注
+  const Acrit = Math.min(inp.acrit, n / 64) * cellKm2;   // 封顶见 ACRIT_CELLS 头注；工作档 acrit≡300＝逐位旧值，精修档经 ultraInput 面积归一
   const h2 = new Float32Array(n);
 
   for (let it = 0; it < ITERS; it++) {

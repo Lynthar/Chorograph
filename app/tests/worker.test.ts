@@ -11,7 +11,7 @@ import { project, type Camera } from "../src/core/projection.ts";
 import { yearRangeOf } from "../src/core/time.ts";
 import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
-import { ERODE_VER, erodeField, erodeInput, erodeKey, rowFbm, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
+import { ERODE_VER, erodeField, erodeInput, erodeKey, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
 import { fbm } from "../src/core/noise.ts";
 import { reliefNoise, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
@@ -411,7 +411,8 @@ describe("侵蚀真形（core/erode）", () => {
       elev0[r * cols + c] = elevCol[c]; relief0[r * cols + c] = reliefCol[c]; water[r * cols + c] = c === 0 ? 1 : 0;
     }
     return { bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 1, cols, rows,
-      elev0, relief0, water, amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: hovGrid || new Float32Array(rows * cols) };
+      elev0, relief0, water, amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: hovGrid || new Float32Array(rows * cols),
+      cap: 400_000, axisMax: 8, acrit: 300 };
   };
   it("确定性：同输入两跑逐位同输出（Worker 与主线程回退必须可互换）", () => {
     const a = erodeField(mk()), b = erodeField(mk());
@@ -419,12 +420,30 @@ describe("侵蚀真形（core/erode）", () => {
     assert.deepStrictEqual(a.shadow, b.shadow);
   });
   it("细分几何：倍率按预算取、场步长=粗步长/倍率、bb 原样", () => {
-    const f = erodeField(mk()), sx = upscaleOf(4, 4);
+    const f = erodeField(mk()), sx = upscaleOf(4, 4, 400_000, 8);
     assert.ok(sx > 1, "小网格必须真的细分");
     assert.strictEqual(f.cols, 4 * sx);
     assert.strictEqual(f.rows, 4 * sx);
     assert.strictEqual(f.step, 1 / sx);
     assert.deepStrictEqual(f.bb, mk().bb);
+  });
+  it("upscaleOf 预算分档（2026-08-10）：战略 40 万逐位旧值；战术 140 万下旧 140 密度顶到轴上限 8×、280 密度取 5×", () => {
+    assert.strictEqual(upscaleOf(48, 32, 400_000, 8), 8, "战略小图=轴上限");
+    assert.strictEqual(upscaleOf(140, 94, 400_000, 8), 5, "旧战术@旧预算＝5×（旧值锁定）");
+    assert.strictEqual(upscaleOf(140, 94, 1_400_000, 8), 8, "旧战术@新预算＝轴上限 8×（1120×752，不重涂也更锐）");
+    assert.strictEqual(upscaleOf(280, 188, 1_400_000, 8), 5, "280 密度@新预算＝5×（1400×940≈132 万）");
+  });
+  it("精修档（2026-08-11）：axisMax 16 下 240×161→16×＝3840×2576、280×188→14×；ultraInput 三键换、acrit 面积归一、数组共享引用", () => {
+    assert.strictEqual(upscaleOf(240, 161, 10_500_000, 16), 16, "井陉（0.001° 地板图）→ 恰 4K 宽");
+    assert.strictEqual(upscaleOf(280, 188, 10_500_000, 16), 14, "280 密度图 → 3920×2632≈1030 万");
+    assert.strictEqual(upscaleOf(140, 94, 10_500_000, 16), 16, "旧 140 图轴上限 16 → 2240×1504");
+    const w = mk(), u = ultraInput(w, 10_500_000);
+    assert.strictEqual(u.cap, 10_500_000);
+    assert.strictEqual(u.axisMax, 16);
+    // 4×4 夹具：sxW=upscaleOf(4,4,400k,8)=8、sxU=upscaleOf(4,4,10.5M,16)=16 → acrit=300×(16/8)²=1200
+    assert.strictEqual(u.acrit, 1200, "acrit 按 (sxU/sxW)² 放大＝物理集水阈值与工作档一致");
+    assert.strictEqual(u.elev0, w.elev0, "数组共享引用（Worker postMessage 自会克隆）");
+    assert.strictEqual(w.cap, 400_000, "原输入不被改写（纯函数）");
   });
   it("水域＝基准面（远岸恒 -0.35、近岸随双线性基面，不侵蚀不加噪）；陆地不穿透类型地板", () => {
     const inp = mk(), f = erodeField(inp), sx = f.cols / 4;
@@ -480,7 +499,8 @@ describe("侵蚀真形（core/erode）", () => {
       const cols = 6, rows = 6, n2 = cols * rows;
       return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
         elev0: new Float32Array(n2).fill(0.5), relief0: new Float32Array(n2).fill(relief),
-        water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2) };
+        water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2),
+        cap: 400_000, axisMax: 8, acrit: 300 };
     };
     const span = (f: { data: Float32Array }): number => {
       const a = Float32Array.from(f.data).sort();
@@ -496,7 +516,8 @@ describe("侵蚀真形（core/erode）", () => {
       const cols = 6, rows = 6, n2 = cols * rows;
       return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
         elev0: new Float32Array(n2).fill(0.5), relief0: new Float32Array(n2).fill(relief),
-        water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2) };
+        water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2),
+        cap: 400_000, axisMax: 8, acrit: 300 };
     };
     const rough = (f: { data: Float32Array; cols: number; rows: number }): number => {
       const a: number[] = [];
@@ -536,6 +557,9 @@ describe("侵蚀真形（core/erode）", () => {
       ["bb", i => { i.bb = { ...i.bb, lonMax: 104.001 }; }],
       ["kmx", i => { i.kmx = 97; }],
       ["step", i => { i.step = 0.5; }],
+      ["cap", i => { i.cap = 1_400_000; }],   // 预算分档：同几何不同预算＝不同细分＝必须不同键
+      ["axisMax", i => { i.axisMax = 16; }],  // 精修档三键同理（漏键＝按键取回错档分辨率的场）
+      ["acrit", i => { i.acrit = 1200; }],
     ];
     for (const [what, v] of vary) {
       const i = mk(); v(i);
@@ -560,6 +584,12 @@ describe("侵蚀真形（core/erode）", () => {
     assert.ok(Math.abs(sum - 0.3) < 1e-6, "只落这一格");
     const inp2 = erodeInput({ terrain: "plain", relief: 0.5 }, undefined, grid, 3100);
     assert.ok(inp2 && inp2.hovGrid.every(v => v === 0), "relief>0 无涂改＝零栅格照样侵蚀");
+    assert.strictEqual(inp2!.cap, 400_000, "战略图＝基准预算（逐位旧值）");
+    assert.strictEqual(inp2!.axisMax, 8, "工作档轴上限 8");
+    assert.strictEqual(inp2!.acrit, 300, "工作档河道阈值＝旧常量逐位");
+    const tacGrid = { ...grid, step: 0.01 };
+    const inp3 = erodeInput({ terrain: "plain", relief: 0.5, mapKind: "tactical" }, undefined, tacGrid, 3100);
+    assert.strictEqual(inp3!.cap, 1_400_000, "战术图＝140 万预算（分档随 mapKind）");
   });
 });
 

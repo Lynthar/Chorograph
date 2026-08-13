@@ -1,7 +1,9 @@
 /* 图库开图 · 整屏加载舞台：山河印 + 图名 + 金细进度 + 步骤行。
    语法：进行中一律金、印章朱（品牌位；印分白文/朱文两态随主题，symbol 在 index.html）。
    library.ts 开图流程置 loadStageSig 步进
-   0 读取存档 → 1 地形烘焙(·渲染器) → 2 时段过滤 → 3 泥金落款；置 null 后本组件淡出再卸载。 */
+   0 读取存档 → 1 地势定形(·渲染器) → 2 时段过滤 → 3 泥金落款；置 null 后本组件淡出再卸载。
+   ⚠「地势定形」是这一过程的**唯一用户面词**（顶栏胶囊/高程 hint/帮助条目同词）——原「地形烘焙」
+   已统一，别再另起名（ARM_NAME 之训：同一件事两个名字就是下一处漂移）。 */
 import { Fragment } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { loadStageSig, type LoadStageState } from "./state.ts";
@@ -20,7 +22,7 @@ export function LoadStage() {
     return () => clearTimeout(t);
   }, [st]);
   if (!shown) return null;
-  const steps = ["读取存档", "地形烘焙" + (shown.renderer ? " · " + shown.renderer : ""), "时段过滤", "泥金落款"];
+  const steps = ["读取存档", "地势定形" + (shown.renderer ? " · " + shown.renderer : ""), "时段过滤", "泥金落款"];
   const step = Math.min(steps.length - 1, shown.step);
   return (
     <div class={"loadstage" + (closing ? " out" : "")}>

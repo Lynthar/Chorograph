@@ -7,8 +7,9 @@ import { distKm, haversine, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm } from "../src/core/geometry.ts";
 import { genTerrainAt, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, yearRangeOf } from "../src/core/time.ts";
-import { buildElevField, contourStepFor, elevBilinear, elevSmooth, elevUnitM } from "../src/core/elev.ts";
-import { buildGridCells, type Grid } from "../src/core/grid.ts";
+import { buildElevField, contourStepFor, elevBilinear, elevSmooth, elevUnitM, heightStepM, kmPerDeg } from "../src/core/elev.ts";
+import { buildGridCells, gridStepDeg, type Grid } from "../src/core/grid.ts";
+import { BRUSH_NOTCHES, brushActualKm, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm } from "../src/core/brush.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, errText, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
@@ -987,6 +988,126 @@ describe("新建战术战场 blankTacticalWorld（柱B）", () => {
     assert.deepStrictEqual(e.calendar, { kind: "earth" });
     assert.strictEqual(e.contourM, 100);
     assert.deepStrictEqual(e.tacSpan, yearSpanT(calOf({ kind: "earth" }), -204), "earth 历法的年区间");
+  });
+  it("新战场网格密度缺省「极细」280（2026-08-10 精度批，期望有意新增）；烘焙同规", () => {
+    assert.strictEqual(blankTacticalWorld(S, "d").meta.gridN, 280);
+  });
+});
+
+describe("战术网格密度 meta.gridN（2026-08-10 精度批）", () => {
+  const tacMeta = (gridN?: number) => ({ mapKind: "tactical" as const, terrain: "plain" as const,
+    bbox: { lonMin: 100, lonMax: 101.4, latMin: 30, latMax: 31 }, ...(gridN != null ? { gridN } : {}) });
+  it("缺键＝跨度/140 逐位（旧档与黄金基准不动）；280＝跨度/280；钳 [60,400]；非法值回落 140", () => {
+    const span = 1.4;
+    assert.ok(Math.abs(buildGridCells(tacMeta(), [], 3100).step - span / 140) < 1e-12, "缺键=140");
+    assert.ok(Math.abs(buildGridCells(tacMeta(280), [], 3100).step - span / 280) < 1e-12, "极细=280");
+    assert.ok(Math.abs(buildGridCells(tacMeta(9999), [], 3100).step - span / 400) < 1e-12, "上钳 400");
+    assert.ok(Math.abs(buildGridCells(tacMeta(3), [], 3100).step - span / 60) < 1e-12, "下钳 60");
+    assert.ok(Math.abs(buildGridCells(tacMeta(NaN), [], 3100).step - span / 140) < 1e-12, "NaN 回落 140");
+    assert.strictEqual(buildGridCells({ ...tacMeta(280), mapKind: undefined } as never, [], 3100).step, 1.0, "战略图不吃 gridN＝恒 1°");
+  });
+  it("同一涂改在两档密度下同域生效：140 上涂的粗块在 280 网格按粗块盖章铺满", () => {
+    const coarse = 1.4 / 140;
+    const ov = { lon: +(100 + 3.5 * coarse).toFixed(4), lat: +(30 + 3.5 * coarse).toFixed(4), t: "hill", step: +coarse.toFixed(4) };
+    const g = buildGridCells(tacMeta(280), [ov], 3100);
+    // 四象限探点各偏块心 ±0.25 粗格＝必落在四个不同细格的**格内**（块边恰在细格线上，按边判归浮点不稳）
+    for (const [dx, dy] of [[-0.25, -0.25], [0.25, -0.25], [-0.25, 0.25], [0.25, 0.25]] as const) {
+      const c = Math.floor((ov.lon + dx * coarse - 100) / g.step), r = Math.floor((ov.lat + dy * coarse - 30) / g.step);
+      assert.strictEqual(g.cells[r][c], "hill", `旧粗块须铺满所覆盖的 2×2 细格 (${r},${c})`);
+    }
+  });
+});
+
+describe("笔刷物理档位 core/brush（2026-08-12 用户点单）", () => {
+  /* 半径 6371＝地球，好让「一格≈111km」这类数字读得懂；出厂缺省 10000km 的世界一格≈174.5km，
+     结论同向只是更极端（见「战略图格粒度」一测的头注）。 */
+  const TAC = { mapKind: "tactical" as const, planetRadiusKm: 6371,
+    bbox: { lonMin: 100, lonMax: 101.4, latMin: 30, latMax: 31 }, gridN: 280 };
+  const STRAT = { planetRadiusKm: 6371, bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } };
+
+  it("档表两端点与线性：战术 100m→20km、战略 20km→500km，32 档等距", () => {
+    assert.strictEqual(BRUSH_NOTCHES, 32);
+    assert.ok(Math.abs(brushNominalKm(TAC, 1) - 0.1) < 1e-12, "战术首档 100m");
+    assert.ok(Math.abs(brushNominalKm(TAC, 32) - 20) < 1e-12, "战术末档 20km");
+    assert.ok(Math.abs(brushNominalKm(STRAT, 1) - 20) < 1e-12, "战略首档 20km");
+    assert.ok(Math.abs(brushNominalKm(STRAT, 32) - 500) < 1e-12, "战略末档 500km");
+    const d = brushNominalKm(TAC, 2) - brushNominalKm(TAC, 1);
+    for (let n = 3; n <= 32; n++) {
+      assert.ok(Math.abs(brushNominalKm(TAC, n) - brushNominalKm(TAC, n - 1) - d) < 1e-12, `第 ${n} 档须与前档等距（线性，非等比）`);
+    }
+  });
+
+  it("档位钳 [1,32]、非数当 1——滑杆够不到越界，但存档/快捷键别的路子不许产出 NaN 半径", () => {
+    assert.strictEqual(brushNominalKm(TAC, 0), brushNominalKm(TAC, 1));
+    assert.strictEqual(brushNominalKm(TAC, 99), brushNominalKm(TAC, 32));
+    assert.strictEqual(brushNominalKm(TAC, NaN), brushNominalKm(TAC, 1));
+    assert.strictEqual(brushRadiusCells(TAC, "terrain", NaN), 0);
+  });
+
+  it("半径上限 256：手编的玩具尺度世界不许把一笔涂改撑成千万格（O(R²) 会钉死主线程）", () => {
+    /* kmPerDeg 是存档里的自由数值——1 米/度 的世界里 20km 档折算下来是千万格半径。
+       上限从不咬合法图：gridN 上钳 400＝满幅 R=200、战略 360° 满幅 R=180。 */
+    const toy = { ...TAC, worldModel: "flat" as const, kmPerDeg: 0.001 };
+    assert.ok(brushStepDeg(toy, "terrain") * kmPerDeg(toy) < 1e-5, "前提：这张图的格小到微米量级");
+    assert.strictEqual(brushRadiusCells(toy, "terrain", BRUSH_NOTCHES), 256);
+    assert.ok(brushRadiusCells({ ...TAC, gridN: 400 }, "terrain", BRUSH_NOTCHES) < 256, "合法图不该碰到上限");
+  });
+
+  it("名义→格半径：非负整数、单调不减、不足一格＝单格（涂宽恒 2R+1 奇数格）", () => {
+    let prev = -1;
+    for (let n = 1; n <= BRUSH_NOTCHES; n++) {
+      const R = brushRadiusCells(TAC, "terrain", n);
+      assert.ok(Number.isInteger(R) && R >= 0, `第 ${n} 档半径须非负整数，实得 ${R}`);
+      assert.ok(R >= prev, `第 ${n} 档不得比前档小`);
+      prev = R;
+    }
+    assert.strictEqual(brushRadiusCells(TAC, "terrain", 1), 0, "首档 100m 不足一格＝单格");
+  });
+
+  it("⚠ 战略图地形格恒 1°：20km 起步的前若干档物理上必然同落一格——故读数报实际不报名义", () => {
+    /* 这不是缺陷而是数据粒度：笔刷只能整格地涂，而战略图的地形格恒 1°（≈111km@地球、
+       ≈174.5km@出厂缺省 10000km 世界）。档表照用户点单的 20–500km 实现，UI 报实际涂宽。 */
+    assert.strictEqual(gridStepDeg(STRAT), 1.0, "前提：战略图格恒 1°");
+    const oneCell = brushActualKm(STRAT, "terrain", 0);
+    assert.ok(oneCell > 110 && oneCell < 112, `一格实得 ${oneCell}km，应在 111km 上下`);
+    assert.ok(brushNominalKm(STRAT, 1) < oneCell, "名义 20km 小于一格＝该档的名义值是假的");
+    assert.strictEqual(brushRadiusCells(STRAT, "terrain", 1), 0);
+    assert.strictEqual(brushActualKm(STRAT, "terrain", brushRadiusCells(STRAT, "terrain", 1)), oneCell);
+  });
+
+  it("实际涂宽＝(2R+1)×格边×每度公里；涂域笔走 paintStep、地形笔走 gridStepDeg", () => {
+    for (const sub of ["terrain", "paint"]) {
+      const step = brushStepDeg(TAC, sub);
+      assert.ok(Math.abs(brushActualKm(TAC, sub, 3) - 7 * step * kmPerDeg(TAC)) < 1e-9, `${sub}：R=3 即 7 格`);
+    }
+    assert.strictEqual(brushStepDeg(TAC, "paint"), paintStep(TAC), "涂域自有更细网格");
+    assert.strictEqual(brushStepDeg(TAC, "terrain"), gridStepDeg(TAC));
+  });
+
+  it("gridStepDeg 与 buildGridCells 的 step 同值（抽出来的那一份不许漂）", () => {
+    const cases = [TAC, { ...TAC, gridN: 140 }, STRAT,
+      { ...TAC, bbox: { lonMin: 0, lonMax: 0.02, latMin: 0, latMax: 0.02 } }];   // 末例触 0.001° 地板
+    for (const m of cases) assert.strictEqual(gridStepDeg(m), buildGridCells(m, [], 3100).step);
+  });
+
+  it("读数格式：低端报米、中段留一位小数——相邻档差数百米，fmtKm 的整 km 会把连着几档印成同一个数", () => {
+    assert.strictEqual(fmtBrushKm(0.112), "112 m");
+    assert.strictEqual(fmtBrushKm(1.44), "1.4 km");
+    assert.strictEqual(fmtBrushKm(20), "20 km");
+    assert.strictEqual(fmtKm(1.4), fmtKm(1.44), "前提：fmtKm 在此处确实分不开");
+    assert.notStrictEqual(fmtBrushKm(1.4), fmtBrushKm(2.0), "笔刷读数须分得开相邻档");
+  });
+});
+
+describe("高程笔米制分档 heightStepM（2026-08-10 精度批）", () => {
+  it("自动档：战术 10m / 战略 50m（≈旧硬编码 0.02×2000 的手感）；显式档钳到图种下限", () => {
+    assert.strictEqual(heightStepM({ mapKind: "tactical" }, 0), 10);
+    assert.strictEqual(heightStepM({}, 0), 50);
+    assert.strictEqual(heightStepM(undefined, 0), 50);
+    assert.strictEqual(heightStepM({ mapKind: "tactical" }, 1), 1, "战术可精雕到 1m");
+    assert.strictEqual(heightStepM({}, 1), 10, "战略下限 10m（换图后残留的战术档位被钳）");
+    assert.strictEqual(heightStepM({ mapKind: "tactical" }, 250), 250, "上不封（档表之外的显式值原样）");
+    assert.strictEqual(heightStepM({}, NaN), 50, "非法值＝自动档");
   });
 });
 

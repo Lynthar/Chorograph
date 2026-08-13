@@ -6,15 +6,16 @@
      只是一次省时机会；console.warn 留一条诊断线索（只响一次）。
    ⚠ 独立库 yutu2-fieldcache，不并进 yutu2：图库那边有版本守卫与多标签语义要护，而缓存是
      内容寻址的幂等写（两个标签写同键必同值），无冲突可言，隔离最省心。
-   条目按 lastUsed LRU 封顶（CAP 条 × 单条 ≤~3.2MB[erode MAX_FINE 预算]≈几十 MB 上限）；
-   开库时清掉算法代号不同的存货（键前缀即代号，openKeyCursor 不掏 3MB 的值）；
+   条目按 lastUsed LRU 封顶（CAP 条 × 单条 ≤~10.6MB[erode 战术预算 140 万格]≈85MB 上限——
+   预算分档批 CAP 随之 20→8，免得战术大条目把 IDB 吃到配额线）；
+   开库时清掉算法代号不同的存货（键前缀即代号，openKeyCursor 不掏兆级的值）；
    配额写失败时整仓清空——省时层绝不挤占数据层的存储余量。 */
 import { openDB, reqP, txDone } from "./idb.ts";
 import { ERODE_VER } from "../core/erode.ts";
 import type { ElevField } from "../core/elev.ts";
 
 const DB = "yutu2-fieldcache";
-export const FIELD_CACHE_CAP = 20;
+export const FIELD_CACHE_CAP = 8;
 
 let dbP: Promise<IDBDatabase | null> | null = null;
 let warned = false;

@@ -322,6 +322,41 @@ describe("编辑操作内核", () => {
     paintHeightAt(sw2, sg, 101.5, 31.5, 0.02, 1, null);
     assert.ok(!("step" in sw2.heightOverrides![0]), "战略高程涂改不带 step 键");
   });
+  it("splitOverridesToStep：密度提档拆分上一密度的涂改（2026-08-10 精度批）", async () => {
+    const { splitOverridesToStep, paintTerrainAt } = await import("../src/ui/editops.ts");
+    const bbox = { lonMin: 100, lonMax: 101.4, latMin: 30, latMax: 31.4 };
+    const m140 = { mapKind: "tactical", bbox } as never as import("../src/core/types.ts").Meta;
+    const g140 = buildGridCells(m140, [], 3000);
+    const w = mkWorld({ meta: m140 });
+    w.terrainOverrides.push({ lon: 100.5, lat: 30.5, t: "water", step: 1 });      // 1° 继承粗块＝不动（真实档序：烘焙继承在前、本图涂改追加在后）
+    w.terrainOverrides.push({ lon: 100.9, lat: 30.9, t: "plain" });               // 缺 step＝恒随当前网格＝不动
+    paintTerrainAt(w, g140, 3000, 100.703, 30.703, "hill", 1, false, null);   // 落点取格内偏心＝避开格线上的浮点判归
+    paintHeightAt(w, g140, 100.703, 30.703, 0.5, 1, { on: true, since: 3000, until: 3050 });
+    const oldStep = g140.step, newStep = Math.max(0.001, (bbox.lonMax - bbox.lonMin) / 280);
+    const n = splitOverridesToStep(w, bbox, newStep, oldStep);
+    assert.strictEqual(n, 2, "地形+高程各一块被拆");
+    const fine = w.terrainOverrides.filter(o => o.t === "hill");
+    assert.strictEqual(fine.length, 4, "140→280＝恰 2×2");
+    assert.ok(fine.every(o => o.step === +newStep.toFixed(4)), "拆出的块记新步长");
+    assert.strictEqual(w.terrainOverrides.filter(o => o.t === "water").length, 1, "1° 继承粗块原样");
+    assert.strictEqual(w.terrainOverrides.filter(o => o.t === "plain").length, 1, "缺 step 条目原样");
+    assert.strictEqual(w.heightOverrides!.length, 4, "高程章同规拆分");
+    assert.ok(w.heightOverrides!.every(o => o.dh === 0.5 && o.since === 3000 && o.until === 3050), "dh 逐枚照抄、时段键随块拷贝");
+    // 拆出的细块在新网格上仍盖同域（按各自块心探格＝格心必在格内，浮点稳），且新橡皮擦得掉（「刷不动」之症的密度版被治住）
+    const m280 = { mapKind: "tactical", gridN: 280, bbox } as never as import("../src/core/types.ts").Meta;
+    const g280 = buildGridCells(m280, w.terrainOverrides, 3000);
+    for (const o of fine)
+      assert.strictEqual(g280.cells[Math.floor((o.lat - 30) / g280.step)][Math.floor((o.lon - 100) / g280.step)], "hill", "拆分后同域仍生效");
+    const w2 = { ...w, meta: m280 } as never as import("../src/core/types.ts").World;
+    paintTerrainAt(w2, g280, 3000, 100.703, 30.703, "plain", 3, true, null);   // 半径 2 盘含对角＝罩住整个 2×2
+    assert.strictEqual(w2.terrainOverrides.filter(o => o.t === "hill").length, 0, "新密度橡皮能移除拆出的块");
+    // 整块在图幅外＝保留原块（拆出 0 枚等于静默删数据）
+    const w3 = mkWorld({ meta: m140 });
+    w3.terrainOverrides.push({ lon: 99, lat: 29, t: "hill", step: +oldStep.toFixed(4) });
+    splitOverridesToStep(w3, bbox, newStep, oldStep);
+    assert.strictEqual(w3.terrainOverrides.length, 1, "幅外块原样保留");
+    assert.strictEqual(w3.terrainOverrides[0].lon, 99);
+  });
   it("applyEdgeForm：河宽 widthM——>0 存、空/非法删、不传不动", () => {
     const e = { from: "a", to: "b", type: "river" } as never as import("../src/core/types.ts").Edge;
     applyEdgeForm(e, { 名称: "", note: "", kv: "", since: "", until: "", widthM: "300" });

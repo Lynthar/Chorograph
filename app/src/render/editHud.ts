@@ -19,13 +19,13 @@ export function drawPaintCells(ctx: CanvasRenderingContext2D, cam: Camera, layer
   ctx.restore();
 }
 
-/** 笔刷光圈：半径=((size-1)+0.5)×每格像素（对齐旧 drawBrushCursor；cellDeg=格边度数，涂域=PD、地形=grid.step） */
+/** 笔刷光圈：rDeg=盘半径（度）＝(R+0.5)×格边度数，由调用方经 core/brush 折算（2026-08-12 起
+    档位是物理尺度不是格数，故环、涂改盘、播撒盘、读数四处一律从同一个 R 派生，免各自换算漂移） */
 export function drawBrushRing(ctx: CanvasRenderingContext2D, cam: Camera, x: number, y: number,
-  size: number, erase: boolean, dpr: number, cellDeg = PD): void {
+  rDeg: number, erase: boolean, dpr: number): void {
   /* 作用区=度空间正圆（brushCells 按格计圆），投影纵横比差 1/cos——环画椭圆如实标示：
      横=r·cos、纵=r（旧正圆取横向半径，高纬纵向低估 cos 倍，lat38° 约差 21%）。 */
   const cosK = cam.flat ? 1 : Math.cos(cam.lat0 * Math.PI / 180);
-  const rDeg = ((size - 1) + 0.5) * cellDeg;
   ctx.save();
   ctx.scale(dpr, dpr);
   ctx.beginPath();

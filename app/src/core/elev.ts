@@ -118,8 +118,18 @@ export function reliefNoise(lon: number, lat: number, seed: number): number {
 export function elevUnitM(meta: Meta | undefined): number {
   return +((meta || {}).elevUnitM as number) || 2000;
 }
-/** 纬度每度公里数：平面走 flatKmPerDeg，球面按 2πR/360——与 distKm 同轨 */
-function kmPerDeg(meta: Meta | undefined): number {
+/** 高程笔幅度档（米/笔；2026-08-10 精度批，用户点单「战术 1m 起、战略 10m 起」）。 */
+export const HEIGHT_STEPS_TAC = [1, 5, 10, 25, 50];
+export const HEIGHT_STEPS_STRAT = [10, 25, 50, 100, 250];
+/** 生效的每笔米数：chosen≤0/缺省＝自动（战术 10 / 战略 50≈旧硬编码 0.02×2000m=40m 的手感）；
+    显式值钳到该图种档域下限（战术 ≥1 / 战略 ≥10）——换图后残留的另一图种档位不至于越下限。 */
+export function heightStepM(meta: Meta | undefined, chosen: number): number {
+  const tac = ((meta || {}) as { mapKind?: string }).mapKind === "tactical";
+  if (!(chosen > 0)) return tac ? 10 : 50;
+  return Math.max(tac ? 1 : 10, chosen);
+}
+/** 纬度每度公里数：平面走 flatKmPerDeg，球面按 2πR/360——与 distKm 同轨（笔刷实尺寸读数亦用） */
+export function kmPerDeg(meta: Meta | undefined): number {
   const m = meta || {};
   return m.worldModel === "flat" ? flatKmPerDeg(m) : 2 * Math.PI * (+(m.planetRadiusKm ?? 0) || 10000) / 360;
 }

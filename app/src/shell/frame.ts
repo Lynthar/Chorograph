@@ -11,11 +11,12 @@ import { snowEOf } from "../render/material.ts";
 import { drawAnalysis } from "../render/analysis.ts";
 import { drawPaintCells, drawBrushRing, drawSelectBox } from "../render/editHud.ts";
 import { paintStep } from "../core/territory.ts";
+import { brushRadiusCells } from "../core/brush.ts";
 import { dataLon } from "../ui/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig,
-  routePtsSig, routeResSig, unitLegsSig, editVerSig, gridVerSig, saveConflictSig }
+  routePtsSig, routeResSig, unitLegsSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig }
   from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -56,10 +57,12 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
         const f = pf ? world.factions.find(x => x.id === pf) : null;
         const L = f && f.paint && f.paint[paintLayerSig.value];
         if (L) drawPaintCells(octx, cam(), L, f!.color || "#888", ctx.DPR, paintStep(ctx.meta));
-        if (ptr.mxy) drawBrushRing(octx, cam(), ptr.mxy[0], ptr.mxy[1], brushSizeSig.value, brushEraseSig.value, ctx.DPR, paintStep(ctx.meta));
+        if (ptr.mxy) drawBrushRing(octx, cam(), ptr.mxy[0], ptr.mxy[1],
+          (brushRadiusCells(ctx.meta, "paint", brushSizeSig.value) + 0.5) * paintStep(ctx.meta), brushEraseSig.value, ctx.DPR);
       }
       if (m === "edit" && editSubSig.value === "terrain" && ptr.mxy && ctx.grid) {   // 地形笔刷环（按 grid.step 定径）
-        drawBrushRing(octx, cam(), ptr.mxy[0], ptr.mxy[1], brushSizeSig.value, brushEraseSig.value, ctx.DPR, ctx.grid.step);
+        drawBrushRing(octx, cam(), ptr.mxy[0], ptr.mxy[1],
+          (brushRadiusCells(ctx.meta, "terrain", brushSizeSig.value) + 0.5) * ctx.grid.step, brushEraseSig.value, ctx.DPR);
       }
       const od = opDrawSig.value;
       if (m === "edit" && od && ptr.opStroke && ptr.opStroke.pts.length) {   // 画线预览：已采点 + 橡皮筋到光标
@@ -143,7 +146,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       bs ? bs.x1 : -1, bs ? bs.y1 : -1, bs ? bs.moved : false,
       // 顶栏保存态文案的来源（同样不是 signal，漏了就会「已保存」迟迟不上屏）
       autosave.pending, ctx.savedAt, ctx.saveErr, ctx.bootNote, ctx.mapId, ctx.source, ctx.lib,
-      saveConflictSig.value
+      saveConflictSig.value, erodePhaseSig.value
     ];
   };
   const changed = (a: unknown[], b: unknown[]): boolean => a.length !== b.length || a.some((x, i) => x !== b[i]);
@@ -168,9 +171,14 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
        可见文案不再写图名（面包屑相邻已有、画布图幅标题第三遍——2026-07-16 审阅③双写），只报来源；图名细节留 title */
     const srcLabel = !ctx.lib ? "内置示例（只读）" : ctx.source === "folder" ? `文件「${ctx.mapId || "—"}」` : `地图「${(ctx.meta || ({} as Meta)).名称 || "未命名"}」`;
     const srcShort = !ctx.lib ? "内置示例（只读）" : ctx.source === "folder" ? "📁 文件夹图库" : "💾 浏览器图库";
+    /* 地势定形相位胶囊（可读性三件套之一）：命名的、可见的过程不被读成 bug——
+       落定后的换场自此有预告。告警态（冲突/保存失败）在场时让位，警报优先。 */
+    const ep = erodePhaseSig.value;
+    const epTxt = saveConflictSig.value || ctx.saveErr ? ""
+      : ep === "work" ? "⛰ 地势定形中… · " : ep === "ultra" ? "⛰ 地势精修中… · " : ep === "done" ? "✓ 地势已定形 · " : "";
     /* ⚠ 冲突自成一档，不能并进「自动保存失败」那句——那句尾巴写着「随下次改动重试」，
        而冲突态恰恰**不会**重试（守卫短路着，等用户在弹层里决断），并进去就是在说假话。 */
-    const ftTxt = (saveConflictSig.value
+    const ftTxt = epTxt + (saveConflictSig.value
       ? "⚠ 保存已暂停——这张图在别处被改过，请在弹层中选择处置"
       : ctx.saveErr
       /* ⚠ 走 errText 而非直读 .message：真配额下 QuotaExceededError 的 message 是空串，

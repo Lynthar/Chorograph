@@ -3,7 +3,7 @@
    有意的功能增长需在此处上调限值（连同原因一并入提交说明）。 */
 import { statSync } from "node:fs";
 
-const LIMIT_KB = 426;   // 2026-08-09 侵蚀缓存批+内核提速批 ~421KB（缓存 +3KB＝fieldcache/erodeKey/host；提速 +3KB＝行滑动 fbm/4 叉堆/侵蚀专用 Worker），留 ~5KB 余量（前值 415 系侵蚀真形批所定）
+const LIMIT_KB = 431;   // 2026-08-10 战略/战术精度批 ~426.2KB（+2.9KB＝高程米制分档/gridN 密度+涂改拆分/侵蚀预算分档/涂改索引/笔刷实尺寸读数），留 ~5KB 余量（前值 426 系侵蚀缓存+提速批所定）
 const file = new URL("../dist/index.html", import.meta.url);
 
 let size;

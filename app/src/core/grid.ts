@@ -10,11 +10,23 @@ import { DEFAULT_BBOX, type BBox, type Edge, type Meta, type TerrainOverride, ty
    涂改经 canonComposite 归一；消费点一律走 core/constants 的 terrainProps/flatten（不再直接查旧表）。 */
 export interface Grid { bb: BBox; step: number; cols: number; rows: number; cells: string[][] }
 
+/* 地形网格的格边度数（2026-08-12 抽出，原为 buildGridCells 内联式，逐字未改）：
+   战术图按跨度自适应加密——目标格数走 meta.gridN（2026-08-10 精度批；缺键=140＝旧档与
+   黄金基准逐位不变，新建战场=280＝笔刷/色边细一倍）；战略图维持 1°/格。钳 [60,400] 防手编
+   极端值把 O(cols×rows) 的重建与涂改表撑爆；0.001° 地板（≈111m）在 20km 小战场上先于 280 生效。
+   ⚠ 抽出的缘由：笔刷尺度（core/brush）与 fprops 读数都要这个步长，而它们拿不到 ctx.grid——
+   各自照抄一份「与 buildGridCells 同式」的注释就是漂移的起点。 */
+export function gridStepDeg(meta: Meta | undefined): number {
+  const m = meta || {};
+  const bb = m.bbox || DEFAULT_BBOX;
+  const gn = Math.min(400, Math.max(60, Math.round(+(m.gridN as number)) || 140));
+  return m.mapKind === "tactical" ? Math.max(0.001, (bb.lonMax - bb.lonMin) / gn) : 1.0;
+}
+
 export function buildGridCells(meta: Meta | undefined, overrides: TerrainOverride[] | undefined, yearNow: number): Grid {
   const m = meta || {};
   const bb = m.bbox || DEFAULT_BBOX;
-  // 战术图：网格按跨度自适应加密（目标≈140格宽）；战略图维持 1°/格
-  const step = m.mapKind === "tactical" ? Math.max(0.001, (bb.lonMax - bb.lonMin) / 140) : 1.0;
+  const step = gridStepDeg(m);
   // cols/rows 封顶 2048（合法战略 ≤360、战术 ≈140 均远不及——逐位不变）：防超大/损坏 bbox 的 O(cols×rows) 分配 OOM
   const cols = Math.min(2048, Math.max(1, Math.ceil((bb.lonMax - bb.lonMin) / step))), rows = Math.min(2048, Math.max(1, Math.ceil((bb.latMax - bb.latMin) / step)));
   const cells: string[][] = [];

@@ -19,6 +19,9 @@ export interface RouteClient {
   legs(unit: Unit): Promise<Leg[] | null>;
   /** 侵蚀重铸（自带输入不依赖 setContext；Worker 挂掉时返 null——调用方保持粗格） */
   erode(input: ErodeInput): Promise<ElevField | null>;
+  /** 4K 静置精修（第三车道，懒建）：几十秒的精修单不许挤占工作档侵蚀车道。
+      ⚠ 建不出 Worker 一律返 null **绝不同步回退**——30s 的同步演算＝冻死主线程，宁可不精修 */
+  erodeUltra(input: ErodeInput): Promise<ElevField | null>;
   dispose(): void;
 }
 
@@ -28,9 +31,12 @@ export function createRouteClient(): RouteClient {
                                   // 不再挤同一队列——收笔后 hover 路由不用等侵蚀，侵蚀也不用等腿账。
                                   // 同一份内联 bundle 二次实例化＝零体积成本；erode 自带全部输入，
                                   // 不吃 setContext，故 ew 无 ctx 镜像之需。
+  let uw: Worker | null = null;   // 4K 静置精修车道（2026-08-11，懒建）：精修单跑几十秒，
+  let uwTried = false;            // 与 ew 分开＝精修期间新笔的工作档侵蚀不排队
   let seq = 0;
   const pending = new Map<number, (r: RouteReply) => void>();
   const pendingE = new Map<number, (r: RouteReply) => void>();
+  const pendingU = new Map<number, (r: RouteReply) => void>();
   const fallback: RouteCtx = {};
   const killWorker = () => {
     try { w?.terminate(); } catch { /* 已死 */ }
@@ -43,6 +49,28 @@ export function createRouteClient(): RouteClient {
     ew = null;
     for (const [, res] of pendingE) res({ t: "route", id: -1, res: null } as RouteReply);
     pendingE.clear();
+  };
+  const killUltraWorker = () => {
+    try { uw?.terminate(); } catch { /* 已死 */ }
+    uw = null;
+    for (const [, res] of pendingU) res({ t: "route", id: -1, res: null } as RouteReply);
+    pendingU.clear();
+  };
+  /* 懒建：不开战术图/低配机（host 不发精修单）的会话根本不实例化第三个 Worker */
+  const ensureUw = (): Worker | null => {
+    if (uwTried) return uw;
+    uwTried = true;
+    try {
+      uw = new RouteWorker();
+      uw.onmessage = e => {
+        const r = e.data as RouteReply;
+        const f = pendingU.get(r.id);
+        if (f) { pendingU.delete(r.id); f(r); }
+      };
+      uw.onerror = killUltraWorker;
+      uw.onmessageerror = killUltraWorker;
+    } catch { uw = null; }
+    return uw;
   };
   try {
     w = new RouteWorker();
@@ -96,6 +124,13 @@ export function createRouteClient(): RouteClient {
       const r = await ask({ t: "erode", id: ++seq, ...input });
       return r.t === "erode" ? r.f : null;
     },
-    dispose() { killWorker(); killErodeWorker(); }
+    async erodeUltra(input) {
+      const worker = ensureUw();
+      if (!worker) return null;   // 头注之约：绝不同步回退
+      const id = ++seq;
+      const r = await new Promise<RouteReply>(res => { pendingU.set(id, res); worker.postMessage({ t: "erode", id, ...input }); });
+      return r.t === "erode" ? r.f : null;
+    },
+    dispose() { killWorker(); killErodeWorker(); killUltraWorker(); }
   };
 }

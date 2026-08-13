@@ -124,6 +124,10 @@ export interface SaveConflict {
 }
 export const saveConflictSig = signal<SaveConflict | null>(null);
 
+/* —— 地势定形相位（顶栏胶囊；host 独写）：work=工作档演算中 / ultra=4K 静置精修中 /
+   done=刚落定（host 2s 后自动归 idle）。缓存命中不置相位——瞬时完成的事不值得一枚胶囊。 —— */
+export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
+
 /* —— 弹层：帮助 / 设置（v0.14 .ovl；设置分 app=改当前世界参数 / create=新建地图）—— */
 export const helpOpenSig = signal(false);
 export type SettingsMode = "app" | "create";
@@ -515,16 +519,23 @@ export const armSig = signal<Arm>("land");
 /* —— 派系涂域画笔 —— */
 export const paintFactionSig = signal<string | null>(null);   // 涂给谁
 export const paintLayerSig = signal(0);                       // 涂进第几个时段层
-export const brushSizeSig = signal(3);                        // 半径=size-1 格（涂域/地形共用，1–12）
+/* 笔刷档位 1–32（2026-08-12 起是**物理尺度档**不是格数，档表与折算全在 core/brush；涂域/地形共用）。
+   缺省 2＝战术 742m，约合旧缺省「5 格」在井陉级图上的手感；战略图第 2 档不足一格＝单格 1°。 */
+export const brushSizeSig = signal(2);
 export const brushEraseSig = signal(false);
 export const brushSmoothSig = signal(2);                      // 涂域边界平滑（Chaikin 轮数 0–3；笔刷框调）
 /** 「⏳ 新对象时间段」（编辑左栏）：勾选后新画的地点/连线/布景/地形涂改带 since/until（对齐旧 eraNew） */
 export const eraNewSig = signal<{ on: boolean; since: number | null; until: number | null }>({ on: false, since: null, until: null });
 export const paintTerrainSig = signal<string>("water");       // 地形涂改：当前笔刷复合串（"地貌"/"地貌/生态"；两轴）
 export const terrainAxisSig = signal<"lf" | "eco" | "height">("lf");   // 地形子工具三轴：地貌 / 生态(改地面+落真实印章) / 高程起伏
+export const heightStepMSig = signal(0);                      // 高程笔幅度 米/笔；0=自动（战术 10/战略 50），生效值走 core/elev.heightStepM
 export const addTypeSig = signal<string>("city");             // 地点：落点预选类型（柱B——同布景选印章之例；缺省城市=旧行为）
 export const decorKindSig = signal<string>("tree");           // 布景：当前印章种类
 export const decorSizeSig = signal(1);                        // 布景印章尺寸（0.5–2.5）
+/* 布景橡皮半径档 1–12（屏幕 px：6+5×档，v0.14 decorEraseAt 原式）。⚠ 与 brushSizeSig 分家（2026-08-12）：
+   笔刷档位改成 1–32 的物理尺度后，再共用一个数就会把「第 30 档」串成 156px 的巨型橡皮；
+   分开之后布景橡皮的取值域与手感逐位不变。 */
+export const decorEraseSig = signal(3);
 export const routePtsSig = signal<RoutePoint[]>([]);
 export const routeResSig = signal<ComputedRoute | null>(null);
 export const routeBusySig = signal(false);

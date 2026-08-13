@@ -4,11 +4,11 @@
    语义自旧编辑面板原样转写；笔刷数值与画布上方 fprops 浮条同信号联动。 */
 import { DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, nodeCatOf, parseComposite } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhen, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
-import { elevUnitM } from "../core/elev.ts";
+import { HEIGHT_STEPS_STRAT, HEIGHT_STEPS_TAC, heightStepM } from "../core/elev.ts";
 import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
-import { addTypeSig, brushEraseSig, canRedoSig, canUndoSig, decorKindSig, editSubSig, eraNewSig, isTacSig, linkFromSig, linkTypeSig,
+import { addTypeSig, brushEraseSig, canRedoSig, canUndoSig, decorKindSig, editSubSig, eraNewSig, heightStepMSig, isTacSig, linkFromSig, linkTypeSig,
   mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, parseWhenInput, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisSig, undoWorld, worldSig,
   type EditSub } from "./state.ts";
 
@@ -112,7 +112,8 @@ function PaintCtx() {
 function TerrainCtx() {
   const [lf, eco] = parseComposite(paintTerrainSig.value);   // 当前笔刷复合串 → 地貌/生态
   const axis = terrainAxisSig.value;
-  const unit = elevUnitM((worldSig.value?.meta || {}));
+  const meta = worldSig.value?.meta || {};
+  const stepM = heightStepM(meta, heightStepMSig.value);   // 生效的每笔米数（0=自动档）
   const setLf = (id: Landform) => { paintTerrainSig.value = eco === "none" ? id : id + "/" + eco; };
   const setEco = (id: Ecotype) => { paintTerrainSig.value = id === "none" ? lf : lf + "/" + id; };
   return (
@@ -147,7 +148,17 @@ function TerrainCtx() {
           <div class="hint">涂生态＝改地面色调/寻路代价（保留地貌）+ 随笔<b>随机落下相应真实布景印章</b>（乔木/沼草/沙丘…，落后可在「选择」里单独点选、调整、删除）；选「无」＝清生态回纯地貌。<kbd>E</kbd>切橡皮＝抹地面并擦附近印章 · <kbd>[ ]</kbd>调笔刷</div>
         </>
       ) : (
-        <div class="hint">高程画笔：按住拖动{brushEraseSig.value ? <b>▼ 下切</b> : <b>▲ 抬升</b>}地势（每笔约 {Math.round(0.02 * unit)}m，可反复叠加；<kbd>E</kbd> 换向、<kbd>[ ]</kbd> 调大小）。山峰/棱线/凹路皆可雕；开「等高线」图层看效果。水域恒平、陆地不跌成滩涂。</div>
+        <>
+          {/* 幅度分档（2026-08-10 精度批，用户点单）：战术 1m 起精雕、战略 10m 起粗塑；米数经
+              elevUnitM 折成抽象 dh（pointer.terrainDab）。档表按图种取＝换图自动换排 */}
+          <div class="sec" style={{ marginTop: "4px" }}>幅度<span class="mini">每笔抬降的米数 · 可叠加</span></div>
+          <div class="chips">
+            {(isTacSig.value ? HEIGHT_STEPS_TAC : HEIGHT_STEPS_STRAT).map(v => (
+              <button key={v} class="ch tr" aria-pressed={stepM === v} onClick={() => { heightStepMSig.value = v; }}>±{v}m</button>
+            ))}
+          </div>
+          <div class="hint">高程画笔：按住拖动{brushEraseSig.value ? <b>▼ 下切</b> : <b>▲ 抬升</b>}地势（每笔 ±{stepM}m，可反复叠加；<kbd>E</kbd> 换向、<kbd>[ ]</kbd> 调大小）。山峰/棱线/凹路皆可雕；开「等高线」图层看效果。水域恒平、陆地不跌成滩涂。笔画即时可见；松笔后水系约需一至三秒把草稿冲刷定形（进度见顶栏）、等高线与读数都取自定形后的地势。</div>
+        </>
       )}
     </>
   );

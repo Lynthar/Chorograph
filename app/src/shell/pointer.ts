@@ -5,9 +5,10 @@
 import { unproject, clampView, zoomAtView, panByView } from "../core/projection.ts";
 import { CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_KINDS, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
+import { BRUSH_NOTCHES, brushRadiusCells } from "../core/brush.ts";
 import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
-import { elevUnitM, elevSmooth } from "../core/elev.ts";
+import { elevUnitM, elevSmooth, heightStepM } from "../core/elev.ts";
 import { distKm } from "../core/geo.ts";
 import { esc, fmtKm, tget } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
@@ -20,7 +21,7 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUn
   inspEditSig, settingsSig, closeSettings, helpOpenSig, saveConflictSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
   addTypeSig, paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, decorKindSig, decorSizeSig,
-  brushSizeSig, brushEraseSig, eraNewSig,
+  brushSizeSig, brushEraseSig, decorEraseSig, eraNewSig, heightStepMSig,
   mutateWorld, mutateWorldLive, pushHistoryOnce, beginStroke, endStroke, undoWorld, redoWorld,
   deleteNodeAt, deleteUnitAt, deleteEdgeIdx, deleteDecorAt,
   type EditSub, type Sel }
@@ -188,7 +189,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const ll = unproject(cam(), x, y);
     const lon = dataLon(ctx.meta, ll[0]);
     const pd = paintStep(ctx.meta);
-    if (!brushCells(paintStroke.set, paintStroke.dims, lon, ll[1], brushSizeSig.value, brushEraseSig.value, pd)) return;
+    // 档位→格半径 R 在 core/brush 一处折算（笔刷函数仍收 size=R+1 的格语义，几何与既有测试不动）
+    const size = brushRadiusCells(ctx.meta, "paint", brushSizeSig.value) + 1;
+    if (!brushCells(paintStroke.set, paintStroke.dims, lon, ll[1], size, brushEraseSig.value, pd)) return;
     const { fid, idx, dims, set } = paintStroke;
     mutateWorldLive(w => {
       const f = w.factions.find(x2 => x2.id === fid);
@@ -203,10 +206,13 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     let changed = false;
     // 返回 changed 给 mutateWorldLive：空笔（涂同地形/无变化）不广播、不 editVer++（不留空撤销、不空触发自动保存）
     const axis = terrainAxisSig.peek();   // 三轴：lf 地貌 / eco 生态(改地面) / height 高程
+    // 高程笔米制分档（2026-08-10）：每笔 dh＝所选米数/elevUnitM（原硬编码 ±0.02＝40m@2000 无档位）
+    const dhAbs = heightStepM(ctx.meta, heightStepMSig.peek()) / elevUnitM(ctx.meta);
+    const size = brushRadiusCells(ctx.meta, "terrain", brushSizeSig.value) + 1;   // 同 paintDab：档位在 core/brush 折成格半径
     mutateWorldLive(w => {
       changed = axis === "height"
-        ? paintHeightAt(w, grid, dataLon(ctx.meta, ll[0]), ll[1], brushEraseSig.peek() ? -0.02 : 0.02, brushSizeSig.value, eraNewSig.peek())
-        : paintTerrainAt(w, grid, yearSig.peek(), dataLon(ctx.meta, ll[0]), ll[1], paintTerrainSig.value, brushSizeSig.value, brushEraseSig.value, eraNewSig.peek(), axis);
+        ? paintHeightAt(w, grid, dataLon(ctx.meta, ll[0]), ll[1], brushEraseSig.peek() ? -dhAbs : dhAbs, size, eraNewSig.peek())
+        : paintTerrainAt(w, grid, yearSig.peek(), dataLon(ctx.meta, ll[0]), ll[1], paintTerrainSig.value, size, brushEraseSig.value, eraNewSig.peek(), axis);
       return changed;
     });
     if (changed) rebuild();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）
@@ -227,7 +233,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const keep = new Set(ECO[eco].scatter.map(s => s.k));
     const ll = unproject(cam(), x, y);
     const ids = ecoForeignIdsInDisc(cam(), ctx.meta, w0, yearSig.peek(), ll[0], ll[1],
-      (brushSizeSig.peek() + 0.5) * grid.step, keep);
+      (brushRadiusCells(ctx.meta, "terrain", brushSizeSig.peek()) + 1.5) * grid.step, keep);   // 盘半径 R 格 + 外扩半格 + 一格毛边＝旧「size+0.5」逐位
     if (ids.length) mutateWorldLive(w => { for (const id of ids) removeDecor(w, id); });
   };
   const decorPlace = (x: number, y: number): void => {
@@ -238,7 +244,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       applyEra(addDecor(w, ll[0], ll[1], kind, decorSizeSig.value), eraNewSig.peek());
     });
   };
-  const decorEraseRadius = (): number => 6 + 5 * brushSizeSig.value;   // v0.14 decorEraseAt：半径随「大小」滑杆
+  const decorEraseRadius = (): number => 6 + 5 * decorEraseSig.value;   // v0.14 decorEraseAt：半径随「橡皮半径」滑杆（自有档位，见 state 头注）
   const decorEraseSweep = (x: number, y: number): void => {
     const w0 = worldSig.peek();
     if (!w0 || !decorPickable()) return;   // 布景层隐藏＝不许盲擦看不见的章
@@ -249,19 +255,26 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
      调整/删除，走同一 decor[] 层）。按间距节流（每约一笔刷宽落一簇）；尺寸由 ECO 散布规格 s 换算到
      decor.size（视觉与旧自动点缀相当）。生态=无 → 不落章（该笔只改/清地面色调与代价）。 */
   const ecoStamp = (x: number, y: number): void => {
-    if (!decorPickable()) return;                                   // 布景层隐藏＝不盲落
+    const grid = ctx.grid;
+    if (!decorPickable() || !grid) return;                          // 布景层隐藏＝不盲落
     const spec = ECO[parseComposite(paintTerrainSig.peek())[1]].scatter;
     if (!spec.length) return;
-    const spacing = Math.max(10, 9 * brushSizeSig.peek());
+    /* 播撒盘＝**看得见的那个笔刷环**（2026-08-12 随物理档位改）：原式 `5+6×档` 是屏幕 px 常数，
+       与按世界度画的环随缩放可差一个量级——放大时撒不满环、缩小时撒到环外（同 ecoForeignSweep
+       头注「不用屏幕 px 圈」之训的另一半）。取环的纵向半径，横向按投影 cos 折算＝恰好铺满环内。 */
+    const c = cam();
+    const rDeg = (brushRadiusCells(ctx.meta, "terrain", brushSizeSig.peek()) + 0.5) * grid.step;
+    const rPx = Math.max(3, rDeg / c.degPerPx);
+    const cosK = c.flat ? 1 : Math.cos(c.lat0 * Math.PI / 180);
+    const spacing = Math.max(10, 1.5 * rPx);                        // 每约一笔刷宽落一簇（旧 9×档 ÷ (5+6×档) 大档趋近 1.5，同比）
     if (ecoSprayLast && Math.hypot(x - ecoSprayLast.x, y - ecoSprayLast.y) < spacing) return;   // 未到间距不重落
     ecoSprayLast = { x, y };
-    const rPx = 5 + 6 * brushSizeSig.peek();
     let any = false;
     mutateWorldLive(w => {
       for (const it of spec) {
         if (Math.random() > Math.min(1, it.p * 1.15)) continue;     // 概率门（略提，画得密实些）
         const a = Math.random() * 6.2832, rr = Math.sqrt(Math.random()) * rPx;   // 盘内均匀散布
-        const l2 = unproject(cam(), x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+        const l2 = unproject(cam(), x + Math.cos(a) * rr * cosK, y + Math.sin(a) * rr);
         const size = +(it.s / (tget(DECOR_BASE, it.k) || 5) * (0.85 + Math.random() * 0.4)).toFixed(2);   // ±20% 尺寸抖动
         applyEra(addDecor(w, l2[0], l2[1], it.k, size), eraNewSig.peek());
         any = true;
@@ -912,12 +925,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     }
     if (modeSig.value === "edit" && (editSubSig.value === "paint" || editSubSig.value === "terrain")) {
       if (e.key === "[") { brushSizeSig.value = Math.max(1, brushSizeSig.peek() - 1); return; }
-      if (e.key === "]") { brushSizeSig.value = Math.min(12, brushSizeSig.peek() + 1); return; }
+      if (e.key === "]") { brushSizeSig.value = Math.min(BRUSH_NOTCHES, brushSizeSig.peek() + 1); return; }
       if (e.key === "e" || e.key === "E") { brushEraseSig.value = !brushEraseSig.peek(); return; }
     }
     if (modeSig.value === "edit" && editSubSig.value === "decor") {
-      if (e.key === "[") { if (brushEraseSig.peek()) brushSizeSig.value = Math.max(1, brushSizeSig.peek() - 1); else decorSizeSig.value = Math.max(0.5, Math.round((decorSizeSig.peek() - 0.1) * 10) / 10); return; }
-      if (e.key === "]") { if (brushEraseSig.peek()) brushSizeSig.value = Math.min(12, brushSizeSig.peek() + 1); else decorSizeSig.value = Math.min(2.5, Math.round((decorSizeSig.peek() + 0.1) * 10) / 10); return; }
+      if (e.key === "[") { if (brushEraseSig.peek()) decorEraseSig.value = Math.max(1, decorEraseSig.peek() - 1); else decorSizeSig.value = Math.max(0.5, Math.round((decorSizeSig.peek() - 0.1) * 10) / 10); return; }
+      if (e.key === "]") { if (brushEraseSig.peek()) decorEraseSig.value = Math.min(12, decorEraseSig.peek() + 1); else decorSizeSig.value = Math.min(2.5, Math.round((decorSizeSig.peek() + 0.1) * 10) / 10); return; }
       if (e.key === "e" || e.key === "E") { brushEraseSig.value = !brushEraseSig.peek(); return; }
     }
     if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) { e.preventDefault(); if (e.shiftKey) redoWorld(); else undoWorld(); return; }
@@ -973,8 +986,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         decorSizeSig.value = Math.max(0.5, Math.min(2.5, Math.round((decorSizeSig.peek() + dir * 0.1) * 10) / 10));
         return;
       }
-      if (sub === "paint" || sub === "terrain" || sub === "decor") {
-        brushSizeSig.value = Math.max(1, Math.min(12, brushSizeSig.peek() + dir));
+      if (sub === "decor") {   // 此处必是橡皮态（画笔态已在上一分支返回）——布景橡皮自有档位
+        decorEraseSig.value = Math.max(1, Math.min(12, decorEraseSig.peek() + dir));
+        return;
+      }
+      if (sub === "paint" || sub === "terrain") {
+        brushSizeSig.value = Math.max(1, Math.min(BRUSH_NOTCHES, brushSizeSig.peek() + dir));
         return;
       }
     }

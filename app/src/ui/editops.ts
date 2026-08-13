@@ -7,7 +7,7 @@ import { activeAt } from "../core/time.ts";
 import { setUnitPoint, unitKind } from "../core/units.ts";
 import { CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
-import type { Arm, Asset, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
+import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
 
 export const newNodeId = (): string => "n" + Date.now().toString(36);
 export const newEventId = (): string => "ev" + Date.now().toString(36);
@@ -208,6 +208,20 @@ export function removeOp(w: World, evId: string, i: number): boolean {
    圆盘笔刷（半径=size-1 格，dr²+dc²≤R²+0.5）逐格：先移除该格「当年生效且同粒度或更细」的旧涂改，
    再写入新涂改；橡皮=只移除（靠 buildGridCells 回退种子初稿/继承的粗块）。lon/lat=笔刷中心（数据经度，已折回）。
    新壳不再直改 grid.cells（改完由外壳 rebuild 重建）；era=「⏳新对象时间段」（勾选则涂改带 since/until）。 */
+/* 逐 dab 涂改索引（2026-08-10 精度批）：按「涂改中心所在格」分桶。280 密度重涂改图（长平级
+   ＝1.6 万条）上，原「盘内逐格 × 全表 filter」每 move 上百万次比较＝拖笔即卡；分桶后每 dab
+   一次 O(N) 建桶 + 逐格 O(命中数)。⚠ 桶只是**预筛**，候选仍过全谓词（|Δ|<tol 且 tol=0.4 格
+   <半格 ⇒ 命中者必落在中心所在桶＝无漏），负坐标的键折叠也只会多扫、被全谓词拒掉＝语义逐位。 */
+const bucketByCell = <T extends { lon: number; lat: number }>(list: T[], bb: BBox, step: number): Map<number, T[]> => {
+  const m = new Map<number, T[]>();
+  for (const o of list) {
+    const k = Math.floor((o.lat - bb.latMin) / step) * 4096 + Math.floor((o.lon - bb.lonMin) / step);
+    const a = m.get(k);
+    if (a) a.push(o); else m.set(k, [o]);   // 桶内保持数组序＝find 首个命中语义可复现
+  }
+  return m;
+};
+
 export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: number, lat: number,
   t: string, size: number, erase: boolean, era?: EraNew | null,
   axis: "both" | "lf" | "eco" = "both"): boolean {   // t=复合串（两轴）；axis=单轴笔刷时只并入该轴、另一轴留旧格值
@@ -216,29 +230,30 @@ export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: numbe
   const c0 = Math.floor((lon - bb.lonMin) / step), r0 = Math.floor((lat - bb.latMin) / step);
   const R = size - 1, prec = step >= 0.05 ? 2 : 4, tol = step * 0.4;
   const [brLf, brEco] = parseComposite(t);   // 笔刷复合的两轴分量（单轴模式各取其一并入现格）
-  let ovs = w.terrainOverrides || [];
+  const ovs = w.terrainOverrides || [];
   /* 地貌笔＝重定基面：涂到的格子把**当刻生效的手雕高程一并复位**（同粒度或更细，同类型涂改
      移除之规）——雕痕存在独立的 heightOverrides 层，地貌笔不清它时「涂平原盖不掉雕出的山」，
      且雕痕下的格子往往本就是平原类型＝涂平原零改动、字面意义的「刷不动」（2026-08-08 用户实报）。
      只在**落笔**时清（橡皮各轴自守）；生态轴不清——林可以长在雕出的山上。 */
   const wipeHov = !erase && axis !== "eco";
-  let hovs = w.heightOverrides;
+  const hovs = w.heightOverrides;
+  const bkt = bucketByCell(ovs, bb, step);
+  const hbkt = wipeHov && hovs && hovs.length ? bucketByCell(hovs, bb, step) : null;
+  const hit = (o: { lon: number; lat: number; step?: number; since?: number | null; until?: number | null },
+    clon: number, clat: number): boolean =>
+    Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
+      && (+(o.step as number) || step) <= step * 1.001 && activeAt(o, yearNow);
+  const deadT = new Set<TerrainOverride>(), deadH = new Set<HeightOverride>();
+  const added: TerrainOverride[] = [];
   let changed = false;
   for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
     if (dr * dr + dc * dc > R * R + 0.5) continue;
     const r = r0 + dr, c = c0 + dc;
     if (!(cells[r] && cells[r][c] !== undefined)) continue;   // 越界跳过
     const clon = bb.lonMin + (c + 0.5) * step, clat = bb.latMin + (r + 0.5) * step;
-    const n = ovs.length;
-    ovs = ovs.filter(o => !(Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
-      && (+(o.step as number) || step) <= step * 1.001 && activeAt(o, yearNow)));
-    if (ovs.length !== n) changed = true;
-    if (wipeHov && hovs && hovs.length) {
-      const nh = hovs.length;
-      hovs = hovs.filter(o => !(Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
-        && (+(o.step as number) || step) <= step * 1.001 && activeAt(o, yearNow)));
-      if (hovs.length !== nh) changed = true;
-    }
+    const k = r * 4096 + c;
+    for (const o of bkt.get(k) || []) if (!deadT.has(o) && hit(o, clon, clat)) { deadT.add(o); changed = true; }
+    if (hbkt) for (const o of hbkt.get(k) || []) if (!deadH.has(o) && hit(o, clon, clat)) { deadH.add(o); changed = true; }
     if (!erase) {
       // 单轴笔刷：并入现格值的对应轴（地貌笔改地貌留生态、生态笔改生态留地貌）——现格=cells 已含旧涂改+初稿
       let cellT = t;
@@ -249,17 +264,21 @@ export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: numbe
       }
       const ov: TerrainOverride = { lon: +clon.toFixed(prec), lat: +clat.toFixed(prec), t: cellT };
       if (tac) ov.step = +step.toFixed(4);   // 战术细格涂改记录自身块尺寸（与继承的 1° 粗块区分）——对齐旧 paintAt（index.html:2739），存档格式兼容硬约束
-      ovs.push(applyEra(ov, era)); changed = true;
+      added.push(applyEra(ov, era)); changed = true;
     }
   }
-  w.terrainOverrides = ovs;
-  if (hovs !== w.heightOverrides) w.heightOverrides = hovs;   // 只在真过滤时赋回（缺键不落盘之约）
+  // 与旧逐格 filter+push 的产物同序：存活者按原序 + 新涂按盘序追加（新涂中心互异＝不会互相命中）
+  w.terrainOverrides = deadT.size || added.length ? (deadT.size ? ovs.filter(o => !deadT.has(o)) : ovs).concat(added) : ovs;
+  if (deadH.size) w.heightOverrides = hovs!.filter(o => !deadH.has(o));   // 只在真移除时赋回（缺键不落盘之约）
   return changed;
 }
 
 /* —— 高程涂改（heightOverrides[]；渲染层专用，不动地形类型/寻路）——
    圆盘笔刷逐格**加性**叠加 dh（抬升正/下切负）；同格、同粒度、同时段的图章合并累加，
-   累加到 ≈0 自动清除（涂上去再涂回来=无痕）。几何与 paintTerrainAt 同（半径 size-1 格）。 */
+   累加到恰 0 自动清除（涂上去再涂回来=无痕）。几何与 paintTerrainAt 同（半径 size-1 格）。
+   精度 6 位小数（2026-08-10 米制分档批，原 4 位）：1m/笔 在自定义 elevUnitM（如 3000＝
+   0.000333/笔）下 4 位会削去 10%＝雕 100 笔少 10m；清除阈值随之 1e-4→1e-6（0.2m 的旧阈值
+   会把大 elevUnitM 下的整笔 1m 当零吞掉）。 */
 export function paintHeightAt(w: World, grid: Grid, lon: number, lat: number,
   dh: number, size: number, era?: EraNew | null): boolean {
   const { bb, step, cells } = grid;
@@ -269,6 +288,7 @@ export function paintHeightAt(w: World, grid: Grid, lon: number, lat: number,
   const ovs = w.heightOverrides || (w.heightOverrides = []);
   const es = era && era.on && era.since != null && isFinite(era.since) ? era.since : null;
   const eu = era && era.on && era.until != null && isFinite(era.until) ? era.until : null;
+  const bkt = bucketByCell(ovs, bb, step);   // 逐 dab 索引（预筛，候选仍过全谓词；桶内保数组序＝find 首个命中）
   const dead = new Set<HeightOverride>();
   let changed = false;
   for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
@@ -276,13 +296,13 @@ export function paintHeightAt(w: World, grid: Grid, lon: number, lat: number,
     const r = r0 + dr, c = c0 + dc;
     if (!(cells[r] && cells[r][c] !== undefined)) continue;
     const clon = +(bb.lonMin + (c + 0.5) * step).toFixed(prec), clat = +(bb.latMin + (r + 0.5) * step).toFixed(prec);
-    const ex = ovs.find(o => !dead.has(o) && Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
+    const ex = (bkt.get(r * 4096 + c) || []).find(o => !dead.has(o) && Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
       && (+(o.step as number) || step) <= step * 1.001 && (o.since ?? null) === es && (o.until ?? null) === eu);
     if (ex) {
-      ex.dh = +(ex.dh + dh).toFixed(4);
-      if (Math.abs(ex.dh) < 1e-4) dead.add(ex);
+      ex.dh = +(ex.dh + dh).toFixed(6);
+      if (Math.abs(ex.dh) < 1e-6) dead.add(ex);
     } else {
-      const ov: HeightOverride = { lon: clon, lat: clat, dh: +dh.toFixed(4) };
+      const ov: HeightOverride = { lon: clon, lat: clat, dh: +dh.toFixed(6) };
       if (tac) ov.step = +step.toFixed(4);
       ovs.push(applyEra(ov, era));
     }
@@ -290,6 +310,46 @@ export function paintHeightAt(w: World, grid: Grid, lon: number, lat: number,
   }
   if (dead.size) w.heightOverrides = ovs.filter(o => !dead.has(o));
   return changed;
+}
+
+/* —— 网格密度切换的涂改拆分（2026-08-10 精度批）——
+   密度提档（如 140→280）后，上一密度涂的块比新格粗：显示上仍按粗块盖章无恙，但
+   「同粒度或更细」的移除/橡皮规则永远认不得它们——旧笔迹擦不掉、涂平原压不掉旧雕痕
+   ＝「刷不动」之症的密度版。故把 step∈(新格,旧格] 的涂改按块覆盖域拆成新格若干枚
+   （几何=buildGridCells 粗块盖章同式；140→280 恰 2×2）。1° 继承粗块（step≫旧格）与
+   缺 step 条目（恒随当前网格）不动；**降档不迁移**（细块在粗网格上按所在格盖章、移除
+   规则本就认「更细」）。原数组序原位展开＝后涂者仍盖先涂者；整块落在图幅外＝原样保留
+   （拆出 0 枚等于静默删数据）。terrainOverrides 与 heightOverrides 同规（dh 逐枚照抄＝
+   栅格化累加结果不变）。返回被拆分的块数。 */
+export function splitOverridesToStep(w: World, bb: BBox, newStep: number, oldStep: number): number {
+  const lo = newStep * 1.001, hi = oldStep * 1.001;
+  const prec = newStep >= 0.05 ? 2 : 4, stp = +newStep.toFixed(4);
+  const cmax = Math.max(1, Math.ceil((bb.lonMax - bb.lonMin) / newStep)) - 1;
+  const rmax = Math.max(1, Math.ceil((bb.latMax - bb.latMin) / newStep)) - 1;
+  let n = 0;
+  const split = <T extends { lon: number; lat: number; step?: number }>(list: T[] | undefined): T[] | undefined => {
+    if (!list || !list.length) return list;
+    let any = false;
+    const out: T[] = [];
+    for (const o of list) {
+      const s = +(o.step as number) || 0;
+      if (!(s > lo && s <= hi)) { out.push(o); continue; }
+      /* ⚠ 低边 +1e-9 与高边 −1e-9 对称收缩：同族块的边恰落新格线上，浮点噪声会把低边挤进
+         左/下一格＝拆出 3×2 幅（2×2 的期望被复制多一列，实测踩过）；收缩量 ≪ 格距无碍真覆盖 */
+      const c0 = Math.max(0, Math.floor((o.lon - s / 2 - bb.lonMin + 1e-9) / newStep)), c1 = Math.min(cmax, Math.floor((o.lon + s / 2 - bb.lonMin - 1e-9) / newStep));
+      const r0 = Math.max(0, Math.floor((o.lat - s / 2 - bb.latMin + 1e-9) / newStep)), r1 = Math.min(rmax, Math.floor((o.lat + s / 2 - bb.latMin - 1e-9) / newStep));
+      if (c1 < c0 || r1 < r0) { out.push(o); continue; }   // 整块在图幅外＝保留原块
+      any = true; n++;
+      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++)
+        out.push({ ...o, lon: +(bb.lonMin + (c + 0.5) * newStep).toFixed(prec), lat: +(bb.latMin + (r + 0.5) * newStep).toFixed(prec), step: stp });
+    }
+    return any ? out : list;
+  };
+  const t = split(w.terrainOverrides);
+  if (t !== w.terrainOverrides && t) w.terrainOverrides = t;
+  const h = split(w.heightOverrides);
+  if (h !== w.heightOverrides && h) w.heightOverrides = h;
+  return n;
 }
 
 /* —— 手绘布景（decor[]；对齐旧 placeDecor/decorEraseAt）—— */
