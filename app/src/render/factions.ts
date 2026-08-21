@@ -28,7 +28,7 @@ export function drawFactions(ctx: CanvasRenderingContext2D, cam: Camera, meta: M
         ctx.beginPath();
         for (const L of pls) {
           let c = LOOP_CACHE.get(L);
-          if (!c || c.smooth !== smooth) { c = { smooth, loops: territoryLoops(L.cells, (meta || {}).bbox, smooth, paintStep(meta)) }; LOOP_CACHE.set(L, c); }
+          if (!c || c.smooth !== smooth) { c = { smooth, loops: territoryLoops(L, (meta || {}).bbox, smooth, paintStep(meta)) }; LOOP_CACHE.set(L, c); }   // 层整体传入＝cells/runs 双认（读旧写新）
           for (const lp of c.loops) {
             const pts = lp.map(p => project(cam, p[0], p[1]));
             pts.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]));

@@ -342,7 +342,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   /* 从战役事件点烘焙一张战术图，入库、在父图事件写双向链接、打开它。dia=战场直径 km */
   async function genTactical(ev: WorldNode, dia?: number | null): Promise<boolean> {
     if (!ctx.lib) { alert("图库不可用，无法生成战术图。"); return false; }
-    const world = createTacticalWorld(worldSig.peek()!, ev, dia || 200,
+    const world = createTacticalWorld(worldSig.peek()!, ev, dia || 60,
       { parentMapId: ctx.mapId, yearNow: yearSig.peek(), today: new Date().toISOString().slice(0, 10) });
     let newId: string | null = null, link: NonNullable<WorldNode["tacmap"]> | null = null;
     if (ctx.source === "folder" && ctx.folderDir) {
@@ -376,7 +376,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     else if (t.id && es.some(x => x.id === t.id)) id = t.id;
     if (!id && t.name) { const hit = es.find(x => x.name === t.name); if (hit) id = hit.id; }
     if (id) return openMapById(id);
-    if (confirm("找不到已链接的战术图（可能已删除，或图库来源已切换）。\n以默认参数重新生成一张？")) return genTactical(ev, 200);
+    if (confirm("找不到已链接的战术图（可能已删除，或图库来源已切换）。\n以默认参数重新生成一张？")) return genTactical(ev, 60);
     return false;
   }
   /* 战术图→上级战略图（meta.parent：id/文件名→名称 双重回退） */
@@ -433,7 +433,11 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       if (!confirm(ctx.source === "folder"
         ? `从文件夹删除「${nm}」？\n将删除文件 ${id}（能否找回取决于系统回收站设置）。`
         : `删除地图「${nm}」？\n此操作不可恢复（如需备份，请先打开它并「导出 JSON」）。`)) return;
-      if (ctx.source === "folder") { await folderRemove(ctx.folderDir!, id); fcacheRemove(ctx.fcache, ctx.folderDir!.name, id); ctx.lib!.kvSet("foldercache", ctx.fcache).catch(() => {}); }
+      if (ctx.source === "folder") {
+        /* 删失败（权限收回等）必须停手——继续清缓存/列表＝界面消失而文件还在的「假删除」 */
+        if (!(await folderRemove(ctx.folderDir!, id))) { alert(`删除失败：文件夹访问权限可能已失效，「${nm}」仍在磁盘上。`); return; }
+        fcacheRemove(ctx.fcache, ctx.folderDir!.name, id); ctx.lib!.kvSet("foldercache", ctx.fcache).catch(() => {});
+      }
       else await ctx.lib!.remove(id);
       if (ctx.mapId === id) ctx.mapId = null;
       refreshLib();

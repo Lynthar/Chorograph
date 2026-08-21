@@ -22,6 +22,13 @@ export function flatKmPerDeg(meta: Meta | undefined): number {
   return +(m.kmPerDeg ?? 0) || (2 * Math.PI * (+(m.planetRadiusKm ?? 0) || 10000) / 360);
 }
 
+/** 纬度每度公里数：平面走 flatKmPerDeg，球面按 2πR/360——与 distKm 同轨。
+    2026-08-12 自 elev.ts 迁来：网格密度（core/grid）要按公里定格边，而「网格依赖高程」是错的依赖方向。 */
+export function kmPerDeg(meta: Meta | undefined): number {
+  const m = meta || {};
+  return m.worldModel === "flat" ? flatKmPerDeg(m) : 2 * Math.PI * (+(m.planetRadiusKm ?? 0) || 10000) / 360;
+}
+
 /** 统一距离入口：球面=大圆；平面=直线 */
 export function distKm(meta: Meta | undefined, lon1: number, lat1: number, lon2: number, lat2: number): number {
   const m = meta || {};

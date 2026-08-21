@@ -2,7 +2,7 @@
    当年金显、未来淡显、选中描边；空态＝几何印引导。语义同旧 EventTimeline。
    战术图另有「相位」节（分帧命名时刻的列表管理,与时间坞金菱标记同源）。 */
 import { EVENT_TYPES } from "../core/constants.ts";
-import { calOf, cnDay, cnMonth, fmtHM, fmtShichen, fmtT, fmtWhen, fromT, type CalendarSpec } from "../core/calendar.ts";
+import { calOf, fmtDayTime, fmtMD, fmtT, fmtWhen, fromT, type CalendarSpec } from "../core/calendar.ts";
 import { evCurrentAt, evFutureAt, phaseIndexAt, phasesOf } from "../core/time.ts";
 import { addPhaseAt, removePhaseAt, renamePhase } from "./editops.ts";
 import { clearOpSel, flyReqSig, isTacSig, mutateWorld, selSig, showToast, stopPlay, worldSig, yearSig } from "./state.ts";
@@ -14,8 +14,8 @@ import { tget } from "../core/util.ts";
 function phLab(cal: CalendarSpec, t: number): string {
   const p = fromT(cal, t);
   const frac = t - Math.floor(t);
-  const hm = frac > 1e-9 ? " " + (cal.kind === "earth" ? fmtHM(frac) : fmtShichen(frac)) : "";
-  return (cal.kind === "earth" ? `${p.m}月${p.d}日` : `${cnMonth(p.m)}月${cnDay(p.d)}`) + hm;
+  const hm = frac > 1e-9 ? " " + fmtDayTime(cal, frac) : "";   // 月名/时刻一律走 calendar 的显示单一真源
+  return fmtMD(cal, p.m, p.d) + hm;
 }
 
 /** 相位节（战术图专属）：「＋ 新增相位」记当前时刻、行内改名（失焦即存）、

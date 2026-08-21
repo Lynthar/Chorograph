@@ -33,6 +33,13 @@ export interface ErodeInput {
   cap: number;
   /** 单轴细分上限（工作档 8 / 精修档 16）；必填同 cap 之规 */
   axisMax: number;
+  /** 细带波长倍率（工作档恒 1；精修档＝sxU/sxW）：三条**锚定细格**的细带（涂改细噪 λ≈5、雕体
+      支脉 λ≈14、表面细节 λ≈3）与坡度键的波长按此放大，使它们的**物理**尺度在两档之间固定。
+      不归一时精修档的细带波长随分辨率一起缩而幅度不变＝微坡度陡两三倍：井陉实测每公里坡度
+      中位数 精修/工作＝2.23×（p95 仅 1.11＝宏观地貌没变，变的全是细纹），停笔半分钟后硬换上屏
+      就成了用户实报的「过一会又回到细密纹理，山地尤其明显」。DIFF/DETAIL_AMP **有意不归一**：
+      前者让精修档保留更多真实短波、后者是幅度不是波长——精修更锐仍是本意，变的只是「不许换皮」。 */
+  bandS: number;
   /** 河道起始阈值（**当前分辨率的细格数**）：工作档恒 ACRIT_CELLS=300；精修档经 ultraInput
       按 (sxU/sxW)² 放大＝**物理集水面积与工作档一致**——不归一则精修档沟壑密度凭空三倍、
       换档瞬间「换了张图」（Acrit=min(acrit,n/64)×cellKm2，格数×更小的格面积＝更小的 km² 阈值） */
@@ -52,7 +59,10 @@ export interface ErodeInput {
    不重涂也自动更锐。代价＝战术侵蚀单 0.7s→约 2~3s（等待窗有 fieldPlusDelta 预览盖住）、
    缓存单条 3.2→约 10.6MB（fieldcache CAP 随之 20→8）。挑哪档由 erodeInput 按 mapKind 定，
    随输入进 ErodeInput.cap 与 erodeKey＝Worker 不看 ctx、缓存键自然分流。 */
-const MAX_FINE = 400_000;
+/* 战略 40万→60万(2026-08-13 尺度定形批):战略格边改公里锚定(20/3km)后大陆级区域图网格
+   384→200 列,预算不提则细分场 39万→24万=旗舰图显示不升反降;60 万恰令其升到 4×=43 万
+   (1.67km 细格)与改前观感持平。大格数图(全球 106 万)细分自然回 1×,耗时账见设计稿。 */
+const MAX_FINE = 600_000;
 const MAX_FINE_TAC = 1_400_000;
 const ITERS = 6;            // 侵蚀迭代数（隐式解无条件稳定；批6 自 5 上调＝切割深度的老实杠杆）
 const KDT = 0.04;           // 河蚀强度 ×dt（f=KDT·√A/dist；A 单位 km²、dist 单位 km）；批6 自 0.022 上调＝
@@ -95,7 +105,7 @@ const DETAIL_AMP = 0.15;            // 侵蚀后表面细节幅（λ≈3 细格�
 /* 细节的键＝max(类型/雕体系数, 坡度键)：**粗糙度的老实判据是坡度**——低而陡的雕崖该嶙峋、
    高而缓的丘顶该平滑（河洛岸崖 h4 实拍：键只挂雕体高度时低崖依旧软）。坡度取**侵蚀后**的
    最终场（沟壁天然带糙），逐格中央差读快照防次序依赖。 */
-const DETAIL_SLOPE_K = 12, DETAIL_SLOPE_CAP = 0.45;   // 每细格抽象坡 → 键（0.03/格≈45° 崖 → 0.36）
+const DETAIL_SLOPE_K = 12, DETAIL_SLOPE_CAP = 0.45;   // 每**参照**细格抽象坡 → 键（0.03/格≈45° 崖 → 0.36；见 ErodeInput.bandS）
 /* 平原静场（2026-08-08 批7）：两条细带（36/度 高频档、λ≈3 细格表面细节）的系数渐入改「带下限」
    ——正比例渐入把平原系数(0.017~0.035)按比例缩噪，但 ±1~3m 摊在 0.1~1km 波长上就是 3~8° 坡，
    坡度型光照照章显影＝「几米的高度差也都显示出来」（河洛/井陉平原实证，探针见评审归档）。
@@ -128,7 +138,7 @@ export function upscaleOf(cols: number, rows: number, cap: number, axisMax: numb
    年份免去 1~2s 重算，「先粗后细」的可见换场（用户实报读感像「还在施工/出错了」）就不再发生。
    指纹自动涵盖上方全部旋钮值；⚠ 改**公式/流程**而不动旋钮的数值行为变更须 EALGO+1，
    否则旧缓存会以旧观感还魂。 */
-const EALGO = 3;   // 2026-08-11：4K 静置精修（axisMax/acrit 入输入与键，键头 12→14 元）；前代 2=预算分档，均未发布
+const EALGO = 4;   // 2026-08-19：细带按物理波长归一（bandS 入输入与键，键头 14→15 元）；3=4K 静置精修、2=预算分档，均未发布
 const KNOB_FP = [EALGO, MAX_FINE, MAX_FINE_TAC, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF,
   RIDGE_F, RIDGE_W, RIDGE_AMP, RIDGE_MEAN, WARP1, WARP2, TYPE_FEATHER, DETAIL_AMP,
   DETAIL_SLOPE_K, DETAIL_SLOPE_CAP, HF_LO, DET_LO, DET_HI, RIDGE5_AMP, EPS,
@@ -157,13 +167,38 @@ export function erodeKey(inp: ErodeInput): string {
     for (let i = 0; i < u.length; i++) mix(u[i]);
   };
   const head = new Float64Array([inp.bb.lonMin, inp.bb.latMin, inp.bb.lonMax, inp.bb.latMax,
-    inp.step, inp.cols, inp.rows, inp.amp, inp.seed, inp.kmx, inp.kmy, inp.cap, inp.axisMax, inp.acrit]);
+    inp.step, inp.cols, inp.rows, inp.amp, inp.seed, inp.kmx, inp.kmy, inp.cap, inp.axisMax, inp.acrit, inp.bandS]);
   mixA(new Uint32Array(head.buffer));
   mixA(new Uint32Array(inp.elev0.buffer, inp.elev0.byteOffset, inp.elev0.length));   // 整段独立分配＝偏移恒 4 对齐
   mixA(new Uint32Array(inp.relief0.buffer, inp.relief0.byteOffset, inp.relief0.length));
   mixA(inp.water);
   mixA(new Uint32Array(inp.hovGrid.buffer, inp.hovGrid.byteOffset, inp.hovGrid.length));
   return ERODE_VER + "-" + (a >>> 0).toString(36) + "-" + (b >>> 0).toString(36);
+}
+
+/** 侵蚀门（2026-08-13 延迟组装批）：与 erodeInput 的「返 null」判据同一条——relief>0，或有
+    当刻生效、dh≠0、且**落得进图幅**的手雕高程（单格章=所在格在界内;粗块章=覆盖域与网格相交）。
+    host 在 rebuild 同拍只问门（轻,O(涂改数)零分配）,数组组装挪到防抖结算时——erodeInput 每次
+    组装分配 ~13B/格,196 万格图上每笔 move 白扔 26MB。⚠ 判据须与 erodeInput 逐位同判
+    （「门的判定与等待窗显示分支同源」之约由此担保;worker.test 拿随机夹具锁 gate===(input!==null)）。 */
+export function erodeGate(meta: Meta | undefined, hov: HeightOverride[] | undefined, grid: Grid, yearNow: number): boolean {
+  const m = meta || {};
+  if (Math.max(0, Math.min(1, +(m.relief as number) || 0)) > 0) return true;
+  const { bb, step, cols, rows } = grid;
+  for (const o of hov || []) {
+    if (!activeAt(o, yearNow)) continue;
+    const dh = +o.dh || 0; if (!dh) continue;
+    const bs = +(o.step as number) || step;
+    if (bs <= step * 1.001) {
+      const c = Math.floor((o.lon - bb.lonMin) / step), r = Math.floor((o.lat - bb.latMin) / step);
+      if (r >= 0 && r < rows && c >= 0 && c < cols) return true;
+    } else {
+      const c0 = Math.max(0, Math.floor((o.lon - bs / 2 - bb.lonMin) / step)), c1 = Math.min(cols - 1, Math.floor((o.lon + bs / 2 - bb.lonMin - 1e-9) / step));
+      const r0 = Math.max(0, Math.floor((o.lat - bs / 2 - bb.latMin) / step)), r1 = Math.min(rows - 1, Math.floor((o.lat + bs / 2 - bb.latMin - 1e-9) / step));
+      if (c1 >= c0 && r1 >= r0) return true;
+    }
+  }
+  return false;
 }
 
 /** 组装侵蚀输入（主线程侧）。「relief=0 且无高程涂改」返 null＝旧粗格路径逐位不变契约；
@@ -200,16 +235,20 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
   const kmx = m.worldModel === "flat" ? kmy : kmy * Math.cos((bb.latMin + bb.latMax) / 2 * Math.PI / 180);
   const cap = m.mapKind === "tactical" ? MAX_FINE_TAC : MAX_FINE;
   return { bb, step, cols, rows, elev0, relief0, water, amp, seed: ((m.genSeed as number) | 0) || 1, kmx, kmy, hovGrid,
-    cap, axisMax: 8, acrit: ACRIT_CELLS };
+    cap, axisMax: 8, acrit: ACRIT_CELLS, bandS: 1 };
 }
 
 /** 精修档输入（4K 静置精修，2026-08-11）：同一份工作档输入换预算——数组共享引用（Worker 侧
     postMessage 自会克隆）、axisMax 提到 16、acrit 按 (sxU/sxW)² 放大＝物理集水阈值与工作档
-    一致（见 ErodeInput.acrit 注）。ultraCap 由主机按 deviceMemory 分档传入。 */
-export function ultraInput(inp: ErodeInput, ultraCap: number): ErodeInput {
+    一致（见 ErodeInput.acrit 注）。ultraCap 由主机按 deviceMemory 分档传入。
+    ⚠ 倍率提不上去＝返 null 不发精修单（2026-08 审查修正）：低内存档 5.25M 预算撞上 196 万格
+    大战场时 sxU==sxW，同一几何在不同缓存键下整个重算一遍＝半分钟白算＋一条重复缓存；
+    工作档场就是终态，host 对 null 的处置（不排精修）现成。 */
+export function ultraInput(inp: ErodeInput, ultraCap: number): ErodeInput | null {
   const sxW = upscaleOf(inp.cols, inp.rows, inp.cap, inp.axisMax);
   const sxU = upscaleOf(inp.cols, inp.rows, ultraCap, 16);
-  return { ...inp, cap: ultraCap, axisMax: 16, acrit: inp.acrit * (sxU / sxW) * (sxU / sxW) };
+  if (sxU <= sxW) return null;
+  return { ...inp, cap: ultraCap, axisMax: 16, acrit: inp.acrit * (sxU / sxW) * (sxU / sxW), bandS: sxU / sxW };
 }
 
 /* —— 结构噪声：整数哈希 8 向梯度噪声（确定性、无三角函数；与 core/noise 的 sin-hash 无关＝不入平价）。
@@ -268,6 +307,11 @@ export function erodeField(inp: ErodeInput): ElevField {
   const { bb, step, cols, rows, elev0, relief0, water, amp, seed, kmx, kmy } = inp;
   const sx = upscaleOf(cols, rows, inp.cap, inp.axisMax);
   const FC = cols * sx, FR = rows * sx, n = FC * FR, fstep = step / sx;
+  /* 参照细格边＝工作档的细格（精修档 bandS>1 时把它撑回去，见 ErodeInput.bandS）。凡「锚定细格」
+     的波长与逐格坡度都按它算，两档的细纹遂是同一张皮、精修只是把它解析得更清楚。
+     ⚠ 工作档 bandS 恒 1 ⇒ `fstep * 1 === fstep`、`k * 1 === k` 皆位级恒等＝已验收的观感逐位不变
+     （改前/改后三输入哈希比对锁着这条）。 */
+  const rstep = fstep * inp.bandS;
   const h = new Float32Array(n);
   const base = new Float32Array(n);   // 结构基面（无噪声）：钳制参照，同旧「类型基础值」之职
   const wat = new Uint8Array(n);
@@ -297,7 +341,7 @@ export function erodeField(inp: ErodeInput): ElevField {
     const bt = b00 + (b01 - b00) * tx, bbt = b10 + (b11 - b10) * tx;
     bl2B = bt + (bbt - bt) * ty;
   };
-  const fnF = 1 / (5 * fstep);   // 涂改细噪声频率：波长≈5 细格（fbm 内含 4 倍频＝再往下细三档）
+  const fnF = 1 / (5 * rstep);   // 涂改细噪声频率：波长≈5 参照细格（fbm 内含 4 倍频＝再往下细三档）
   const sx1 = (seed % 97) * 1.31 + 41.7, sy1 = (seed % 89) * 0.97 + 13.9;   // 种子移相（与起伏噪声相位独立）
   /* 起伏噪声＝reliefNoise 同式同相位，唯 36/度 高频档按局部起伏系数渐入（coef≥0.12 时 ===reliefNoise）：
      细分场把高频档完整解析出来后，平原（系数小）的低幅高频起伏在坡度型光照里渲成满地褶皱棱角
@@ -332,11 +376,13 @@ export function erodeField(inp: ErodeInput): ElevField {
     }
   }
   const gw = RIDGE_W.map((w, k) => {
-    const t = Math.max(0, Math.min(1, (1 / (RIDGE_F[k] * fstep) - 2.5) / 2.5));
+    /* 别名门控按**参照**细格判：精修档解析得动更短的带，但那会让它比工作档多长出一条山系带
+       ＝换档换地貌。工作档能开的带在更细的格上永不走样，故按参照细格判既防混叠又保同形。 */
+    const t = Math.max(0, Math.min(1, (1 / (RIDGE_F[k] * rstep) - 2.5) / 2.5));
     return w * t * t * (3 - 2 * t);
   });
   const gwSum = gw.reduce((a, x) => a + x, 0);
-  const f5 = 1 / (14 * fstep);   // 雕体支脉带频率（格锚定）
+  const f5 = 1 / (14 * rstep);   // 雕体支脉带频率（锚定参照细格）
   const dcoef = new Float32Array(n);   // 侵蚀后表面细节的逐格系数（水域恒 0）
   for (let r = 0; r < FR; r++) {
     const pr = Math.min(rows - 1, (r / sx) | 0), lat = bb.latMin + (r + 0.5) * fstep;
@@ -520,7 +566,7 @@ export function erodeField(inp: ErodeInput): ElevField {
      把基座里的细噪声磨掉三成＝「雕形回糊」病根之二）；键＝max(系数, 坡度键)（见 DETAIL_SLOPE_K 注），
      平原近零、水域恒 0。在钳制之前＝地板天花之约不破。 */
   if (DETAIL_AMP > 0) {
-    const dF = 1 / (3 * fstep), dx2 = (seed % 83) * 1.7 + 9.1, dy2 = (seed % 79) * 1.13 + 27.4;
+    const dF = 1 / (3 * rstep), dx2 = (seed % 83) * 1.7 + 9.1, dy2 = (seed % 79) * 1.13 + 27.4;
     const fD = rowFbm();   // 本段自己的行滑窗（按行扫描）
     h2.set(h);   // 坡度读快照（h 正被逐格改写）
     for (let r = 0; r < FR; r++) {
@@ -532,7 +578,9 @@ export function erodeField(inp: ErodeInput): ElevField {
         const gy = (h2[(r < FR - 1 ? r + 1 : r) * FC + c] - h2[(r > 0 ? r - 1 : r) * FC + c]) * 0.5;
         /* 系数键带下限渐入（批7，见 DET_LO 头注）：平原不再吃 ±2m speckle；坡度键原样＝沟壁照旧带糙 */
         const dt = Math.max(0, Math.min(1, (dcoef[i] - DET_LO) / (DET_HI - DET_LO)));
-        const k = Math.max(dcoef[i] * dt * dt * (3 - 2 * dt), Math.min(DETAIL_SLOPE_CAP, Math.hypot(gx, gy) * DETAIL_SLOPE_K));
+        /* 坡度键 ×bandS：gx/gy 是「每细格的高差」，精修档的格更小＝同一面真坡读出来的键更小；
+           乘回倍率就是「每参照细格」的坡，与工作档同量纲（工作档 ×1＝逐位不变）。 */
+        const k = Math.max(dcoef[i] * dt * dt * (3 - 2 * dt), Math.min(DETAIL_SLOPE_CAP, Math.hypot(gx, gy) * DETAIL_SLOPE_K * inp.bandS));
         if (k > 0.02) h[i] += k * DETAIL_AMP * (fD((bb.lonMin + (c + 0.5) * fstep) * dF + dx2, lat * dF + dy2) - 0.47);
       }
     }
@@ -559,9 +607,12 @@ export function erodeField(inp: ErodeInput): ElevField {
   /* 定向天光遮蔽（朝光源西南向行进采样；量纲与着色器屏幕坡度一致）——帧时零成本的投影阴影 */
   const shadow = new Float32Array(n);
   const dirC = -0.7071, dirR = -0.7071;
-  /* 逐步距常量外提（同式同值：乘积/被除数逐位同，除法照旧是除法——换成乘倒数会漂位） */
-  const offC = SHADOW_STEPS.map(s => dirC * s), offR = SHADOW_STEPS.map(s => dirR * s);
-  const dDen = SHADOW_STEPS.map(s => s * fstep * 1.4142);
+  /* 逐步距常量外提（同式同值：乘积/被除数逐位同，除法照旧是除法——换成乘倒数会漂位）。
+     步距同样按 bandS 撑回**参照细格**：不撑则精修档的光线只走到工作档 1/bandS 的距离处
+     （井陉 480m→170m），山投下的影子当场短一截＝换档又换了张皮（工作档 ×1＝逐位不变）。 */
+  const sstep = SHADOW_STEPS.map(s => s * inp.bandS);
+  const offC = sstep.map(s => dirC * s), offR = sstep.map(s => dirR * s);
+  const dDen = sstep.map(s => s * fstep * 1.4142);
   for (let r = 0; r < FR; r++) for (let c = 0; c < FC; c++) {
     const i = r * FC + c;
     if (wat[i]) continue;

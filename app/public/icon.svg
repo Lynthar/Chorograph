@@ -8,8 +8,10 @@
       .mark{stroke:#dd6047;stroke-width:8.5}
     }
   </style>
-  <rect class="plate" width="100" height="100" rx="24"/>
-  <rect class="frame" x="5" y="5" width="90" height="90" rx="21" fill="none" stroke-width="7"/>
-  <path class="mark" d="M16 62 L37 30 L51 49 L64 33 L84 62" fill="none" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <path class="mark" d="M15 78 C27 71 36 85 50 78 C62 72 72 84 85 77" fill="none" stroke-width="8" stroke-linecap="round"/>
+  <!-- ⚠ 同样的三条也写成呈现属性：CSS 优先级恒高于呈现属性，故暗色分支照常生效；
+       而 <style> 被剥掉时（某些托管方会剥）仍渲染成白文，不至于退化成一团黑方块 -->
+  <rect class="plate" width="100" height="100" rx="24" fill="#b73527"/>
+  <rect class="frame" x="5" y="5" width="90" height="90" rx="21" fill="none" stroke-width="7" display="none"/>
+  <path class="mark" d="M16 62 L37 30 L51 49 L64 33 L84 62" fill="none" stroke="#fdf3ef" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path class="mark" d="M15 78 C27 71 36 85 50 78 C62 72 72 84 85 77" fill="none" stroke="#fdf3ef" stroke-width="8" stroke-linecap="round"/>
 </svg>

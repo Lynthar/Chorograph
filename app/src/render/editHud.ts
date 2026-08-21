@@ -3,18 +3,34 @@
 import { PD } from "../core/constants.ts";
 import { project, type Camera } from "../core/projection.ts";
 import { hexA } from "../core/util.ts";
-import type { PaintLayer } from "../core/types.ts";
+import { DEFAULT_BBOX } from "../core/types.ts";
+import type { BBox, PaintLayer } from "../core/types.ts";
 
-/** 当前编辑层的格底纹（对齐旧 drawPolitics 编辑态分支） */
-export function drawPaintCells(ctx: CanvasRenderingContext2D, cam: Camera, layer: PaintLayer, color: string, dpr: number, pd = PD): void {
+/** 当前编辑层的格底纹（对齐旧 drawPolitics 编辑态分支）。cells=逐格方块（旧档）;
+    runs=按行程整条画（×1 后满涂层逐格画每帧几十万矩形画不动,行程数只随边界复杂度）。
+    bb=图幅原点（runs 的行列相对它;2026-08-13 加参,frame 传 meta.bbox）。 */
+export function drawPaintCells(ctx: CanvasRenderingContext2D, cam: Camera, layer: PaintLayer, color: string, dpr: number, pd = PD, bb: BBox = DEFAULT_BBOX): void {
   const cells = layer.cells || [];
-  if (!cells.length) return;
+  const R = layer.runs;
+  if (!cells.length && !R) return;
   ctx.save();
   ctx.scale(dpr, dpr);
   ctx.fillStyle = hexA(color, 0.15);
   for (const [lon, lat] of cells) {
     const a = project(cam, lon - pd / 2, lat + pd / 2), b = project(cam, lon + pd / 2, lat - pd / 2);
     ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  }
+  if (R && +R.pd > 0 && Array.isArray(R.d)) {
+    const p = +R.pd, d = R.d;
+    const iMax = Math.ceil((bb.lonMax - bb.lonMin) / p) + 1;   // len 防御钳,同 eachPaintCenter（值也是用户数据）
+    for (let k = 0; k + 2 < d.length; k += 3) {
+      const j = Math.floor(+d[k]), i0 = Math.max(-2, Math.floor(+d[k + 1])), len = Math.floor(+d[k + 2]);
+      if (!isFinite(j) || !isFinite(i0) || !(len > 0)) continue;
+      const iEnd = Math.min(i0 + len, iMax);
+      if (iEnd <= i0) continue;
+      const a = project(cam, bb.lonMin + i0 * p, bb.latMin + (j + 1) * p), b = project(cam, bb.lonMin + iEnd * p, bb.latMin + j * p);
+      ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+    }
   }
   ctx.restore();
 }

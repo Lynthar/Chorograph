@@ -105,12 +105,14 @@ export function unitPos(u: Unit, T: number): UnitPos | null {
   return null;
 }
 
-/** 写/改某日航点：同日=改写（保留原状态 st），异日=插入并按日排序（原地修改；调用层负责失效 legs 缓存） */
+/** 写/改某日航点：同日=只改坐标（其余键全保留），异日=插入并按日排序（原地修改；调用层负责失效 legs 缓存）。
+    ⚠ 同日改写必须整点展开——原先只捎带 st，2026-07 之后航点长出的 facing/strength/speed/morale
+    在「选中当日再拖一下位置」这条最常走的路上被静默抹掉（2026-08 审查坐实的数据损坏）。 */
 export function setUnitPoint(u: Unit, T: number, lon: number, lat: number): void {
   u.track = u.track || [];
   const p: TrackPt = { t: +T, lon: +(+lon).toFixed(4), lat: +(+lat).toFixed(4) };
   const i = u.track.findIndex(q => q.t === +T);
-  if (i >= 0) { if (u.track[i].st) p.st = u.track[i].st; u.track[i] = p; }
+  if (i >= 0) u.track[i] = { ...u.track[i], ...p };
   else { u.track.push(p); u.track.sort((a, b) => a.t - b.t); }
 }
 
@@ -187,7 +189,7 @@ export interface Leg {
 }
 
 /* 一日行军约几小时：速度 v(km/日)是「含宿营休整的整日配额」,不是 24 小时匀速——
-   亚日航段(时辰级战役分帧)按 v/MARCH_H 的小时行军速率折算,否则 2 小时突击 5km
+   亚日航段(小时级战役分帧)按 v/MARCH_H 的小时行军速率折算,否则 2 小时突击 5km
    在 30km/日 之下会被 24 小时摊薄算成超速(井陉成图实测误报)。 */
 const MARCH_H = 8;
 

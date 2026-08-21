@@ -2,6 +2,7 @@
    normalizeWorld 是"单点迁移"哲学的载体：外部导入/旧存档缺什么补什么、旧字段就地升级，
    改这里的任何分支都是行为变更——旧档打开后的内容会跟着变，先想兼容。 */
 import { LEGACY_KIND, LEGACY_TYPE, EVENT_TYPES, UNIT_KINDS } from "./constants.ts";
+import { autoGridN } from "./grid.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
 import type { BBox, CalendarCfg, GenStyle, TerrainMode, World, WorldModel } from "./types.ts";
@@ -126,7 +127,37 @@ export interface BlankWorldSpec {
 
 /** 按世界参数生成空白世界。today=今日日期串(YYYY-MM-DD)——旧实现内联 new Date()，
     这里改显式传入以保持纯函数（黄金基准即以占位日期锁定其余全部字段）。 */
+/* —— 世界尺寸硬上限（2026-08-19 用户点单「新建图是不是没有硬上限」）——
+   此前经纬范围**一个钳都没有**（面板只补了「max≤min 就 +10」）：填 lonMin -5000 / lonMax 5000
+   照样建得出来，而建出来的图过不了自己的导入闸（validate 的跨度红线 3600/1700）＝「能建、存得出、
+   再也导不回来」。故按图种给两套边界，且平面那套**与 validate 同一条线**——建得出来的一定导得回去。
+   ⚠ 这条钳不管网格规模（那是 autoGridN 三道闸的职责，见「尺度定形」节），它管的是尺寸本身荒谬；
+   ⚠ 战术战场另有自己的红线 core/tactical.tacDiaClamp（直径 20~140km），两处各管一个图种。 */
+export const WORLD_RADIUS_KM: readonly [number, number] = [100, 500_000];
+export const WORLD_KM_PER_DEG: readonly [number, number] = [1, 100_000];
+/** 平面世界的度是自由标尺，只收到 validate 的致命线上（同 core/validate 的 3600/1700 与 |坐标|≤1e6） */
+const FLAT_SPAN: readonly [number, number] = [3600, 1700], FLAT_ABS = 1e6;
+const cl = (v: number, lo: number, hi: number): number => v < lo ? lo : (v > hi ? hi : v);
+
+export function clampWorldBBox(model: WorldModel | undefined, bb: BBox): BBox {
+  const sphere = model !== "flat";
+  const [aLon, aLat] = sphere ? [360, 90] : [FLAT_ABS, FLAT_ABS];
+  const [sLon, sLat] = sphere ? [360, 180] : FLAT_SPAN;
+  let lonMin = cl(+bb.lonMin || 0, -aLon, aLon), latMin = cl(+bb.latMin || 0, -aLat, aLat);
+  if (sphere) latMin = cl(latMin, -90, 90);
+  let lonMax = cl(+bb.lonMax || 0, -aLon, aLon), latMax = cl(+bb.latMax || 0, -aLat, aLat);
+  /* 退化/倒置留一条最小跨度：网格构造与投影都不吃零跨度的图幅 */
+  if (!(lonMax > lonMin)) lonMax = Math.min(sphere ? aLon : FLAT_ABS, lonMin + 1);
+  if (!(latMax > latMin)) latMax = Math.min(sphere ? 90 : FLAT_ABS, latMin + 1);
+  if (lonMax - lonMin > sLon) lonMax = lonMin + sLon;
+  if (latMax - latMin > sLat) latMax = latMin + sLat;
+  return { lonMin, lonMax, latMin, latMax };
+}
+
 export function blankWorld(s: BlankWorldSpec, today: string): World {
+  s = { ...s, bbox: clampWorldBBox(s.worldModel, s.bbox),
+    planetRadiusKm: s.planetRadiusKm == null ? undefined : cl(s.planetRadiusKm, WORLD_RADIUS_KM[0], WORLD_RADIUS_KM[1]),
+    kmPerDeg: s.kmPerDeg == null ? s.kmPerDeg : cl(s.kmPerDeg, WORLD_KM_PER_DEG[0], WORLD_KM_PER_DEG[1]) };
   const span = s.bbox.lonMax - s.bbox.lonMin;
   const w: any = {
     meta: { 名称: s.名称, 说明: "（新建地图）", worldModel: s.worldModel, planetRadiusKm: s.planetRadiusKm,
@@ -141,6 +172,10 @@ export function blankWorld(s: BlankWorldSpec, today: string): World {
   if (s.vault) w.meta.vault = s.vault;
   if (s.calendar) w.meta.calendar = s.calendar;   // 历法创建时定死（改 kind 会重释一切已存日戳）
   if (s.relief != null && s.relief > 0) w.meta.relief = s.relief;
+  /* 尺度身份盖章（2026-08-13 创建定形批）：网格密度在创建时解算并写进存档——尺寸输入（bbox/
+     kmPerDeg/半径）创建后冻结,公式却会演进;盖章后旧图永远按建图当天的格边打开,法则常数
+     此后只影响新图。⚠ 对黄金基准属 sanctioned 附加键：parity 比对时剥掉此键另断言其值。 */
+  w.meta.gridN = autoGridN(w.meta);
   return w as World;
 }
 

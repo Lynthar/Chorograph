@@ -139,9 +139,9 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
         {isBattle && !n.tacmap && !tac && (
           <span style={{ display: "inline-flex", gap: "5px", alignItems: "center" }}>
             <button class="bt tr" title="以此事件为中心生成小范围战场图（地形/地点/派系按当年快照继承）" onClick={() => {
-              tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(diaRef.current?.value ?? "") || 200) };
+              tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(diaRef.current?.value ?? "") || 60) };
             }}>⚔ 生成战术图</button>
-            <input ref={diaRef} class="fld" type="number" min={1} step={10} defaultValue="200" style={{ width: "5em" }} title="战场直径（km）" />
+            <input ref={diaRef} class="fld" type="number" min={20} max={140} step={10} defaultValue="60" style={{ width: "5em" }} title="战场直径 km（钳 20~140；对角线红线 200km）" />
             <span class="sub">km</span>
           </span>
         )}
@@ -228,7 +228,7 @@ function EdgeCard({ e, idx, world }: { e: Edge; idx: number; world: World }) {
 }
 
 
-/** 航段时长读数：≥1 日按日、不足 1 日按小时(时辰级航点的 days 是 1/24 浮点,裸显是一串小数) */
+/** 航段时长读数：≥1 日按日、不足 1 日按小时(亚日航点的 days 是 1/24 浮点,裸显是一串小数) */
 const fmtDur = (d: number): string => d >= 1 - 1e-9 ? `${+d.toFixed(1)}日` : `${+(d * 24).toFixed(1)}时`;
 
 /** 航点动向（沿旧行内编辑语义：坐标数字栏/状态选择/删航点；editable=编辑态） */

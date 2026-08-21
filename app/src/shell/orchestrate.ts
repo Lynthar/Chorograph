@@ -7,7 +7,6 @@
    「开图批末恰好重建一次」（builtFor 键 + batch 冲刷共同保证）。 */
 import { batch, effect } from "@preact/signals-core";
 import { roadCellSet } from "../core/grid.ts";
-import { unitLegs } from "../core/units.ts";
 import { worldSig, yearSig, selSig, hoverSig, editVerSig, gridVerSig, isTacSig, unitLegsSig, setWorldState } from "../ui/state.ts";
 import type { World } from "../core/types.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -30,7 +29,35 @@ export function landWorld(ctx: ShellCtx, w: World, id: string | null, year: numb
 
 /** 接线编排 effect；返回解除函数（生产不解除，供测试隔离用例） */
 export function wireOrchestration(ctx: ShellCtx, host: Pick<Host, "rebuildIfNeeded">): () => void {
-  return effect(() => {
+  /* 腿账下 Worker（2026-08 审查批）：unitLegs 原先在这个 effect 里**同步**跑 A*——尺度定形放开
+     140km 战场（196 万格）后，选中多腿部队＝主线程冻数秒，且 editVer 依赖使**拖航点每个 move
+     都重算全部腿**＝拖不动（routeClient.legs 的 Worker 通道当时已建成、无人调用）。
+     并发形制照抄 host 侵蚀闸：LEGS_MS 防抖归并连发（拖拽 move 间隔 8~33ms）＋单飞行＋dirty
+     补发＋seq 令牌丢过期/丢换选后到货的结果。官道格随单携带（roadCellSet 在主线程算,O(路网
+     格数) 便宜）——对象域编辑（加删路/挪地点）不重建网格,Worker ctx 里那份 roads 是旧的。
+     网格新鲜性由信道次序担保：rebuild 的 setContext 惰性推送恰在下一个 legs 请求前冲刷。
+     ⚠ 无部队时**同步清空**（选中态一变立即撤旧账,不等防抖）；⚠ 已知代价：分帧出图是同步流程,
+     出图帧里选中部队的超速⚠标记用的是最近一次算好的腿账（原先逐帧同步重算）。 */
+  let legsTimer: ReturnType<typeof setTimeout> | undefined;
+  let legsSeq = 0, legsBusy = false, legsDirty = false;
+  const LEGS_MS = 80;
+  const fireLegs = (): void => {
+    const w = worldSig.peek(), sel = selSig.peek();
+    const u = (w && ctx.grid && isTacSig.peek() && sel && sel.kind === "unit") ? (w.units || []).find(x => x.id === sel.id) : null;
+    if (!u) return;                                         // 效应体已同步清过 sig；这里只管「还有没有活」
+    if (legsBusy) { legsDirty = true; return; }
+    legsBusy = true;
+    const my = ++legsSeq, uid = u.id;
+    const roads = roadCellSet(w!.nodes, w!.edges, yearSig.peek(), ctx.grid!);
+    ctx.routeClient.legs(u, roads).then(legs => {
+      legsBusy = false;
+      const cur = selSig.peek();
+      if (legs && legsSeq === my && cur && cur.kind === "unit" && cur.id === uid)
+        unitLegsSig.value = new Map([[uid, legs]]);
+      if (legsDirty) { legsDirty = false; fireLegs(); }
+    }, e => { legsBusy = false; console.warn("腿账计算失败（保持上一份读数）：", e); });   // 拒绝也要放闸——卡死 busy＝这局腿账永哑
+  };
+  const dispose = effect(() => {
     const w = worldSig.value;
     if (w) ctx.meta = w.meta || {};
     yearSig.value; gridVerSig.value;
@@ -41,10 +68,15 @@ export function wireOrchestration(ctx: ShellCtx, host: Pick<Host, "rebuildIfNeed
        ⚠ isTacSig 这道门不是遗漏：战略图（2026-07-31 起也可摆部队）的航点时刻是**年**，而 unitLegs 的
        days 是日数——年差直接当日数比，会把「一年行军千里」判成超速。战略图的速度只作记账（同士气之规）。 */
     const sel = selSig.value;
-    editVerSig.value;                                       // 依赖：编辑改动（拖航点实时重算）
+    editVerSig.value;                                       // 依赖：编辑改动（拖航点重算，经防抖归并）
     const u = (w && ctx.grid && isTacSig.peek() && sel && sel.kind === "unit") ? (w.units || []).find(x => x.id === sel.id) : null;
-    if (!u) { if (unitLegsSig.peek().size) unitLegsSig.value = new Map(); return; }
-    const roads = roadCellSet(w!.nodes, w!.edges, yearSig.peek(), ctx.grid!);
-    unitLegsSig.value = new Map([[u.id, unitLegs(ctx.meta, ctx.grid!, roads, u)]]);
+    clearTimeout(legsTimer);
+    if (!u) {
+      legsSeq++; legsDirty = false;                         // 令牌作废＝换选/清选后到货的旧结果不落 sig
+      if (unitLegsSig.peek().size) unitLegsSig.value = new Map();
+      return;
+    }
+    legsTimer = setTimeout(fireLegs, LEGS_MS);
   });
+  return () => { clearTimeout(legsTimer); legsSeq++; dispose(); };
 }

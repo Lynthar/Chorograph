@@ -3,7 +3,7 @@
    语义断言防"新旧一起错"：官道减半、水军限水、可达性判定、时间轴范围。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildGridCells, roadCellSet } from "../src/core/grid.ts";
+import { buildGridCells, roadCellSet, type Grid } from "../src/core/grid.ts";
 import { astar, cellCenter, cellCost, computeRoute, lonlatToCell, measureLegs, routeReport } from "../src/core/route.ts";
 import { DEPTH_RATIO, bearingDeg, footCornersLL, setUnitPoint, unitFacingAt, unitFootKm, unitLegs, unitPos } from "../src/core/units.ts";
 import { pickUnit, unitSpots } from "../src/render/units.ts";
@@ -11,13 +11,15 @@ import { project, type Camera } from "../src/core/projection.ts";
 import { yearRangeOf } from "../src/core/time.ts";
 import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
-import { ERODE_VER, erodeField, erodeInput, erodeKey, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
+import { ERODE_VER, erodeField, erodeGate, erodeInput, erodeKey, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
 import { fbm } from "../src/core/noise.ts";
 import { reliefNoise, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
 /* 全平原世界：语义可手推 */
-const META: Meta = { terrain: "plain" };
+/* 战略夹具写死 48 列＝1°/格（DEFAULT_BBOX 恰 48° 宽）：网格密度自 2026-08-12 起缺键即自动，
+   而这些用例测的是寻路与腿账，不该随默认策略漂。 */
+const META: Meta = { terrain: "plain", gridN: 48 };
 const plainWorld = (over: Partial<World> = {}): World => ({
   meta: META, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [], ...over
 });
@@ -96,7 +98,8 @@ describe("寻路（语义）", () => {
 describe("寻路（战术尺度）", () => {
   /* 战术细网格三处尺度修正的判别测试（战略 1° 路径由 golden 平价锁定,此处专锁细网格域） */
   it("roadCellSet：战术细网格采样加密,官道格不断续", () => {
-    const meta: Meta = { mapKind: "tactical", terrain: "plain", bbox: { lonMin: 0, lonMax: 0.28, latMin: 0, latMax: 0.2 } };
+    const meta: Meta = { mapKind: "tactical", terrain: "plain", gridN: 140,   // 写死 140 列：这些用例测的是寻路与腿账，不该随密度默认值漂（2026-08-12 缺键改自动）
+      bbox: { lonMin: 0, lonMax: 0.28, latMin: 0, latMax: 0.2 } };
     const world = plainWorld({ meta,
       nodes: [{ id: "a", type: "city", lon: 0.011, lat: 0.101 }, { id: "b", type: "city", lon: 0.271, lat: 0.101 }],
       edges: [{ from: "a", to: "b", type: "road" }] });
@@ -188,7 +191,14 @@ describe("部队（语义）", () => {
     setUnitPoint(u, 90, 99, 29);
     assert.deepStrictEqual(u.track.map(p => p.t), [90, 100]);
   });
-  it("unitLegs：跨日=日配额旧语义；亚日按一日行军 8 小时折算（时辰级不再摊薄误报）", () => {
+  it("setUnitPoint：同日改写只动坐标——st/facing/兵力/速度/士气全保留（2026-08 审查：原先只捎 st，拖一下位置即静默抹掉存量声明）", () => {
+    const u: Unit = { id: "u", kind: "inf", track: [
+      { t: 100, lon: 100, lat: 30, st: "eng", facing: 45, strength: 8000, speed: 25, morale: 60 } as never] };
+    setUnitPoint(u, 100, 105, 35);
+    assert.deepStrictEqual(u.track, [
+      { t: 100, lon: 105, lat: 35, st: "eng", facing: 45, strength: 8000, speed: 25, morale: 60 }]);
+  });
+  it("unitLegs：跨日=日配额旧语义；亚日按一日行军 8 小时折算（小时级不再摊薄误报）", () => {
     const world = plainWorld();
     const { grid, roads } = mkGrid(world);
     const kmPerDay = distKm(META, 100.5, 30.5, 101.5, 30.5);   // 走 1 格的里程
@@ -205,7 +215,7 @@ describe("部队（语义）", () => {
     const dup: Unit = { id: "d", kind: "inf", track: [{ t: 5, lon: 100.5, lat: 30.5 }, { t: 5, lon: 100.5, lat: 30.5 }] };
     assert.strictEqual(unitLegs(META, grid, roads, dup)[0].ok, false, "days=0 恒不可达");
   });
-  it("unitLegs：时辰级航段的可达按小时速率（v/8 km/时）记账", () => {
+  it("unitLegs：亚日航段的可达按小时速率（v/8 km/时）记账", () => {
     const world = plainWorld();
     const { grid, roads } = mkGrid(world);
     const kmCell = distKm(META, 100.5, 30.5, 101.5, 30.5);
@@ -412,7 +422,7 @@ describe("侵蚀真形（core/erode）", () => {
     }
     return { bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 1, cols, rows,
       elev0, relief0, water, amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: hovGrid || new Float32Array(rows * cols),
-      cap: 400_000, axisMax: 8, acrit: 300 };
+      cap: 400_000, axisMax: 8, acrit: 300, bandS: 1 };
   };
   it("确定性：同输入两跑逐位同输出（Worker 与主线程回退必须可互换）", () => {
     const a = erodeField(mk()), b = erodeField(mk());
@@ -437,13 +447,30 @@ describe("侵蚀真形（core/erode）", () => {
     assert.strictEqual(upscaleOf(240, 161, 10_500_000, 16), 16, "井陉（0.001° 地板图）→ 恰 4K 宽");
     assert.strictEqual(upscaleOf(280, 188, 10_500_000, 16), 14, "280 密度图 → 3920×2632≈1030 万");
     assert.strictEqual(upscaleOf(140, 94, 10_500_000, 16), 16, "旧 140 图轴上限 16 → 2240×1504");
-    const w = mk(), u = ultraInput(w, 10_500_000);
+    const w = mk(), u = ultraInput(w, 10_500_000)!;
+    assert.ok(u, "倍率有增益＝出精修单");
     assert.strictEqual(u.cap, 10_500_000);
     assert.strictEqual(u.axisMax, 16);
     // 4×4 夹具：sxW=upscaleOf(4,4,400k,8)=8、sxU=upscaleOf(4,4,10.5M,16)=16 → acrit=300×(16/8)²=1200
     assert.strictEqual(u.acrit, 1200, "acrit 按 (sxU/sxW)² 放大＝物理集水阈值与工作档一致");
     assert.strictEqual(u.elev0, w.elev0, "数组共享引用（Worker postMessage 自会克隆）");
     assert.strictEqual(w.cap, 400_000, "原输入不被改写（纯函数）");
+    /* 零增益跳过（2026-08 审查）：低内存预算在大战场上提不动倍率＝同几何白算一遍还入一条重复缓存 */
+    assert.strictEqual(ultraInput({ ...w, cols: 1400, rows: 1400, cap: 1_400_000 }, 5_250_000), null,
+      "sxU==sxW（大战场×低内存档均 1×）＝不发精修单");
+  });
+  it("细带按物理波长归一（2026-08-19，用户实报「地势定形完过一会又回到细密纹理」）：bandS 的三条约束", () => {
+    /* 病：涂改细噪 λ≈5、雕体支脉 λ≈14、表面细节 λ≈3 都锚在**细格**上，精修档格更小＝物理波长
+       一起缩而幅度不变 ⇒ 微坡度陡两三倍（井陉实测每公里坡度中位数 精修/工作 2.23→归一后 1.26，
+       p95 仅 1.11＝宏观地貌本来就没变，变的全是细纹）。遮蔽光线步距同理（480m→170m）。 */
+    const w = mk(), u = ultraInput(w, 10_500_000)!;
+    const sxW = upscaleOf(w.cols, w.rows, w.cap, w.axisMax), sxU = upscaleOf(u.cols, u.rows, u.cap, u.axisMax);
+    assert.ok(sxU > sxW, "前提：精修档确实更细");
+    assert.ok(Math.abs(u.bandS * (u.step / sxU) - w.step / sxW) < 1e-12, "bandS×精修细格边＝工作档细格边（细带的物理波长两档一致）");
+    assert.strictEqual(w.bandS, 1, "工作档恒 1——×1 是位级恒等，已验收的观感逐位不变靠这条");
+    const a = erodeField(w), c = erodeField({ ...w, bandS: 2 });
+    assert.notDeepStrictEqual(Array.from(c.data), Array.from(a.data), "bandS 必须真接进场里，否则这条归一是摆设");
+    assert.notStrictEqual(erodeKey(u), erodeKey({ ...u, bandS: 1 }), "bandS 是内容键的一元（换了值不许命中旧缓存）");
   });
   it("水域＝基准面（远岸恒 -0.35、近岸随双线性基面，不侵蚀不加噪）；陆地不穿透类型地板", () => {
     const inp = mk(), f = erodeField(inp), sx = f.cols / 4;
@@ -500,7 +527,7 @@ describe("侵蚀真形（core/erode）", () => {
       return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
         elev0: new Float32Array(n2).fill(0.5), relief0: new Float32Array(n2).fill(relief),
         water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2),
-        cap: 400_000, axisMax: 8, acrit: 300 };
+        cap: 400_000, axisMax: 8, acrit: 300, bandS: 1 };
     };
     const span = (f: { data: Float32Array }): number => {
       const a = Float32Array.from(f.data).sort();
@@ -517,7 +544,7 @@ describe("侵蚀真形（core/erode）", () => {
       return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
         elev0: new Float32Array(n2).fill(0.5), relief0: new Float32Array(n2).fill(relief),
         water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2),
-        cap: 400_000, axisMax: 8, acrit: 300 };
+        cap: 400_000, axisMax: 8, acrit: 300, bandS: 1 };
     };
     const rough = (f: { data: Float32Array; cols: number; rows: number }): number => {
       const a: number[] = [];
@@ -584,12 +611,118 @@ describe("侵蚀真形（core/erode）", () => {
     assert.ok(Math.abs(sum - 0.3) < 1e-6, "只落这一格");
     const inp2 = erodeInput({ terrain: "plain", relief: 0.5 }, undefined, grid, 3100);
     assert.ok(inp2 && inp2.hovGrid.every(v => v === 0), "relief>0 无涂改＝零栅格照样侵蚀");
-    assert.strictEqual(inp2!.cap, 400_000, "战略图＝基准预算（逐位旧值）");
+    assert.strictEqual(inp2!.cap, 600_000, "战略图预算（2026-08-13 尺度定形批 40万→60万,随公里锚定的更细网格）");
     assert.strictEqual(inp2!.axisMax, 8, "工作档轴上限 8");
     assert.strictEqual(inp2!.acrit, 300, "工作档河道阈值＝旧常量逐位");
     const tacGrid = { ...grid, step: 0.01 };
     const inp3 = erodeInput({ terrain: "plain", relief: 0.5, mapKind: "tactical" }, undefined, tacGrid, 3100);
     assert.strictEqual(inp3!.cap, 1_400_000, "战术图＝140 万预算（分档随 mapKind）");
+  });
+  it("erodeGate 与 erodeInput 逐位同判（2026-08-13 延迟组装批:门在 rebuild 同拍、数组在结算拍,判据不许漂）", () => {
+    const { grid } = mkGrid(plainWorld());
+    const cases: [Record<string, unknown>, { lon: number; lat: number; dh?: number; step?: number; until?: number }[] | undefined][] = [
+      [{ terrain: "plain" }, []],
+      [{ terrain: "plain" }, undefined],
+      [{ terrain: "plain", relief: 0.5 }, undefined],
+      [{ terrain: "plain" }, [{ lon: 100.2, lat: 30.7, dh: 0.2 }]],
+      [{ terrain: "plain" }, [{ lon: 100.2, lat: 30.7, dh: 0 }]],                     // dh=0＝无效章
+      [{ terrain: "plain" }, [{ lon: 100.2, lat: 30.7, dh: 0.2, until: 3050 }]],      // 当刻失效
+      [{ terrain: "plain" }, [{ lon: 500, lat: 90, dh: 0.2 }]],                       // 落不进图幅
+      [{ terrain: "plain" }, [{ lon: 500, lat: 90, dh: 0.2, step: 3 }]],              // 粗块也在幅外
+      [{ terrain: "plain" }, [{ lon: 100.1, lat: 30.5, dh: 0.2, step: 2 }]],          // 粗块与网格相交
+      [{ terrain: "plain", relief: 0 }, [{ lon: 100.2, lat: 30.7, dh: -0.1 }]]
+    ];
+    for (const [meta, hov] of cases) {
+      const g = erodeGate(meta as never, hov as never, grid, 3100);
+      const i = erodeInput(meta as never, hov as never, grid, 3100);
+      assert.strictEqual(g, i !== null, `gate 与 input 判据漂了：${JSON.stringify([meta, hov])}`);
+    }
+  });
+});
+
+describe("A* 开集换堆（2026-08-13 规模引擎批）：弹出序与旧线性扫逐位相同、guard 随格数扩", () => {
+  /* 神谕＝旧实现（Map 线性扫最小 f、平手保留先入者）,在测试里原样内联——随机世界对照,
+     路径与里程 deepStrictEqual＝「(f,首入序) 字典序堆复刻平手语义」的性质锁。 */
+  const scanAstar = (meta: Meta | undefined, grid: Grid, roads: Set<string> | undefined,
+    startLL: [number, number], goalLL: [number, number], arm: "land" | "water") => {
+    const [sr, sc] = lonlatToCell(grid, startLL[0], startLL[1]);
+    const [gr, gc] = lonlatToCell(grid, goalLL[0], goalLL[1]);
+    const key = (r: number, c: number) => r * grid.cols + c;
+    const open = new Map<number, { r: number; c: number; f: number }>(), came = new Map<number, number>(), gScore = new Map<number, number>();
+    const hK = grid.step < 1 ? 0.5 : 1;
+    const h = (r: number, c: number) => {
+      const [lo, la] = cellCenter(grid, r, c), [glo, gla] = cellCenter(grid, gr, gc);
+      return distKm(meta, lo, la, glo, gla) * hK;
+    };
+    gScore.set(key(sr, sc), 0); open.set(key(sr, sc), { r: sr, c: sc, f: h(sr, sc) });
+    const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]];
+    let guard = 0;
+    while (open.size) {
+      if (++guard > 200000) break;
+      let cur: { r: number; c: number; f: number } | null = null, ck: number | null = null;
+      for (const [k, v] of open) { if (!cur || v.f < cur.f) { cur = v; ck = k; } }
+      open.delete(ck!);
+      if (cur!.r === gr && cur!.c === gc) {
+        const path: [number, number][] = [];
+        let k: number | undefined = ck!;
+        while (k !== undefined) { const r = Math.floor(k / grid.cols), c = k % grid.cols; path.push(cellCenter(grid, r, c)); k = came.get(k); }
+        path.reverse();
+        let dist = 0;
+        for (let i = 1; i < path.length; i++) dist += distKm(meta, path[i - 1][0], path[i - 1][1], path[i][0], path[i][1]);
+        return { path, dist };
+      }
+      for (const [dr, dc] of dirs) {
+        const nr = cur!.r + dr, nc = cur!.c + dc;
+        if (nr < 0 || nc < 0 || nr >= grid.rows || nc >= grid.cols) continue;
+        const cost = cellCost(grid, roads, nr, nc, arm);
+        if (!isFinite(cost)) continue;
+        const [lo1, la1] = cellCenter(grid, cur!.r, cur!.c), [lo2, la2] = cellCenter(grid, nr, nc);
+        const step = distKm(meta, lo1, la1, lo2, la2) * ((cellCost(grid, roads, cur!.r, cur!.c, arm) + cost) / 2);
+        const nk = key(nr, nc), tentative = gScore.get(key(cur!.r, cur!.c))! + step;
+        if (!gScore.has(nk) || tentative < gScore.get(nk)!) {
+          came.set(nk, key(cur!.r, cur!.c)); gScore.set(nk, tentative);
+          open.set(nk, { r: nr, c: nc, f: tentative + h(nr, nc) });
+        }
+      }
+    }
+    return null;
+  };
+  const lcg = (s: number) => () => (s = (s * 48271) % 2147483647) / 2147483647;
+  const randGrid = (seed: number, cols: number, rows: number): Grid => {
+    const rnd = lcg(seed);
+    const kinds = ["plain", "hill", "mountain", "forest", "marsh", "water", "desert"];
+    const cells: string[][] = [];
+    for (let r = 0; r < rows; r++) { const row: string[] = []; for (let c = 0; c < cols; c++) row.push(kinds[Math.floor(rnd() * kinds.length)]); cells.push(row); }
+    return { bb: { lonMin: 100, lonMax: 100 + cols * 0.01, latMin: 30, latMax: 30 + rows * 0.01 }, step: 0.01, cols, rows, cells };
+  };
+  it("随机世界对照：堆版与线性扫版路径/里程逐位相同（含官道平手与不可达）", () => {
+    const meta = { planetRadiusKm: 6371 } as Meta;
+    let reached = 0;
+    for (let seed = 1; seed <= 12; seed++) {
+      const g = randGrid(seed * 7 + 1, 24, 18);
+      const roads = new Set<string>();
+      const rnd = lcg(seed * 131 + 7);
+      for (let i = 0; i < 60; i++) roads.add(Math.floor(rnd() * 18) + "," + Math.floor(rnd() * 24));
+      for (const arm of ["land", "water"] as const) {
+        const A: [number, number] = [100.005, 30.005], B: [number, number] = [100 + 0.235, 30 + 0.175];
+        const a = astar(meta, g, roads, A, B, arm), b = scanAstar(meta, g, roads, A, B, arm);
+        assert.deepStrictEqual(a, b, `seed=${seed} arm=${arm} 堆版与神谕不同`);
+        if (a) reached++;
+      }
+    }
+    assert.ok(reached >= 8, `夹具须有足量可达用例（实得 ${reached}）`);
+  });
+  it("guard 随格数扩：旧 20 万步硬顶在大网格上会假报「不可达」——同一条长途在扩闸后可达", () => {
+    /* 500×500 全平原＝25 万格 > 旧 guard;0.5× 启发式下对角长途的真实弹出数超 20 万,
+       旧实现在中途 break 返 null（功能断裂）。guard=max(20 万,2×格数)＝50 万,走得完。 */
+    const cols = 500, rows = 500;
+    const cells: string[][] = [];
+    for (let r = 0; r < rows; r++) cells.push(new Array(cols).fill("plain"));
+    const g: Grid = { bb: { lonMin: 100, lonMax: 100 + cols * 0.001, latMin: 30, latMax: 30 + rows * 0.001 }, step: 0.001, cols, rows, cells };
+    const meta = { planetRadiusKm: 6371 } as Meta;
+    const res = astar(meta, g, undefined, [100.0005, 30.0005], [100 + 0.4995, 30 + 0.4995], "land");
+    assert.ok(res, "25 万格对角长途须可达（旧 guard 在此假报不可达）");
+    assert.ok(res!.path.length >= cols, "路径须真跨全图");
   });
 });
 

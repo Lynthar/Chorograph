@@ -143,6 +143,9 @@ export async function folderCreate(dir: DirHandleLike, world: unknown,
   return fn;
 }
 
-export async function folderRemove(dir: DirHandleLike, fn: string): Promise<void> {
-  try { await dir.removeEntry(fn); } catch { /* 已被外部删除=达成目的 */ }
+/** 删文件。已不存在＝达成目的（幂等 true）；**其余失败必须返 false**（权限被收回/句柄作废）——
+    原先全吞：调用方接着清 UI 缓存与列表，磁盘文件却还在＝「假删除」（失败要响，2026-08 审查）。 */
+export async function folderRemove(dir: DirHandleLike, fn: string): Promise<boolean> {
+  try { await dir.removeEntry(fn); return true; }
+  catch (e) { return (e as { name?: string } | null)?.name === "NotFoundError"; }   // 已被外部删除=达成目的
 }

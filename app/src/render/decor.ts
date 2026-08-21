@@ -180,11 +180,14 @@ export function drawPrim(g: C, kind: string, x: number, y: number, s: number, j 
 }
 
 /* 自定义印章位图缓存：asset id → 解码中的 Image（dataURL 无网络、1–2 帧内 complete）。
-   dataURL 按 id 不可变故只增不汰；未就绪的当帧跳过绘制。 */
+   dataURL 按 id 不可变故只增不汰；未就绪的当帧跳过绘制。
+   ⚠ 只认内嵌数据（data:/blob:）——src 是存档里的自由字符串（值也是用户数据），http(s) 外链
+   开图即向第三方发请求（分享档＝跟踪器），且无 CORS 的远程图会污染画布＝导出 PNG 抛
+   SecurityError；拒喂 src 的 Image naturalWidth 恒 0＝走「未解码跳过」现分支，不画不请求。 */
 const IMG_CACHE = new Map<string, HTMLImageElement>();
 function assetImg(a: Asset): HTMLImageElement {
   let im = IMG_CACHE.get(a.id);
-  if (!im) { im = new Image(); im.src = a.src; IMG_CACHE.set(a.id, im); }
+  if (!im) { im = new Image(); if (/^(data|blob):/.test(a.src)) im.src = a.src; IMG_CACHE.set(a.id, im); }
   return im;
 }
 

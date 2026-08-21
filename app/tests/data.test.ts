@@ -10,6 +10,7 @@ import { fcachePatch, fcacheRemove, folderCreate, folderList, folderMtime, folde
   folderReadWorldAt, folderUniqueFilename, folderWriteWorld, type DirHandleLike, type FolderCache, type FolderCacheEntry } from "../src/data/folder.ts";
 import { isStaleError, staleError, staleWrite } from "../src/data/guard.ts";
 import { openDB, reqP, txDone } from "../src/data/idb.ts";
+import { parseTemplates, pickCalendarCfg, removeTemplate, upsertTemplate, type CalTemplate } from "../src/data/calstore.ts";
 import { createTabSync, tabMapKey, TAB_WARN_OPEN, TAB_WARN_SAVED, type TabMsg } from "../src/data/tabsync.ts";
 
 let seq = 0;
@@ -44,7 +45,7 @@ function memDir(name = "地图夹", init: Record<string, string> = {}) {
       }
       return fileHandle(fn);
     },
-    async removeEntry(fn: string) { if (!(fn in files)) throw new Error("NotFound"); delete files[fn]; },
+    async removeEntry(fn: string) { if (!(fn in files)) { const e = new Error("NotFound"); e.name = "NotFoundError"; throw e; } delete files[fn]; },   // 名字对齐真 DOMException（folderRemove 按 name 判幂等）
     _touch(fn: string, content: string) { files[fn] = content; mt[fn] = ++clock; },
     _files: files,
     get _reads() { return reads; }
@@ -268,11 +269,13 @@ describe("文件夹图库", () => {
     const fn2 = await folderCreate(dir, { meta: { 名称: "新图" }, nodes: [] });
     assert.strictEqual(fn2, "新图-3.json");
   });
-  it("folderRemove 幂等；文件名净化防目录穿越", async () => {
+  it("folderRemove 幂等且报结果（真删/已不在=true，权限失败=false）；文件名净化防目录穿越", async () => {
     const dir = memDir("夹", { "删.json": "{}" });
-    await folderRemove(dir, "删.json");
+    assert.strictEqual(await folderRemove(dir, "删.json"), true);
     assert.ok(!("删.json" in dir._files));
-    await folderRemove(dir, "删.json");                     // 再删不炸
+    assert.strictEqual(await folderRemove(dir, "删.json"), true, "再删不炸＝幂等达成目的");
+    const locked = { ...dir, removeEntry: async () => { const e = new Error("denied"); e.name = "NotAllowedError"; throw e; } };
+    assert.strictEqual(await folderRemove(locked as typeof dir, "x.json"), false, "权限失败必须报 false（假删除之防）");
     assert.strictEqual(await folderUniqueFilename(dir, "../越权"), "_越权.json");
   });
   it("fcachePatch/fcacheRemove：按文件夹名分区，undefined 跳过", () => {
@@ -593,5 +596,36 @@ describe("侵蚀场缓存（data/fieldcache）", () => {
       if (i === 0) assert.strictEqual(got, null, "最旧一条必被淘汰");
       if (i >= over + 2) assert.ok(got, `近用条不该被淘汰：lru-${i}`);
     }
+  });
+});
+
+describe("历法模板库 data/calstore（2026-08-19：图库页存模具，建图时整份拷进 meta）", () => {
+  it("pickCalendarCfg 只留认得的键，坏值当没给（模板是本机自由数据）", () => {
+    assert.deepStrictEqual(pickCalendarCfg({ months: 10, dpm: 36, era: " 启 ", junk: 1, __proto__: { x: 1 } } as never),
+      { months: 10, dpm: 36, era: "启" });
+    assert.deepStrictEqual(pickCalendarCfg({ monthLens: ["x", 31, 0, 28] } as never), { monthLens: [31, 28] });
+    assert.deepStrictEqual(pickCalendarCfg({ hoursPerDay: 10, minutesPerHour: 100 } as never),
+      { hoursPerDay: 10, minutesPerHour: 100 });
+    assert.deepStrictEqual(pickCalendarCfg({ hoursPerDay: 24, minutesPerHour: 60, eras: [{ name: "开元", from: 100 }] } as never),
+      {}, "与缺省同值不落盘；已退役的旧键（年号/时段）一并当没给");
+    assert.deepStrictEqual(pickCalendarCfg({ kind: "earth", months: 10 } as never), { kind: "earth" }, "earth 不读其余键，同 calOf");
+    assert.deepStrictEqual(pickCalendarCfg("坏" as never), {});
+  });
+
+  it("parseTemplates：缺 id/名称的跳过、cfg 过筛、非数组返空", () => {
+    const l = parseTemplates([{ id: "a", 名称: "纪元历", cfg: { months: 10, junk: 2 } }, { 名称: "无 id" }, { id: "b" }, 7]);
+    assert.deepStrictEqual(l, [{ id: "a", 名称: "纪元历", cfg: { months: 10 } }]);
+    assert.deepStrictEqual(parseTemplates(null), []);
+    assert.deepStrictEqual(parseTemplates({ 0: { id: "a", 名称: "x" } }), [], "对象不是数组＝没有模板");
+  });
+
+  it("upsert 就地替换保次序、remove 按 id", () => {
+    const a: CalTemplate = { id: "a", 名称: "甲", cfg: {} }, b: CalTemplate = { id: "b", 名称: "乙", cfg: {} };
+    const l = upsertTemplate(upsertTemplate([], a), b);
+    assert.deepStrictEqual(l.map(t => t.id), ["a", "b"]);
+    const l2 = upsertTemplate(l, { id: "a", 名称: "甲改", cfg: { era: "启" } });
+    assert.deepStrictEqual(l2.map(t => t.名称), ["甲改", "乙"], "改名不该把它挪到末尾");
+    assert.deepStrictEqual(removeTemplate(l2, "a").map(t => t.id), ["b"]);
+    assert.deepStrictEqual(l.map(t => t.名称), ["甲", "乙"], "纯函数：原数组不动");
   });
 });

@@ -4,12 +4,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitArm, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
-import { buildGridCells } from "../src/core/grid.ts";
+import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
-  paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selMembers, selSig, setWorldState, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
+  paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selMembers, selSig, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 
@@ -117,24 +117,24 @@ describe("编辑操作内核", () => {
     assert.strictEqual(dataLon({}, 190), -170);
     assert.strictEqual(dataLon({ worldModel: "flat" }, 190), 190);
   });
-  it("addNode：city 起步、三位小数、link=名称", () => {
+  it("addNode：city 起步、四位小数（⚠ 期望有意翻转：原三位＝111m 量子，粗于 100m 战术格）、link=名称", () => {
     const w = mkWorld();
     const n = addNode(w, "洛城", 100.12345, 30.9876);
     assert.strictEqual(n.type, "city", "缺省仍 city 起步（旧行为）");
     assert.strictEqual(addNode(w, "垒", 101, 31, "camp").type, "camp", "柱B：可预选类型落点");
     assert.strictEqual(n.type, "city");
-    assert.strictEqual(n.lon, 100.123);
-    assert.strictEqual(n.lat, 30.988);
+    assert.strictEqual(n.lon, 100.1235);
+    assert.strictEqual(n.lat, 30.9876);
     assert.strictEqual(n.link, "洛城");
     assert.strictEqual(w.nodes[0], n);
   });
-  it("addLabel：type=label、文本=名称、经度折回三位小数、无 link/字段", () => {
+  it("addLabel：type=label、文本=名称、经度折回四位小数（同 addNode 期望翻转）、无 link/字段", () => {
     const w = mkWorld();
     const n = addLabel(w, "申时·东北风↗", 190.12345, 30.9876);
     assert.strictEqual(n.type, "label");
     assert.strictEqual(n.名称, "申时·东北风↗");
-    assert.strictEqual(n.lon, -169.877);
-    assert.strictEqual(n.lat, 30.988);
+    assert.strictEqual(n.lon, -169.8766);
+    assert.strictEqual(n.lat, 30.9876);
     assert.ok(!("link" in n) && !("字段" in n), "标注不预填 link/字段");
     assert.strictEqual(w.nodes[0], n);
   });
@@ -258,8 +258,31 @@ describe("编辑操作内核", () => {
     assert.deepStrictEqual(e.字段, { 宽度: "三丈" });
     assert.strictEqual(e.since, 3000);
   });
+  it("笔画路径版（2026-08-19 连续批）：一盘一格只处理一次——不重复入库、同格高程一笔只叠一次", () => {
+    const M = { worldModel: "sphere", terrain: "plain", gridN: 8, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;   // 8 列＝0.5°/格
+    const g = buildGridCells(M, [], 0);
+    const blank = (): import("../src/core/types.ts").World =>
+      ({ meta: M, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] } as never as import("../src/core/types.ts").World);
+    const key = (o: { lon: number; lat: number }): string => o.lon + "," + o.lat;
+    /* 两个盘心相隔一格、半径 1 格（十字 5 格）：并集 8 格、重叠 2 格。 */
+    const A: [number, number] = [101.25, 31.25], B: [number, number] = [101.75, 31.25];   // 图幅内部，免得圆盘被边界削掉
+
+    const wp = blank(); paintHeightPath(wp, g, [A, B], 0.02, 2, null);
+    assert.strictEqual(wp.heightOverrides!.length, 8, "并集 8 格，重叠格不许多出一条");
+    assert.ok(wp.heightOverrides!.every(o => o.dh === 0.02), "同一笔里重叠格只叠一次（快拖不该比慢拖挖得深）");
+
+    const wa = blank();
+    paintHeightAt(wa, g, A[0], A[1], 0.02, 2, null); paintHeightAt(wa, g, B[0], B[1], 0.02, 2, null);
+    assert.deepStrictEqual(new Set(wa.heightOverrides!.map(key)), new Set(wp.heightOverrides!.map(key)), "覆盖范围与逐点各落一笔相同");
+    assert.strictEqual(wa.heightOverrides!.filter(o => o.dh === 0.04).length, 2, "对照：分两次落笔才是两笔叠加（每个 move 一笔的旧语义不变）");
+
+    const wt = blank(); paintTerrainPath(wt, g, 0, [A, B], "hill", 2, false, null, "lf");
+    assert.strictEqual(wt.terrainOverrides!.length, 8, "地形同理：重叠格不许写两条（新写的不在桶里，后一盘看不见它）");
+    assert.strictEqual(new Set(wt.terrainOverrides!.map(key)).size, 8);
+  });
+
   it("paintHeightAt：同格图章加性合并、下切、累加≈0 自动清除", () => {
-    const M = { worldModel: "sphere", terrain: "plain", bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;
+    const M = { worldModel: "sphere", terrain: "plain", gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;   // 4 列＝1°/格
     const g = buildGridCells(M, [], 0);
     const w = { meta: M, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] } as never as import("../src/core/types.ts").World;
     paintHeightAt(w, g, 101.5, 31.5, 0.02, 1, null);
@@ -276,7 +299,7 @@ describe("编辑操作内核", () => {
   });
   it("地貌笔＝重定基面：涂到之处清当刻手雕高程；生态轴不清、橡皮不清、时段外不清（2026-08-08）", async () => {
     const { paintTerrainAt } = await import("../src/ui/editops.ts");
-    const M = { worldModel: "sphere", terrain: "plain", bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;
+    const M = { worldModel: "sphere", terrain: "plain", gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;   // 4 列＝1°/格
     const g = buildGridCells(M, [], 3000);
     const mk = () => {
       const w = { meta: M, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] } as never as import("../src/core/types.ts").World;
@@ -299,15 +322,18 @@ describe("编辑操作内核", () => {
     paintTerrainAt(w4, g, 3000, 101.5, 31.5, "plain", 1, false, null, "lf");
     assert.strictEqual(w4.heightOverrides!.length, 2, "当刻不生效的雕痕不清（时段层语义）");
   });
-  it("涂改块尺寸 ov.step：战术图涂改记录自身步长（对齐旧 paintAt·存档格式兼容）、战略图不写键", async () => {
+  it("涂改块尺寸 ov.step：格细于 1° 就记（对齐旧 paintAt·存档格式兼容）", async () => {
     const { paintTerrainAt } = await import("../src/ui/editops.ts");
-    // 战略图（step=1）：不写 step——与 v0.14 存档形状逐字节同构
-    const sm = { bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;
+    /* ⚠ **期望有意翻转**（2026-08-12 强制自动档）：判据一直是「缺 step 键＝按 1° 粗块解读」，
+       从前战略图的格恰好就是 1° 所以不必记；自动档后战略图的格也恒细于 1°，于是两个图种都记。
+       仍不记键的只剩「格恰好 1° 或更粗」——48° 图幅写死 48 列即是，也正是黄金基准夹具的形状。 */
+    const sm = { gridN: 48, bbox: { lonMin: 100, lonMax: 148, latMin: 30, latMax: 62 } } as never as import("../src/core/types.ts").Meta;
     const sg = buildGridCells(sm, [], 3000);
+    assert.strictEqual(sg.step, 1, "前提：这张战略图恰好 1°/格");
     const sw = mkWorld({ meta: sm });
     paintTerrainAt(sw, sg, 3000, 101.5, 31.5, "water", 1, false, null);
     assert.strictEqual(sw.terrainOverrides.length, 1);
-    assert.ok(!("step" in sw.terrainOverrides[0]), "战略涂改不带 step 键（旧档形状不变）");
+    assert.ok(!("step" in sw.terrainOverrides[0]), "恰 1° 的涂改不带 step 键（v0.14 存档形状）");
     // 战术图（步长=跨度/140）：记录 +step.toFixed(4)，与继承的 1° 粗块区分
     const tm = { mapKind: "tactical", bbox: { lonMin: 100, lonMax: 101.4, latMin: 30, latMax: 31.4 } } as never as import("../src/core/types.ts").Meta;
     const tg = buildGridCells(tm, [], 3000);
@@ -320,42 +346,24 @@ describe("编辑操作内核", () => {
     assert.strictEqual(tw.heightOverrides![0].step, +tg.step.toFixed(4));
     const sw2 = mkWorld({ meta: sm });
     paintHeightAt(sw2, sg, 101.5, 31.5, 0.02, 1, null);
-    assert.ok(!("step" in sw2.heightOverrides![0]), "战略高程涂改不带 step 键");
+    assert.ok(!("step" in sw2.heightOverrides![0]), "恰 1° 的高程涂改不带 step 键");
   });
-  it("splitOverridesToStep：密度提档拆分上一密度的涂改（2026-08-10 精度批）", async () => {
-    const { splitOverridesToStep, paintTerrainAt } = await import("../src/ui/editops.ts");
-    const bbox = { lonMin: 100, lonMax: 101.4, latMin: 30, latMax: 31.4 };
-    const m140 = { mapKind: "tactical", bbox } as never as import("../src/core/types.ts").Meta;
-    const g140 = buildGridCells(m140, [], 3000);
-    const w = mkWorld({ meta: m140 });
-    w.terrainOverrides.push({ lon: 100.5, lat: 30.5, t: "water", step: 1 });      // 1° 继承粗块＝不动（真实档序：烘焙继承在前、本图涂改追加在后）
-    w.terrainOverrides.push({ lon: 100.9, lat: 30.9, t: "plain" });               // 缺 step＝恒随当前网格＝不动
-    paintTerrainAt(w, g140, 3000, 100.703, 30.703, "hill", 1, false, null);   // 落点取格内偏心＝避开格线上的浮点判归
-    paintHeightAt(w, g140, 100.703, 30.703, 0.5, 1, { on: true, since: 3000, until: 3050 });
-    const oldStep = g140.step, newStep = Math.max(0.001, (bbox.lonMax - bbox.lonMin) / 280);
-    const n = splitOverridesToStep(w, bbox, newStep, oldStep);
-    assert.strictEqual(n, 2, "地形+高程各一块被拆");
-    const fine = w.terrainOverrides.filter(o => o.t === "hill");
-    assert.strictEqual(fine.length, 4, "140→280＝恰 2×2");
-    assert.ok(fine.every(o => o.step === +newStep.toFixed(4)), "拆出的块记新步长");
-    assert.strictEqual(w.terrainOverrides.filter(o => o.t === "water").length, 1, "1° 继承粗块原样");
-    assert.strictEqual(w.terrainOverrides.filter(o => o.t === "plain").length, 1, "缺 step 条目原样");
-    assert.strictEqual(w.heightOverrides!.length, 4, "高程章同规拆分");
-    assert.ok(w.heightOverrides!.every(o => o.dh === 0.5 && o.since === 3000 && o.until === 3050), "dh 逐枚照抄、时段键随块拷贝");
-    // 拆出的细块在新网格上仍盖同域（按各自块心探格＝格心必在格内，浮点稳），且新橡皮擦得掉（「刷不动」之症的密度版被治住）
-    const m280 = { mapKind: "tactical", gridN: 280, bbox } as never as import("../src/core/types.ts").Meta;
-    const g280 = buildGridCells(m280, w.terrainOverrides, 3000);
-    for (const o of fine)
-      assert.strictEqual(g280.cells[Math.floor((o.lat - 30) / g280.step)][Math.floor((o.lon - 100) / g280.step)], "hill", "拆分后同域仍生效");
-    const w2 = { ...w, meta: m280 } as never as import("../src/core/types.ts").World;
-    paintTerrainAt(w2, g280, 3000, 100.703, 30.703, "plain", 3, true, null);   // 半径 2 盘含对角＝罩住整个 2×2
-    assert.strictEqual(w2.terrainOverrides.filter(o => o.t === "hill").length, 0, "新密度橡皮能移除拆出的块");
-    // 整块在图幅外＝保留原块（拆出 0 枚等于静默删数据）
-    const w3 = mkWorld({ meta: m140 });
-    w3.terrainOverrides.push({ lon: 99, lat: 29, t: "hill", step: +oldStep.toFixed(4) });
-    splitOverridesToStep(w3, bbox, newStep, oldStep);
-    assert.strictEqual(w3.terrainOverrides.length, 1, "幅外块原样保留");
-    assert.strictEqual(w3.terrainOverrides[0].lon, 99);
+  it("战略图开了网格密度即记 step——不记的话烘焙成战术图时会按 1° 粗块盖章（面积三十几倍）", async () => {
+    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    /* 判据自 2026-08-12 起是「格细于 1°」而非「是不是战术图」：缺 step 键＝按 1° 粗块解读
+       （grid/erode/elev 三处 `+(o.step) || step` 与 core/tactical 烘焙的 `|| 1` 同规）。 */
+    const dm = { gridN: 192, bbox: { lonMin: 100, lonMax: 148, latMin: 30, latMax: 62 } } as never as import("../src/core/types.ts").Meta;
+    const dg = buildGridCells(dm, [], 3000);
+    assert.ok(dg.step < 1, `前提：这张战略图的格细于 1°（实得 ${dg.step}）`);
+    const dw = mkWorld({ meta: dm });
+    paintTerrainAt(dw, dg, 3000, 101.5, 31.5, "water", 1, false, null);
+    assert.strictEqual(dw.terrainOverrides[0].step, +dg.step.toFixed(4), "细格战略涂改须记块尺寸");
+    paintHeightAt(dw, dg, 101.5, 31.5, 0.02, 1, null);
+    assert.strictEqual(dw.heightOverrides![0].step, +dg.step.toFixed(4), "高程涂改同规则");
+  });
+  it("splitOverridesToStep 已删（2026-08-13 冻结批）：尺寸/密度创建后冻结,「改图幅=改格边」的迁移路不存在了", async () => {
+    const ops = await import("../src/ui/editops.ts");
+    assert.ok(!("splitOverridesToStep" in ops), "冻结后不该再有涂改拆分入口——它复活即说明有人重新打开了改图幅的路");
   });
   it("applyEdgeForm：河宽 widthM——>0 存、空/非法删、不传不动", () => {
     const e = { from: "a", to: "b", type: "river" } as never as import("../src/core/types.ts").Edge;
@@ -567,30 +575,41 @@ describe("派系与涂域", () => {
     assert.strictEqual(f.since, 3000);
     assert.strictEqual(f.link, "L");
   });
-  it("涂域格集合：cells↔Set 往返稳定（两位小数落盘）", async () => {
-    const { paintDims, cellsToSet, setToCells } = await import("../src/ui/paint.ts");
-    const dims = paintDims({});
+  it("涂域位图：层(cells/runs 双认)↔位图↔runs 往返稳定（2026-08-13 尺度定形批,存档读旧写新）", async () => {
+    const { maskFromLayer, runsFromMask } = await import("../src/ui/paint.ts");
+    const { paintCellSet } = await import("../src/core/territory.ts");
+    const pd = 0.5;
     const cells: [number, number][] = [[100.25, 30.25], [82.25, 22.25], [129.75, 53.75]];
-    const s = cellsToSet(dims.bb, cells);
-    assert.strictEqual(s.size, 3);
-    const back = setToCells(dims.bb, s).sort((a, b) => a[0] - b[0]);
-    assert.deepStrictEqual(back, cells.slice().sort((a, b) => a[0] - b[0]));
+    const m1 = maskFromLayer({}, { cells }, pd);
+    assert.strictEqual(m1.data.reduce((a, b) => a + b, 0), 3, "三个旧坐标对各亮一格");
+    const runs = runsFromMask(m1);
+    assert.strictEqual(runs.pd, pd);
+    assert.strictEqual(runs.d.length, 9, "三格互不相邻＝三条行程");
+    // runs 解码回集合＝与 cells 解码逐位同集（读旧写新的等价性）
+    const bb = m1.bb;
+    assert.deepStrictEqual([...paintCellSet({ runs }, bb, pd)].sort(), [...paintCellSet(cells, bb, pd)].sort());
+    // 再进位图＝定点（往返稳定）
+    const m2 = maskFromLayer({}, { runs }, pd);
+    assert.deepStrictEqual([...m2.data], [...m1.data]);
+    // 连排格压成单条行程（行程编码真的在压）
+    const row: [number, number][] = [[100.25, 30.25], [100.75, 30.25], [101.25, 30.25]];
+    const r2 = runsFromMask(maskFromLayer({}, { cells: row }, pd));
+    assert.strictEqual(r2.d.length, 3, "同行连排＝一条 [j,i0,len]");
+    assert.strictEqual(r2.d[2], 3, "len=3");
   });
-  it("brushCells：圆盘半径/越界裁剪/橡皮/无变化返回 false", async () => {
-    const { paintDims, brushCells } = await import("../src/ui/paint.ts");
+  it("brushMask：圆盘半径/越界裁剪/橡皮/无变化返回 false", async () => {
+    const { paintDims, maskFromLayer, brushMask } = await import("../src/ui/paint.ts");
     const dims = paintDims({});
-    const s = new Set<string>();
-    assert.strictEqual(brushCells(s, dims, 100.25, 30.25, 3, false), true);
-    const n3 = s.size;
+    const m = maskFromLayer({}, { cells: [] }, 0.5);
+    const count = () => m.data.reduce((a: number, b: number) => a + b, 0);
+    assert.strictEqual(brushMask(m, 100.25, 30.25, 3, false), true);
+    const n3 = count();
     assert.ok(n3 >= 9 && n3 <= 21, `size=3 圆盘应 9~21 格，得 ${n3}`);
-    assert.strictEqual(brushCells(s, dims, 100.25, 30.25, 3, false), false, "重涂同处无变化");
-    assert.strictEqual(brushCells(s, dims, 100.25, 30.25, 3, true), true, "橡皮清除");
-    assert.strictEqual(s.size, 0);
-    brushCells(s, dims, dims.bb.lonMin + 0.1, dims.bb.latMin + 0.1, 4, false);
-    for (const k of s) {
-      const [i, j] = k.split(",").map(Number);
-      assert.ok(i >= 0 && j >= 0, "越界格应被裁剪");
-    }
+    assert.strictEqual(brushMask(m, 100.25, 30.25, 3, false), false, "重涂同处无变化");
+    assert.strictEqual(brushMask(m, 100.25, 30.25, 3, true), true, "橡皮清除");
+    assert.strictEqual(count(), 0);
+    brushMask(m, dims.bb.lonMin + 0.1, dims.bb.latMin + 0.1, 4, false);
+    assert.ok(count() > 0 && count() < 49, "贴角落笔＝越界半盘被裁剪");
   });
   it("ensurePaintLayer / removePaintLayer / setPaintLayerSpan", async () => {
     const { ensurePaintLayer } = await import("../src/ui/paint.ts");
@@ -691,7 +710,7 @@ describe("地形涂改", () => {
   it("paintTerrainAt：圆盘笔刷改格、经 buildGridCells 生效、同格重涂不堆叠、橡皮回种子、空擦无变化", async () => {
     const { paintTerrainAt } = await import("../src/ui/editops.ts");
     const { buildGridCells } = await import("../src/core/grid.ts");
-    const meta = { bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } };   // 4×4 战略网格（step=1）
+    const meta = { gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } };   // 4×4 战略网格（写死 4 列＝step=1）
     const lon = 101.5, lat = 31.5, c = 1, r = 1;                                    // 落在 (r1,c1) 格中心
     const g0 = buildGridCells(meta, [], 3000);
     const seed = g0.cells[r][c];
@@ -719,7 +738,7 @@ describe("地形涂改", () => {
   it("paintTerrainAt 单轴：生态轴改生态留地貌、地貌轴改地貌留生态、生态 none 清生态", async () => {
     const { paintTerrainAt } = await import("../src/ui/editops.ts");
     const { buildGridCells } = await import("../src/core/grid.ts");
-    const meta = { terrain: "plain" as const, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } };   // 初稿全 plain
+    const meta = { terrain: "plain" as const, gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } };   // 初稿全 plain，4 列＝1°/格
     const lon = 101.5, lat = 31.5, r = 1, c = 1;
     const w = mkWorld({ meta });
     const cell = () => buildGridCells(meta, w.terrainOverrides, 3000).cells[r][c];   // 每步按最新涂改重建取该格
@@ -736,13 +755,13 @@ describe("地形涂改", () => {
 });
 
 describe("布景 + 框选", () => {
-  it("addDecor / removeDecor：挂 decor[]、三位小数、id 唯一、空则删键", async () => {
+  it("addDecor / removeDecor：挂 decor[]、四位小数（同 addNode 期望翻转）、id 唯一、空则删键", async () => {
     const { addDecor, removeDecor } = await import("../src/ui/editops.ts");
     const w = mkWorld();
     const d0 = addDecor(w, 100.12345, 30.9876, "tree", 1.5);
     assert.strictEqual(d0.kind, "tree");
-    assert.strictEqual(d0.lon, 100.123);
-    assert.strictEqual(d0.lat, 30.988);
+    assert.strictEqual(d0.lon, 100.1235);
+    assert.strictEqual(d0.lat, 30.9876);
     assert.strictEqual(d0.size, 1.5);
     const d1 = addDecor(w, 110, 40, "peak", 1);
     assert.strictEqual(w.decor!.length, 2);
@@ -753,13 +772,13 @@ describe("布景 + 框选", () => {
     assert.strictEqual(removeDecor(w, d1.id), true);
     assert.strictEqual(w.decor.length, 0, "删空后留空数组（decor 为必备字段）");
   });
-  it("moveDecor：改经纬（经度折回、三位小数）、缺失 id 无操作", async () => {
+  it("moveDecor：改经纬（经度折回、四位小数，同 addNode 期望翻转）、缺失 id 无操作", async () => {
     const { addDecor, moveDecor } = await import("../src/ui/editops.ts");
     const w = mkWorld();
     const d = addDecor(w, 100, 30, "tree", 1);
     moveDecor(w, d.id, 105.98765, 31.12345);
-    assert.strictEqual(d.lon, 105.988);
-    assert.strictEqual(d.lat, 31.123);
+    assert.strictEqual(d.lon, 105.9877);
+    assert.strictEqual(d.lat, 31.1234);   // 31.12345 的二进制略低于半位＝toFixed 收 4（非 5）
     moveDecor(w, "没有", 0, 0);   // 不抛
     assert.strictEqual(w.decor.length, 1);
   });
@@ -1118,5 +1137,31 @@ describe("整组成员集合 selMembers（批删／方向键微调／整组拖�
     assert.deepStrictEqual(selMembers({ kind: "edge", idx: 0 }), empty);
     assert.deepStrictEqual(selMembers({ kind: "faction", id: "f1" }), empty);
     assert.deepStrictEqual(selMembers(null), empty);
+  });
+});
+
+/* 时间轴细档随历法走（2026-08-20 历法通用化）：战术图的「时」档一步＝一日的 1/时数。
+   缺省 24 时制＝1/24 日，与旧的硬编码逐位相同；配了 10 时制的世界，时间轴就真按 10 时走。 */
+describe("时间步进粒度 timeStep", () => {
+  const withWorld = (calendar: unknown, tac: boolean, fn: () => void): void => {
+    const w0 = worldSig.peek(), s0 = subDaySig.peek();
+    worldSig.value = { meta: { mapKind: tac ? "tactical" : "strategic", calendar }, nodes: [] } as never;
+    subDaySig.value = true;
+    try { fn(); } finally { worldSig.value = w0; subDaySig.value = s0; }
+  };
+  it("粗档恒 1（日/年）", () => {
+    const s0 = subDaySig.peek();
+    subDaySig.value = false;
+    assert.strictEqual(timeStep(), 1);
+    subDaySig.value = s0;
+  });
+  it("战术图细档＝1/每日时数（缺省 24 与旧硬编码逐位同）", () => {
+    withWorld({}, true, () => assert.strictEqual(timeStep(), 1 / 24));
+    withWorld({ hoursPerDay: 10 }, true, () => assert.strictEqual(timeStep(), 1 / 10));
+    withWorld({ kind: "earth" }, true, () => assert.strictEqual(timeStep(), 1 / 24, "地球历恒 24 时"));
+  });
+  it("战略图细档＝1/月数（不受一日时数影响）", () => {
+    withWorld({ months: 10, dpm: 36, hoursPerDay: 10 }, false, () => assert.strictEqual(timeStep(), 1 / 10));
+    withWorld({}, false, () => assert.strictEqual(timeStep(), 1 / 12));
   });
 });

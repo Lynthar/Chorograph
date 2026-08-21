@@ -1,6 +1,6 @@
 /* 时间坞纯逻辑：主轨聚簇/标签避让、战术「时」窗口、量子化、时轨刻度。
    语义断言（组件 TimeDock.tsx 走截图目检；此处锁的是设计决议的可测部分：
-   「事件间距 <10px 聚簇」「当前日 ±1 窗口」「半时辰步进网格」）。 */
+   「事件间距 <10px 聚簇」「当前日 ±1 窗口」「时档步进网格」）。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildMarks, hourWindow, quantTime, subTicks } from "../src/ui/timedock.ts";
@@ -71,7 +71,7 @@ describe("quantTime：步进网格+钳制", () => {
   it("年粒度四舍五入", () => {
     assert.equal(quantTime(3106.6, 1, 2980, 3180), 3107);
   });
-  it("半时辰网格（1/24 日）", () => {
+  it("「时」网格（1/24 日，缺省时制）", () => {
     assert.equal(quantTime(4.03, 1 / 24, 1, 9), Math.round(4.03 * 24) / 24);
   });
   it("出界钳制", () => {
@@ -81,11 +81,11 @@ describe("quantTime：步进网格+钳制", () => {
 });
 
 describe("subTicks：时轨刻度", () => {
-  it("三日窗：每日 大刻+日名、午 中刻、22 半时辰小刻", () => {
-    const ts = subTicks(3, 6, d => "日" + d);
+  it("三日窗：每日 大刻+日名、午 中刻、22 道时刻小刻", () => {
+    const ts = subTicks(3, 6, 24, (d: number) => "日" + d);
     assert.equal(ts.filter(t => t.kind === "day").length, 3);
     assert.equal(ts.filter(t => t.kind === "noon").length, 3);
-    assert.equal(ts.filter(t => t.kind === "half").length, 3 * 22);
+    assert.equal(ts.filter(t => t.kind === "hour").length, 3 * 22);
     assert.deepEqual(ts.filter(t => t.kind === "day").map(t => t.label), ["日3", "日4", "日5"]);
     // 首日大刻在 0%、次日在 1/3 处；正午在日内 12/24
     const days = ts.filter(t => t.kind === "day");

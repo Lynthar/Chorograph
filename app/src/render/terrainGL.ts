@@ -231,6 +231,10 @@ void main(){
   vec4 twEff=vec4(mt.tw.xy, max(mt.tw.z, min(1.0, smac*float(${FX.slopeRidge}))), mt.tw.w);
   // 屏幕锚定纹理的幅度按 1/像素密度折算（明暗对比恒定不随缩放）× 陡坡增纹（见 FX.texSlope 头注）
   float texW=float(${FX.texW})/uPXPD*(1.0+min(float(${FX.texSlopeMax}), max(0.0, smac-float(${FX.texSlopeLo}))*float(${FX.texSlope})));
+  // 纹理疏密：世界锚定两八度低频调制（见 FX.texPatchF 头注）——五点采样共用此 texW，故不添假坡
+  float pf=float(${FX.texPatchF})/uGridBB.z;
+  float pn=0.65*vnoise2(rel*pf+vec2(19.3,5.7))+0.35*vnoise2(rel*pf*2.7+vec2(63.1,28.9));
+  texW*=mix(float(${FX.texPatchLo}), float(${FX.texPatchHi}), smoothstep(0.32,0.68,pn));
   // 装饰噪声门（decoGate 同式；land 平滑过渡防岸线阶跃；fine 纯 uniform=一致控制流,粗格恒 1）
   float fine=uFStep<uGridBB.z*0.999?1.0:0.0;
   float dk0=max(smoothstep(float(${FX.decoSlopeLo}),float(${FX.decoSlopeHi}),smac),

@@ -43,6 +43,24 @@ export function polylineKm(meta: Meta | undefined, pts: [number, number][]): num
   return s;
 }
 
+/** 线段与轴对齐矩形是否相交（含端点在内、贴边相切；Liang-Barsky 参数区间非空即交）。
+    战术烘焙「折线穿越战场即带入」用——「任一顶点在框内」会漏掉两端都在框外的横贯线
+    （RDP 把长直河道简化到只剩框外顶点，2026-08 审查坐实）。 */
+export function segIntersectsRect(x0: number, y0: number, x1: number, y1: number,
+  xMin: number, yMin: number, xMax: number, yMax: number): boolean {
+  if (!isFinite(x0 + y0 + x1 + y1)) return false;   // 值也是用户数据：NaN 会让下面的比较全假=空放行
+  const dx = x1 - x0, dy = y1 - y0;
+  let t0 = 0, t1 = 1;
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0;
+    const r = q / p;
+    if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+    else { if (r < t0) return false; if (r < t1) t1 = r; }
+    return true;
+  };
+  return clip(-dx, x0 - xMin) && clip(dx, xMax - x0) && clip(-dy, y0 - yMin) && clip(dy, yMax - y0);
+}
+
 /** 射线法：点是否在多边形内 */
 export function pointInPoly(x: number, y: number, pts: Pt[]): boolean {
   let c = false;

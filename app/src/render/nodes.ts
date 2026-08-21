@@ -5,7 +5,7 @@
    事件点未发生=淡显、当年=红圈；编辑模式全部地点可见（旧 nodeVisible 语义）。
    ⚠ nodeVisibleAt 是绘制与拾取（render/pick.ts）同源的可见门——改门先想两边；
    noteBox 同理是标注文本体的同源几何（画与点都由它出）。 */
-import { NODE_STYLE, RANK_ZOOM, certaintyStyle } from "../core/constants.ts";
+import { NODE_STYLE, RANK_KM_PX, certaintyStyle } from "../core/constants.ts";
 import { activeAt, evCurrentAt, evFutureAt, ownerAt } from "../core/time.ts";
 import { project, type Camera } from "../core/projection.ts";
 import { kmPerDegLat, toRad } from "../core/geo.ts";
@@ -198,7 +198,7 @@ function drawNodeMark(ctx: CanvasRenderingContext2D, n: WorldNode, x: number, y:
 /** 地点可见门（绘制与拾取同源，防"隐形可选"）：时限 → nodes 总门与 events/notes 类型子门 →
     编辑全见 → rank 缩放门。pin 屏幕角标注不在此处理：绘制走 drawPinnedNotes、拾取一律排除。 */
 export interface NodeGateOpts { layers?: Record<string, boolean>; editing?: boolean }
-export function nodeVisibleAt(n: WorldNode, cam: Camera, yearNow: number, opts: NodeGateOpts): boolean {
+export function nodeVisibleAt(n: WorldNode, cam: Camera, meta: Meta | undefined, yearNow: number, opts: NodeGateOpts): boolean {
   const L = opts.layers || {};
   if (!activeAt(n, yearNow)) return false;
   if (L.nodes === false) return false;
@@ -206,15 +206,15 @@ export function nodeVisibleAt(n: WorldNode, cam: Camera, yearNow: number, opts: 
   if (n.type === "label" && L.notes === false) return false;
   if (opts.editing) return true;                       // 编辑也按当年世界编辑，但全部地点可见
   const s = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
-  return cam.degPerPx <= RANK_ZOOM[s.rank == null ? 2 : s.rank];
+  return cam.degPerPx * kmPerDegLat(meta) <= RANK_KM_PX[s.rank == null ? 2 : s.rank];
 }
 export function drawNodes(
-  ctx: CanvasRenderingContext2D, cam: Camera, world: World, yearNow: number,
+  ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
   opts: OverlayOpts, multiSet: Set<string>, fcolor: (id: string | null) => string,
   field: LabelField
 ) {
   const on = (id: string) => (opts.layers || {})[id] !== false;
-  const nodeVisible = (n: WorldNode) => nodeVisibleAt(n, cam, yearNow, opts);
+  const nodeVisible = (n: WorldNode) => nodeVisibleAt(n, cam, meta, yearNow, opts);
   /* 占位次序＝让位次序：标注最先（不让位）→ 当日事件（战场焦点，2026-07 提级）→ 地名按 rank；
      部队标签在 drawUnits（同场、更后）——部队让地名（用户拍板：地点语义上固定不动，标签该稳）。 */
   const keyOf = (n: WorldNode): number => n.type === "label" ? -2
@@ -284,7 +284,7 @@ export function drawNodeRanges(
     if (!(typeof n.radiusKm === "number" && n.radiusKm > 0)) continue;
     const selected = n.id === selId;
     const st = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
-    const visible = activeAt(n, yearNow) && cam.degPerPx <= (RANK_ZOOM[st.rank] ?? Infinity);
+    const visible = activeAt(n, yearNow) && cam.degPerPx * kpd <= (RANK_KM_PX[st.rank] ?? Infinity);
     if (!visible && !selected) continue;
     const dLat = n.radiusKm / kpd;
     const cosn = flat ? 1 : Math.max(0.05, Math.cos(toRad(n.lat)));

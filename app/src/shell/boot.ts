@@ -4,9 +4,9 @@
 import { effect } from "@preact/signals-core";
 import { roadCellSet } from "../core/grid.ts";
 import { clampView } from "../core/projection.ts";
-import { flatKmPerDeg } from "../core/geo.ts";
 import { createTerrainRenderer } from "../render/renderer.ts";
 import { mountUI } from "../ui/mount.tsx";
+import { initCalTemplates } from "../ui/CalendarOverlay.tsx";
 import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
   modeSig, armSig, routePtsSig, routeResSig, routeBusySig, setMode,
   editSubSig, editVerSig, isTacSig, linkTypeSig, tacReqSig,
@@ -35,6 +35,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     const ui = JSON.parse(localStorage.getItem("yutu2.ui") || "{}") || {};
     uiPrefsSig.value = { theme: ui.theme === "dark" ? "dark" : "light", den: ui.den === "tight" ? "tight" : "loose", legend: ui.legend !== false };
   } catch (e) {}
+  initCalTemplates();   // 本机历法模板（建图时的模具，见 data/calstore 头注）；读不到就是没有，不拦启动
   effect(() => {
     const p = uiPrefsSig.value;
     const app = $("app");
@@ -147,14 +148,6 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   $("btnHome").onclick = () => goHome();
   $("btnSettings").onclick = () => openSettings("app");
   $("btnHelp").onclick = () => { helpOpenSig.value = !helpOpenSig.peek(); };
-  /* 星球/尺度读数（原底栏 updateFooterData 前半；迁画布右下 coords 浮签）：随世界变化更新 */
-  effect(() => {
-    const w = worldSig.value;
-    const m: Meta = (w && w.meta) || {};
-    $("ftPlanet").textContent = m.worldModel === "flat"
-      ? `平面·天圆地方 ${Math.round(flatKmPerDeg(m))} km/度`
-      : `球面星球 半径 ${m.planetRadiusKm || "—"} km`;
-  });
   /* 顶栏面包屑：当前图名（战术图=「上级 · 当前」；新增，图名同时仍以画布字饰呈现） */
   effect(() => {
     const w = worldSig.value;
@@ -191,7 +184,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   /* #gentac=<事件名/id>&dia=<km>：从战役事件烘焙战术图并打开（无头，绕过 prompt） */
   if (dl.wantGenTac && worldSig.value) {
     const ev = worldSig.value.nodes.find(n => n.type === "event" && (n.名称 === dl.wantGenTac || n.id === dl.wantGenTac));
-    if (ev) await genTactical(ev, dl.wantDia || 200);
+    if (ev) await genTactical(ev, dl.wantDia || 60);   // 缺省 60＝典型会战（2026-08-13 与另三处入口同改；直径钳 [20,140] 在 core/tactical 一处）
     else console.warn("#gentac 找不到战役事件：", dl.wantGenTac);
   }
 

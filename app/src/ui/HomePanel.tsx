@@ -2,7 +2,7 @@
    视图走 libViewSig（来源/条目/当前图），动作经 libActionsSig 回外壳（开图/删除/导入/链接文件夹）；
    「🆕 新建地图」开设置弹层的 create 模式（对齐旧 hmNew→toggleSettings(true,"create")）。 */
 import { useRef } from "preact/hooks";
-import { libActionsSig, libViewSig, openSettings } from "./state.ts";
+import { calOverlaySig, libActionsSig, libViewSig, openSettings } from "./state.ts";
 
 function fmtTime(ts?: number): string {
   if (!ts) return "—";
@@ -28,6 +28,7 @@ export function HomePanel() {
           <button type="button" class="hm-new" onClick={() => openSettings("create")}>🆕 新建地图</button>
           <button type="button" class="tbtn" title="选择一个导出过的 .json，作为一张新地图加入图库" onClick={() => fileRef.current?.click()}>📂 导入 JSON 为新图</button>
           <button type="button" class="tbtn" title="以内置示例大陆新开一张地图" onClick={() => acts?.newFromSample()}>📜 从内置示例新建</button>
+          <button type="button" class="tbtn" title="自定义架空历法（月名/月长/每日时数）并命名存下，新建地图时可直接选用" onClick={() => { calOverlaySig.value = true; }}>📅 历法</button>
           {v.fsSupported && v.source !== "folder" && (
             <button type="button" class="tbtn" title="链接一个本地文件夹作为图库，直接读写其中的 .json（需 Edge/Chrome 经 localhost 或 https）" onClick={() => acts?.linkFolder()}>📁 链接文件夹</button>
           )}
@@ -55,9 +56,12 @@ export function HomePanel() {
               <div key={m.id} class="mapcard" title={`打开「${m.name || "未命名"}」`} role="button" tabIndex={0}
                 onClick={() => acts?.open(m.id)}
                 onKeyDown={e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); acts?.open(m.id); } }}>
-                {m.thumb ? <img class="mc-thumb" src={m.thumb} alt="" /> : <div class="mc-thumb">🗺</div>}
+                {/* 图种角标（2026-08-19 用户点单「一眼分清哪个是战术图」）：**两种都挂**——只给战术图挂
+                    等于要用户拿「没有标记」当标记；压在缩略图角上而不是跟在名字后面，才是「一眼」。 */}
+                <span class={"mc-kind" + (c.tac ? " tac" : "")}>{c.tac ? "⚔ 战术图" : "🗺 战略图"}</span>
+                {m.thumb ? <img class="mc-thumb" src={m.thumb} alt="" /> : <div class="mc-thumb">{c.tac ? "⚔" : "🗺"}</div>}
                 <div class="mc-body">
-                  <div class="mc-name">{m.name || "未命名"}{c.tac ? <> <span class="tag" style={{ background: "#8a2f2f" }}>⚔ 战术</span></> : null}</div>
+                  <div class="mc-name">{m.name || "未命名"}</div>
                   <div class="mc-sub">{c.tac
                     ? `${c.nodes || 0} 地点 · ${c.units || 0} 部队 · 兵棋战场图`
                     : `${c.nodes || 0} 地点 · ${c.factions || 0} 派系 · ${c.events || 0} 战役`}</div>

@@ -12,9 +12,10 @@ import { yearRangeOf } from "../core/time.ts";
 import { normalizeWorld } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
 import { removeDecor, removeEdgeAt, removeFaction, removeNode, removeUnit } from "./editops.ts";
+import type { CalTemplate } from "../data/calstore.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
-import type { Arm, Decor, Edge, Faction, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
+import type { Arm, Decor, Edge, Faction, Meta, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 
 /** 新壳已实现的图层子集（未实现的不出现在面板上）。trails/ranges/vision 为战术图专属（tacOnly）；
@@ -130,9 +131,13 @@ export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
 
 /* —— 弹层：帮助 / 设置（v0.14 .ovl；设置分 app=改当前世界参数 / create=新建地图）—— */
 export const helpOpenSig = signal(false);
+/* 历法弹层与本机模板（2026-08-19）：模板是建图时的模具，存 localStorage，见 data/calstore 头注 */
+export const calOverlaySig = signal(false);
+export const calTemplatesSig = signal<CalTemplate[]>([]);
 export type SettingsMode = "app" | "create";
-/** token 每次打开 +1：设置卡以其为 key 整体重挂，实现旧版 fillSettings 的「每次打开重灌表单」 */
-export const settingsSig = signal<{ mode: SettingsMode; token: number } | null>(null);
+/** token 每次打开 +1：设置卡以其为 key 整体重挂，实现旧版 fillSettings 的「每次打开重灌表单」。
+    from＝create 模式的预填参数（「以此参数新建」带当前图 meta 换到创建分支;2026-08-13 冻结批） */
+export const settingsSig = signal<{ mode: SettingsMode; token: number; from?: Meta } | null>(null);
 export function openSettings(mode: SettingsMode = "app"): void {
   settingsSig.value = { mode, token: ((settingsSig.peek() || { token: 0 }).token) + 1 };
 }
@@ -149,13 +154,13 @@ export const rangeSig = computed(() => {
 });
 
 /* —— 时间步进粒度的**细档开关**（两种图共用一个信号，各自的粗/细两档）：
-   战术图＝日（粗，旧语义）｜半时辰 1/24 日（细）；战略图＝年（粗）｜月 1/月数 年（细，2026-07-31）。
+   战术图＝日（粗，旧语义）｜时 1/时数 日（细，时数由历法给，缺省 24）；战略图＝年（粗）｜月 1/月数 年（细，2026-07-31）。
    小数时刻 core 原生支持（unitPos 连续插值、activeAt 连续比较），此处只是 UI 步长。 */
 export const subDaySig = signal(false);
 export function timeStep(): number {
   if (!subDaySig.peek()) return 1;
-  if (isTacSig.peek()) return 1 / 24;
-  return 1 / monthsOf(calOf((worldSig.peek()?.meta || {}).calendar));
+  const cal = calOf((worldSig.peek()?.meta || {}).calendar);
+  return 1 / (isTacSig.peek() ? cal.hpd : monthsOf(cal));
 }
 /** 切回粗档（日/年）时把当前时刻落回整数（避免 +1 步在小数位上漂移） */
 export function toggleSubDay(): void {
@@ -165,7 +170,7 @@ export function toggleSubDay(): void {
   });
 }
 
-/* —— 时间轴播放（对齐旧 togglePlay：300ms 一步＝当前粒度（年/月｜日/半时辰），到头自停；再按=暂停）—— */
+/* —— 时间轴播放（对齐旧 togglePlay：300ms 一步＝当前粒度（年/月｜日/时），到头自停；再按=暂停）—— */
 export const playingSig = signal(false);
 let playTimer: ReturnType<typeof setInterval> | null = null;
 /** 停止播放（换图/撤销/回库共用——否则计时器继续推新世界的年份，见审计）。 */

@@ -63,23 +63,25 @@ export function hourWindow(now: number, min: number, max: number): { w0: number;
   return { w0, w1: w0 + span };
 }
 
-/** 时间量子化+钳制：拖拽/步进共用（战略=1 年、战术=1 日、「时」=1/24 日）。
+/** 时间量子化+钳制：拖拽/步进共用（战略=1 年、战术=1 日、「时」=1/时数 日）。
     乘整数网格再除（而非乘 step 倒数）——与历法显示层 quantT 同族，免浮点漂移。 */
 export function quantTime(v: number, step: number, min: number, max: number): number {
   const inv = Math.round(1 / step);
   return Math.min(max, Math.max(min, Math.round(v * inv) / inv));
 }
 
-export interface SubTick { pct: number; kind: "day" | "noon" | "half"; label?: string }
-/** 时轨刻度：整日大刻+日名标签、正午中刻+「午」、每 1/24 日（半时辰）小刻 */
-export function subTicks(w0: number, w1: number, dayLabel: (d: number) => string): SubTick[] {
+export interface SubTick { pct: number; kind: "day" | "noon" | "hour"; label?: string }
+/** 时轨刻度：整日大刻+日名标签、正午中刻+「午」、每 1/时数 日一道小刻。
+    ⚠ 时数由历法给（缺省 24＝与旧式逐位同）；奇数时制没有正中那一刻，「午」自然不出。 */
+export function subTicks(w0: number, w1: number, hpd: number, dayLabel: (d: number) => string): SubTick[] {
   const span = w1 - w0, out: SubTick[] = [];
+  const noon = hpd % 2 === 0 ? hpd / 2 : -1;
   for (let d = w0; d < w1; d++) {
     out.push({ pct: ((d - w0) / span) * 100, kind: "day", label: dayLabel(d) });
-    for (let k = 1; k < 24; k++) {
-      const pct = ((d + k / 24 - w0) / span) * 100;
-      if (k === 12) out.push({ pct, kind: "noon", label: "午" });
-      else out.push({ pct, kind: "half" });
+    for (let k = 1; k < hpd; k++) {
+      const pct = ((d + k / hpd - w0) / span) * 100;
+      if (k === noon) out.push({ pct, kind: "noon", label: "午" });
+      else out.push({ pct, kind: "hour" });
     }
   }
   return out;

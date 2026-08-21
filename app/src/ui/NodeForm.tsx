@@ -171,7 +171,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
     if (id) selSig.value = { kind: "node", id };   // 落默认名并选中→表单改名（去 prompt）
   };
   const genTac = () => {
-    tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(val("ef_tacdia") ?? "") || 200) };
+    tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(val("ef_tacdia") ?? "") || 60) };
   };
 
   return (
@@ -226,7 +226,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
       {isEv && (n.tacmap || !tac) && (
         <div class="seg" style={{ alignItems: "center" }}>
           <button type="button" class="tbtn" title={n.tacmap ? "重新生成一张战术图并改链到它（旧图保留在图库）" : "以此事件为中心生成小范围战场图（地形/地点/派系按当年快照继承）"} onClick={genTac}>{n.tacmap ? "⟳ 重新生成战术图" : "⚔ 生成战术图"}</button>
-          <input class="fld" id="ef_tacdia" type="number" min={1} step={10} defaultValue="200" style={{ width: "5em" }} title="战场直径 km——生成范围（默认 200）" />
+          <input class="fld" id="ef_tacdia" type="number" min={20} max={140} step={10} defaultValue="60" style={{ width: "5em" }} title="战场直径 km——生成范围（默认 60,钳 20~140）" />
           <span class="sub">km 直径</span>
         </div>
       )}

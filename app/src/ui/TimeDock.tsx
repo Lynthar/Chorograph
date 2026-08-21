@@ -1,6 +1,6 @@
 /* 时间坞：接替旧的时间轴滑杆。
    战略＝年轨（事件刻度+<10px 聚簇+标签避让+金填充+步进钮）；
-   战术＝V1 双层坞（日轨常驻；「时」粒度时滑出时辰细轨：当前日±1 窗口、半时辰小刻，回「日」即收）。
+   战术＝V1 双层坞（日轨常驻；「时」粒度时滑出时轨：当前日±1 窗口、按历法时数排小刻，回「日」即收）。
    金＝时间语法：播放钮/填充/刻度/当年标签/游标一律金。状态机不动：值=yearSig、粒度=subDaySig、
    播放=togglePlay（P 键共用）；轨道=scrubber（按下即停播+落点、拖动跟随），刻度/标签纯显示。
    时轨拖拽期间窗口冻结（dragSub），否则跨日界会重取窗口导致指针↔值映射抖动；抬手 subBump 重取。 */
@@ -8,7 +8,7 @@ import { Fragment } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { signal } from "@preact/signals";
 import type { JSX } from "preact";
-import { calOf, cnDay, cnMonth, fmtHM, fmtShichen, fmtT, fmtYear, fromT, monthsOf, yearMonthOf, type CalendarSpec } from "../core/calendar.ts";
+import { calOf, fmtDayTime, fmtMD, fmtT, fmtYear, fromT, monthLabel, monthsOf, yearMonthOf, type CalendarSpec } from "../core/calendar.ts";
 import { evCurrentAt, phaseIndexAt, phasesOf } from "../core/time.ts";
 import { isTacSig, playingSig, rangeSig, stopPlay, subDaySig, timeStep, togglePlay, toggleSubDay, worldSig, yearSig } from "./state.ts";
 import { buildMarks, hourWindow, quantTime, subTicks, type EvMark } from "./timedock.ts";
@@ -20,7 +20,7 @@ const subBump = signal(0);
 
 function dayShort(cal: CalendarSpec, T: number): string {
   const p = fromT(cal, T);
-  return cal.kind === "earth" ? `${p.m}月${p.d}日` : `${cnMonth(p.m)}月${cnDay(p.d)}`;
+  return fmtMD(cal, p.m, p.d);
 }
 
 export function TimeDock() {
@@ -30,7 +30,7 @@ export function TimeDock() {
   const tac = isTacSig.value;
   const playing = playingSig.value;
   const cal = calOf((worldSig.value?.meta || {}).calendar);
-  /* 细档开关两图共用（战术=半时辰、战略=月）；下层时轨只属战术图，故另立 sub */
+  /* 细档开关两图共用（战术=时、战略=月）；下层时轨只属战术图，故另立 sub */
   const fine = subDaySig.value;
   const sub = tac && fine;
   const span = max - min;
@@ -60,12 +60,12 @@ export function TimeDock() {
   if (tac) {
     const p = fromT(cal, y);
     const frac = y - Math.floor(y);
-    mainLab = cal.kind === "earth" ? `${p.m}月${p.d}日` : `${cnMonth(p.m)}月${cnDay(p.d)}`;
-    subLab = fmtYear(cal, p.y, true) + (sub ? " · " + (cal.kind === "earth" ? fmtHM(frac) : fmtShichen(frac)) : "");
+    mainLab = fmtMD(cal, p.m, p.d);
+    subLab = fmtYear(cal, p.y, true) + (sub ? " · " + fmtDayTime(cal, frac) : "");
   } else {
     /* 战略图月粒度（2026-07-31）：细档下主标签＝月名、副标签＝纪年——与战术图「主日副年」同构 */
     const g = yearMonthOf(cal, y);
-    mainLab = fine ? (cal.kind === "earth" ? `${g.m}月` : `${cnMonth(g.m)}月`) : fmtYear(cal, Math.round(y), true);
+    mainLab = fine ? (cal.kind === "earth" ? `${g.m}月` : monthLabel(cal, g.m)) : fmtYear(cal, Math.round(y), true);
     subLab = fine ? fmtYear(cal, g.y, true) : "纪年 · 步进 1 年";
   }
   const mmMin = tac ? dayShort(cal, min) : fmtYear(cal, Math.round(min), true);
@@ -92,10 +92,9 @@ export function TimeDock() {
   const dayLab = (d: number): string => {
     const p = fromT(cal, d);
     const withMonth = p.d === 1 || d === win.w0;
-    return cal.kind === "earth" ? (withMonth ? `${p.m}月${p.d}日` : `${p.d}日`)
-      : (withMonth ? `${cnMonth(p.m)}月${cnDay(p.d)}` : cnDay(p.d));
+    return withMonth ? fmtMD(cal, p.m, p.d) : `${p.d}日`;
   };
-  const ticks = sub ? subTicks(win.w0, win.w1, dayLab) : [];
+  const ticks = sub ? subTicks(win.w0, win.w1, cal.hpd, dayLab) : [];
   const d0 = Math.floor(y);
   const tp = Math.min(100, Math.max(0, ((y - win.w0) / wspan) * 100));
   const scrubSub = (el: HTMLElement, clientX: number): void => {
@@ -116,8 +115,8 @@ export function TimeDock() {
   return (
     <>
       <button class="dk-play tr" title="播放时间轴 (P)" aria-label={playing ? "暂停" : "播放"} onClick={togglePlay}>{playing ? "⏸" : "▶"}</button>
-      <button class="dk-step tr" title={tac ? (sub ? "后退半时辰" : "后退一日") : (fine ? "后退一月" : "后退一年")} aria-label="后退一步" onClick={() => stepBy(-1)}>‹</button>
-      <button class="dk-step tr" title={tac ? (sub ? "前进半时辰" : "前进一日") : (fine ? "前进一月" : "前进一年")} aria-label="前进一步" onClick={() => stepBy(1)}>›</button>
+      <button class="dk-step tr" title={tac ? (sub ? "后退一时" : "后退一日") : (fine ? "后退一月" : "后退一年")} aria-label="后退一步" onClick={() => stepBy(-1)}>‹</button>
+      <button class="dk-step tr" title={tac ? (sub ? "前进一时" : "前进一日") : (fine ? "前进一月" : "前进一年")} aria-label="前进一步" onClick={() => stepBy(1)}>›</button>
       <div class="dk-year" title="时间为基底：疆域·归属·战役·地点/道路/地形的存在时段，一切依纪年显示">
         <span class="y">{mainLab}</span><span class="s">{subLab}</span>
       </div>
@@ -183,7 +182,7 @@ export function TimeDock() {
         {tac ? <>
           <button aria-pressed={!fine} title="时间步进：按日"
             onClick={() => { if (subDaySig.peek()) toggleSubDay(); }}>日</button>
-          <button aria-pressed={fine} title="时间步进：半时辰（1/24 日）——小时级战役分帧"
+          <button aria-pressed={fine} title={`时间步进：一时（1/${cal.hpd} 日）——小时级战役分帧`}
             onClick={() => { if (!subDaySig.peek()) toggleSubDay(); }}>时</button>
         </> : <>
           <button aria-pressed={!fine} title="时间步进：按年"

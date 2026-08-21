@@ -35,8 +35,12 @@ export function validateWorld(w: unknown): ValidateResult {
   else if (!Array.isArray(o.nodes)) F("nodes", "nodes 不是数组");
 
   /* —— 数组字段成员必须是对象（否则打开即崩=fatal）；字段本身非数组则会被清空补齐=warning —— */
-  const listFields = ["factions", "nodes", "edges", "decor", "terrainOverrides", "heightOverrides", "units", "events"];
-  const CAP: Record<string, number> = { factions: 20000, terrainOverrides: 300000, heightOverrides: 300000 };  // 余项默认 200000
+  const listFields = ["factions", "nodes", "edges", "decor", "terrainOverrides", "heightOverrides", "units", "events", "assets"];
+  /* 涂改上限 400 万（2026-08 审查修正，原 30 万）：闸的前提是「正常世界远够不到」，而编辑器
+     自身已够得到——140km 战术图 196 万格、20km 笔刷一 dab ≈3.1 万条，重涂几分钟即破 30 万，
+     导出的图再导入反被自己的闸拒掉（能保存出的档必须能再导入）。400 万＝格数上限 260 万 ×
+     时段层余量，仍远低于恶意档量级。 */
+  const CAP: Record<string, number> = { factions: 20000, terrainOverrides: 4000000, heightOverrides: 4000000 };  // 余项默认 200000
   for (const k of listFields) {
     const v = o[k];
     if (v == null) continue;
@@ -64,8 +68,12 @@ export function validateWorld(w: unknown): ValidateResult {
     if (!isObj(b) || !isNum(b.lonMin) || !isNum(b.lonMax) || !isNum(b.latMin) || !isNum(b.latMax)
       || b.lonMin >= b.lonMax || b.latMin >= b.latMax)
       W("meta.bbox", "范围无效（需 lonMin<lonMax、latMin<latMax 的数字），将按默认范围处理");
-    else if (b.lonMax - b.lonMin > 3600 || b.latMax - b.latMin > 1700)   // 合法上界 360/170（±180/±85）
-      F("meta.bbox", "范围跨度过大，无法生成地形网格（疑损坏或恶意档）");
+    /* 跨度上界＝球面合法值（360/170）的 10 倍宽容：平面世界的「度」是自由标尺（kmPerDeg 自定），
+       跨度合法域天然大于球面，收紧到 360/170 会误拒合法平面档；量级项防天文坐标（浮点在
+       1e300 处格心精度归零＝渲染乱码，同 deeplink |n|≤1e6 之规）。 */
+    else if (b.lonMax - b.lonMin > 3600 || b.latMax - b.latMin > 1700
+      || Math.abs(+b.lonMin) > 1e6 || Math.abs(+b.lonMax) > 1e6 || Math.abs(+b.latMin) > 1e6 || Math.abs(+b.latMax) > 1e6)
+      F("meta.bbox", "范围跨度或坐标量级过大，无法生成地形网格（疑损坏或恶意档）");
   }
 
   const checkTimed = (path: string, m: Record<string, unknown>) => {
@@ -89,6 +97,20 @@ export function validateWorld(w: unknown): ValidateResult {
       W(`${p}.color`, `颜色 ${JSON.stringify(f.color)} 不是 #rgb/#rrggbb 格式`);
     checkTimed(p, f);
     if (f.paint != null && !Array.isArray(f.paint)) W(`${p}.paint`, "涂域层不是数组");
+    else (f.paint || []).forEach((L, k) => {
+      /* ⚠ 层成员可为 null/原始值（normalizeWorld 会剔除）——先挡再取 runs，否则 null.runs 直接
+         抛 TypeError＝损坏档把「返回错误」的契约打穿（2026-08 审查坐实）。 */
+      if (!isObj(L)) { W(`${p}.paint[${k}]`, "涂域层成员不是对象，打开时将被剔除"); return; }
+      /* runs 行程编码（2026-08-13 写新格式）：形状不对只警告——渲染端 eachPaintCenter 自带
+         防御（非数跳过、长度钳制），坏 runs 顶多不显示,不崩图；量级闸同顶层数组之规 */
+      const R = (L as { runs?: unknown }).runs as { pd?: unknown; d?: unknown } | null | undefined;
+      if (R != null && !(typeof R === "object" && +(R.pd as number) > 0 && Array.isArray(R.d) && (R.d as unknown[]).length % 3 === 0))
+        W(`${p}.paint[${k}].runs`, "涂域行程编码形状无效（pd>0 且 d 为三元组数组），该层将按空处理");
+      else if (R && Array.isArray(R.d) && (R.d as unknown[]).length > 12000000)
+        F(`${p}.paint[${k}].runs`, "涂域行程编码过大（疑损坏或恶意档）");
+      if (Array.isArray((L as { cells?: unknown }).cells) && ((L as { cells: unknown[] }).cells).length > 4000000)
+        F(`${p}.paint[${k}].cells`, "涂域格坐标过多（疑损坏或恶意档）");
+    });
   });
   const refFaction = (path: string, id: unknown) => {
     if (id != null && id !== "" && !factionIds.has(String(id))) W(path, `引用了不存在的派系「${String(id)}」`);
@@ -115,6 +137,7 @@ export function validateWorld(w: unknown): ValidateResult {
     });
     if (Array.isArray(n.ops)) n.ops.forEach((op, j) => {   // 作战线：normalize 会剔坏成员/坏折线，这里仅提示（红线：不 fatal）
       if (!isObj(op)) { W(`${p}.ops[${j}]`, "作战线成员不是对象，打开时将被剔除"); return; }
+      if (Array.isArray(op.pts) && (op.pts as unknown[]).length > 100000) { F(`${p}.ops[${j}].pts`, "折线点数过多（疑损坏或恶意档）"); return; }
       const usable = Array.isArray(op.pts)
         && (op.pts as unknown[]).filter(q => Array.isArray(q) && isFinite(Number(q[0])) && isFinite(Number(q[1]))).length >= 2;
       if (!usable) W(`${p}.ops[${j}]`, "作战线需要至少 2 个有效 [经,纬] 坐标点，打开时将被剔除");
@@ -126,6 +149,7 @@ export function validateWorld(w: unknown): ValidateResult {
   (Array.isArray(o.edges) ? (o.edges as Record<string, unknown>[]) : []).forEach((e, i) => {
     const p = `edges[${i}]`;
     const free = Array.isArray(e.pts) && (e.pts as unknown[]).length >= 2;   // 自由折线（河流/工事）：pts 折线、无端点
+    if (Array.isArray(e.pts) && (e.pts as unknown[]).length > 100000) F(`${p}.pts`, "折线点数过多（疑损坏或恶意档）");   // 逐帧遍历的嵌套数组同吃量级闸
     if (free) { if (e.type !== "river" && e.type !== "wall") W(`${p}.pts`, "只有河流与工事可用自由折线 pts"); }
     else for (const end of ["from", "to"]) if (!nodeIds.has(String(e[end]))) W(`${p}.${end}`, `连线引用了不存在的地点「${String(e[end])}」`);
     if (!tget(EDGE_STYLE, String(e.type))) W(`${p}.type`, `未知连线类型「${String(e.type)}」`);
@@ -135,6 +159,10 @@ export function validateWorld(w: unknown): ValidateResult {
 
   /* —— 布景 / 地形涂改 —— */
   const assetIds = new Set((Array.isArray(o.assets) ? o.assets as { id?: unknown }[] : []).map(a => String(a && a.id)));
+  (Array.isArray(o.assets) ? (o.assets as Record<string, unknown>[]) : []).forEach((a, i) => {
+    if (typeof a.src === "string" && a.src && !/^(data|blob):/.test(a.src))   // 渲染端同判（render/decor.assetImg）：外链不请求不绘制
+      W(`assets[${i}].src`, "印章资产不是内嵌数据（data:/blob:），将不显示");
+  });
   (Array.isArray(o.decor) ? (o.decor as Record<string, unknown>[]) : []).forEach((d, i) => {
     const k = String(d.kind);
     if (k.startsWith("img:")) { if (!assetIds.has(k.slice(4))) W(`decor[${i}].kind`, `自定义印章缺资产「${k}」`); }   // 悬空引用
@@ -162,7 +190,8 @@ export function validateWorld(w: unknown): ValidateResult {
       W(`${p}.range`, `「${nk.名}」无远程投射能力，火力圈不会绘制`);
     refFaction(`${p}.faction`, u.faction);
     if (u.track != null && !Array.isArray(u.track)) W(`${p}.track`, "航点不是数组，将被清空");
-    if (Array.isArray(u.track)) u.track.forEach((pt, j) => {
+    if (Array.isArray(u.track) && u.track.length > 100000) F(`${p}.track`, "航点数过多（疑损坏或恶意档）");   // 位置插值逐帧遍历航点
+    else if (Array.isArray(u.track)) u.track.forEach((pt, j) => {
       if (!isObj(pt) || !isNum(pt.t) || !isNum(pt.lon) || !isNum(pt.lat)) W(`${p}.track[${j}]`, "航点需要数字 t/lon/lat");
     });
   });

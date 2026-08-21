@@ -8,9 +8,13 @@ import { batch } from "@preact/signals";
 import { createHost, type Host } from "../src/shell/host.ts";
 import { landWorld, wireOrchestration } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
+import { unitLegs } from "../src/core/units.ts";
 import { gridVerSig, hoverSig, mutateWorld, selSig, unitLegsSig, worldSig, yearSig } from "../src/ui/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
-import type { World, WorldNode } from "../src/core/types.ts";
+import type { Unit, World, WorldNode } from "../src/core/types.ts";
+
+/** 等过「防抖 LEGS_MS(80) + fake legs 的微任务」——腿账下 Worker 后编排异步填 sig */
+const settleLegs = (): Promise<void> => new Promise(r => setTimeout(r, 130));
 
 /* host.rebuild 经 $() 摸 DOM 挂点（hud 恒写；seed/style 仅无世界时读）——node 下以最小 fake 顶上 */
 const els: Record<string, { dataset: Record<string, string>; value: string }> = {};
@@ -31,6 +35,9 @@ function mkCtx(): { ctx: ShellCtx; counts: { rebuilds: number } } {
     lib: null, mapId: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
   } as unknown as ShellCtx;
+  /* 腿账下 Worker 后编排走 routeClient.legs——fake 直调核心纯函数（微任务返回，同真 Worker 语义序） */
+  (ctx.routeClient as { legs?: (u: Unit, roads?: Set<string>) => Promise<unknown> }).legs =
+    (u, roads) => Promise.resolve(unitLegs(ctx.meta, ctx.grid!, roads, u));
   return { ctx, counts };
 }
 const W = (extra: object = {}): World => normalizeWorld({
@@ -97,7 +104,7 @@ describe("编排 effect × host 重建计数（开图批末恰建一次）", () 
     assert.equal(counts.rebuilds, 3, "批内两键同变=一次冲刷一次重建");
   });
 
-  it("战术图·可达性预算随选中部队：选中算入缓存、且只留选中者；取消选中清空", () => {
+  it("战术图·可达性预算随选中部队：选中算入缓存、且只留选中者；取消选中清空", async () => {
     const tac = W({
       meta: { 名称: "战", worldModel: "sphere", terrain: "plain", mapKind: "tactical",
         bbox: { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 } },
@@ -107,11 +114,16 @@ describe("编排 effect × host 重建计数（开图批末恰建一次）", () 
     openLikeLibrary(ctx, host, tac, "t1", 3050);
     assert.equal(unitLegsSig.peek().size, 0, "开图清预算缓存");
     selSig.value = { kind: "unit", id: "u1" };
-    assert.deepEqual([...unitLegsSig.peek().keys()], ["u1"], "只算当前选中的部队");
+    await settleLegs();
+    assert.deepEqual([...unitLegsSig.peek().keys()], ["u1"], "只算当前选中的部队（异步落账）");
     selSig.value = { kind: "unit", id: "u2" };
+    assert.deepEqual([...unitLegsSig.peek().keys()], ["u1"], "防抖窗内仍是旧账（未闪空）");
+    await settleLegs();
     assert.deepEqual([...unitLegsSig.peek().keys()], ["u2"], "换选=换缓存（不累积）");
     selSig.value = null;
-    assert.equal(unitLegsSig.peek().size, 0, "取消选中清空");
+    assert.equal(unitLegsSig.peek().size, 0, "取消选中**同步**清空（撤旧账不等防抖）");
+    await settleLegs();
+    assert.equal(unitLegsSig.peek().size, 0, "清选后无过期结果还魂（seq 令牌）");
   });
 
   it("effect 未接线时开图仍有兜底重建（且只兜一次）", () => {

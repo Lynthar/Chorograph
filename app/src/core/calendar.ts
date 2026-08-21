@@ -7,19 +7,61 @@
      （G2000-01-01=2451545；闰年 1900✗/2000✓/0年双历✓）。1582-10-05~14 的儒略输入落到同一物理日
      （=格里 10-15~24），显示取格里正名。
    内部纪年一律天文纪年（0=前1年，-215=前216年）；UI 显示/解析一律「前N」，不露裸负数。
-   日戳 T 为线性数字：整数=日，小数=日内时刻（0=午夜；custom 显示时辰·96刻制，earth 显示 HH:MM）。
+   日戳 T 为线性数字：整数=日，小数=日内时刻（0=零时）。日内时刻一律「时:分」——每日时数与
+   每时分数由历法给出，缺省 24×60，earth 恒 24×60。
    activeAt/unitPos 等时间过滤只比较数字——历法只是 T 的编解码层，换历法不动时间语义。 */
 import type { CalendarCfg } from "./types.ts";
 
-export interface CalendarSpec { kind: "custom" | "earth"; months: number; dpm: number; dpy: number; era: string }
+/** 一日分法的上限（值也是用户数据）：时×分＝显示量子，封顶让 quantT 的整数网格远在 2^53 内 */
+export const MAX_HPD = 1000, MAX_MPH = 1000;
 
-/** 历法归一（容错：缺省/非法回落 custom 12×30、纪元 SE）。earth 分支不得读 months/dpm/dpy */
+export interface CalendarSpec {
+  kind: "custom" | "earth"; months: number; dpm: number; dpy: number; era: string;
+  /* —— 一日的分法：**恒有值**（缺省 24×60、earth 恒 24×60），故消费端不必各自兜底
+     （同「参数可选＋内部兜底常数」一律改必填之训）。 —— */
+  hpd: number;        // 每日时数
+  mph: number;        // 每时分数
+  /* —— 架空历法扩充的归一态：**缺省一律不落这些键**，于是 tacT/fromT/各 fmt 都走与 v0.14
+     逐字相同的旧分支＝黄金基准逐位（新特性只在真配了的历法上生效）。 —— */
+  lens?: number[];    // 不等长月的每月日数（全等长时不落＝退回 months×dpm 旧式）
+  off?: number[];     // lens 的前缀和（off[i]=前 i 个月共几日，长度 months+1）
+  names?: string[];   // 月名
+}
+
+const posInt = (v: unknown, cap: number): number => {
+  const n = Math.floor(+(v as number));
+  return isFinite(n) && n >= 1 ? Math.min(cap, n) : 0;
+};
+const strOf = (v: unknown): string => (typeof v === "string" && v.trim()) ? v.trim() : "";
+
+/** 历法归一（容错：缺省/非法回落 custom 12×30、纪元 SE）。earth 分支不得读 months/dpm/dpy。
+    ⚠ 扩充字段一律「不合法即当没给」：历法是存档与模板里的自由数据，同「键名也是用户数据」之规。 */
 export function calOf(c?: CalendarCfg | null): CalendarSpec {
   const cc = c || {};
   const months = Math.max(1, ((cc.months as number) | 0) || 12);
   const dpm = Math.max(1, ((cc.dpm as number) | 0) || 30);
-  const era = (typeof cc.era === "string" && cc.era.trim()) ? cc.era.trim() : "SE";
-  return { kind: cc.kind === "earth" ? "earth" : "custom", months, dpm, dpy: months * dpm, era };
+  const era = strOf(cc.era) || "SE";
+  const spec: CalendarSpec = { kind: cc.kind === "earth" ? "earth" : "custom", months, dpm, dpy: months * dpm, era, hpd: 24, mph: 60 };
+  if (spec.kind === "earth") return spec;   // earth 只认 kind；以下全是 custom 的扩充
+
+  /* 不等长月：全等长时**收敛回等长路径**——同一份历法只该有一条数学，也免得 lens 分支去背旧式的
+     越界进位语义（golden 里 m=0 / m=13 那两例正是它）。 */
+  const ml = (Array.isArray(cc.monthLens) ? cc.monthLens : []).map(v => posInt(v, 9999)).filter(v => v > 0);
+  if (ml.length) {
+    spec.months = ml.length;
+    if (ml.every(v => v === ml[0])) { spec.dpm = ml[0]; spec.dpy = ml.length * ml[0]; }
+    else {
+      const off = [0];
+      for (const L of ml) off.push(off[off.length - 1] + L);
+      spec.lens = ml; spec.off = off; spec.dpy = off[off.length - 1];
+      spec.dpm = Math.round(spec.dpy / ml.length);   // 仅作「平均月长」兜底（不等长时无人该拿它算日戳）
+    }
+  }
+  const nm = (Array.isArray(cc.monthNames) ? cc.monthNames : []).map(strOf);
+  if (nm.some(v => v)) spec.names = nm;
+  spec.hpd = posInt(cc.hoursPerDay, MAX_HPD) || 24;
+  spec.mph = posInt(cc.minutesPerHour, MAX_MPH) || 60;
+  return spec;
 }
 
 /* —— 地球历法内核（JDN）—— */
@@ -46,6 +88,12 @@ function jdnToEarth(J: number): { y: number; m: number; d: number } {
 /** 年/月/日（1 基；年=天文纪年）→ 日戳 T（整日） */
 export function tacT(cal: CalendarSpec, y: number, m: number, d: number): number {
   if (cal.kind === "earth") return earthToJDN(y, Math.max(1, m), Math.max(1, d));
+  /* 不等长月：先把越界月按整年进位归一（等长式里这是 (m-1)×dpm 自然带出来的），再查前缀和。
+     ⚠ 等长历法**不走这条**（calOf 已收敛回等长），故 v0.14 的越界语义与黄金基准逐位不动。 */
+  if (cal.off) {
+    const M = cal.months, mi0 = Math.max(1, Math.floor(m)) - 1, carry = Math.floor(mi0 / M);
+    return (y + carry) * cal.dpy + cal.off[mi0 - carry * M] + (Math.max(1, d) - 1);
+  }
   return y * cal.dpy + (Math.max(1, m) - 1) * cal.dpm + (Math.max(1, d) - 1);
 }
 
@@ -54,68 +102,73 @@ export function fromT(cal: CalendarSpec, T: number): { y: number; m: number; d: 
   const D = Math.floor(T);
   if (cal.kind === "earth") return jdnToEarth(D);
   const y = Math.floor(D / cal.dpy), r = D - y * cal.dpy;
+  if (cal.off) {   // 月数不多，线性找即可（前缀和有序：off[i] ≤ r < off[i+1]）
+    let i = cal.months - 1;
+    while (i > 0 && cal.off[i] > r) i--;
+    return { y, m: i + 1, d: r - cal.off[i] + 1 };
+  }
   return { y, m: Math.floor(r / cal.dpm) + 1, d: (r % cal.dpm) + 1 };
 }
 
-const CN_NUM = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
-export function cnMonth(m: number): string { return m <= 12 ? CN_NUM[m] : String(m); }
-/** 初七/十七/廿七 式古典日名；>30 回退数字 */
-export function cnDay(d: number): string {
-  if (d <= 10) return "初" + CN_NUM[d];
-  if (d < 20) return "十" + CN_NUM[d - 10];
-  if (d === 20) return "二十";
-  if (d < 30) return "廿" + CN_NUM[d - 20];
-  if (d === 30) return "三十";
-  return String(d) + "日";
+/** 月的显示名——**全 app 单一真源**（同 ARM_NAME 之训：配了月名却有几处还印「3月」就是漂移）。
+    配了月名取月名且**不补「月」字**（「霜月月」不成话）；没配＝「3月」式，两轨同式。 */
+export function monthLabel(cal: CalendarSpec, m: number): string {
+  const nm = cal.kind === "custom" && cal.names ? cal.names[m - 1] : "";
+  return nm || m + "月";
+}
+/** 月日文本（日期串/时间轴日名/事件列表共用的单一真源）：「3月7日」/「霜月7日」 */
+export function fmtMD(cal: CalendarSpec, m: number, d: number): string {
+  return monthLabel(cal, m) + d + "日";
 }
 
-/* —— 日内时刻（T 的小数部分，0=午夜）——
-   custom：十二时辰·96 刻制（每时辰 8 刻=初/正各 4 刻；子初=23:00、子正=00:00、午正=12:00，
-   刻名 初刻(略)/一刻/二刻/三刻）；earth：HH:MM。显示按各自量子四舍五入（刻/分），不改存储值。 */
-const SHICHEN = "子丑寅卯辰巳午未申酉戌亥";
-const KE = ["", "一", "二", "三"];
+/* —— 日内时刻（T 的小数部分，0=零时）——
+   一律「时:分」：每日时数 hpd × 每时分数 mph 由历法给出（缺省与地球历同为 24×60）。
+   显示按量子（1/(hpd×mph) 日）四舍五入，不改存储值；位宽随进制走（24×60 制＝09:30，与旧式逐字同）。 */
 
-/** 日内分数 → 时辰名（如 午正 / 午正二刻 / 子初）。按刻(1/96日)取整 */
-export function fmtShichen(frac: number): string {
-  const k = ((Math.round(frac * 96) % 96) + 96) % 96;
-  const s = (k + 4) % 96;                          // 平移使 0=子初(23:00)
-  const idx = fl(s / 8), half = fl((s % 8) / 4), r = s % 4;
-  return SHICHEN[idx] + (half ? "正" : "初") + (r ? KE[r] + "刻" : "");
+/** 补零到「该位最大值」同宽：24 时制＝两位、10 时制＝一位 */
+const pad = (v: number, max: number): string => String(v).padStart(String(Math.max(1, max - 1)).length, "0");
+
+/** 一日几个量子（显示与时间轴最细一档共用）＝时数 × 每时分数 */
+function dayQuanta(cal: CalendarSpec): number { return cal.hpd * cal.mph; }
+
+/** 日内时刻文本——**全 app 单一真源**（两轨同式；调用点别再各写一遍分支）。 */
+export function fmtDayTime(cal: CalendarSpec, frac: number): string {
+  const tot = dayQuanta(cal);
+  const t = ((Math.round(frac * tot) % tot) + tot) % tot;
+  return pad(Math.floor(t / cal.mph), cal.hpd) + ":" + pad(t % cal.mph, cal.mph);
 }
-export function fmtHM(frac: number): string {
-  const t = ((Math.round(frac * 1440) % 1440) + 1440) % 1440;
-  const h = fl(t / 60), mi = t % 60;
-  return String(h).padStart(2, "0") + ":" + String(mi).padStart(2, "0");
-}
-/** 显示前按历法量子取整（custom=刻、earth=分），进位自然跨日 */
+/** 显示前按历法量子取整（缺省=分），进位自然跨日 */
 function quantT(cal: CalendarSpec, T: number): number {
-  const q = cal.kind === "earth" ? 1440 : 96;
-  return Math.round(+T * q) / q;
+  return Math.round(+T * dayQuanta(cal)) / dayQuanta(cal);
 }
 /** 天文纪年 → 「前N」显示年（earth 专属；custom 按 v0.14 冻结语义渲染裸数字，含 0/负年） */
 function bcYear(y: number): string { return y > 0 ? String(y) : "前" + (1 - y); }
 
-/** 古典/历史格式：SE3107·三月初七（·午正）｜ 1863年7月1日 09:30 ｜ 公元前216年8月2日 */
+/** custom 的纪年文本＝纪元前缀 + 天文纪年数字（「SE3107」）；表单值恒是同一个数字。 */
+function yearLabel(cal: CalendarSpec, y: number, spaced?: boolean): string {
+  return cal.era + (spaced ? " " : "") + y;
+}
+
+/** 日期格式：SE3107·3月7日（ 12:30）｜ 1863年7月1日 09:30 ｜ 公元前216年8月2日 */
 export function fmtT(cal: CalendarSpec, T: number): string {
   const Tq = quantT(cal, +T);
   const { y, m, d } = fromT(cal, Tq);
   const frac = Tq - Math.floor(Tq);
-  if (cal.kind === "earth")
-    return `${y > 0 ? String(y) : "公元前" + (1 - y)}年${m}月${d}日${frac ? " " + fmtHM(frac) : ""}`;
-  return `${cal.era}${y}·${cnMonth(m)}月${cnDay(d)}${frac ? "·" + fmtShichen(frac) : ""}`;
+  const head = cal.kind === "earth" ? `${y > 0 ? String(y) : "公元前" + (1 - y)}年` : `${yearLabel(cal, y)}·`;
+  return head + fmtMD(cal, m, d) + (frac ? " " + fmtDayTime(cal, frac) : "");
 }
 /** 表单格式：3107-3-7（ 午正）｜ 1815-6-18 13:30 ｜ 前216-8-2——与 parseYMD 互逆 */
 export function fmtYMD(cal: CalendarSpec, T: number): string {
   const Tq = quantT(cal, +T);
   const { y, m, d } = fromT(cal, Tq);
   const frac = Tq - Math.floor(Tq);
-  const time = frac ? (cal.kind === "earth" ? " " + fmtHM(frac) : " " + fmtShichen(frac)) : "";
+  const time = frac ? " " + fmtDayTime(cal, frac) : "";
   return `${cal.kind === "earth" ? bcYear(y) : String(y)}-${m}-${d}${time}`;
 }
 
 /** 解析日期输入："3107-3-7 / 3107.3.7 / 3107年3月7日 / 3107"(仅年=正月初一)；
-    「前216-8-2」/「-215-8-2」=公元前（天文纪年 1-N / -N）；可带时刻「 13:30」或「午正二刻」；空/非法→null */
-const YMD_RE = /^(前|-)?(\d{1,6})(?:[-./年]\s*(\d{1,2}))?(?:[-./月]\s*(\d{1,2}))?\s*日?(?:\s*(?:(\d{1,2})[:：](\d{1,2})|([子丑寅卯辰巳午未申酉戌亥])\s*([初正])\s*(?:([一二三])\s*刻|初刻)?))?\s*$/;
+    「前216-8-2」/「-215-8-2」=公元前（天文纪年 1-N / -N）；可带时刻「 13:30」（按本历法的时/分进制）；空/非法→null */
+const YMD_RE = /^(前|-)?(\d{1,6})(?:[-./年]\s*(\d{1,2}))?(?:[-./月]\s*(\d{1,2}))?\s*日?(?:\s*(\d{1,3})[:：](\d{1,3}))?\s*$/;
 export function parseYMD(cal: CalendarSpec, s: unknown): number | null {
   const str = String(s == null ? "" : s).trim();
   if (!str) return null;
@@ -125,11 +178,9 @@ export function parseYMD(cal: CalendarSpec, s: unknown): number | null {
   let frac = 0;
   if (m[5] != null) {
     const h = +m[5], mi = +m[6];
-    if (h > 23 || mi > 59) return null;
-    frac = (h * 60 + mi) / 1440;
-  } else if (m[7] != null) {
-    const idx = SHICHEN.indexOf(m[7]), half = m[8] === "正" ? 1 : 0, r = m[9] ? KE.indexOf(m[9]) : 0;
-    frac = ((idx * 8 + half * 4 + r - 4 + 96) % 96) / 96;
+    // 时刻越界＝解析不出（不静默进位到次日）；进制随历法，24×60 时与旧判据 h>23||mi>59 逐位等价
+    if (h >= cal.hpd || mi >= cal.mph) return null;
+    frac = (h * cal.mph + mi) / (cal.hpd * cal.mph);
   }
   // 注：月/日越界（13月/32日）经 tacT 静默进位到相邻年月，是 v0.14 既有语义、黄金基准逐位锁定——
   // core 层不改（改则破坏平价）；越界录入的防护若要做，应放 UI 表单层，不动此编解码函数。
@@ -192,10 +243,10 @@ export function fmtYear(cal: CalendarSpec, y: number, spaced?: boolean): string 
     const { y: gy, m } = yearMonthOf(cal, y);
     return cal.kind === "earth"
       ? `${gy > 0 ? "公元" + gy : "公元前" + (1 - gy)}年${m}月`
-      : `${cal.era}${spaced ? " " : ""}${gy}·${cnMonth(m)}月`;
+      : `${yearLabel(cal, gy, spaced)}·${monthLabel(cal, m)}`;
   }
   if (cal.kind === "earth") return y > 0 ? `公元${y}` : `公元前${1 - y}`;
-  return cal.era + (spaced ? " " : "") + y;
+  return yearLabel(cal, y, spaced);
 }
 /** 表单年份值：custom=原数字串（含小数年，历史现状）；earth=「1863」/「前216」；月粒度=「3107-3」 */
 export function fmtYearForm(cal: CalendarSpec, y: number): string {
@@ -242,8 +293,7 @@ export function fmtWhenRange(cal: CalendarSpec, tac: boolean, since: number | nu
     if (Math.floor(qa) === Math.floor(qb)) {
       const fa = qa - Math.floor(qa), fb = qb - Math.floor(qb);
       const day = fmtT(cal, Math.floor(qa));
-      const t = (f: number) => cal.kind === "earth" ? fmtHM(f) : (f ? fmtShichen(f) : "子正");
-      return cal.kind === "earth" ? `${day} ${t(fa)}–${t(fb)}` : `${day}·${t(fa)}–${t(fb)}`;
+      return `${day} ${fmtDayTime(cal, fa)}–${fmtDayTime(cal, fb)}`;
     }
   }
   return `${a}–${b}`;

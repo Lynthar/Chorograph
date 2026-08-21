@@ -10,7 +10,7 @@ import { seedTerrain } from "../src/core/terrain.ts";
 import { distKm, flatKmPerDeg, haversine, kmPerDegLat, wrapLon } from "../src/core/geo.ts";
 import { calOf, fmtT, fmtYMD, fromT, parseYMD, tacT } from "../src/core/calendar.ts";
 import { clampView, minDegPerPx, panByView, project, projectSeq, unproject, visibleWorldCopies, zoomAtView, type Camera } from "../src/core/projection.ts";
-import { buildGridCells, roadCellSet } from "../src/core/grid.ts";
+import { autoGridN, buildGridCells, roadCellSet } from "../src/core/grid.ts";
 import { territoryLoops } from "../src/core/territory.ts";
 import { activeAt, ownerAt, paintLayersAt } from "../src/core/time.ts";
 import { chaikin, convexHull, pointInPoly, type Pt } from "../src/core/geometry.ts";
@@ -87,7 +87,20 @@ describe("常量与旧实现深度一致", () => {
     assert.deepStrictEqual(C.EVENT_TYPES, g.EVENT_TYPES);
     assert.deepStrictEqual(stripKeys(C.NODE_TMPL, NEW_NODE_TYPES), g.NODE_TMPL);
     assert.deepStrictEqual(C.EVENT_TMPL, g.EVENT_TMPL);
-    assert.deepStrictEqual(C.RANK_ZOOM.map(v => (isFinite(v) ? v : "Infinity")), g.RANK_ZOOM);
+    /* ⚠ **sanctioned 平价偏离（2026-08-20 显隐门公里锚定）**：RANK_ZOOM（°/px）换成
+       RANK_KM_PX（km/px）——绝对度数让同一个阈值在不同星球半径上代表不同的地面距离
+       （R=10000km 的世界比地球漂 57%）。golden 冻的是**地球口径下的显隐时机**，故断言改成
+       「按地球每度公里折算后与旧阈值等价」，容差 3%（新值是另写的一份圆整公里数，不是拿旧值
+       乘出来的；实测最大偏移 2.6% ＝ 滚轮一档 18% 的 1/7）。 */
+    const EARTH_KM_DEG = 2 * Math.PI * 6371 / 360;
+    assert.strictEqual(C.RANK_KM_PX.length, g.RANK_ZOOM.length);
+    g.RANK_ZOOM.forEach((v: number | string, i: number) => {
+      if (v === "Infinity") { assert.strictEqual(C.RANK_KM_PX[i], Infinity, "rank0 恒显"); return; }
+      const oldKm = (v as number) * EARTH_KM_DEG;
+      assert.ok(Math.abs(C.RANK_KM_PX[i] - oldKm) / oldKm < 0.03,
+        `rank${i}：${C.RANK_KM_PX[i]} km/px 应与旧的 ${v}°/px（地球＝${oldKm.toFixed(2)} km/px）等价`);
+      assert.ok(C.RANK_KM_PX[i] < C.RANK_KM_PX[i - 1], "阈值须逐档收紧");
+    });
   });
   it("连线/速度/兵种", () => {
     // EDGE_STYLE/UNIT_KINDS：剔除柱B 新增 "wall"/"cmd" 后与旧版逐位一致
@@ -148,6 +161,12 @@ describe("地理距离一致", () => {
   });
 });
 
+/* ⚠ **一处 sanctioned 平价偏离（2026-08-20 历法通用化）**：golden 的 `fmtT` 期望串已由
+   「SE3107·三月初七」改写为「SE3107·3月7日」——农历式日名（初七/廿一/三十）随年号与时辰刻
+   一并退役，架空历法与地球历法自此同一种日期写法。**改的只有这一列**：`CAL`/`tacT`/`fromT`/
+   `fmtYMD`/`parseYMD` 的期望值一字未动＝编解码数学逐位不变，仍是冻结基线。新串亦不是拿本仓
+   代码生成的，而是**由夹具自身的 `fmtYMD` 三元组推出**（年份标签沿用旧串前半），免「同一份实现
+   自证等于没测」。 */
 describe("历法一致", () => {
   for (const cc of golden.calendar) {
     it(`calendar=${JSON.stringify(cc.calendar)}`, () => {
@@ -188,7 +207,13 @@ describe("投影一致", () => {
 describe("地形网格构建一致", () => {
   for (const gc of golden.buildGrid) {
     it(gc.name, () => {
-      const g = buildGridCells(gc.meta, gc.overrides, gc.yearNow);
+      /* 密度写进夹具输入（2026-08-12 强制自动档）：这三例原先靠「缺键默认」拿到 1°/格 与 跨度/140，
+         而默认策略正是本批要改的东西。⚠ 冻结的是**数学**不是默认策略——列数由夹具自己记录的
+         步长反解（span/step，两例恰得 48 与 140），故 grid/cells/roadCells 的期望值逐位仍然成立，
+         且 step 本身照旧断言，policy→step 的换算若漂了依然会红。基线 JSON 一字未动。 */
+      const bb0 = gc.grid.bb;
+      const meta = { ...gc.meta, gridN: Math.round((bb0.lonMax - bb0.lonMin) / gc.grid.step) };
+      const g = buildGridCells(meta, gc.overrides, gc.yearNow);
       assert.deepStrictEqual({ cols: g.cols, rows: g.rows, step: g.step, bb: g.bb }, gc.grid);
       assert.deepStrictEqual(g.cells.map(r => r.map(C.flattenTerrain).join(",")), gc.cells);   // cells 存复合串、flatten 回旧类比对
       const rc = [...roadCellSet(gc.nodes, gc.edges, gc.yearNow, g)].sort();
@@ -251,7 +276,9 @@ describe("相机操作一致", () => {
   it("zoomAt / panBy（含触底触顶与边界钳制）", () => {
     for (const c of golden.cameraOps) {
       const r = c.op[0] === "zoom"
-        ? zoomAtView(c.view, c.meta, 1200, 700, c.op[1], c.op[2], c.op[3])
+        /* zoomAtView 的两头 2026-08-20 改必填：显式传旧缺省（maxDpp 0.5）与物理地板
+           minDegPerPx(meta)＝与旧的内部兜底逐位相同，golden 期望值一字未动。 */
+        ? zoomAtView(c.view, c.meta, 1200, 700, c.op[1], c.op[2], c.op[3], 0.5, minDegPerPx(c.meta))
         : panByView(c.view, c.meta, c.op[1], c.op[2]);
       assert.deepStrictEqual({ lon0: r.lon0, lat0: r.lat0, degPerPx: r.degPerPx }, c.after);
     }
@@ -278,9 +305,16 @@ describe("世界规范化/构造一致", () => {
       assert.deepStrictEqual(JSON.parse(JSON.stringify(normalizeWorld(clone(c.input)))), want);
     }
   });
-  it("blankWorld（更新 字段以占位日期锁定其余全部）", () => {
-    for (const c of g.blank)
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(blankWorld(c.spec, "@today@"))), c.output);
+  it("blankWorld（更新 字段以占位日期锁定其余全部；gridN 盖章＝sanctioned 附加键）", () => {
+    /* 2026-08-13 创建定形批：blankWorld 在 meta 上盖章 gridN（密度是图的身份,创建时解算落盘）。
+       黄金基准锁其余全部字段——剥掉此一键逐位比对,另断言键值＝autoGridN(meta)（同表自证之嫌
+       由 behavior.test 的具体数值锁化解:地球 48° 区域恰 801 列）。 */
+    for (const c of g.blank) {
+      const w = JSON.parse(JSON.stringify(blankWorld(c.spec, "@today@")));
+      assert.strictEqual(w.meta.gridN, autoGridN(w.meta), "盖章值＝创建当刻自动档");
+      delete w.meta.gridN;
+      assert.deepStrictEqual(w, c.output);
+    }
   });
   it("countsOf / safeName", () => {
     for (const c of g.counts) assert.deepStrictEqual(countsOf(clone(c.input)), c.output);
@@ -315,8 +349,12 @@ describe("寻路/行军/时间轴范围一致", () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const grids: Record<string, any> = {};
   for (const [k, v] of Object.entries<any>(R.worlds)) {
-    const grid = buildGridCells(v.world.meta, v.world.terrainOverrides, v.yearNow);
-    grids[k] = { meta: v.world.meta, grid, roads: roadCellSet(v.world.nodes, v.world.edges, v.yearNow, grid), world: v.world, yearNow: v.yearNow };
+    /* 同「地形网格构建一致」：密度写进夹具输入（2026-08-12 缺键改自动档）。这些寻路场景全是
+       1°/格 的战略图，列数＝经度跨度即取回历史网格；冻的是寻路数学，不是网格密度的默认策略。 */
+    const wbb = v.world.meta.bbox || { lonMin: 82, lonMax: 130 };
+    const meta = { ...v.world.meta, gridN: Math.round(wbb.lonMax - wbb.lonMin) };
+    const grid = buildGridCells(meta, v.world.terrainOverrides, v.yearNow);
+    grids[k] = { meta, grid, roads: roadCellSet(v.world.nodes, v.world.edges, v.yearNow, grid), world: v.world, yearNow: v.yearNow };
   }
   it("astar（官道/同格/水军走廊/不可达）", () => {
     for (const c of R.astar) {

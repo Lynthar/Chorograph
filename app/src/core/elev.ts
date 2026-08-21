@@ -6,7 +6,7 @@
    三个倍频（约 1.2°/0.17°/0.03°）令战略与战术两种尺度都有可见地势。
    等高线等距（contourStepFor）与光标读数采样（elevBilinear）也居此——等高线与读数同源于本场。 */
 import { fbm } from "./noise.ts";
-import { flatKmPerDeg } from "./geo.ts";
+import { kmPerDeg } from "./geo.ts";
 import { terrainProps } from "./constants.ts";
 import { activeAt } from "./time.ts";
 import type { Grid } from "./grid.ts";
@@ -128,11 +128,7 @@ export function heightStepM(meta: Meta | undefined, chosen: number): number {
   if (!(chosen > 0)) return tac ? 10 : 50;
   return Math.max(tac ? 1 : 10, chosen);
 }
-/** 纬度每度公里数：平面走 flatKmPerDeg，球面按 2πR/360——与 distKm 同轨（笔刷实尺寸读数亦用） */
-export function kmPerDeg(meta: Meta | undefined): number {
-  const m = meta || {};
-  return m.worldModel === "flat" ? flatKmPerDeg(m) : 2 * Math.PI * (+(m.planetRadiusKm ?? 0) || 10000) / 360;
-}
+
 
 /** 缩放自适应等高距。测绘经验式「等距(米)≈比例尺分母/4000」在 96dpi 屏上化简为
     「理想等距≈1.6×每像素米数」；向上吸附到以 meta.contourM（缺省 10m=数据标定下限）为锚的

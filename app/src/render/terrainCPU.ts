@@ -230,7 +230,11 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       let e = e0 + (fbm(lonW * 1.1, latW * 1.1) - 0.5) * rough * 2 * decoK;
       if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp * decoK;
       elev[i] = e;
-      const texW = texW0 * (1 + Math.min(FX.texSlopeMax, Math.max(0, smac - FX.texSlopeLo) * FX.texSlope));
+      /* 纹理疏密（同 GL；见 FX.texPatchF 头注）：世界锚定两八度低频调制，同一片林/沼/山有疏有密 */
+      const pf = FX.texPatchF / step;
+      const pn = 0.65 * vnoise(rx * pf + 19.3, ry * pf + 5.7) + 0.35 * vnoise(rx * pf * 2.7 + 63.1, ry * pf * 2.7 + 28.9);
+      const texW = texW0 * (1 + Math.min(FX.texSlopeMax, Math.max(0, smac - FX.texSlopeLo) * FX.texSlope))
+        * (FX.texPatchLo + (FX.texPatchHi - FX.texPatchLo) * sstep(0.32, 0.68, pn));
       esh[i] = microOn ? e + texAt(rx, ry, MT.c, MT.d, twrEff, MT.m, pxpd) * texW : e;
       const es = elevSmooth(field!.data, field!, p[0], p[1]);
       ed[i] = es;

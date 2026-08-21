@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="app/public/icon.svg" alt="" width="88" height="88">
+
 # 舆图 · Chorograph
 
 **浏览器端的「分析型」世界地图工具 —— 为世界观搭建与小说创作而生**

@@ -96,6 +96,29 @@ export function minDegPerPx(meta: Meta | undefined): number {
   return (isFinite(k) && k > 0) ? Math.max(1e-6, 0.005 / k) : 0.004;
 }
 
+/* —— 放大到底：按**比例尺档位**定（2026-08-20 用户点单）——
+   战术图停在「500 m」档、战略图停在「50 km」档。口径与画面左下的比例尺同源：读数恒＝
+   degPerPx × 每度公里（投影里两处 cos 正好抵消，故与视中心纬度无关），于是「让比例尺停在
+   X 档」可精确反算成 dpp = X / (SCALE_BAR_PX × 每度公里)。
+   ⚠ 固定档位对中小战略图会翻车：3°×3°（≈330km）那样的图，「50km 档」比全图整屏还粗 ⇒ 放大
+   极限落在缩小极限之外，相机被钉死在一个尺度上（既缩不到整屏也放不大）。故配一道**小图护栏**：
+   任何图都至少保证 MIN_ZOOM_RANGE 倍可放大（用户拍板 10 倍≈14 档滚轮）。最内层仍是物理地板
+   minDegPerPx，防手编档给出极端的每度公里。 */
+export const SCALE_BAR_PX = 110;                              // 比例尺条的目标宽度：drawScaleBar 与本规则的单一真源
+export const SCALE_FLOOR_KM = { tactical: 0.5, strategic: 50 };
+export const MIN_ZOOM_RANGE = 10;
+/** 放大到底（最小 度/像素）。fitDpp＝该图「全图恰好整屏」的度/像素（外壳按 bbox 与画布算）。
+    ⚠ 传纯 fit：不含 meta.view.degPerPx0 那半句——它是存档里的自由数值，手编一个大的会连带把
+    放大这一头也放松。fitDpp 非正/非有限＝当没有图幅，只按档位与物理地板定。 */
+export function minDppFor(meta: Meta | undefined, fitDpp: number): number {
+  const phys = minDegPerPx(meta), k = kmPerDegLat(meta);
+  if (!(isFinite(k) && k > 0)) return phys;
+  const floorKm = (meta || {}).mapKind === "tactical" ? SCALE_FLOOR_KM.tactical : SCALE_FLOOR_KM.strategic;
+  const byScale = floorKm / (SCALE_BAR_PX * k);
+  const guard = (isFinite(fitDpp) && fitDpp > 0) ? fitDpp / MIN_ZOOM_RANGE : byScale;
+  return Math.max(phys, Math.min(byScale, guard));
+}
+
 /** 数据坐标经度归一（球面 [-180,180)；平面原样）——渲染/拾取共用 */
 export function wrapLonData(l: number, meta: Meta | undefined): number {
   return wrapLon(l, (meta || {}).worldModel === "flat");
@@ -103,15 +126,17 @@ export function wrapLonData(l: number, meta: Meta | undefined): number {
 
 export interface ViewState { lon0: number; lat0: number; degPerPx: number }
 
-/* 缩放到光标（滚轮/双击）：保持光标下经纬度不动；缩放限 [minDegPerPx, maxDpp]。
-   maxDpp＝缩放下限（最大 度/像素），缺省 0.5（平价锁定不破）；外壳按 bbox/画布算「全图恰好整屏」值传入。 */
+/* 缩放到光标（滚轮/双击）：保持光标下经纬度不动；缩放钳在 [minDpp, maxDpp]。
+   ⚠ 两头都**必填**（同「参数可选＋内部兜底常数一律改必填」之训）：缩小到底＝全图恰好整屏、
+   放大到底＝minDppFor 的比例尺档位，两条规则各有出处，此处只管钳。 */
 export function zoomAtView(
-  view: ViewState, meta: Meta | undefined, w: number, h: number, x: number, y: number, f: number, maxDpp = 0.5
+  view: ViewState, meta: Meta | undefined, w: number, h: number, x: number, y: number, f: number,
+  maxDpp: number, minDpp: number
 ): ViewState & { wrapShift: number } {
   const flat = (meta || {}).worldModel === "flat";
   const cam: Camera = { lon0: view.lon0, lat0: view.lat0, degPerPx: view.degPerPx, w, h, flat };
   const before = unproject(cam, x, y);
-  const dpp = Math.max(minDegPerPx(meta), Math.min(maxDpp, view.degPerPx * f));
+  const dpp = Math.max(minDpp, Math.min(maxDpp, view.degPerPx * f));
   const after = unproject({ ...cam, degPerPx: dpp }, x, y);
   const cl = clampView({ lon0: view.lon0 + before[0] - after[0], lat0: view.lat0 + before[1] - after[1] }, meta);
   return { lon0: cl.lon0, lat0: cl.lat0, degPerPx: dpp, wrapShift: cl.wrapShift };

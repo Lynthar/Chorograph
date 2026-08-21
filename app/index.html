@@ -125,6 +125,11 @@
     display:flex; align-items:center; justify-content:center; font-size:13px;
     background:rgba(22,17,10,.55); color:#f0d9c0; opacity:0; transition:opacity .12s; }
   #home .mapcard:hover .mc-del{ opacity:1; }
+  /* 图种角标：战略=靛、战术=朱；压缩略图左上角，缩略图有无都读得出 */
+  #home .mc-kind{ position:absolute; left:9px; top:9px; z-index:2; font-size:12px; font-weight:bold; letter-spacing:.02em;
+    padding:2px 9px; border-radius:9px; color:#f3ead6; background:rgba(44,56,86,.93);
+    border:1px solid rgba(243,234,214,.32); box-shadow:0 1px 4px rgba(0,0,0,.38); pointer-events:none; }
+  #home .mc-kind.tac{ background:rgba(138,47,47,.94); }
   .mc-del:hover{ background:#b0202a; color:#fff; }
   .hm-empty{ grid-column:1/-1; text-align:center; color:#9fb0c8; line-height:2.2;
     padding:72px 0; border:1.5px dashed #47506a; border-radius:10px; }
@@ -181,7 +186,7 @@
       <div id="opMount"></div>
       <div class="mount" id="cvTabMount"></div>
       <!-- 读数浮签（底栏退役：坐标/高程 + 星球尺度迁此；外壳直写文本） -->
-      <div class="coords"><b id="ftCoord">经纬度 —</b><span id="ftPlanet">—</span></div>
+      <div class="coords"><b id="ftCoord">经纬度 —</b></div>
     </div>
     <div class="mount" id="inspMount"></div>
   </div>

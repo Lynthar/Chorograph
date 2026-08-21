@@ -27,9 +27,13 @@ export function applyEra<T extends { since?: number | null; until?: number | nul
   return o;
 }
 
+/* 落点精度统一 4 位小数（2026-08 审查修正，原 3 位）：三位＝111m 量子，在 100m 战术格上新落的
+   点/章/线会从光标处跳开半格（高倍下十几像素可见），且粗于移动路径（moveNode/setUnitPoint 本就
+   4 位）。四位≈11m，与移动同准。 */
+
 /** 新建地点（旧 addNodeAt：缺省 city 起步；柱B 起「地点」子工具类型 chips 可预选 type,类型仍可在表单里改） */
 export function addNode(w: World, 名称: string, lon: number, lat: number, type = "city", id = newNodeId()): WorldNode {
-  const n: WorldNode = { id, 名称, lon: +dataLon(w.meta, lon).toFixed(3), lat: +lat.toFixed(3),
+  const n: WorldNode = { id, 名称, lon: +dataLon(w.meta, lon).toFixed(4), lat: +lat.toFixed(4),
     type, faction: null, 字段: {}, note: "", link: 名称 };
   w.nodes.push(n);
   return n;
@@ -37,7 +41,7 @@ export function addNode(w: World, 名称: string, lon: number, lat: number, type
 
 /** 新建标注（v0.15 净新）：自由文本注记——名称即图面文本，字号/屏幕角/派系色在表单里改 */
 export function addLabel(w: World, 文本: string, lon: number, lat: number, id = newNodeId()): WorldNode {
-  const n: WorldNode = { id, 名称: 文本, lon: +dataLon(w.meta, lon).toFixed(3), lat: +lat.toFixed(3),
+  const n: WorldNode = { id, 名称: 文本, lon: +dataLon(w.meta, lon).toFixed(4), lat: +lat.toFixed(4),
     type: "label", faction: null };
   w.nodes.push(n);
   return n;
@@ -46,7 +50,7 @@ export function addLabel(w: World, 文本: string, lon: number, lat: number, id 
 /** 在某地点旁新建事件点（旧 addEventAt：偏移 +0.4/+0.3，默认战役、年份=当前年） */
 export function addEventNear(w: World, at: WorldNode, 名称: string, yearNow: number, id = newEventId()): WorldNode {
   const nd: WorldNode = { id, 名称,
-    lon: +dataLon(w.meta, at.lon + 0.4).toFixed(3), lat: +(at.lat + 0.3).toFixed(3),
+    lon: +dataLon(w.meta, at.lon + 0.4).toFixed(4), lat: +(at.lat + 0.3).toFixed(4),
     type: "event", evtype: "battle", year: yearNow, 字段: {}, note: "", link: 名称 };
   w.nodes.push(nd);
   return nd;
@@ -209,8 +213,8 @@ export function removeOp(w: World, evId: string, i: number): boolean {
    再写入新涂改；橡皮=只移除（靠 buildGridCells 回退种子初稿/继承的粗块）。lon/lat=笔刷中心（数据经度，已折回）。
    新壳不再直改 grid.cells（改完由外壳 rebuild 重建）；era=「⏳新对象时间段」（勾选则涂改带 since/until）。 */
 /* 逐 dab 涂改索引（2026-08-10 精度批）：按「涂改中心所在格」分桶。280 密度重涂改图（长平级
-   ＝1.6 万条）上，原「盘内逐格 × 全表 filter」每 move 上百万次比较＝拖笔即卡；分桶后每 dab
-   一次 O(N) 建桶 + 逐格 O(命中数)。⚠ 桶只是**预筛**，候选仍过全谓词（|Δ|<tol 且 tol=0.4 格
+   ＝1.6 万条）上，原「盘内逐格 × 全表 filter」每 move 上百万次比较＝拖笔即卡；分桶后每**笔迹路径**
+   一次 O(N) 建桶 + 逐格 O(命中数)（2026-08-19 连续批把桶提到路径外——插值后一次 move 可有上百个盘心）。⚠ 桶只是**预筛**，候选仍过全谓词（|Δ|<tol 且 tol=0.4 格
    <半格 ⇒ 命中者必落在中心所在桶＝无漏），负坐标的键折叠也只会多扫、被全谓词拒掉＝语义逐位。 */
 const bucketByCell = <T extends { lon: number; lat: number }>(list: T[], bb: BBox, step: number): Map<number, T[]> => {
   const m = new Map<number, T[]>();
@@ -222,12 +226,30 @@ const bucketByCell = <T extends { lon: number; lat: number }>(list: T[], bb: BBo
   return m;
 };
 
+/* 涂改要不要记自身块尺寸——判据自 2026-08-12 起**不再是「是不是战术图」**:缺 step 键＝按 1° 粗块
+   解读(`grid.ts`/`erode.ts`/`elev.ts` 三处 `+(o.step) || step` 与 `core/tactical.ts` 烘焙的 `|| 1` 同规),
+   故凡格细于 1° 都必须记。战略图一开网格密度就落在这一档,不记则烘焙成战术图时按 1° 粗块盖章
+   ＝面积三十几倍。战术图恒记＝旧行为逐位(它的 step 本就 <1,这一支只是把老语义原样留着)。 */
+const recordBlockStep = (w: World, step: number): boolean =>
+  ((w.meta || {}) as { mapKind?: string }).mapKind === "tactical" || step < 1;
+
 export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: number, lat: number,
   t: string, size: number, erase: boolean, era?: EraNew | null,
   axis: "both" | "lf" | "eco" = "both"): boolean {   // t=复合串（两轴）；axis=单轴笔刷时只并入该轴、另一轴留旧格值
+  return paintTerrainPath(w, grid, yearNow, [[lon, lat]], t, size, erase, era, axis);
+}
+
+/* 一次落一串盘心（2026-08-19 笔画连续批：一次 pointermove 的插值路径）。逐点各调一次
+   paintTerrainAt 也能画出连续笔迹，但有两处代价：① 每点重建一次 O(涂改数) 的桶；② **同一格被
+   相邻两盘覆盖时会重复入库**（新写的涂改不在桶里，后一盘看不见它）——一笔下来能把同一格涂改
+   翻两三倍。故收成路径版：桶只建一次，`seen` 保证同一格只处理一次（同一笔同一格的写入值恒等
+   ——笔刷与基面格值在这一串里都不变，故跳过后来者与写两遍等价）。 */
+export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
+  path: readonly (readonly [number, number])[],
+  t: string, size: number, erase: boolean, era?: EraNew | null,
+  axis: "both" | "lf" | "eco" = "both"): boolean {
   const { bb, step, cells } = grid;
-  const tac = ((w.meta || {}) as { mapKind?: string }).mapKind === "tactical";   // 旧 isTac() 语义
-  const c0 = Math.floor((lon - bb.lonMin) / step), r0 = Math.floor((lat - bb.latMin) / step);
+  const recStep = recordBlockStep(w, step);
   const R = size - 1, prec = step >= 0.05 ? 2 : 4, tol = step * 0.4;
   const [brLf, brEco] = parseComposite(t);   // 笔刷复合的两轴分量（单轴模式各取其一并入现格）
   const ovs = w.terrainOverrides || [];
@@ -245,26 +267,32 @@ export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: numbe
       && (+(o.step as number) || step) <= step * 1.001 && activeAt(o, yearNow);
   const deadT = new Set<TerrainOverride>(), deadH = new Set<HeightOverride>();
   const added: TerrainOverride[] = [];
+  const seen = new Set<number>();
   let changed = false;
-  for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
-    if (dr * dr + dc * dc > R * R + 0.5) continue;
-    const r = r0 + dr, c = c0 + dc;
-    if (!(cells[r] && cells[r][c] !== undefined)) continue;   // 越界跳过
-    const clon = bb.lonMin + (c + 0.5) * step, clat = bb.latMin + (r + 0.5) * step;
-    const k = r * 4096 + c;
-    for (const o of bkt.get(k) || []) if (!deadT.has(o) && hit(o, clon, clat)) { deadT.add(o); changed = true; }
-    if (hbkt) for (const o of hbkt.get(k) || []) if (!deadH.has(o) && hit(o, clon, clat)) { deadH.add(o); changed = true; }
-    if (!erase) {
-      // 单轴笔刷：并入现格值的对应轴（地貌笔改地貌留生态、生态笔改生态留地貌）——现格=cells 已含旧涂改+初稿
-      let cellT = t;
-      if (axis !== "both") {
-        const [cLf, cEco] = parseComposite(cells[r][c]);
-        cellT = axis === "lf" ? canonComposite(brLf + (cEco === "none" ? "" : "/" + cEco))
-                              : canonComposite(cLf + (brEco === "none" ? "" : "/" + brEco));
+  for (const [lon, lat] of path) {
+    const c0 = Math.floor((lon - bb.lonMin) / step), r0 = Math.floor((lat - bb.latMin) / step);
+    for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
+      if (dr * dr + dc * dc > R * R + 0.5) continue;
+      const r = r0 + dr, c = c0 + dc;
+      if (!(cells[r] && cells[r][c] !== undefined)) continue;   // 越界跳过
+      const clon = bb.lonMin + (c + 0.5) * step, clat = bb.latMin + (r + 0.5) * step;
+      const k = r * 4096 + c;                                   // 界内 ⇒ c<cols≤2048 ⇒ 键唯一（桶的折叠只多扫，seen 不能有假命中）
+      if (seen.has(k)) continue;                                // 同一格只处理一次（见函数头注）
+      seen.add(k);
+      for (const o of bkt.get(k) || []) if (!deadT.has(o) && hit(o, clon, clat)) { deadT.add(o); changed = true; }
+      if (hbkt) for (const o of hbkt.get(k) || []) if (!deadH.has(o) && hit(o, clon, clat)) { deadH.add(o); changed = true; }
+      if (!erase) {
+        // 单轴笔刷：并入现格值的对应轴（地貌笔改地貌留生态、生态笔改生态留地貌）——现格=cells 已含旧涂改+初稿
+        let cellT = t;
+        if (axis !== "both") {
+          const [cLf, cEco] = parseComposite(cells[r][c]);
+          cellT = axis === "lf" ? canonComposite(brLf + (cEco === "none" ? "" : "/" + cEco))
+                                : canonComposite(cLf + (brEco === "none" ? "" : "/" + brEco));
+        }
+        const ov: TerrainOverride = { lon: +clon.toFixed(prec), lat: +clat.toFixed(prec), t: cellT };
+        if (recStep) ov.step = +step.toFixed(4);   // 细格涂改记录自身块尺寸（与继承的 1° 粗块区分）——对齐旧 paintAt（index.html:2739），存档格式兼容硬约束
+        added.push(applyEra(ov, era)); changed = true;
       }
-      const ov: TerrainOverride = { lon: +clon.toFixed(prec), lat: +clat.toFixed(prec), t: cellT };
-      if (tac) ov.step = +step.toFixed(4);   // 战术细格涂改记录自身块尺寸（与继承的 1° 粗块区分）——对齐旧 paintAt（index.html:2739），存档格式兼容硬约束
-      added.push(applyEra(ov, era)); changed = true;
     }
   }
   // 与旧逐格 filter+push 的产物同序：存活者按原序 + 新涂按盘序追加（新涂中心互异＝不会互相命中）
@@ -281,91 +309,68 @@ export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: numbe
    会把大 elevUnitM 下的整笔 1m 当零吞掉）。 */
 export function paintHeightAt(w: World, grid: Grid, lon: number, lat: number,
   dh: number, size: number, era?: EraNew | null): boolean {
+  return paintHeightPath(w, grid, [[lon, lat]], dh, size, era);
+}
+
+/* 路径版（同 paintTerrainPath 之规，见其头注）。⚠ 这里 `seen` 还兼着一条语义：dh 是**加性**的，
+   一次 pointermove 的插值路径上同一格若被相邻几个盘反复叠加，快拖一下就会比慢拖挖深好几倍。
+   一格一次＝「每个事件每格加一笔」，慢拖仍因事件更多而叠得更深（笔速控制落料，与手感相符）。 */
+export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [number, number])[],
+  dh: number, size: number, era?: EraNew | null): boolean {
   const { bb, step, cells } = grid;
-  const tac = ((w.meta || {}) as { mapKind?: string }).mapKind === "tactical";   // 同 paintTerrainAt：战术涂改记录块尺寸
-  const c0 = Math.floor((lon - bb.lonMin) / step), r0 = Math.floor((lat - bb.latMin) / step);
+  const recStep = recordBlockStep(w, step);   // 同 paintTerrainAt：细格涂改记录块尺寸
   const R = size - 1, prec = step >= 0.05 ? 2 : 4, tol = step * 0.4;
   const ovs = w.heightOverrides || (w.heightOverrides = []);
   const es = era && era.on && era.since != null && isFinite(era.since) ? era.since : null;
   const eu = era && era.on && era.until != null && isFinite(era.until) ? era.until : null;
   const bkt = bucketByCell(ovs, bb, step);   // 逐 dab 索引（预筛，候选仍过全谓词；桶内保数组序＝find 首个命中）
   const dead = new Set<HeightOverride>();
+  const seen = new Set<number>();
   let changed = false;
-  for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
-    if (dr * dr + dc * dc > R * R + 0.5) continue;
-    const r = r0 + dr, c = c0 + dc;
-    if (!(cells[r] && cells[r][c] !== undefined)) continue;
-    const clon = +(bb.lonMin + (c + 0.5) * step).toFixed(prec), clat = +(bb.latMin + (r + 0.5) * step).toFixed(prec);
-    const ex = (bkt.get(r * 4096 + c) || []).find(o => !dead.has(o) && Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
-      && (+(o.step as number) || step) <= step * 1.001 && (o.since ?? null) === es && (o.until ?? null) === eu);
-    if (ex) {
-      ex.dh = +(ex.dh + dh).toFixed(6);
-      if (Math.abs(ex.dh) < 1e-6) dead.add(ex);
-    } else {
-      const ov: HeightOverride = { lon: clon, lat: clat, dh: +dh.toFixed(6) };
-      if (tac) ov.step = +step.toFixed(4);
-      ovs.push(applyEra(ov, era));
+  for (const [lon, lat] of path) {
+    const c0 = Math.floor((lon - bb.lonMin) / step), r0 = Math.floor((lat - bb.latMin) / step);
+    for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
+      if (dr * dr + dc * dc > R * R + 0.5) continue;
+      const r = r0 + dr, c = c0 + dc;
+      if (!(cells[r] && cells[r][c] !== undefined)) continue;
+      const k = r * 4096 + c;
+      if (seen.has(k)) continue;                  // 同一格一笔只叠一次（见函数头注）
+      seen.add(k);
+      const clon = +(bb.lonMin + (c + 0.5) * step).toFixed(prec), clat = +(bb.latMin + (r + 0.5) * step).toFixed(prec);
+      const ex = (bkt.get(k) || []).find(o => !dead.has(o) && Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
+        && (+(o.step as number) || step) <= step * 1.001 && (o.since ?? null) === es && (o.until ?? null) === eu);
+      if (ex) {
+        ex.dh = +(ex.dh + dh).toFixed(6);
+        if (Math.abs(ex.dh) < 1e-6) dead.add(ex);
+      } else {
+        const ov: HeightOverride = { lon: clon, lat: clat, dh: +dh.toFixed(6) };
+        if (recStep) ov.step = +step.toFixed(4);
+        ovs.push(applyEra(ov, era));
+      }
+      changed = true;
     }
-    changed = true;
   }
   if (dead.size) w.heightOverrides = ovs.filter(o => !dead.has(o));
   return changed;
 }
 
-/* —— 网格密度切换的涂改拆分（2026-08-10 精度批）——
-   密度提档（如 140→280）后，上一密度涂的块比新格粗：显示上仍按粗块盖章无恙，但
-   「同粒度或更细」的移除/橡皮规则永远认不得它们——旧笔迹擦不掉、涂平原压不掉旧雕痕
-   ＝「刷不动」之症的密度版。故把 step∈(新格,旧格] 的涂改按块覆盖域拆成新格若干枚
-   （几何=buildGridCells 粗块盖章同式；140→280 恰 2×2）。1° 继承粗块（step≫旧格）与
-   缺 step 条目（恒随当前网格）不动；**降档不迁移**（细块在粗网格上按所在格盖章、移除
-   规则本就认「更细」）。原数组序原位展开＝后涂者仍盖先涂者；整块落在图幅外＝原样保留
-   （拆出 0 枚等于静默删数据）。terrainOverrides 与 heightOverrides 同规（dh 逐枚照抄＝
-   栅格化累加结果不变）。返回被拆分的块数。 */
-export function splitOverridesToStep(w: World, bb: BBox, newStep: number, oldStep: number): number {
-  const lo = newStep * 1.001, hi = oldStep * 1.001;
-  const prec = newStep >= 0.05 ? 2 : 4, stp = +newStep.toFixed(4);
-  const cmax = Math.max(1, Math.ceil((bb.lonMax - bb.lonMin) / newStep)) - 1;
-  const rmax = Math.max(1, Math.ceil((bb.latMax - bb.latMin) / newStep)) - 1;
-  let n = 0;
-  const split = <T extends { lon: number; lat: number; step?: number }>(list: T[] | undefined): T[] | undefined => {
-    if (!list || !list.length) return list;
-    let any = false;
-    const out: T[] = [];
-    for (const o of list) {
-      const s = +(o.step as number) || 0;
-      if (!(s > lo && s <= hi)) { out.push(o); continue; }
-      /* ⚠ 低边 +1e-9 与高边 −1e-9 对称收缩：同族块的边恰落新格线上，浮点噪声会把低边挤进
-         左/下一格＝拆出 3×2 幅（2×2 的期望被复制多一列，实测踩过）；收缩量 ≪ 格距无碍真覆盖 */
-      const c0 = Math.max(0, Math.floor((o.lon - s / 2 - bb.lonMin + 1e-9) / newStep)), c1 = Math.min(cmax, Math.floor((o.lon + s / 2 - bb.lonMin - 1e-9) / newStep));
-      const r0 = Math.max(0, Math.floor((o.lat - s / 2 - bb.latMin + 1e-9) / newStep)), r1 = Math.min(rmax, Math.floor((o.lat + s / 2 - bb.latMin - 1e-9) / newStep));
-      if (c1 < c0 || r1 < r0) { out.push(o); continue; }   // 整块在图幅外＝保留原块
-      any = true; n++;
-      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++)
-        out.push({ ...o, lon: +(bb.lonMin + (c + 0.5) * newStep).toFixed(prec), lat: +(bb.latMin + (r + 0.5) * newStep).toFixed(prec), step: stp });
-    }
-    return any ? out : list;
-  };
-  const t = split(w.terrainOverrides);
-  if (t !== w.terrainOverrides && t) w.terrainOverrides = t;
-  const h = split(w.heightOverrides);
-  if (h !== w.heightOverrides && h) w.heightOverrides = h;
-  return n;
-}
+/* 2026-08-13 冻结批：splitOverridesToStep 已删——它唯一的存在理由是「改图幅=改格边」的涂改
+   迁移,而尺寸/密度自此创建后冻结（设置弹层不再改 bbox）,那条路不存在了。 */
 
 /* —— 手绘布景（decor[]；对齐旧 placeDecor/decorEraseAt）—— */
-/** 落一枚布景印章（经度折回、三位小数；id 同旧 d+base36+序号%97） */
+/** 落一枚布景印章（经度折回、四位小数；id 同旧 d+base36+序号%97） */
 export function addDecor(w: World, lon: number, lat: number, kind: string, size: number): Decor {
   const d: Decor = { id: "d" + Date.now().toString(36) + ((w.decor || []).length % 97),
-    lon: +dataLon(w.meta, lon).toFixed(3), lat: +lat.toFixed(3), kind, size };
+    lon: +dataLon(w.meta, lon).toFixed(4), lat: +lat.toFixed(4), kind, size };
   (w.decor || (w.decor = [])).push(d);
   return d;
 }
-/** 移一枚布景到新经纬（经度折回、三位小数；单枚拖移与框选整组拖移共用） */
+/** 移一枚布景到新经纬（经度折回、四位小数；单枚拖移与框选整组拖移共用） */
 export function moveDecor(w: World, id: string, lon: number, lat: number): void {
   const d = (w.decor || []).find(x => x.id === id);
   if (!d) return;
-  d.lon = +dataLon(w.meta, lon).toFixed(3);
-  d.lat = +lat.toFixed(3);
+  d.lon = +dataLon(w.meta, lon).toFixed(4);
+  d.lat = +lat.toFixed(4);
 }
 /** 删一枚布景（按 id）。World.decor 恒为数组（normalizeWorld 保证），空了留空数组不删键 */
 export function removeDecor(w: World, id: string): boolean {

@@ -14,7 +14,9 @@ export interface RouteCtx { meta?: Meta; grid?: Grid; roads?: Set<string>; world
 export type RouteRequest =
   | { t: "ctx"; meta: Meta | undefined; grid: Grid; roads: Set<string> | string[]; world: World; yearNow: number }
   | { t: "route"; id: number; A: RoutePoint; B: RoutePoint; arm: Arm }
-  | { t: "legs"; id: number; unit: Unit }
+  /* legs 可随单带 roads（2026-08 审查批）：官道格随 nodes/edges/年份变，而 ctx 只在网格重建时
+     重发——纯对象域编辑（加删路、挪地点）后按 st.roads 算就是旧路网；带上即以本单为准。 */
+  | { t: "legs"; id: number; unit: Unit; roads?: Set<string> | string[] }
   | ({ t: "erode"; id: number } & ErodeInput);
 
 export type RouteReply =
@@ -35,5 +37,6 @@ export function handleRouteMsg(st: RouteCtx, msg: RouteRequest): RouteReply | nu
   if (msg.t === "route") {
     return { t: "route", id: msg.id, res: computeRoute(st.meta, st.grid, st.roads, st.world, st.yearNow ?? 0, msg.A, msg.B, msg.arm) };
   }
-  return { t: "legs", id: msg.id, legs: unitLegs(st.meta, st.grid, st.roads, msg.unit) };
+  const roads = msg.roads != null ? (msg.roads instanceof Set ? msg.roads : new Set(msg.roads)) : st.roads;
+  return { t: "legs", id: msg.id, legs: unitLegs(st.meta, st.grid, roads, msg.unit) };
 }

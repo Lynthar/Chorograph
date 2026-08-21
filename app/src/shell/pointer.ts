@@ -2,10 +2,10 @@
    浏览左拖/中键/Space+左拖=平移；编辑·选择空白拖=框选（Shift=强制框选）；
    按住地点/布景/部队=拖移；连线可点点或拖拽成线；其余工具空白按下只作点击。
    模块内闭持全部拖拽/笔迹瞬态；frame 经 PointerView 只读画线笔迹/框选/光标位。 */
-import { unproject, clampView, zoomAtView, panByView } from "../core/projection.ts";
-import { CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_KINDS, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite } from "../core/constants.ts";
+import { unproject, clampView, minDppFor, zoomAtView, panByView } from "../core/projection.ts";
+import { CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_KINDS, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite, terrainProps } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
-import { BRUSH_NOTCHES, brushRadiusCells } from "../core/brush.ts";
+import { BRUSH_NOTCHES, brushRadiusCells, brushDabStepDeg, interpolatePath } from "../core/brush.ts";
 import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { elevUnitM, elevSmooth, heightStepM } from "../core/elev.ts";
@@ -18,7 +18,7 @@ import { fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStrengthAt } from
 import { pickDecor, decorIdsInRadius, decorsInBox, ecoForeignIdsInDisc } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit, selMembers,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
-  inspEditSig, settingsSig, closeSettings, helpOpenSig, saveConflictSig, togglePlay, stopPlay,
+  inspEditSig, settingsSig, closeSettings, helpOpenSig, calOverlaySig, saveConflictSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
   addTypeSig, paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, decorEraseSig, eraNewSig, heightStepMSig,
@@ -27,10 +27,11 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUn
   type EditSub, type Sel }
   from "../ui/state.ts";
 import { addNode, addEdge, addFreeEdge, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
-  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setNodeRangeKm, moveNode, moveDecor, dataLon, paintTerrainAt, paintHeightAt }
+  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setNodeRangeKm, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath }
   from "../ui/editops.ts";
 import { poolGet } from "../ui/stamps.ts";
-import { paintDims, cellsToSet, setToCells, brushCells, ensurePaintLayer, type PaintDims } from "../ui/paint.ts";
+import { paintDims, maskFromLayer, brushMask, runsFromMask, ensurePaintLayer, type PaintMask } from "../ui/paint.ts";
+import { paintCellSet } from "../core/territory.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
 import type { Host } from "./host.ts";
@@ -41,8 +42,8 @@ import type { WorldNode } from "../core/types.ts";
 interface PanDrag { x: number; y: number; lon0: number; lat0: number; click: boolean }
 interface OpStroke { pts: [number, number][]; lastX: number; lastY: number; free?: "river" | "wall" }   // free=自由画连线笔迹（收笔入该型 pts 边），否则作战线
 interface BoxSel { x0: number; y0: number; x1: number; y1: number; moved: boolean; decorOnly?: boolean }   // decorOnly=布景子工具的框选（只圈布景）
-interface PaintStroke { set: Set<string>; dims: PaintDims; fid: string; idx: number }
-interface DecorStroke { erase: boolean; lastX: number; lastY: number }
+interface PaintStroke { mask: PaintMask; fid: string; idx: number; lastX: number; lastY: number }   // lastX/Y=上一个指针位置（插值锚点，见 strokePath）
+interface DecorStroke { erase: boolean; lastX: number; lastY: number }   // lastX/Y=上一次真落章/扫除的位置（按间距节流的锚点）
 /* 对象拖动的共同瞬态：x0/y0=按下点（画布 CSS px）、pushed=已越死区并记过一步撤销。
    死区见 ARM_PX / armDrag——点选带手抖不该算一次编辑。 */
 interface ObjDrag { x0: number; y0: number; pushed: boolean }
@@ -75,16 +76,19 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   const { cam, cssSize, cosk, rebuild } = host;
   const { hideHome } = libio;
 
-  /* 缩放下限（最大 度/像素）＝全图恰好整屏 × 1.1 余量：v0.14 硬编码 0.5 与图无关，
-     战术图 bbox 0.24° 时形同无限制（可缩到全图不足半屏）。无 bbox 退回 0.5；
-     不低于该图默认开图缩放 degPerPx0，免开图即被钳进。传入 zoomAtView(…, maxDpp)。 */
-  const maxDppFit = (): number => {
+  /* 缩小到底（最大 度/像素）＝全图恰好整屏 × 1.1 余量：v0.14 硬编码 0.5 与图无关，
+     战术图 bbox 0.24° 时形同无限制（可缩到全图不足半屏）。无 bbox 退回 0.5。 */
+  const fitDpp = (): number => {
     const meta = ctx.meta, bb = meta?.bbox, [w, h] = cssSize();
     if (!bb || !(w > 0 && h > 0)) return 0.5;
     const cosLat = meta?.worldModel === "flat" ? 1 : Math.max(0.05, Math.cos((bb.latMin + bb.latMax) / 2 * Math.PI / 180));
-    const fit = Math.max((bb.lonMax - bb.lonMin) * cosLat / w, (bb.latMax - bb.latMin) / h) * 1.1;
-    return Math.max(fit, meta?.view?.degPerPx0 || 0);
+    return Math.max((bb.lonMax - bb.lonMin) * cosLat / w, (bb.latMax - bb.latMin) / h) * 1.1;
   };
+  /* 传给 zoomAtView 的两头。缩小那头另**不低于该图默认开图缩放 degPerPx0**（免开图即被钳进）；
+     放大那头走 core 的 minDppFor（比例尺档位 + 小图护栏 + 物理地板）。⚠ 喂它的是**纯 fitDpp**
+     而不是 maxDppFit()——degPerPx0 是存档里的自由数值，手编一个大的会连带放松放大这一头。 */
+  const maxDppFit = (): number => Math.max(fitDpp(), ctx.meta?.view?.degPerPx0 || 0);
+  const minDppFit = (): number => minDppFor(ctx.meta, fitDpp());
 
   /* 悬停速览提示（v0.14 #tip）：部队/地点/连线 hover 出小卡；拖动/绘制时隐藏。
      部队优先同 clickAt 之序（画在最上层者先答），故战术图上悬停部队即知可点。 */
@@ -140,14 +144,15 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
 
   let drag: PanDrag | null = null, nodeDrag: IdDrag | null = null,
     paintStroke: PaintStroke | null = null, opStroke: OpStroke | null = null,
-    terrainStroke: boolean | null = null, decorStroke: DecorStroke | null = null,
+    terrainStroke: { lastX: number; lastY: number } | null = null, decorStroke: DecorStroke | null = null,
     boxSel: BoxSel | null = null, multiDrag: MultiDrag | null = null,
     unitDrag: IdDrag | null = null, rangeDrag: RangeDrag | null = null,
     mxy: [number, number] | null = null;
   let spaceHeld = false, linkDrag: { fromId: string; x: number; y: number; moved: boolean } | null = null,
     decorDrag: IdDrag | null = null,
     clickTrack: { x: number; y: number; moved: boolean } | null = null, nudgeT = 0,
-    ecoSprayLast: { x: number; y: number } | null = null;   // 生态笔播撒印章的上次落点（按间距节流，避免每帧堆章）
+    ecoSprayLast: { x: number; y: number } | null = null,   // 生态笔播撒印章的上次落点（按间距节流，避免每帧堆章）
+    ecoSweepLast: { x: number; y: number } | null = null;   // 生态笔异生态扫除的上次位置（O(布景数)/次，不能每个插值点都跑一遍）
   /* 起拖死区门（对象拖动共用）：位移不足 ARM_PX 就返回 false——不记撤销、不改数据，
      这一按下退化为纯点选。越过后 pushed 记忆，本次拖动不再判（否则拖回起点附近会二次入栈）。
      4px 与浏览态「左键位移<4=点击」同阈值；笔刷类（涂域/地形/布景印章）不设死区——
@@ -184,47 +189,90 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     linkFromSig.value = hitId;
     return false;
   };
-  const paintDab = (x: number, y: number): void => {
+  /* —— 笔画连续（2026-08-19，用户实报「涂域/地形笔刷幅度大或速度快时断成一个个不连续的点」）——
+     病根两条，缺一条药都不成：① `pointermove` 只报**当前一点**，两点之间不插值，采样间距一旦超过
+     笔刷直径就必然断开；② 每 dab 的开销是全图级的（涂域一次 runsFromMask 全幅扫描、地形一次
+     rebuild），主线程越忙浏览器合并掉的 move 越多、采样越稀——于是「笔刷越大、拖得越快、断得越开」。
+     故：先用 getCoalescedEvents 取回被合并掉的真实轨迹点，再在相邻点之间按 ≤stepPx 补齐。只做后者，
+     主线程卡住那几十毫秒里的真实笔迹会被拉成直线；只做前者，补不回那段根本没产生的采样。
+     ⚠ 合并事件只读 clientX/Y：它们未经派发，`offsetX/Y` 是相对 currentTarget 现算的，在合并事件上
+     并不可靠（MDN 与 WICG 均有案）。同一元素上 offset 与 client 之差在一帧内是常数，借派发事件那
+     一点换算即可，还免掉一次布局。无此 API 的浏览器自动退回纯插值。 */
+  const MAX_DABS = 400;   // 单次 move 的落笔上限：60Hz 下已够 600px/帧 的位移，真实手速够不到；纯属护住主线程的兜底
+  const strokePath = (e: PointerEvent, lastX: number, lastY: number, stepPx: number): [number, number][] => {
+    const dx = e.offsetX - e.clientX, dy = e.offsetY - e.clientY;
+    const co = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+    const raw: [number, number][] = co.map(q => [q.clientX + dx, q.clientY + dy]);
+    raw.push([e.offsetX, e.offsetY]);   // 末点恒取派发事件本身（与合并序列末项同点时 n=0，自然跳过）
+    return interpolatePath(raw, lastX, lastY, stepPx, MAX_DABS);
+  };
+  /** 落点间距（像素）：几何在 core/brush.brushDabStepDeg 一处定，此处只作度→像素换算。
+      ⚠ 按**横向**折算（球面图上 cos 纬度那一侧每像素跨的度数更大），否则高纬横拖会跳格。 */
+  const dabStepPx = (cellDeg: number, R: number): number => {
+    const c = cam();
+    const cosK = c.flat ? 1 : Math.cos(c.lat0 * Math.PI / 180);
+    return Math.max(0.05, brushDabStepDeg(cellDeg, R) * cosK / c.degPerPx);
+  };
+  const paintPath = (pts: readonly [number, number][]): void => {
     if (!paintStroke) return;
-    const ll = unproject(cam(), x, y);
-    const lon = dataLon(ctx.meta, ll[0]);
-    const pd = paintStep(ctx.meta);
     // 档位→格半径 R 在 core/brush 一处折算（笔刷函数仍收 size=R+1 的格语义，几何与既有测试不动）
     const size = brushRadiusCells(ctx.meta, "paint", brushSizeSig.value) + 1;
-    if (!brushCells(paintStroke.set, paintStroke.dims, lon, ll[1], size, brushEraseSig.value, pd)) return;
-    const { fid, idx, dims, set } = paintStroke;
+    const { fid, idx, mask } = paintStroke;
+    let hit = false;
+    for (const [x, y] of pts) {
+      const ll = unproject(cam(), x, y);
+      if (brushMask(mask, dataLon(ctx.meta, ll[0]), ll[1], size, brushEraseSig.value)) hit = true;
+    }
+    if (!hit) return;   // 一格没改（涂在已涂处/图幅外）：不写库、不广播
     mutateWorldLive(w => {
       const f = w.factions.find(x2 => x2.id === fid);
       const L = f && f.paint && f.paint[idx];
-      if (L) f!.paint![idx] = { ...L, cells: setToCells(dims.bb, set, pd) };   // L 真⇒f/f.paint 真；换层对象=overlay 环缓存自动失效
+      if (L) {   // L 真⇒f/f.paint 真；换层对象=overlay 环缓存自动失效；写 runs 删 cells＝「读旧写新」的写侧
+        const nl: typeof L = { ...L, runs: runsFromMask(mask) };
+        delete nl.cells;
+        f!.paint![idx] = nl;
+      }
     });
   };
-  const terrainDab = (x: number, y: number): void => {
+  const terrainPath = (pts: readonly [number, number][]): void => {
     const grid = ctx.grid;
     if (!grid) return;
-    const ll = unproject(cam(), x, y);
     let changed = false;
     // 返回 changed 给 mutateWorldLive：空笔（涂同地形/无变化）不广播、不 editVer++（不留空撤销、不空触发自动保存）
     const axis = terrainAxisSig.peek();   // 三轴：lf 地貌 / eco 生态(改地面) / height 高程
     // 高程笔米制分档（2026-08-10）：每笔 dh＝所选米数/elevUnitM（原硬编码 ±0.02＝40m@2000 无档位）
     const dhAbs = heightStepM(ctx.meta, heightStepMSig.peek()) / elevUnitM(ctx.meta);
-    const size = brushRadiusCells(ctx.meta, "terrain", brushSizeSig.value) + 1;   // 同 paintDab：档位在 core/brush 折成格半径
+    const R = brushRadiusCells(ctx.meta, "terrain", brushSizeSig.value);   // 同 paintPath：档位在 core/brush 折成格半径
+    const path = pts.map(([x, y]) => {
+      const ll = unproject(cam(), x, y);
+      return [dataLon(ctx.meta, ll[0]), ll[1]] as [number, number];
+    });
     mutateWorldLive(w => {
       changed = axis === "height"
-        ? paintHeightAt(w, grid, dataLon(ctx.meta, ll[0]), ll[1], brushEraseSig.peek() ? -dhAbs : dhAbs, size, eraNewSig.peek())
-        : paintTerrainAt(w, grid, yearSig.peek(), dataLon(ctx.meta, ll[0]), ll[1], paintTerrainSig.value, size, brushEraseSig.value, eraNewSig.peek(), axis);
+        ? paintHeightPath(w, grid, path, brushEraseSig.peek() ? -dhAbs : dhAbs, R + 1, eraNewSig.peek())
+        : paintTerrainPath(w, grid, yearSig.peek(), path, paintTerrainSig.value, R + 1, brushEraseSig.value, eraNewSig.peek(), axis);
       return changed;
     });
-    if (changed) rebuild();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）
-    if (axis === "eco") {     // 生态轴：改地面之外随笔落/擦真实印章（橡皮＝抹地面同时擦附近印章）
-      if (brushEraseSig.peek()) decorEraseSweep(x, y); else { ecoForeignSweep(x, y); ecoStamp(x, y); }
+    if (changed) rebuild();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）；整条路径只重建一次
+    if (axis !== "eco") return;
+    /* 生态轴：改地面之外随笔落/擦真实印章（橡皮＝抹地面同时擦附近印章）。
+       ⚠ 扫除是 O(布景数)/次，不能每个插值点都跑——按笔刷半径节流（播撒自带节流，见 ecoStamp）。 */
+    const swR = Math.max(6, R * grid.step / Math.max(1e-9, cam().degPerPx));
+    const erase = brushEraseSig.peek();
+    for (const [x, y] of pts) {
+      if (!ecoSweepLast || Math.hypot(x - ecoSweepLast.x, y - ecoSweepLast.y) >= swR) {
+        ecoSweepLast = { x, y };
+        if (erase) decorEraseSweep(x, y); else ecoForeignSweep(x, y);
+      }
+      if (!erase) ecoStamp(x, y);   // 播撒自带间距节流（见 ecoStamp）
     }
   };
   /* 生态笔＝替换语义（2026-08-09，用户实报「给森林刷荒漠，树留在原地」）：落笔盘内属于**别的
      生态**散布的印章一并清掉（tree/pine/shrub/reed/dune/rock 并集减当前生态自家的；手放的
      山峰/丘/自定义图章不在并集里，永不被生态笔扫掉）。生态=无 也扫＝刷成裸地即植被清空
-     （只清地面不落新章之约不变；要连山峰图章一起清用生态橡皮）。每 move 都扫（不吃播撒的
-     间距节流——快速拖动不能在簇间留下漏网的树）；半径外扩半格罩住盘缘格与播撒毛边。 */
+     （只清地面不落新章之约不变；要连山峰图章一起清用生态橡皮）。⚠ 扫除沿**整条笔迹**推进、
+     间距不超一个笔刷半径（2026-08-19 连续批前是「每 move 一次」，快拖会在簇间留下漏网的树；
+     它 O(布景数)/次，故比播撒扫得密、又不能每个插值点都跑）；半径外扩半格罩住盘缘格与播撒毛边。 */
   const ecoForeignSweep = (x: number, y: number): void => {
     if (!decorPickable()) return;   // 布景层藏着不盲删（同橡皮之规）
     const w0 = worldSig.peek(), grid = ctx.grid;
@@ -306,7 +354,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       for (const f of world.factions) {
         const Ls = f.paint || [];
         for (let i = 0; i < Ls.length; i++) {
-          if (cellsToSet(bb, Ls[i].cells, pd).has(key)) {
+          if (paintCellSet(Ls[i], bb, pd).has(key)) {
             paintFactionSig.value = f.id; paintLayerSig.value = i; brushEraseSig.value = false;
             return;
           }
@@ -402,14 +450,14 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     // 作战线绘制态（模态，覆盖任何编辑子工具）：按住拖一笔成线
     if (world && modeSig.value === "edit" && opDrawSig.value) {
       const ll = unproject(cam(), e.offsetX, e.offsetY);
-      opStroke = { pts: [[+dataLon(ctx.meta, ll[0]).toFixed(3), +ll[1].toFixed(3)]], lastX: e.offsetX, lastY: e.offsetY };
+      opStroke = { pts: [[+dataLon(ctx.meta, ll[0]).toFixed(4), +ll[1].toFixed(4)]], lastX: e.offsetX, lastY: e.offsetY };
       canvas.setPointerCapture(e.pointerId);
       return;
     }
     // 自由画线：连线子工具选「河流/工事」时按住拖一笔成线（镜像作战线画线，无需锚地点）
     if (world && modeSig.value === "edit" && editSubSig.value === "link" && (linkTypeSig.value === "river" || linkTypeSig.value === "wall")) {
       const ll = unproject(cam(), e.offsetX, e.offsetY);
-      opStroke = { pts: [[+dataLon(ctx.meta, ll[0]).toFixed(3), +ll[1].toFixed(3)]], lastX: e.offsetX, lastY: e.offsetY, free: linkTypeSig.value };
+      opStroke = { pts: [[+dataLon(ctx.meta, ll[0]).toFixed(4), +ll[1].toFixed(4)]], lastX: e.offsetX, lastY: e.offsetY, free: linkTypeSig.value };
       canvas.setPointerCapture(e.pointerId);
       return;
     }
@@ -434,19 +482,18 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       });
       paintLayerSig.value = idx;
       const pd = paintStep(ctx.meta);
-      const dims = paintDims(ctx.meta, pd);
       const f2 = worldSig.peek()!.factions.find(x => x.id === fid);
-      paintStroke = { set: cellsToSet(dims.bb, (f2!.paint![idx].cells) || [], pd), dims, fid, idx };
+      paintStroke = { mask: maskFromLayer(ctx.meta, f2!.paint![idx], pd), fid, idx, lastX: e.offsetX, lastY: e.offsetY };
       canvas.setPointerCapture(e.pointerId);
-      paintDab(e.offsetX, e.offsetY);
+      paintPath([[e.offsetX, e.offsetY]]);
       return;
     }
     if (world && modeSig.value === "edit" && editSubSig.value === "terrain") {
       beginStroke();                              // 一笔=一步撤销（undo 按 terrKey 重建网格；收笔回收空笔）
-      terrainStroke = true;
-      ecoSprayLast = null;                        // 新笔重置播撒节流，首落即撒
+      terrainStroke = { lastX: e.offsetX, lastY: e.offsetY };
+      ecoSprayLast = ecoSweepLast = null;         // 新笔重置播撒/扫除节流，首落即撒即扫
       canvas.setPointerCapture(e.pointerId);
-      terrainDab(e.offsetX, e.offsetY);
+      terrainPath([[e.offsetX, e.offsetY]]);
       return;
     }
     if (world && modeSig.value === "edit" && editSubSig.value === "decor") {
@@ -568,10 +615,16 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const dec = ctx.view.degPerPx < 0.002 ? 4 : 2;
       let hTxt = "";
-      if (ctx.grid && ctx.elevField) {
+      if (ctx.grid) {
         const g = ctx.grid, f = ctx.elevField, lonD = dataLon(ctx.meta, ll[0]);
-        if (lonD >= g.bb.lonMin && lonD <= g.bb.lonMax && ll[1] >= g.bb.latMin && ll[1] <= g.bb.latMax)
-          hTxt = ` ｜ 高程≈${Math.round(elevSmooth(f.data, f, lonD, ll[1]) * elevUnitM(ctx.meta))}m`;   // 场自带几何（侵蚀细分后读数带谷线细节）
+        if (lonD >= g.bb.lonMin && lonD <= g.bb.lonMax && ll[1] >= g.bb.latMin && ll[1] <= g.bb.latMax) {
+          if (f) hTxt = ` ｜ 高程≈${Math.round(elevSmooth(f.data, f, lonD, ll[1]) * elevUnitM(ctx.meta))}m`;   // 场自带几何（侵蚀细分后读数带谷线细节）
+          /* 光标处的地貌·生态（2026-08-19 用户点单，接在高程之后）：读**网格现值**＝初稿叠涂改，与画布
+             所见同源；显示名一律走 terrainProps.名 单一真源（纯地貌／plain 基底取生态名／其余「地貌·生态」）。 */
+          const row = g.cells[Math.floor((ll[1] - g.bb.latMin) / g.step)];
+          const cell = row && row[Math.floor((lonD - g.bb.lonMin) / g.step)];
+          if (cell) hTxt += ` ｜ ${terrainProps(cell).名}`;
+        }
       }
       $("ftCoord").textContent = `经纬度 ${dataLon(ctx.meta, ll[0]).toFixed(dec)}°, ${ll[1].toFixed(dec)}°${hTxt}`;
     }
@@ -582,20 +635,31 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (opStroke) {
       if (Math.hypot(e.offsetX - opStroke.lastX, e.offsetY - opStroke.lastY) >= 7) {
         const ll = unproject(cam(), e.offsetX, e.offsetY);
-        opStroke.pts.push([+dataLon(ctx.meta, ll[0]).toFixed(3), +ll[1].toFixed(3)]);
+        opStroke.pts.push([+dataLon(ctx.meta, ll[0]).toFixed(4), +ll[1].toFixed(4)]);
         opStroke.lastX = e.offsetX; opStroke.lastY = e.offsetY;
       }
       return;
     }
-    if (paintStroke) { paintDab(e.offsetX, e.offsetY); return; }
-    if (terrainStroke) { terrainDab(e.offsetX, e.offsetY); return; }
+    if (paintStroke) {   // 三种笔刷一律沿**路径**落笔（见 strokePath 头注），不再只落当前一点
+      const R = brushRadiusCells(ctx.meta, "paint", brushSizeSig.value);
+      paintPath(strokePath(e, paintStroke.lastX, paintStroke.lastY, dabStepPx(paintStroke.mask.pd, R)));
+      paintStroke.lastX = e.offsetX; paintStroke.lastY = e.offsetY;
+      return;
+    }
+    if (terrainStroke) {
+      const R = brushRadiusCells(ctx.meta, "terrain", brushSizeSig.value);
+      terrainPath(strokePath(e, terrainStroke.lastX, terrainStroke.lastY, dabStepPx(ctx.grid ? ctx.grid.step : 1, R)));
+      terrainStroke.lastX = e.offsetX; terrainStroke.lastY = e.offsetY;
+      return;
+    }
     if (decorStroke) {
-      if (decorStroke.erase) decorEraseSweep(e.offsetX, e.offsetY);
-      else {
-        const sp = Math.max(16, 24 * decorSizeSig.value);   // 拖动按间距落章
-        if (Math.hypot(e.offsetX - decorStroke.lastX, e.offsetY - decorStroke.lastY) >= sp) {
-          decorPlace(e.offsetX, e.offsetY); decorStroke.lastX = e.offsetX; decorStroke.lastY = e.offsetY;
-        }
+      /* 印章/橡皮沿路径按间距推进：lastX/Y 记的是上一次**真落章/真扫除**的位置，故快拖时
+         一次 move 会补齐好几枚（原先每个 move 至多一枚＝拖快了就稀稀拉拉）。 */
+      const sp = decorStroke.erase ? Math.max(6, decorEraseRadius() * 0.9) : Math.max(16, 24 * decorSizeSig.value);
+      for (const [x, y] of strokePath(e, decorStroke.lastX, decorStroke.lastY, sp)) {
+        if (Math.hypot(x - decorStroke.lastX, y - decorStroke.lastY) < sp) continue;
+        if (decorStroke.erase) decorEraseSweep(x, y); else decorPlace(x, y);
+        decorStroke.lastX = x; decorStroke.lastY = y;
       }
       return;
     }
@@ -646,7 +710,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const dd = decorDrag;
       mutateWorldLive(w => {
         const d = (w.decor || []).find(x => x.id === dd.id);
-        if (d) { d.lon = +dataLon(ctx.meta, ll[0]).toFixed(3); d.lat = +ll[1].toFixed(3); }
+        if (d) { d.lon = +dataLon(ctx.meta, ll[0]).toFixed(4); d.lat = +ll[1].toFixed(4); }
       });
       return;
     }
@@ -681,7 +745,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (opStroke) {   // 收笔：RDP 简化后入库并自动选中（<2 点=只点了一下，不成线/河）
       const raw = opStroke.pts, freeTp = opStroke.free; opStroke = null;
       const simp = raw.length >= 2 && world
-        ? rdp(raw, ctx.view.degPerPx * 2.5).map(p => [+p[0].toFixed(3), +p[1].toFixed(3)] as [number, number]) : [];
+        ? rdp(raw, ctx.view.degPerPx * 2.5).map(p => [+p[0].toFixed(4), +p[1].toFixed(4)] as [number, number]) : [];
       if (simp.length >= 2 && freeTp) {            // 自由画河/工事：入库为一条 pts 折线边（无端点），自动选中
         let idx = -1;
         mutateWorld(w => { const ed = addFreeEdge(w, simp, freeTp); applyEra(ed, eraNewSig.peek()); idx = w.edges.length - 1; });
@@ -787,7 +851,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
           }
         }
       } else if (mode === "measure" || mode === "route") {
-        const pt = hit ? { lon: hit.lon, lat: hit.lat, node: hit } : { lon: +ll[0].toFixed(3), lat: +ll[1].toFixed(3) };
+        const pt = hit ? { lon: hit.lon, lat: hit.lat, node: hit } : { lon: +ll[0].toFixed(4), lat: +ll[1].toFixed(4) };
         const pts = routePtsSig.value;
         if (mode === "route" && pts.length >= 2) routePtsSig.value = [pt];   // 第三次点击=重新开始
         else routePtsSig.value = [...pts, pt];
@@ -839,7 +903,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     /* ⌘K / Ctrl+K：聚焦顶栏搜索框。
        须在输入框守卫之前（正在打字也能召唤）；弹层/图库打开时让位（焦点别落进被盖住的顶栏）。 */
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "k" || e.key === "K")
-      && !settingsSig.peek() && !helpOpenSig.peek() && !saveConflictSig.peek() && !ctx.libOpen) {
+      && !settingsSig.peek() && !helpOpenSig.peek() && !calOverlaySig.peek() && !saveConflictSig.peek() && !ctx.libOpen) {
       e.preventDefault();
       const sb = document.getElementById("searchBox") as HTMLInputElement | null;
       if (sb) { sb.focus(); sb.select(); }
@@ -855,6 +919,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
        但仍在此整段让位，免得快捷键穿透到被遮罩盖住的地图上。 */
     if (saveConflictSig.peek()) return;
     if (settingsSig.peek()) { if (e.key === "Escape") closeSettings(); return; }
+    if (calOverlaySig.peek()) { if (e.key === "Escape") calOverlaySig.value = false; return; }
     if (helpOpenSig.peek()) { if (e.key === "Escape" || e.key === "?") helpOpenSig.value = false; return; }
     if (ctx.libOpen) {   // 开始界面可见：屏蔽地图快捷键；Esc=回当前图（v0.14 homeVisible 分支）
       if (e.key === "Escape" && ctx.mapId) hideHome();
@@ -897,7 +962,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     /* ＋/－=以画布中心缩放；方向键=编辑模式选中地点微调（否则平移）；WASD=平移（v0.14） */
     const zoomCenter = (f: number): void => {
       const [w, h] = cssSize();
-      const r = zoomAtView(ctx.view, ctx.meta, w, h, w / 2, h / 2, f, maxDppFit());
+      const r = zoomAtView(ctx.view, ctx.meta, w, h, w / 2, h / 2, f, maxDppFit(), minDppFit());
       ctx.view.lon0 = r.lon0; ctx.view.lat0 = r.lat0; ctx.view.degPerPx = r.degPerPx;
     };
     if (e.key === "+" || e.key === "=") { zoomCenter(0.8); return; }
@@ -996,14 +1061,14 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       }
     }
     const [w, h] = cssSize();
-    const r = zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.deltaY < 0 ? 0.85 : 1.18, maxDppFit());   // v0.14 缩放步进
+    const r = zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.deltaY < 0 ? 0.85 : 1.18, maxDppFit(), minDppFit());   // v0.14 缩放步进
     ctx.view.lon0 = r.lon0; ctx.view.lat0 = r.lat0; ctx.view.degPerPx = r.degPerPx;
   }, { passive: false });
   /* 双击=放大（Shift+双击=缩小；仅浏览——工具模式下双击是两次点击，v0.14） */
   canvas.addEventListener("dblclick", e => {
     if (modeSig.peek() !== "browse") return;
     const [w, h] = cssSize();
-    const r = zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.shiftKey ? 1.5 : 0.62, maxDppFit());
+    const r = zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.shiftKey ? 1.5 : 0.62, maxDppFit(), minDppFit());
     ctx.view.lon0 = r.lon0; ctx.view.lat0 = r.lat0; ctx.view.degPerPx = r.degPerPx;
   });
   addEventListener("keyup", e => { if (e.key === " ") { spaceHeld = false; if (!drag) canvas.style.cursor = ""; } });

@@ -56,7 +56,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
         const pf = paintFactionSig.value;
         const f = pf ? world.factions.find(x => x.id === pf) : null;
         const L = f && f.paint && f.paint[paintLayerSig.value];
-        if (L) drawPaintCells(octx, cam(), L, f!.color || "#888", ctx.DPR, paintStep(ctx.meta));
+        if (L) drawPaintCells(octx, cam(), L, f!.color || "#888", ctx.DPR, paintStep(ctx.meta), ctx.meta.bbox);
         if (ptr.mxy) drawBrushRing(octx, cam(), ptr.mxy[0], ptr.mxy[1],
           (brushRadiusCells(ctx.meta, "paint", brushSizeSig.value) + 0.5) * paintStep(ctx.meta), brushEraseSig.value, ctx.DPR);
       }

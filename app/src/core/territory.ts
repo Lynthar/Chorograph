@@ -1,61 +1,99 @@
-/* 势力涂域（0.5° 细胞格）：格集合 → marching squares 提取边界 → 链成闭环 → Chaikin 平滑。
-   与旧实现逐位一致（黄金基准锁定）；缓存策略交给调用方（旧版用 WeakMap，这里保持纯函数）。 */
+/* 势力涂域：格集合 → marching squares 提取边界 → 链成闭环 → Chaikin 平滑。
+   提取数学与旧实现逐位一致（黄金基准锁定,pd=0.5 用例原样）；2026-08-13 尺度定形批改三件：
+   ① **涂域格＝地形格**（paintStep=gridStepDeg,PAINT_MUL 已废）——涂域笔与地形笔完全同粒
+     （用户拍板「和地形笔刷一样」）。×4 从来不是几何要求,是旧存档格式的经济学,见 ②。
+   ② 存档**双表示、读旧写新**：旧 `cells=[lon,lat][]` 逐格心坐标对照读;新落笔/新烘焙的层写
+     `runs` 行程编码（×1 后满涂 140km 图坐标对要 ~50MB,runs ~25KB）。runs 自记编码时的格边
+     pd,解码按格心还原再落进当前网格＝与坐标对同一「跨密度自动重栅格化」性质。
+     normalizeWorld **有意不转格式**（它有 golden）,旧层保持原样直到被重涂。
+   ③ 提取内部走**位图直址**（×1 后满幅约 2M 格,字符串 Set 的四角查找每次提取 ~8M 次哈希,
+     拖笔即卡;位图 ~5-15ms）。查询窗 i∈[-1..cols]、j∈[-1..rows] 与旧 Set 语义一致。 */
 import { PD } from "./constants.ts";
+import { gridStepDeg } from "./grid.ts";
 import { chaikin, type Pt } from "./geometry.ts";
-import { DEFAULT_BBOX, type BBox, type Meta } from "./types.ts";
+import { DEFAULT_BBOX, type BBox, type Meta, type PaintRuns } from "./types.ts";
 
-/* 涂域格步长：战术图按 bbox 派生更细步长（≈span/16→就近取整齐梯级），战略图/无 bbox 恒 PD=0.5°。
-   纯派生、不落盘（同 meta 恒得同步长；渲染/笔刷/存储共用此一处真源→天然一致）；
-   战略图（mapKind≠"tactical"）一律 PD——故战术图涂域细化不影响战略图（平价与落盘皆逐位不变）。 */
+/** 涂域数据来源：裸坐标对（旧签名兼容/黄金用例）或层对象（cells/runs 双认） */
+export type PaintSrc = [number, number][] | { cells?: [number, number][]; runs?: PaintRuns } | null | undefined;
+
+/* 涂域格步长（2026-08-13 起＝地形格,×1）：涂域笔与地形笔同一张网、同一套 32 档、同一个 R。
+   纯派生、不落盘（同 meta 恒得同步长;渲染/笔刷/存储共用此一处真源→天然一致）。 */
 export function paintStep(meta: Meta | undefined): number {
-  const m = meta || {}, bb = m.bbox;
-  if (m.mapKind !== "tactical" || !bb) return PD;
-  const raw = Math.max(bb.lonMax - bb.lonMin, bb.latMax - bb.latMin) / 16;
-  return [PD, 0.25, 0.2, 0.1, 0.05, 0.025, 0.02, 0.01, 0.005].find(v => v <= raw) ?? 0.005;
+  return gridStepDeg(meta);
 }
 
+/* 行列取整与 buildGridCells 同式（ceil−1e-9，2026-08 审查修正，原 round）：涂域格＝地形格后，
+   round 会在「跨度÷步长」带分数时比地形网格少一行/列（如 801 列图纬向 417.19 行→涂域 417、
+   地形 418）＝贴边那道地形格永远涂不上；黄金域（DEFAULT_BBOX÷0.5 恰为整数）两式同值＝逐位不变。 */
 export function paintDims(bb: BBox | undefined, pd = PD): { bb: BBox; cols: number; rows: number } {
   const b = bb || DEFAULT_BBOX;
   return {
     bb: b,
-    cols: Math.max(1, Math.round((b.lonMax - b.lonMin) / pd)),
-    rows: Math.max(1, Math.round((b.latMax - b.latMin) / pd))
+    cols: Math.max(1, Math.ceil((b.lonMax - b.lonMin) / pd - 1e-9)),
+    rows: Math.max(1, Math.ceil((b.latMax - b.latMin) / pd - 1e-9))
   };
 }
 
-/** 涂域格坐标 → "i,j" 集合（与旧版 layerSet 同构） */
-export function paintCellSet(cells: [number, number][] | undefined, bb: BBox | undefined, pd = PD): Set<string> {
-  const { bb: b } = paintDims(bb, pd);
+/** 遍历一份涂域数据的每个格心（经纬）：cells 与 runs 双认（读旧写新之约）。
+    runs 防御（值也是用户数据）：三元组非数跳过、长度钳到自身网格宽——1e9 的 len 不能变成
+    1e9 次回调；起列同理钳住下界。 */
+export function eachPaintCenter(src: PaintSrc, bb: BBox, cb: (lon: number, lat: number) => void): void {
+  if (!src) return;
+  const L = Array.isArray(src) ? { cells: src, runs: undefined as PaintRuns | undefined } : src;
+  for (const c of L.cells || []) { if (Array.isArray(c)) cb(+c[0], +c[1]); }
+  const R = L.runs;
+  if (R && typeof R === "object" && +R.pd > 0 && Array.isArray(R.d)) {
+    const pd = +R.pd, d = R.d;
+    const iMax = Math.ceil((bb.lonMax - bb.lonMin) / pd) + 1;
+    for (let k = 0; k + 2 < d.length; k += 3) {
+      const j = Math.floor(+d[k]), i0 = Math.max(-2, Math.floor(+d[k + 1])), len = Math.floor(+d[k + 2]);
+      if (!isFinite(j) || !isFinite(i0) || !(len > 0)) continue;
+      const iEnd = Math.min(i0 + len, iMax);
+      const lat = bb.latMin + (j + 0.5) * pd;
+      for (let i = i0; i < iEnd; i++) cb(bb.lonMin + (i + 0.5) * pd, lat);
+    }
+  }
+}
+
+/** 涂域数据 → 当前 pd 网格的 "i,j" 格键集合（与旧版 layerSet 同构;首参自 2026-08-13 起双认层对象） */
+export function paintCellSet(src: PaintSrc, bb: BBox | undefined, pd = PD): Set<string> {
+  const b = bb || DEFAULT_BBOX;
   const s = new Set<string>();
-  (cells || []).forEach(c => {
-    const i = Math.round((c[0] - b.lonMin) / pd - 0.5), j = Math.round((c[1] - b.latMin) / pd - 0.5);
+  eachPaintCenter(src, b, (lon, lat) => {
+    const i = Math.round((lon - b.lonMin) / pd - 0.5), j = Math.round((lat - b.latMin) / pd - 0.5);
     s.add(i + "," + j);
   });
   return s;
 }
 
-/* 涂域跨图重采样（战术烘焙用）：cells 是按「源图 bbox/pd」存的格心，直接拷进 pd 更细的战术图
-   会被 paintCellSet 解码成一格一点的碎点。此处把源格视为色块重栅格化到目标网格：
-   目标格心落在任一源格块内即着色（源粗→目标细＝整块铺满；源细→目标粗＝格心采样），出目标 bbox 剔除。
-   小数位随步长（≥0.1° 两位、更细四位），与 ui/paint.setToCells 同规。 */
-export function resamplePaintCells(
-  cells: [number, number][] | undefined,
+/* 涂域跨图重采样为行程编码（战术烘焙用）：源格视为色块重栅格化到目标网格——目标格心落在任一
+   源格块内即着色（源粗→目标细＝整块铺满;源细→目标粗＝格心采样），出目标 bbox 剔除。
+   mapLon＝目标空间经度→源空间经度（平面烘焙的切平面逆投影 lon_src=心+(lon−心)/cosφ;缺省恒等,
+   语义保持故可缺省——旧「逐格坐标对」返回值已废,烘焙自此直接写 runs）。空涂域返 null。 */
+export function resamplePaintRuns(
+  src: PaintSrc,
   srcBB: BBox | undefined, srcPd: number,
-  dstBB: BBox, dstPd: number
-): [number, number][] {
+  dstBB: BBox, dstPd: number,
+  mapLon: (lon: number) => number = l => l
+): PaintRuns | null {
   const sb = srcBB || DEFAULT_BBOX;
-  const s = paintCellSet(cells, srcBB, srcPd);
-  if (!s.size) return [];
+  const s = paintCellSet(src, srcBB, srcPd);
+  if (!s.size) return null;
   const { cols, rows } = paintDims(dstBB, dstPd);
-  const dp = dstPd >= 0.1 ? 2 : 4;
-  const out: [number, number][] = [];
-  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
-    const cx = dstBB.lonMin + (i + 0.5) * dstPd, cy = dstBB.latMin + (j + 0.5) * dstPd;
-    if (s.has(Math.floor((cx - sb.lonMin) / srcPd) + "," + Math.floor((cy - sb.latMin) / srcPd))) {
-      out.push([+cx.toFixed(dp), +cy.toFixed(dp)]);
+  const d: number[] = [];
+  for (let j = 0; j < rows; j++) {
+    const cy = dstBB.latMin + (j + 0.5) * dstPd;
+    const sj = Math.floor((cy - sb.latMin) / srcPd);
+    let run = -1;
+    for (let i = 0; i < cols; i++) {
+      const cx = mapLon(dstBB.lonMin + (i + 0.5) * dstPd);
+      const hit = s.has(Math.floor((cx - sb.lonMin) / srcPd) + "," + sj);
+      if (hit && run < 0) run = i;
+      else if (!hit && run >= 0) { d.push(j, run, i - run); run = -1; }
     }
+    if (run >= 0) d.push(j, run, cols - run);
   }
-  return out;
+  return d.length ? { pd: dstPd, d } : null;
 }
 
 const LUT: Record<number, [string, string][]> = {
@@ -64,11 +102,18 @@ const LUT: Record<number, [string, string][]> = {
   11: [["T", "R"]], 12: [["L", "R"]], 13: [["B", "R"]], 14: [["L", "B"]]
 };
 
-/** 涂域层 → 平滑闭环（经纬度坐标）；smooth=Chaikin 轮数（旧版取 state.brush.smooth，默认 2） */
-export function territoryLoops(cells: [number, number][] | undefined, bbox: BBox | undefined, smooth: number, pd = PD): Pt[][] {
+/** 涂域层 → 平滑闭环（经纬度坐标）；smooth=Chaikin 轮数（旧版取 state.brush.smooth，默认 2）。
+    首参双认（裸 cells＝黄金用例原样;层对象＝渲染端直接传 L）。 */
+export function territoryLoops(src: PaintSrc, bbox: BBox | undefined, smooth: number, pd = PD): Pt[][] {
   const { bb, cols, rows } = paintDims(bbox, pd);
-  const s = paintCellSet(cells, bbox, pd);
-  const val = (i: number, j: number) => s.has(i + "," + j) ? 1 : 0;
+  /* 位图直址（规模引擎批）：查询窗 i∈[-1..cols]、j∈[-1..rows]偏移 +1 存进 (cols+2)×(rows+2)；
+     窗外格（旧数据的越界坐标）本就查不到＝行为同旧字符串 Set。 */
+  const W = cols + 2, mask = new Uint8Array(W * (rows + 2));
+  eachPaintCenter(src, bb, (lon, lat) => {
+    const i = Math.round((lon - bb.lonMin) / pd - 0.5), j = Math.round((lat - bb.latMin) / pd - 0.5);
+    if (i >= -1 && i <= cols && j >= -1 && j <= rows) mask[(j + 1) * W + (i + 1)] = 1;
+  });
+  const val = (i: number, j: number) => mask[(j + 1) * W + (i + 1)];
   const segs: [Pt, Pt][] = [];
   for (let j = -1; j < rows; j++) for (let i = -1; i < cols; i++) {
     const A = val(i, j + 1), B = val(i + 1, j + 1), C = val(i + 1, j), D = val(i, j);

@@ -2,13 +2,13 @@
    全部经 ctx 共享态工作；rebuild 同步把寻路上下文送进 Worker（官道格按当年连线重算）。 */
 import { buildGridCells, roadCellSet, type Grid } from "../core/grid.ts";
 import { buildElevField, coarseField, fieldMix, fieldPlusDelta, type ElevField } from "../core/elev.ts";
-import { erodeInput, erodeKey, ultraInput, type ErodeInput } from "../core/erode.ts";
+import { erodeGate, erodeInput, erodeKey, ultraInput, type ErodeInput } from "../core/erode.ts";
 import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { worldSig, yearSig, gridVerSig, erodePhaseSig } from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
 import type { Camera } from "../core/projection.ts";
-import type { BBox } from "../core/types.ts";
+import type { BBox, HeightOverride } from "../core/types.ts";
 
 export interface Host {
   /** 画布物理像素跟随 CSS 尺寸与 DPR（缩放/换屏后重读 devicePixelRatio） */
@@ -17,7 +17,7 @@ export interface Host {
   cssSize(): [number, number];
   /** 当前视口的经纬度包围盒 */
   viewBB(): BBox;
-  /** 纬度余弦（球面世界经度视觉压缩系数；平面=按 lat0 同式，旧行为） */
+  /** 纬度余弦（球面世界经度视觉压缩系数；平面恒 1＝与 projection.viewCosK 同判） */
   cosk(): number;
   /** 当前帧相机（投影/拾取共用参数包） */
   cam(): Camera;
@@ -46,7 +46,11 @@ export function createHost(ctx: ShellCtx): Host {
     return { lonMin: ctx.view.lon0 - w / 2 * ctx.view.degPerPx / cosk(), lonMax: ctx.view.lon0 + w / 2 * ctx.view.degPerPx / cosk(),
              latMin: ctx.view.lat0 - h / 2 * ctx.view.degPerPx, latMax: ctx.view.lat0 + h / 2 * ctx.view.degPerPx };
   }
-  const cosk = (): number => Math.cos(ctx.view.lat0 * Math.PI / 180);
+  /* ⚠ 平面世界必须取 1（2026-08 审查修正）：viewBB 是地形栅格的渲染视口（frame/composeFrame
+     直喂 R.render），而对象层走 projection.viewCosK（平面=1）——此处曾无条件 cos(lat0)，
+     平面战术图（恒真实纬度，尺度定形批起）上地形与地点/部队横向错位 1/cosφ（38° 处 +27%），
+     拖拽平移与方向键微调（pointer 两处经此函数）同病。球面分支逐位不变。 */
+  const cosk = (): number => ctx.meta.worldModel === "flat" ? 1 : Math.cos(ctx.view.lat0 * Math.PI / 180);
 
   /* 侵蚀细化的并发闸：150ms 防抖（同拍的 legs/route 先进同一 Worker 队列、连续拨年/连笔只算
      最后一帧）+ 同一时刻至多一单在 Worker 里；飞行中再来重建只记「还有活」，回来后按最新网格
@@ -56,11 +60,14 @@ export function createHost(ctx: ShellCtx): Host {
      ⚠ 等待窗显示不换回粗格场（河洛实证第二回「笔刷一按全图变、松开又变回」）：细分场在屏时
      的重建走 fieldPlusDelta＝旧细分场+粗格增量补丁，远处纹丝不动、笔下即时起落；细分场与它的
      增量基准（fineBase＝该场所出世界的粗格场）+ 几何键三件同担、随侵蚀落地一起换，门关或几何
-     变（换图/改图幅）即弃场回粗格。侵蚀输入在 rebuild 里同拍组装（pendInp）——门的判定与显示
-     分支必须同源，fireErode 只消费不再自判。结果按输入内容寻址缓存（fireErode 头注：命中免
-     重算），几何刚换的重建免防抖立即发单。 */
+     变（换图/改图幅）即弃场回粗格。**门的判定在 rebuild 同拍（pendGate＝erodeGate,轻）**、
+     数组组装延迟到 fireErode 结算时（2026-08-13 规模引擎批：erodeInput 每次组装分配 ~13B/格,
+     196 万格图上每笔 move 白扔 26MB＝GC 风暴;门与显示分支同源之约由 erodeGate 与 erodeInput
+     的同一判据担保,worker.test 锁）。结果按输入内容寻址缓存（fireErode 头注：命中免重算），
+     几何刚换的重建免防抖立即发单。 */
   let eroding = false, erodeDirty = false, erodeTimer: ReturnType<typeof setTimeout> | undefined, buildN = 0;
-  let pendInp: ErodeInput | null = null, pendCoarse: Float32Array | null = null;   // 最近一次重建的侵蚀单与粗格场
+  let pendGate = false, pendHovs: HeightOverride[] | undefined, pendYear = 0;   // 门判定与延迟组装的原料（rebuild 同拍记账）
+  let pendInp: ErodeInput | null = null, pendCoarse: Float32Array | null = null;   // 侵蚀单（fireErode 结算时才组装）与粗格场
   let pendUInp: ErodeInput | null = null;   // 同一单的精修档形态（数组共享引用，仅换预算三键；战术图才有）
   let fine: ElevField | null = null, fineBase: Float32Array | null = null, fineKey = "";   // 已落地细分场 + 增量基准 + 几何键
   let lastBuiltKey = "", coarseAt = 0;   // 上次重建的几何键（换几何＝免防抖立即发单）+ 本几何粗格首帧时刻（缓存「早到」判据）
@@ -128,8 +135,15 @@ export function createHost(ctx: ShellCtx): Host {
      已看了一阵）仍走渐变——fieldMix 的「硬切读感像出错了自己纠正」病历只适用于**看久了的画面**
      被结算的场合。 */
   function fireErode(): void {
-    if (!ctx.grid || !pendInp) { dropPhase(); return; }   // 无单＝「relief=0 且无涂改」旧粗格路径逐位不变
+    if (!ctx.grid || !pendGate) { dropPhase(); return; }   // 门关＝「relief=0 且无涂改」旧粗格路径逐位不变
     if (eroding) { erodeDirty = true; return; }
+    /* 延迟组装（每 buildN 至多一次）：原料是 rebuild 同拍记下的 grid/hovs/year 快照——任何
+       世界/年份变化都会先走 rebuild 刷新它们,故结算时组装与「rebuild 同拍组装」逐位同单 */
+    if (!pendInp) {
+      pendInp = erodeInput(ctx.meta, pendHovs, ctx.grid, pendYear);
+      pendUInp = pendInp && ctx.meta.mapKind === "tactical" ? ultraInput(pendInp, ULTRA_CAP) : null;   // 精修档只给战术图（战略观感已验收，不碰）
+    }
+    if (!pendInp) { dropPhase(); return; }   // 门与组装理论上同判（erodeGate 锁）；防御留一手
     eroding = true;
     const token = buildN, baseC = pendCoarse!, key = geomKey(ctx.grid), inp = pendInp, uinp = pendUInp;
     const done = (): void => { if (erodeDirty) { erodeDirty = false; fireErode(); } };
@@ -224,13 +238,15 @@ export function createHost(ctx: ShellCtx): Host {
     const t0 = performance.now();
     ctx.grid = buildGridCells(ctx.meta, w ? w.terrainOverrides : [], yearSig.value);
     const coarse = buildElevField(ctx.meta, w ? w.heightOverrides : undefined, ctx.grid, yearSig.value);
-    pendInp = erodeInput(ctx.meta, w ? w.heightOverrides : undefined, ctx.grid, yearSig.value);
-    pendUInp = pendInp && ctx.meta.mapKind === "tactical" ? ultraInput(pendInp, ULTRA_CAP) : null;   // 精修档只给战术图（战略观感刚验收，不碰）
+    pendHovs = w ? w.heightOverrides : undefined;
+    pendYear = yearSig.value;
+    pendGate = erodeGate(ctx.meta, pendHovs, ctx.grid, pendYear);   // 门同拍判定（轻）；数组组装延迟到 fireErode 结算（见并发闸头注）
+    pendInp = null; pendUInp = null;
     pendCoarse = coarse;
     /* 等待窗显示（见并发闸头注）：同几何细分场在屏＝粗格增量羽化叠上去；否则粗格场
        （开图先出粗帧、门关的旧契约路径、换图/改图幅弃场） */
     const key = geomKey(ctx.grid);
-    if (!pendInp || fineKey !== key) { fine = null; fineBase = null; fineKey = ""; }
+    if (!pendGate || fineKey !== key) { fine = null; fineBase = null; fineKey = ""; }
     ctx.elevField = fine && fineBase ? fieldPlusDelta(fine, fineBase, coarse, ctx.grid, ctx.grid.cells) : coarseField(ctx.grid, coarse);
     const ms = performance.now() - t0;
     ctx.R!.uploadGrid(ctx.grid, ctx.elevField);   // rebuild 只在渲染器就绪后发生（boot 先建 R）；缺 R=启动即错

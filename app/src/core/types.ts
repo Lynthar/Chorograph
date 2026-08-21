@@ -19,8 +19,14 @@ export interface BBox { lonMin: number; lonMax: number; latMin: number; latMax: 
 
 export interface CalendarCfg {
   kind?: "custom" | "earth";  // earth=真实地球历法（儒略/格里高利，日戳=JDN）；缺省 custom
-  months?: number; dpm?: number;   // custom 用；earth 忽略
+  months?: number; dpm?: number;   // custom 用（等长月）；earth 忽略
   era?: string;               // custom 纪元前缀（默认 "SE"）；earth 固定「公元/公元前」
+  /* —— 架空历法扩充（2026-08-19 用户点单；2026-08-20 通用化）：全可选，缺键＝旧行为逐位
+     （黄金基准锁着）。⚠ 都是 custom 专用，earth 分支一概不读。 */
+  monthLens?: number[];       // 不等长月：每月日数（在场即定 months=长度、年长=总和；全等长时退回 months×dpm 旧式）
+  monthNames?: string[];      // 月名（如 霜月/苍月）：缺项按「3月」式回退；显示一律走 calendar.monthLabel
+  hoursPerDay?: number;       // 每日几时（缺省 24）：也是时间轴细档的步长 1/它 日
+  minutesPerHour?: number;    // 每时几分（缺省 60）；时×分＝日内时刻的显示量子
 }
 
 /** 战术图 ↔ 战略图 双向链接（meta.parent / ev.tacmap） */
@@ -49,7 +55,7 @@ export interface Meta {
   battleYear?: number;        // 战术图对应的战役年份
   tacSpan?: [number, number]; // 战术图时间轴默认范围（日戳）
   phases?: Phase[];           // 战术图相位（分帧命名时刻;导航与批量出图锚点）
-  gridN?: number;             // 战术网格横向目标格数（缺省 140＝旧档与黄金基准逐位；「极细」=280＝笔刷细一倍）
+  gridN?: number;             // 地形网格横向列数（创建时按 core/grid.autoGridN 盖章＝图的尺度身份；缺键=自动档；手编值照写、钳到各自域内）
   relief?: number;            // 程序化地势起伏幅度 0..1（缺省=无——旧图高程场逐位不变）
   elevUnitM?: number;         // 1 抽象高程单位 = 多少米（缺省 2000；等高距/光标高程换算用）
   contourM?: number;          // 最细等高距（米）：缩放自适应 ×2 阶梯的锚/下限；缺省 10m
@@ -64,7 +70,13 @@ export type Certainty = "inferred" | "legend";
 
 export interface Owner extends Timed { faction?: string | null }
 
-export interface PaintLayer extends Timed { cells: [number, number][] }
+/** 涂域行程编码（2026-08-13 涂域与地形同格批）：d=[行 j, 起列 i0, 长 len, …] 三元组，
+    行列按**编码时**的涂域格边 pd（自记＝跨密度可重栅格化，与旧坐标对同一性质）。
+    存档**读旧写新**：旧档 cells 照读；新落笔/新烘焙的层写 runs——涂域格与地形格同粒后，
+    满涂一张 140km 图的坐标对要 ~50MB，runs 只要 ~25KB。 */
+export interface PaintRuns { pd: number; d: number[] }
+
+export interface PaintLayer extends Timed { cells?: [number, number][]; runs?: PaintRuns }
 
 export interface Faction extends Timed {
   id: string; 名称?: string; color?: string; 阵营?: string;

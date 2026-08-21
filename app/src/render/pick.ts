@@ -98,7 +98,7 @@ export function pickNode(
     const c2: Camera = { ...cam, lonShift: shift };
     for (const n of world.nodes) {
       if (n.type === "label" && n.pin) continue;
-      if (!nodeVisibleAt(n, cam, yearNow, opts)) continue;
+      if (!nodeVisibleAt(n, cam, meta, yearNow, opts)) continue;
       const [px, py] = project(c2, n.lon, n.lat);
       const d = (px - x) ** 2 + (py - y) ** 2;
       if (d < bd) { bd = d; best = n; }
@@ -132,7 +132,7 @@ export function nodesInBox(
     const c2: Camera = { ...cam, lonShift: shift };
     for (const n of world.nodes) {
       if (n.type === "label" && n.pin) continue;
-      if (!nodeVisibleAt(n, cam, yearNow, opts)) continue;
+      if (!nodeVisibleAt(n, cam, meta, yearNow, opts)) continue;
       const [px, py] = project(c2, n.lon, n.lat);
       if (px >= xs && px <= xe && py >= ys && py <= ye) ids.add(n.id);
     }

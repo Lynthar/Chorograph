@@ -3,7 +3,7 @@
    （经纬网/比例尺/图名）；拆出的域文件与拾取（pick.ts）经此门面再导出——外部 import 面不变。
    数百要素直绘足够；万级批量与空间索引在 后段定案。 */
 import { LAYERS } from "../core/constants.ts";
-import { project, unproject, visibleWorldCopies, type Camera } from "../core/projection.ts";
+import { project, SCALE_BAR_PX, unproject, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { distKm, kmPerDegLat, toRad, wrapLon } from "../core/geo.ts";
 import { calOf, fmtT, fmtYear } from "../core/calendar.ts";
 import { fmtKm } from "../core/util.ts";
@@ -77,7 +77,7 @@ export function drawOverlay(
       drawEdges(ctx, c2, meta, world, yearNow, byId, L, opts.edgeSelIdx);   // 连线（道路/河流/商路）
       const field = createLabelField();   // 标签避让场（每拷贝一场）：线注记/标注 claim → 当日事件→地名→部队 先占先得
       if (on("arrows")) drawOps(ctx, c2, world, yearNow, opts.selId, opts.opSel, field);
-      if (on("nodes")) drawNodes(ctx, c2, world, yearNow, opts, multiSet, fcolor, field);   // 地点记号 + 楷体标签（避让）
+      if (on("nodes")) drawNodes(ctx, c2, meta, world, yearNow, opts, multiSet, fcolor, field);   // 地点记号 + 楷体标签（避让）
       if (on("units")) drawUnits(ctx, c2, meta, world, yearNow,   // 部队【记号】压在地点之上（战场主角）；标签让地名
         { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field });
     }
@@ -171,7 +171,7 @@ function drawScaleBar(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | u
   const kmPerPx = distKm(meta, a[0], a[1], b[0], b[1]) / 100;
   if (!isFinite(kmPerPx) || kmPerPx <= 0) return;
   let nice = 0.001;
-  const target = kmPerPx * 110;
+  const target = kmPerPx * SCALE_BAR_PX;
   for (const m of [1, 2, 5]) for (let p = 0.001; p <= 100000; p *= 10) { if (m * p <= target) nice = Math.max(nice, m * p); }
   const px = nice / kmPerPx, x0 = 12, y0 = H - 16;
   ctx.save();
