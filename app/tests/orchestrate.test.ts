@@ -126,6 +126,31 @@ describe("编排 effect × host 重建计数（开图批末恰建一次）", () 
     assert.equal(unitLegsSig.peek().size, 0, "清选后无过期结果还魂（seq 令牌）");
   });
 
+  it("腿账拒绝要放闸并补发 dirty：飞行中失败 + 期间有改动 ⇒ 自动重算落账（不等下一次编辑）", async () => {
+    const tac = W({
+      meta: { 名称: "战", worldModel: "sphere", terrain: "plain", mapKind: "tactical",
+        bbox: { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 } },
+      units: [{ id: "u1", kind: "inf", track: [{ t: 3050, lon: 100.5, lat: 30.5 }] }]
+    });
+    openLikeLibrary(ctx, host, tac, "t1", 3050);
+    const rc = ctx.routeClient as unknown as { legs: (u: Unit, roads?: Set<string>) => Promise<unknown> };
+    const realLegs = rc.legs;
+    let rejectFirst!: (e: Error) => void, calls = 0;
+    rc.legs = (u, roads) => ++calls === 1 ? new Promise((_, rej) => { rejectFirst = rej; }) : realLegs(u, roads);
+    const warn0 = console.warn;
+    console.warn = () => {};                // 拒绝分支要 warn 一声——测试输出保持零警告
+    try {
+      selSig.value = { kind: "unit", id: "u1" };
+      await settleLegs();                   // 首单已发、悬在飞行中（deferred 不归）
+      mutateWorld(w => { w.nodes.push({ id: "n1", type: "city", lon: 100.2, lat: 30.2 }); });   // editVer++ ⇒ 防抖后 fireLegs ⇒ busy ⇒ dirty
+      await settleLegs();
+      assert.equal(unitLegsSig.peek().size, 0, "前提：首单未归、无账");
+      rejectFirst(new Error("拟真失败"));
+      await settleLegs();
+      assert.deepEqual([...unitLegsSig.peek().keys()], ["u1"], "拒绝放闸并补发 dirty ⇒ 重算落账");
+    } finally { console.warn = warn0; }
+  });
+
   it("effect 未接线时开图仍有兜底重建（且只兜一次）", () => {
     unwire();                               // 模拟接线缺失/回归：批末无 effect 冲刷
     openLikeLibrary(ctx, host, W(), "m9", 3050);

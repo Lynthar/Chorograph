@@ -337,7 +337,10 @@ describe("时间过滤与杂项一致", () => {
   });
   it("hexA / fmtKm / esc / parseKV", () => {
     for (const s of m.hexA) assert.strictEqual(hexA(s.hex, s.a), s.v);
-    for (const s of m.fmtKm) assert.strictEqual(fmtKm(s.km), s.v);
+    /* sanctioned 偏离（2026-08-26）：≥1000km 的「千km」半译改整数 km——期望按另写的字面映射
+       改造（同表自证等于没测之规），数学与其余样本逐位不动 */
+    const KM_FIX: Record<string, string> = { "1.00 千km": "1000 km", "12.35 千km": "12345 km" };
+    for (const s of m.fmtKm) assert.strictEqual(fmtKm(s.km), KM_FIX[s.v] || s.v);
     assert.strictEqual(esc(m.esc.s), m.esc.v);
     assert.deepStrictEqual(parseKV(m.parseKV.s), m.parseKV.v);
   });

@@ -28,9 +28,9 @@ export function esc(s: unknown): string {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as Record<string, string>)[c]);
 }
 
-/** 里程显示：≥1000km 千km 两位小数 / ≥1km 取整 / 以下转米 */
+/** 里程显示：≥1km 取整 / 以下转米。旧「≥1000km 印两位小数 千km」的半译 2026-08-26 收掉
+    （sanctioned 偏离,golden misc 组两样本期望在 parity.test 重写） */
 export function fmtKm(km: number): string {
-  if (km >= 1000) return (km / 1000).toFixed(2) + " 千km";
   if (km >= 1) return Math.round(km) + " km";
   return Math.round(km * 1000) + " m";
 }

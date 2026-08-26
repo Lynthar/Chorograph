@@ -1,5 +1,5 @@
 /* 笔刷尺度（2026-08-12 用户点单）：滑杆自此不是「格数」而是**物理尺度 32 档**——
-   战术 100m→20km、战略 20km→500km，两端点之间线性。按图种给档表，同 HEIGHT_STEPS_* 之规。
+   战术 100m→20km（低端分段加密）、战略 20km→500km 线性。按图种给档表，同 HEIGHT_STEPS_* 之规。
    ⚠ 笔刷只能整格地涂（涂宽恒 2R+1 格），故档位是**名义**尺度，实际涂到多宽由网格密度定：
    名义不足一格即退化成单格。读数一律报 brushActualKm 的**实际**涂宽 + 格数——滑杆推不动时
    看得见是为什么（战略图地形格恒 1°≈111km，前十余档必然同落一格，是数据粒度使然不是缺陷；
@@ -10,13 +10,23 @@ import { paintStep } from "./territory.ts";
 import type { Meta } from "./types.ts";
 
 export const BRUSH_NOTCHES = 32;
-export const BRUSH_KM_TAC: readonly [number, number] = [0.1, 20];      // 战术：100m → 20km
+export const BRUSH_KM_TAC: readonly [number, number] = [0.1, 20];      // 战术：100m → 20km（低端另有分段表）
 export const BRUSH_KM_STRAT: readonly [number, number] = [20, 500];    // 战略：20km → 500km
+
+/* 战术低端分段（2026-08-26 用户点单）：纯线性时第 2 档即 742m，100m 格上 3/5 格（300/500m）
+   雕刻笔永远够不着——前七档改定值序列，其余向 20km 线性递增。战略不分段：6.67km 格边下
+   线性低端本就逐档互异（相邻档差 15.48km ≈ ΔR 1）。 */
+const TAC_LOW: readonly number[] = [0.1, 0.3, 0.5, 0.7, 1, 1.5, 2];
 
 /** 第 notch 档的名义直径（公里）；notch 钳 [1,32]，非数当 1 */
 export function brushNominalKm(meta: Meta | undefined, notch: number): number {
-  const [lo, hi] = (meta || {}).mapKind === "tactical" ? BRUSH_KM_TAC : BRUSH_KM_STRAT;
   const n = Math.min(BRUSH_NOTCHES, Math.max(1, Math.round(notch) || 1));
+  if ((meta || {}).mapKind === "tactical") {
+    const last = TAC_LOW[TAC_LOW.length - 1];
+    return n <= TAC_LOW.length ? TAC_LOW[n - 1]
+      : last + (BRUSH_KM_TAC[1] - last) * (n - TAC_LOW.length) / (BRUSH_NOTCHES - TAC_LOW.length);
+  }
+  const [lo, hi] = BRUSH_KM_STRAT;
   return lo + (hi - lo) * (n - 1) / (BRUSH_NOTCHES - 1);
 }
 

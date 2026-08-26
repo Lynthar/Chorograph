@@ -187,6 +187,10 @@ export function createHost(ctx: ShellCtx): Host {
             scheduleUltra();
           } else dropPhase();
           done();
+        }, e => {   // 拒绝也要放闸（同腿账之规）——卡死 eroding＝本会话侵蚀永哑、胶囊悬在「定形中」
+          eroding = false; dropPhase();
+          console.warn("侵蚀计算失败（保持粗格）：", e);
+          done();
         });
       });
     });
@@ -215,6 +219,10 @@ export function createHost(ctx: ShellCtx): Host {
         if (f) void fieldCachePut(ck, f);   // 半分钟的功不许白费：过期的精修对它的输入仍恒真（撤销即命中）
         if (f && buildN === token && ctx.grid) landUltra(f, baseC, key, true);
         else dropPhase();   // 过期/车道不可用＝撤胶囊；下个静置窗自会重排
+        done();
+      }, e => {   // 拒绝也要放闸——卡死 ultraBusy＝精修永哑、胶囊悬在「精修中」
+        ultraBusy = false; dropPhase();
+        console.warn("静置精修失败（保持工作档）：", e);
         done();
       });
     });

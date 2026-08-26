@@ -40,12 +40,21 @@ export function drawPaintCells(ctx: CanvasRenderingContext2D, cam: Camera, layer
 export function drawBrushRing(ctx: CanvasRenderingContext2D, cam: Camera, x: number, y: number,
   rDeg: number, erase: boolean, dpr: number): void {
   /* 作用区=度空间正圆（brushCells 按格计圆），投影纵横比差 1/cos——环画椭圆如实标示：
-     横=r·cos、纵=r（旧正圆取横向半径，高纬纵向低估 cos 倍，lat38° 约差 21%）。 */
+     横=r·cos、纵=r（旧正圆取横向半径，高纬纵向低估 cos 倍，lat38° 约差 21%）。
+     环是纯预览：小于屏幕下限时整体放大到可辨（保持椭圆比例），**实际涂宽不变**——
+     真值看 fprops 读数；深色实描衬底让浅色虚线在繁杂地形上仍可辨（2026-08-26 R4-#9①）。 */
   const cosK = cam.flat ? 1 : Math.cos(cam.lat0 * Math.PI / 180);
+  let rx = rDeg / cam.degPerPx * cosK, ry = rDeg / cam.degPerPx;
+  const MIN_R = 6;   // 屏幕半径下限（CSS px）：总览下 3px 的环落在地形上等于盲画
+  if (ry < MIN_R) { rx *= MIN_R / ry; ry = MIN_R; }
+  rx = Math.max(3, rx);
   ctx.save();
   ctx.scale(dpr, dpr);
   ctx.beginPath();
-  ctx.ellipse(x, y, Math.max(3, rDeg / cam.degPerPx * cosK), Math.max(3, rDeg / cam.degPerPx), 0, 0, 7);
+  ctx.ellipse(x, y, rx, ry, 0, 0, 7);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(28,32,40,.45)";
+  ctx.stroke();
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = erase ? "rgba(192,57,43,.9)" : "rgba(220,230,240,.8)";
   ctx.setLineDash([4, 3]);

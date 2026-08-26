@@ -26,3 +26,5 @@ jobs:
         run: npm test
       - name: Build single-file artifact
         run: npm run build
+      - name: Browser smoke (headless Chrome)
+        run: npm run e2e

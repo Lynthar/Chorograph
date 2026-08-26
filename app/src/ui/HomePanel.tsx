@@ -53,9 +53,11 @@ export function HomePanel() {
           {v.entries.map(m => {
             const c = m.counts || {};
             return (
-              <div key={m.id} class="mapcard" title={`打开「${m.name || "未命名"}」`} role="button" tabIndex={0}
-                onClick={() => acts?.open(m.id)}
-                onKeyDown={e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); acts?.open(m.id); } }}>
+              /* 卡片语义（2026-08-26 R4-#5）：原 div role=button 内嵌删除 button＝ARIA 禁止的嵌套
+                 交互后代——改 article + 铺满整卡的透明「打开」钮（z 1）＋同级删除钮（z 2），
+                 视觉与点击面逐位不变，Tab 序＝打开→删除，读屏各念各的。 */
+              <article key={m.id} class="mapcard" title={`打开「${m.name || "未命名"}」`}>
+                <button type="button" class="mc-open" aria-label={`打开「${m.name || "未命名"}」`} onClick={() => acts?.open(m.id)}></button>
                 {/* 图种角标（2026-08-19 用户点单「一眼分清哪个是战术图」）：**两种都挂**——只给战术图挂
                     等于要用户拿「没有标记」当标记；压在缩略图角上而不是跟在名字后面，才是「一眼」。 */}
                 <span class={"mc-kind" + (c.tac ? " tac" : "")}>{c.tac ? "⚔ 战术图" : "🗺 战略图"}</span>
@@ -68,7 +70,7 @@ export function HomePanel() {
                   <div class="mc-sub">更新 {fmtTime(m.updatedAt)}</div>
                 </div>
                 <button type="button" class="mc-del" title="删除此地图" onClick={e => { e.stopPropagation(); acts?.remove(m.id); }}>🗑</button>
-              </div>
+              </article>
             );
           })}
           {!v.entries.length && (

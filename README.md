@@ -38,7 +38,7 @@ npm run build        # 构建单文件产物 app/dist/index.html（JS/CSS/Worker
 npm run preview      # 本地验证构建产物（http://localhost:4173）
 ```
 
-构建出的 `dist/index.html` 自包含，可直接双击（`file://`）运行；托管到任意静态服务器即可作 PWA 安装、离线使用。推荐 **Edge / Chrome** 以获得完整功能（「文件夹图库」依赖 File System Access API）。开发模式下可用 URL 深链直达，例如 `#map=<地图名>` 打开图库中的指定地图。
+构建出的 `dist/index.html` 自包含，可直接双击（`file://`）运行；托管到任意静态服务器即可作 PWA 安装、离线使用。推荐 **Edge / Chrome** 以获得完整功能（「文件夹图库」依赖 File System Access API）。**舆图为桌面浏览器设计，暂不适配移动端窄屏与触控。**开发模式下可用 URL 深链直达，例如 `#map=<地图名>` 打开图库中的指定地图。
 
 ## 示例 · 战术推演图
 

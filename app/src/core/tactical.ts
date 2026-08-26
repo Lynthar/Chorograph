@@ -13,11 +13,11 @@
    （对角线 198km），140 同时是工程甜点：1400×1400=196 万格恰保住全域 4K 精修 ≥2×。 */
 import { kmPerDeg, toRad } from "./geo.ts";
 import { segIntersectsRect } from "./geometry.ts";
-import { autoGridN } from "./grid.ts";
+import { autoGridN, buildGridCells } from "./grid.ts";
 import { activeAt, ownerAt, paintLayersAt } from "./time.ts";
 import { paintStep, resamplePaintRuns } from "./territory.ts";
 import { calOf, fmtYear, yearSpanT } from "./calendar.ts";
-import type { CalendarCfg, GenStyle, Meta, PaintLayer, TerrainMode, World, WorldNode } from "./types.ts";
+import type { CalendarCfg, GenStyle, Meta, PaintLayer, TerrainMode, TerrainOverride, World, WorldNode } from "./types.ts";
 
 const clone = <T>(o: T): T => JSON.parse(JSON.stringify(o));
 
@@ -27,6 +27,8 @@ export const TAC_DIA_KM: readonly [number, number] = [20, 140];
 export const tacDiaClamp = (d: number): number => Math.max(TAC_DIA_KM[0], Math.min(TAC_DIA_KM[1], d || 60));
 /** 战术平面世界的缺省每度里程（地球级密度＝真史战役坐标读感与文档一致） */
 export const TAC_KM_PER_DEG = 111.19;
+/** 快照物化的章数上限：战略母图（格边 ≥3.7km）远够不到；细格母图 k×k 粗采后 ≤2 万条（~1MB 档内） */
+export const BAKE_CAP = 20_000;
 
 /* 2026-08-13 平面化：旧的 `tacDiaDeg`（直径 km → 经纬跨度，球面按 cosφ 拉宽经跨）已删——
    战场恒平面后跨度就是 `dia / kmPerDeg` 一行，两个出生点各自写明；既有球面战术档的 bbox
@@ -100,6 +102,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   const kmdeg = +kmPerDeg(m).toFixed(4);   // 母图每纬度里程＝子图平面尺度（4 位小数够 4e-5 相对精度）
   const cosc = m.worldModel === "flat" ? 1 : Math.max(0.087, Math.cos(toRad(ev.lat)));
   const tx = (lon: number): number => +(ev.lon + (lon - ev.lon) * cosc).toFixed(4);   // 母图经度→子图平面经度
+  const invLon = (lon: number): number => ev.lon + (lon - ev.lon) / cosc;             // 子图平面经度→母图经度（tx 的逆）
   const span = d / kmdeg;
   const bbox = {
     lonMin: +(ev.lon - span / 2).toFixed(4), lonMax: +(ev.lon + span / 2).toFixed(4),
@@ -147,9 +150,35 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   // 带入被引用的自定义印章资产（否则子图 img: 断链）
   const usedAssets = new Set(decor.map(dc => typeof dc.kind === "string" && dc.kind.startsWith("img:") ? dc.kind.slice(4) : "").filter(Boolean));
   const assets = usedAssets.size ? (src.assets || []).filter(a => usedAssets.has(a.id)).map(a => clone(a)) : [];
-  const terrainOverrides = (src.terrainOverrides || []).filter(o => inBB(o) && activeAt(o, yr)).map(o => {
-    const c = strip(clone(o)); c.lon = tx(o.lon); c.step = +(o.step as number) || 1; return c;   // 记原块尺寸(战略=1°)，战术细网格上按粗块盖章为初稿
-  });
+  /* 底稿快照物化（2026-08-26）：auto/island 把经纬按图幅归一喂噪声＝底稿锚在**图框**上，子图换
+     bbox 即整体重摇（实测同点地貌 78~94% 不同、island 边缘还落水）——把母图当年可见网格（底稿⊕
+     涂改，buildGridCells 同源）按母图分辨率烙成子图涂改、子图底稿改 plain＝所见即所得且永久稳定
+     （生成器升级不再改旧战场）。sample/plain 锚世界坐标、更细的重采样反而更好＝维持透传继承。
+     BAKE_CAP 防细格母图（旧 auto 战术图再烘）烙爆章数：k×k 瓦片粗采、章尺寸随之放大。 */
+  const bake = m.terrain === "auto" || m.terrain === "island";
+  const terrainOverrides: TerrainOverride[] = [];
+  if (bake) {
+    const g = buildGridCells(m, src.terrainOverrides, yr);
+    const c0 = Math.max(0, Math.floor((invLon(bbox.lonMin) - g.bb.lonMin) / g.step));
+    const c1 = Math.min(g.cols - 1, Math.floor((invLon(bbox.lonMax) - g.bb.lonMin) / g.step));
+    const r0 = Math.max(0, Math.floor((bbox.latMin - g.bb.latMin) / g.step));
+    const r1 = Math.min(g.rows - 1, Math.floor((bbox.latMax - g.bb.latMin) / g.step));
+    if (c1 >= c0 && r1 >= r0) {   // 窗口全在母图幅外（不该发生）＝不烙，子图纯平原
+      const k = Math.max(1, Math.ceil(Math.sqrt((c1 - c0 + 1) * (r1 - r0 + 1) / BAKE_CAP)));
+      for (let r = r0; r <= r1; r += k) for (let c = c0; c <= c1; c += k)
+        terrainOverrides.push({
+          lon: +tx(g.bb.lonMin + (c + k / 2) * g.step).toFixed(4), lat: +(g.bb.latMin + (r + k / 2) * g.step).toFixed(4),
+          t: g.cells[Math.min(r + (k >> 1), r1)][Math.min(c + (k >> 1), c1)],   // 瓦片中央格的类别
+          step: +(g.step * k).toFixed(7)   // 写端 7 位（涂改块尺寸契约）；粗块经向覆盖差一个 cosφ,同下继承粗块之注
+        });
+    }
+  } else {
+    for (const o of src.terrainOverrides || []) {
+      if (!inBB(o) || !activeAt(o, yr)) continue;
+      const c = strip(clone(o)); c.lon = tx(o.lon); c.step = +(o.step as number) || 1;   // 记原块尺寸(战略=1°)，战术细网格上按粗块盖章为初稿
+      terrainOverrides.push(c);
+    }
+  }
   const heightOverrides = (src.heightOverrides || []).filter(o => inBB(o) && activeAt(o, yr)).map(o => {
     const c = strip(clone(o)); c.lon = tx(o.lon); c.step = +(o.step as number) || 1; return c;   // 高程涂改同规则继承
   });
@@ -160,13 +189,12 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
     名称: (ev.名称 || "战役") + "·战术",
     说明: `「${ev.名称 || ""}」战术图（${fmtYear(cs, yr)}，边长≈${d}km），自「${m.名称 || ""}」生成：地形/地点/派系为当年快照；时间轴细化到日。`,
     mapKind: "tactical", worldModel: "flat", kmPerDeg: kmdeg,   // 子图恒平面（切平面投影落地,见头注）
-    terrain: m.terrain || "sample", battleYear: yr, calendar: cal,
+    terrain: bake ? "plain" : (m.terrain || "sample"), battleYear: yr, calendar: cal,   // 物化后底稿即涂改快照,不再吃生成器
     tacSpan: yearSpanT(cs, yr),
     parent: { map: opts.parentMapId || undefined, mapName: m.名称 || "", event: ev.id, eventName: ev.名称 || "" },
     view: { lon0: ev.lon, lat0: ev.lat, degPerPx0: Math.max(0.0004, (bbox.lonMax - bbox.lonMin) / 900) },
     bbox, 版本: "0.6", 更新: opts.today || ""
   };
-  if (m.terrain === "auto") { meta.genSeed = m.genSeed; meta.genStyle = m.genStyle; }
   if (m.relief != null) meta.relief = m.relief;           // 地势起伏与高程标定随图继承
   if (m.elevUnitM != null) meta.elevUnitM = m.elevUnitM;
   if (m.contourM != null) meta.contourM = m.contourM;
@@ -178,7 +206,6 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
      据点凸包，语义与烘焙前一致）。dstPd 用**盖章后的完整 meta** 算（paintStep 经 gridStepDeg
      读 kmPerDeg/gridN——合成残缺 meta 会静默落回出厂尺度,behavior.test 逮住过）。 */
   const srcPd = paintStep(m), dstPd = paintStep(meta);
-  const invLon = (lon: number): number => ev.lon + (lon - ev.lon) / cosc;
   const factions = src.factions.filter(f => activeAt(f, yr)).map(f => {
     const c = strip(clone(f));
     const paint = paintLayersAt(f, yr).map(L => {

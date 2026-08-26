@@ -12,6 +12,7 @@ import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
   editSubSig, editVerSig, isTacSig, linkTypeSig, tacReqSig,
   paintFactionSig, flyReqSig, helpOpenSig, openSettings, selectOp,
   analysisSubSig, uiPrefsSig, subDaySig,
+  selNode, selEdge, selUnit, selFaction,
   type EditSub }
   from "../ui/state.ts";
 import { wireInteractions } from "./pointer.ts";
@@ -155,6 +156,21 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     const par = isTacSig.value && m.parent;
     $("crumbName").textContent = w ? (par ? `${par.mapName || "上级战略图"} · ${m.名称 || "未命名"}` : (m.名称 || "未命名")) : "—";
   });
+  /* 选中态播报（画布可访问性的低成本半边）：读屏经 #a11ysel 的 aria-live 获知当前选中；
+     清选置空＝不出声（每次空击都播「已清除」太吵）。走 textContent，用户数据不进 innerHTML。 */
+  effect(() => {
+    const s = selSig.value, w = worldSig.value;
+    let t = "";
+    if (s && w) {
+      if (s.kind === "node") { const n = selNode(w, s); t = n ? `已选中地点「${n.名称 || n.id}」` : ""; }
+      else if (s.kind === "edge") { const ed = selEdge(w, s); t = ed ? `已选中连线「${ed.名称 || ed.type || "连线"}」` : ""; }
+      else if (s.kind === "unit") { const u = selUnit(w, s); t = u ? `已选中部队「${u.名称 || u.id}」` : ""; }
+      else if (s.kind === "faction") { const f = selFaction(w, s); t = f ? `已选中派系「${f.名称 || f.id}」` : ""; }
+      else if (s.kind === "decor") t = "已选中布景印章";
+      else if (s.kind === "multi") t = `已选中 ${s.ids.length + (s.unitIds ? s.unitIds.length : 0) + (s.decorIds ? s.decorIds.length : 0)} 个对象`;
+    }
+    $("a11ysel").textContent = t;
+  });
 
   /* 行军计算：模式/两点/军种/年份任一变化 → 经 routeClient 走 Worker（过期票丢弃） */
   let routeTicket = 0;
@@ -168,6 +184,11 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
       if (ticket !== routeTicket) return;
       routeResSig.value = res;
       routeBusySig.value = false;
+    }, e => {   // 拒绝也要放闸——busy 卡 true＝面板永远「计算中…」
+      if (ticket !== routeTicket) return;
+      routeResSig.value = null;
+      routeBusySig.value = false;
+      console.warn("行军计算失败：", e);
     });
   });
 

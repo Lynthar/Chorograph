@@ -55,7 +55,11 @@ export function wireOrchestration(ctx: ShellCtx, host: Pick<Host, "rebuildIfNeed
       if (legs && legsSeq === my && cur && cur.kind === "unit" && cur.id === uid)
         unitLegsSig.value = new Map([[uid, legs]]);
       if (legsDirty) { legsDirty = false; fireLegs(); }
-    }, e => { legsBusy = false; console.warn("腿账计算失败（保持上一份读数）：", e); });   // 拒绝也要放闸——卡死 busy＝这局腿账永哑
+    }, e => {
+      legsBusy = false;                                     // 拒绝也要放闸——卡死 busy＝这局腿账永哑
+      console.warn("腿账计算失败（保持上一份读数）：", e);
+      if (legsDirty) { legsDirty = false; fireLegs(); }     // dirty 同样要补发——只放闸不补发，飞行期的改动会哑到下一次编辑
+    });
   };
   const dispose = effect(() => {
     const w = worldSig.value;

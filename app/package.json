@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "node --test",
     "test:watch": "node --test --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "e2e": "node scripts/e2e.mjs"
   },
   "engines": {
     "node": ">=23.6"

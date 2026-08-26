@@ -18,7 +18,7 @@ import { fmtStrength, parseStrength, unitInheritedAt, unitMoraleAt, unitSpeedAt,
 import { wallTeeth } from "../src/render/edges.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, WORLD_KM_PER_DEG, WORLD_RADIUS_KM } from "../src/core/world.ts";
-import { blankTacticalWorld, createTacticalWorld } from "../src/core/tactical.ts";
+import { BAKE_CAP, blankTacticalWorld, createTacticalWorld } from "../src/core/tactical.ts";
 import { eachPaintCenter, paintCellSet, paintDims, paintStep, resamplePaintRuns, territoryLoops } from "../src/core/territory.ts";
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
@@ -547,10 +547,10 @@ describe("CPU 兜底瓦片复用判定", () => {
 
 describe("工具", () => {
   it("esc 全量转义", () => assert.strictEqual(esc(`<a b="c">&'</a>`), "&lt;a b=&quot;c&quot;&gt;&amp;&#39;&lt;/a&gt;"));
-  it("fmtKm 三档", () => {
+  it("fmtKm 两档", () => {
     assert.strictEqual(fmtKm(0.5), "500 m");
     assert.strictEqual(fmtKm(37.4), "37 km");
-    assert.strictEqual(fmtKm(1234), "1.23 千km");
+    assert.strictEqual(fmtKm(1234), "1234 km");
   });
   it("hexA 展开短色值，非法原样返回", () => {
     assert.strictEqual(hexA("#abc", 0.5), "rgba(170,187,204,0.5)");
@@ -1164,16 +1164,30 @@ describe("笔刷物理档位 core/brush（2026-08-12 用户点单）", () => {
     bbox: { lonMin: 100, lonMax: 101.4, latMin: 30, latMax: 31 }, gridN: 280 };
   const STRAT = { planetRadiusKm: 6371, bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } };
 
-  it("档表两端点与线性：战术 100m→20km、战略 20km→500km，32 档等距", () => {
+  it("档表两端点：战术 100m→20km（低端分段）、战略 20km→500km 线性", () => {
     assert.strictEqual(BRUSH_NOTCHES, 32);
     assert.ok(Math.abs(brushNominalKm(TAC, 1) - 0.1) < 1e-12, "战术首档 100m");
     assert.ok(Math.abs(brushNominalKm(TAC, 32) - 20) < 1e-12, "战术末档 20km");
     assert.ok(Math.abs(brushNominalKm(STRAT, 1) - 20) < 1e-12, "战略首档 20km");
     assert.ok(Math.abs(brushNominalKm(STRAT, 32) - 500) < 1e-12, "战略末档 500km");
-    const d = brushNominalKm(TAC, 2) - brushNominalKm(TAC, 1);
-    for (let n = 3; n <= 32; n++) {
-      assert.ok(Math.abs(brushNominalKm(TAC, n) - brushNominalKm(TAC, n - 1) - d) < 1e-12, `第 ${n} 档须与前档等距（线性，非等比）`);
-    }
+    /* ⚠ 期望有意翻转（2026-08-26 低端分段）：原「32 档等距」锁线性——纯线性第 2 档即 742m，
+       100m 格上 300/500m（3/5 格）雕刻笔永远够不着。前七档改定值序列，其余线性到 20km。 */
+    assert.deepStrictEqual(Array.from({ length: 7 }, (_, i) => brushNominalKm(TAC, i + 1)), [0.1, 0.3, 0.5, 0.7, 1, 1.5, 2]);
+    const d = brushNominalKm(TAC, 9) - brushNominalKm(TAC, 8);
+    for (let n = 9; n <= 32; n++)
+      assert.ok(Math.abs(brushNominalKm(TAC, n) - brushNominalKm(TAC, n - 1) - d) < 1e-12, `第 ${n} 档与前档等距（分段点之上线性）`);
+    for (let n = 2; n <= 32; n++)
+      assert.ok(brushNominalKm(TAC, n) > brushNominalKm(TAC, n - 1), `第 ${n} 档须严格递增`);
+  });
+
+  it("100m 格上分段加密的兑现：3/5 格雕刻笔够得着，32 档全互异", () => {
+    const fine = { mapKind: "tactical" as const, worldModel: "flat" as const, kmPerDeg: 111.19,
+      bbox: { lonMin: 100, lonMax: 101.2591, latMin: 30, latMax: 31.2591 }, gridN: 1400 };
+    assert.ok(Math.abs(brushStepDeg(fine, "terrain") * kmPerDeg(fine) - 0.1) < 1e-3, "前提：格边恰 100m");
+    assert.strictEqual(brushRadiusCells(fine, "terrain", 2), 1, "第 2 档 300m＝3 格（旧线性档表：742m＝7 格）");
+    assert.strictEqual(brushRadiusCells(fine, "terrain", 3), 2, "第 3 档 500m＝5 格");
+    const distinct = new Set(Array.from({ length: BRUSH_NOTCHES }, (_, i) => brushRadiusCells(fine, "terrain", i + 1)));
+    assert.strictEqual(distinct.size, 32, "100m 格上 32 档全互异");
   });
 
   it("档位钳 [1,32]、非数当 1——滑杆够不到越界，但存档/快捷键别的路子不许产出 NaN 半径", () => {
@@ -1524,6 +1538,66 @@ describe("战术图生成（快照烘焙）", () => {
     assert.strictEqual(w.meta.elevUnitM, 1500);
     assert.strictEqual(w.meta.contourM, 100);
   });
+  /* —— 底稿快照物化（2026-08-26）：auto/island 底稿锚图框,子图换 bbox 即重摇（实测同点 78~94% 不同）——
+     烘焙改为把母图当年可见网格烙成子图涂改、子图底稿 plain。下三测锁「母子图同点地貌一致」不变量。 —— */
+  const cellOf = (g: Grid, lon: number, lat: number): string => {
+    const c = Math.floor((lon - g.bb.lonMin) / g.step), r = Math.floor((lat - g.bb.latMin) / g.step);
+    return g.cells[Math.max(0, Math.min(g.rows - 1, r))][Math.max(0, Math.min(g.cols - 1, c))];
+  };
+
+  it("auto 母图（平面）烘焙＝真快照：子图任意点最终地貌与母图同点一致，且叠上母图涂改", () => {
+    const src = srcWorld();
+    src.meta = { ...src.meta, worldModel: "flat", kmPerDeg: 111.19, terrain: "auto", genSeed: 1234, genStyle: "continent",
+      bbox: { lonMin: 105, lonMax: 118, latMin: 28, latMax: 41 } };
+    src.terrainOverrides = [{ lon: 112.02, lat: 34.52, t: "water", step: 1 }];   // 母图手涂的湖（1° 粗块）
+    const w = createTacticalWorld(src, ev, 140, {});
+    assert.strictEqual(w.meta.terrain, "plain", "底稿改 plain＝快照即全部");
+    assert.ok(!("genSeed" in w.meta) && !("genStyle" in w.meta), "不再携带生成器参数");
+    assert.ok(w.terrainOverrides.length > 0 && w.terrainOverrides.length <= BAKE_CAP);
+    const mg = buildGridCells(src.meta, src.terrainOverrides, 3107);
+    const sg = buildGridCells(w.meta, w.terrainOverrides, 3107);
+    /* 平面母图 cosφ=1＝坐标恒等,可在整个子图幅上撒点逐点比对（避开母格边界半格取样） */
+    let same = 0, total = 0;
+    for (let i = 0; i < 15; i++) for (let j = 0; j < 15; j++) {
+      const lon = mg.bb.lonMin + (Math.floor((112 - 0.6 + i * 0.08 - mg.bb.lonMin) / mg.step) + 0.5) * mg.step;
+      const lat = mg.bb.latMin + (Math.floor((34.5 - 0.6 + j * 0.08 - mg.bb.latMin) / mg.step) + 0.5) * mg.step;
+      if (lon < w.meta.bbox!.lonMin || lon > w.meta.bbox!.lonMax || lat < w.meta.bbox!.latMin || lat > w.meta.bbox!.latMax) continue;
+      total++;
+      if (cellOf(sg, lon, lat) === cellOf(mg, lon, lat)) same++;
+    }
+    assert.ok(total > 100, `采样量足（实得 ${total}）`);
+    assert.strictEqual(same, total, `母子图同点地貌逐点一致（${same}/${total}）`);
+    assert.strictEqual(cellOf(sg, 112.02, 34.52), "water", "母图手涂的湖烙进快照");
+  });
+
+  it("island 母图（球面）烘焙＝真快照：子图边缘不再凭空落水，物化章与母图同点一致", () => {
+    const src = srcWorld();
+    src.meta = { ...src.meta, terrain: "island", bbox: { lonMin: 90, lonMax: 130, latMin: 20, latMax: 50 } };
+    src.terrainOverrides = [];
+    const w = createTacticalWorld(src, ev, 140, {});   // ev 在 112/34.5＝母图腹地（island 腹地恒 plain）
+    assert.strictEqual(w.meta.terrain, "plain");
+    const mg = buildGridCells(src.meta, [], 3107);
+    for (const o of w.terrainOverrides)
+      assert.strictEqual(o.t, cellOf(mg, 112 + (o.lon - 112) / Math.cos(34.5 * Math.PI / 180), o.lat),
+        `物化章=母图同点类别（逆投影后取样,${o.lon},${o.lat}）`);
+    const sg = buildGridCells(w.meta, w.terrainOverrides, 3107);
+    const bb = w.meta.bbox!;
+    for (const [lon, lat] of [[bb.lonMin + sg.step, bb.latMin + sg.step], [bb.lonMax - sg.step, bb.latMax - sg.step]] as const)
+      assert.strictEqual(cellOf(sg, lon, lat), "plain", "子图边缘＝母图腹地的平原（旧行为：island 重摇＝边缘落水）");
+  });
+
+  it("细格母图（旧 auto 战术图再烘）：k×k 粗采封章数 ≤BAKE_CAP、章尺寸随之放大", () => {
+    const src = srcWorld();
+    const half = 15 / 111.19;   // 30km 战场
+    src.meta = { ...src.meta, mapKind: "tactical", worldModel: "flat", kmPerDeg: 111.19, terrain: "auto", genSeed: 7,
+      bbox: { lonMin: 112 - half, lonMax: 112 + half, latMin: 34.5 - half, latMax: 34.5 + half } };
+    src.terrainOverrides = [];
+    const w = createTacticalWorld(src, { ...ev, lon: 112, lat: 34.5 } as WorldNode, 30, {});
+    assert.ok(w.terrainOverrides.length > 0 && w.terrainOverrides.length <= BAKE_CAP, `章数 ${w.terrainOverrides.length} ≤ ${BAKE_CAP}`);
+    const mstep = gridStepDeg(src.meta);
+    assert.ok(w.terrainOverrides.every(o => (o.step as number) > mstep * 1.5), "粗采瓦片的章尺寸＝k×母格边（k>1）");
+  });
+
   it("earth 历法母图：calendar 原样继承、tacSpan=当年 JDN、说明用公元纪年", () => {
     const src = srcWorld();
     src.meta.calendar = { kind: "earth" };

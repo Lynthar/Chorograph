@@ -525,8 +525,9 @@ export const armSig = signal<Arm>("land");
 export const paintFactionSig = signal<string | null>(null);   // 涂给谁
 export const paintLayerSig = signal(0);                       // 涂进第几个时段层
 /* 笔刷档位 1–32（2026-08-12 起是**物理尺度档**不是格数，档表与折算全在 core/brush；涂域/地形共用）。
-   缺省 2＝战术 742m，约合旧缺省「5 格」在井陉级图上的手感；战略图第 2 档不足一格＝单格 1°。 */
-export const brushSizeSig = signal(2);
+   缺省 4＝战术 700m（7 格,与旧缺省 742m 手感同级）——2026-08-26 低端分段后第 2 档变 300m,
+   缺省随之挪档；战略缺省随之 35.5→66.4km（战略低端一档≈ΔR1,粗一档无碍）。 */
+export const brushSizeSig = signal(4);
 export const brushEraseSig = signal(false);
 export const brushSmoothSig = signal(2);                      // 涂域边界平滑（Chaikin 轮数 0–3；笔刷框调）
 /** 「⏳ 新对象时间段」（编辑左栏）：勾选后新画的地点/连线/布景/地形涂改带 since/until（对齐旧 eraNew） */

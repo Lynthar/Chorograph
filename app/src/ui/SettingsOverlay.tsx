@@ -291,6 +291,30 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       (ro.distinct < BRUSH_NOTCHES ? "——图幅超出承诺域（宽 ≤约 1.39 万 km 且面积 ≤约 9000 万 km² 内 32 档全兑现），格被放粗、相邻档并档" : "");
   };
 
+  /* 本机偏好三行（主题/密度/出图图例）：app 模式照旧在顶部；create 模式后置到「纪年历法」
+     之后（2026-08-26）——新建流程先谈世界参数，本机偏好排在首屏徒增首次决策负担。 */
+  const uiP = uiPrefsSig.value;
+  const prefsBlock = (
+    <>
+      <h4 style={{ margin: "10px 0 4px" }}>界面（本机偏好，不入存档）</h4>
+      <div class="setrow"><label>主题</label>
+        <div class="seg">
+          <button type="button" class={"tbtn" + (uiP.theme === "light" ? " on" : "")} aria-pressed={uiP.theme === "light"} onClick={() => setUiPrefs({ theme: "light" })}>亮 · 素笺</button>
+          <button type="button" class={"tbtn" + (uiP.theme === "dark" ? " on" : "")} aria-pressed={uiP.theme === "dark"} onClick={() => setUiPrefs({ theme: "dark" })}>暗 · 漆</button>
+        </div>
+      </div>
+      <div class="setrow"><label>密度</label>
+        <div class="seg">
+          <button type="button" class={"tbtn" + (uiP.den === "loose" ? " on" : "")} aria-pressed={uiP.den === "loose"} onClick={() => setUiPrefs({ den: "loose" })}>浏览 · 松</button>
+          <button type="button" class={"tbtn" + (uiP.den === "tight" ? " on" : "")} aria-pressed={uiP.den === "tight"} onClick={() => setUiPrefs({ den: "tight" })}>兵棋 · 紧</button>
+        </div>
+      </div>
+      <div class="setrow"><label>出图图例</label>
+        <label><input type="checkbox" checked={uiP.legend !== false}
+          onChange={e => setUiPrefs({ legend: (e.currentTarget as HTMLInputElement).checked })} /> 战术图导出附图例块（派系·兵种·状态，右下角）</label>
+      </div>
+    </>
+  );
   return (
     <div class="modal" ref={box} role="dialog" aria-modal="true" aria-labelledby="setTitle" tabIndex={-1}>
       <div class="mo-head">
@@ -299,28 +323,8 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         <button class="x tr" aria-label="关闭" onClick={closeSettings}>✕</button>
       </div>
       <div class="mo-body" onInput={bumpRo}>
-      {(() => { const p = uiPrefsSig.value; return (
-        <>
-          <h4 style={{ margin: "10px 0 4px" }}>界面（本机偏好，不入存档）</h4>
-          <div class="setrow"><label>主题</label>
-            <div class="seg">
-              <button type="button" class={"tbtn" + (p.theme === "light" ? " on" : "")} aria-pressed={p.theme === "light"} onClick={() => setUiPrefs({ theme: "light" })}>亮 · 素笺</button>
-              <button type="button" class={"tbtn" + (p.theme === "dark" ? " on" : "")} aria-pressed={p.theme === "dark"} onClick={() => setUiPrefs({ theme: "dark" })}>暗 · 漆</button>
-            </div>
-          </div>
-          <div class="setrow"><label>密度</label>
-            <div class="seg">
-              <button type="button" class={"tbtn" + (p.den === "loose" ? " on" : "")} aria-pressed={p.den === "loose"} onClick={() => setUiPrefs({ den: "loose" })}>浏览 · 松</button>
-              <button type="button" class={"tbtn" + (p.den === "tight" ? " on" : "")} aria-pressed={p.den === "tight"} onClick={() => setUiPrefs({ den: "tight" })}>兵棋 · 紧</button>
-            </div>
-          </div>
-          <div class="setrow"><label>出图图例</label>
-            <label><input type="checkbox" checked={p.legend !== false}
-              onChange={e => setUiPrefs({ legend: (e.currentTarget as HTMLInputElement).checked })} /> 战术图导出附图例块（派系·兵种·状态，右下角）</label>
-          </div>
-          <h4 style={{ margin: "12px 0 4px" }}>世界参数</h4>
-        </>
-      ); })()}
+      {!create && prefsBlock}
+      <h4 style={{ margin: "12px 0 4px" }}>世界参数</h4>
       {create && (
         <div class="setrow"><label>地图种类</label>
           <div class="seg">
@@ -448,6 +452,7 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
             </>)}
       </div>
       {create && <div class="setrow"><label></label><span class="sub">真实历法=公元纪年（输入「前216」表公元前）、真实月长与闰年、1582 儒略→格里切换，战术图日程用真实日期。架空历法在「📅 历法」里自定月数/月长/月名/每日时数并命名存下，此处直接选用。<b>历法在创建后锁定</b>（更改会错位已保存的日戳）。</span></div>}
+      {create && prefsBlock}
       <div class="setrow"><label>Obsidian 库名</label><input type="text" id="sw_vault" class="wide" defaultValue={d.vault} /><span class="sub">双链直开用</span></div>
       {!create && (
         <div id="setDataSec">
