@@ -261,10 +261,13 @@ export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
   const hovs = w.heightOverrides;
   const bkt = bucketByCell(ovs, bb, step);
   const hbkt = wipeHov && hovs && hovs.length ? bucketByCell(hovs, bb, step) : null;
+  /* 尺寸判据带绝对项 +5.1e-5：吸收旧档 step 的 toFixed(4) 量化（最多 +5e-5，细格上超过 1.001 的
+     相对容差），被量化撑成「粗块」的同格旧章才擦得掉、盖得掉。重建端（grid/elev/erode）的同式
+     判据锁着黄金基准不能同改——旧章的自愈只发生在笔下：涂过/擦过即除。 */
   const hit = (o: { lon: number; lat: number; step?: number; since?: number | null; until?: number | null },
     clon: number, clat: number): boolean =>
     Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
-      && (+(o.step as number) || step) <= step * 1.001 && activeAt(o, yearNow);
+      && (+(o.step as number) || step) <= step * 1.001 + 5.1e-5 && activeAt(o, yearNow);
   const deadT = new Set<TerrainOverride>(), deadH = new Set<HeightOverride>();
   const added: TerrainOverride[] = [];
   const seen = new Set<number>();
@@ -290,7 +293,10 @@ export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
                                 : canonComposite(cLf + (brEco === "none" ? "" : "/" + brEco));
         }
         const ov: TerrainOverride = { lon: +clon.toFixed(prec), lat: +clat.toFixed(prec), t: cellT };
-        if (recStep) ov.step = +step.toFixed(4);   // 细格涂改记录自身块尺寸（与继承的 1° 粗块区分）——对齐旧 paintAt（index.html:2739），存档格式兼容硬约束
+        /* step 记 7 位小数（原 4 位，对齐旧 paintAt 的存档格式，键语义不变）：4 位在细格上可向上量化
+           超过 0.1%（0.000573→0.0006），重建被 1.001 容差判成粗块＝一格涂改扩成 2×2 且橡皮擦不掉；
+           7 位误差 ≤5e-8，对合法最细格 0.0002° 恒在容差内。 */
+        if (recStep) ov.step = +step.toFixed(7);   // 细格涂改记录自身块尺寸（与继承的 1° 粗块区分）
         added.push(applyEra(ov, era)); changed = true;
       }
     }
@@ -338,13 +344,14 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
       seen.add(k);
       const clon = +(bb.lonMin + (c + 0.5) * step).toFixed(prec), clat = +(bb.latMin + (r + 0.5) * step).toFixed(prec);
       const ex = (bkt.get(k) || []).find(o => !dead.has(o) && Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
-        && (+(o.step as number) || step) <= step * 1.001 && (o.since ?? null) === es && (o.until ?? null) === eu);
+        && (+(o.step as number) || step) <= step * 1.001 + 5.1e-5 && (o.since ?? null) === es && (o.until ?? null) === eu);   // 尺寸判据同 paintTerrainPath 的 hit：绝对项吸收旧档 4 位量化
       if (ex) {
         ex.dh = +(ex.dh + dh).toFixed(6);
+        if (recStep) ex.step = +step.toFixed(7);   // 顺手把旧章的量化 step 校直——不然它在重建端仍按粗块解读
         if (Math.abs(ex.dh) < 1e-6) dead.add(ex);
       } else {
         const ov: HeightOverride = { lon: clon, lat: clat, dh: +dh.toFixed(6) };
-        if (recStep) ov.step = +step.toFixed(4);
+        if (recStep) ov.step = +step.toFixed(7);   // 7 位防细格量化误判粗块（同 paintTerrainPath 之规）
         ovs.push(applyEra(ov, era));
       }
       changed = true;

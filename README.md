@@ -38,11 +38,11 @@ npm run build        # 构建单文件产物 app/dist/index.html（JS/CSS/Worker
 npm run preview      # 本地验证构建产物（http://localhost:4173）
 ```
 
-构建出的 `dist/index.html` 自包含，可直接双击（`file://`）运行；托管到任意静态服务器即可作 PWA 安装、离线使用。推荐 **Edge / Chrome** 以获得完整功能（「文件夹图库」依赖 File System Access API）。开发模式下可用 URL 深链直达，例如 `#sample=井陉之战-战术.json` 载入仓库内的示例地图。
+构建出的 `dist/index.html` 自包含，可直接双击（`file://`）运行；托管到任意静态服务器即可作 PWA 安装、离线使用。推荐 **Edge / Chrome** 以获得完整功能（「文件夹图库」依赖 File System Access API）。开发模式下可用 URL 深链直达，例如 `#map=<地图名>` 打开图库中的指定地图。
 
 ## 示例 · 战术推演图
 
-仓库内附三张真实战役的战术推演图（`井陉之战-战术.json` / `鄱阳湖之战-战术.json` / `长平之战-战术.json`）作为可载入示例——展示战役当年快照、时间轴逐日回放、部队航点与 A\* 可达性校验等战术图能力；长平一图另用上了十个相位与分帧出图、三道壁垒工事线、可靠性三档（石长城主线按推断虚描、两段实测残墙作确证实描）。开发模式下经深链 `#sample=<文件名>` 直接载入。
+战术图用于复原真实战役：战役当年快照、时间轴逐日回放、部队航点与 A\* 可达性校验、相位分帧出图、工事线与史料可靠性三档（确证实描 / 推断虚描）。随仓库附带的示例战术图（井陉之战 / 鄱阳湖之战 / 长平之战）正在按新的尺度与网格法则重做，后续版本恢复；届时可在仓库根放置 `.json` 后经深链 `#sample=<文件名>` 直接载入。
 
 ## 测试
 
@@ -62,8 +62,7 @@ npm run typecheck    # tsc --noEmit
 | `app/src/core/` | 纯逻辑：几何 / 投影 / 噪声 / 地形 / 历法 / 距离 / A\* 寻路（黄金基准平价锁定） |
 | `app/src/render/` | 渲染层：WebGL2 地形 + Canvas2D 覆盖层 / 兵棋 / 布景 / 分析 |
 | `app/src/data/` | IndexedDB 图库 / 文件夹图库 |
-| `app/src/worker/` | 寻路 Web Worker |
-| `井陉之战-战术.json`, `鄱阳湖之战-战术.json`, `长平之战-战术.json` | 可载入的战术图示例 |
+| `app/src/worker/` | 寻路与侵蚀 Web Worker |
 
 ## 许可
 

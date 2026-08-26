@@ -107,6 +107,15 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     });
   });
 
+  /* 离图闸（2026-08 审查修正）：save 的失败被 autosave 吞成 pending（flush 永不 reject，契约见
+     data/autosave 头注），而换图/切库原先无条件继续换世界＝把「自动保存失败」静默升级成「丢改动」。
+     判据一条：flush 之后仍 pending＝上一次写失败（在途与 600ms 内的新触碰都被 flush 内联写掉）。 */
+  async function leaveCurrent(): Promise<boolean> {
+    await autosave.flush();
+    if (!autosave.pending || !ctx.mapId || !worldSig.peek()) return true;
+    return confirm("当前地图还有未保存的改动，且自动保存失败（存储可能已满或文件夹权限失效）。\n仍要离开并丢弃这些改动吗？\n（可先点「取消」，用 ⚙ 设置 →「💾 导出 JSON」抢救一份。）");
+  }
+
   /* 守卫拦下写入：弹冲突弹层让用户决断。底栏同时保持●未保存＋红字——改动确实还在内存里，
      不许显示成已保存。弹层置位期间自动保存不再尝试写入（见上面的短路）。 */
   function noteConflict(info: StaleInfo): void {
@@ -259,7 +268,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     const ent = libViewSig.peek().entries.find(e => e.id === id);
     stageStep(0, (ent && ent.name) || "读取中");
     try {
-      await autosave.flush();
+      if (!(await leaveCurrent())) return false;
       /* ⚠ 世界与版本必须一趟读出（getWorldAt 同事务）：先读内容、再单独读版本，中间隔着
          paintFrame 的一帧——另一处若恰在这段窗口里落盘，基准就比快照新，此后每次保存都过守卫，
          把基于旧快照的内容整份写回去。偏差方向恒定落在「漏拦」这侧，正是守卫要拦的那类。 */
@@ -281,7 +290,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     const t0 = performance.now();
     stageStep(0, fn);
     try {
-      await autosave.flush();
+      if (!(await leaveCurrent())) return false;
       const got = await folderReadWorldAt(ctx.folderDir!, fn);   // 同一个 File 出内容与 mtime（同上之由）
       const w = got.world;
       if (!w) { alert("无法读取该地图文件（可能已被移动、改名或损坏）。"); return false; }
@@ -526,6 +535,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     },
     async linkFolder() {
       if (!fsSupported()) return;
+      if (!(await leaveCurrent())) return;   // 换库＝mapId 作废，之后当前图再也存不进去——脏着不许静默切
       let handle: FolderHandle | null = null;
       try { handle = await showDirectoryPicker({ mode: "readwrite", id: "yutu-lib" }); } catch (e) { return; }  // 取消=静默
       let perm: string = "prompt"; try { perm = await handle.requestPermission({ mode: "readwrite" }); } catch (e) {}
@@ -536,7 +546,8 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       ctx.lib!.kvSet("librarySource", "folder").catch(() => {});
       refreshLib();
     },
-    backToBrowser() {
+    async backToBrowser() {
+      if (!(await leaveCurrent())) return;   // 同 linkFolder 之规
       snapView();
       ctx.source = "browser"; ctx.folderDir = null; ctx.mapId = null; ctx.baseVer = null;
       ctx.lib!.kvSet("librarySource", "browser").catch(() => {});

@@ -28,6 +28,12 @@ export function normalizeWorld(w: unknown): World {
   const bb = o.meta.bbox, num = (x: any) => typeof x === "number" && isFinite(x);
   if (bb != null && !(isRec(bb) && num(bb.lonMin) && num(bb.lonMax) && num(bb.latMin) && num(bb.latMax)
     && bb.lonMin < bb.lonMax && bb.latMin < bb.latMax)) delete o.meta.bbox;
+  // 物理标定同规（2026-08 审查）：半径/每度里程非有限或 ≤0 剔键回默认——负值会产出负距离，
+  // 消费端 `+(x) || 10000` 的兜底只挡 0/NaN、挡不住负数与 Infinity。合法档零影响。
+  for (const k of ["planetRadiusKm", "kmPerDeg"]) {
+    const v = o.meta[k];
+    if (v != null && !(isFinite(+v) && +v > 0)) delete o.meta[k];
+  }
   // heightOverrides 保持「缺键不落盘」（旧档形状不变）：仅当存在时清理，非数组则删键
   if (o.heightOverrides != null) {
     if (Array.isArray(o.heightOverrides)) o.heightOverrides = o.heightOverrides.filter(isRec);

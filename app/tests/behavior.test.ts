@@ -725,6 +725,23 @@ describe("存档校验 validateWorld", () => {
     for (const fixable of [{ meta: "x", nodes: [] }, { meta: {}, nodes: [], factions: "坏", events: { 不是: "数组" } }])
       assert.strictEqual(validateWorld(fixable).ok, true, JSON.stringify(fixable));
   });
+  it("物理标定（2026-08 审查修正）：非正的半径/每度里程——validate 提示、normalize 剔键回默认", () => {
+    const r = validateWorld({ meta: { planetRadiusKm: -6371, kmPerDeg: Infinity }, nodes: [] });
+    assert.strictEqual(r.ok, true, "旧档无损红线：只提示不拒开");
+    assert.strictEqual(r.warnings.filter(i => i.path === "meta.planetRadiusKm" || i.path === "meta.kmPerDeg").length, 2);
+    const w = normalizeWorld({ meta: { planetRadiusKm: -6371, kmPerDeg: Infinity }, nodes: [] });
+    assert.ok(!("planetRadiusKm" in w.meta) && !("kmPerDeg" in w.meta), "无效值剔键");
+    assert.ok(distKm(w.meta, 0, 0, 1, 0) > 0, "剔键后距离按默认半径、恒为正");
+    const ok = normalizeWorld({ meta: { planetRadiusKm: 6371, kmPerDeg: 111 }, nodes: [] });
+    assert.strictEqual(ok.meta.planetRadiusKm, 6371, "合法值原样保留");
+    assert.strictEqual(ok.meta.kmPerDeg, 111);
+  });
+  it("heightOverrides 成员字段提示：非数字 lon/lat/dh 报 warning（应用端自会跳过，不 fatal）", () => {
+    const r = validateWorld({ meta: {}, nodes: [],
+      heightOverrides: [{ lon: 1, lat: 2, dh: 0.5 }, { lon: "x", lat: 2, dh: 0.5 }, { lon: 1, lat: 2 }] });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.warnings.filter(i => i.path.startsWith("heightOverrides")).length, 2, "坏成员各报一条；合法项不受累");
+  });
   /* ⚠ 仓库根的示例战术图属**使用产物**，会被作者删掉重做（2026-08-20 三张即如此）——
      故这条把关做成「文件在就验、不在就跳过」：新图放回原名即自动恢复把关，不必回来改测试。 */
   it("真史示例世界：零 fatal（井陉之战战术图）", (t) => {

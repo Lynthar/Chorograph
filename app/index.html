@@ -124,7 +124,7 @@
   .mc-del{ position:absolute; top:7px; right:7px; width:27px; height:27px; border-radius:6px;
     display:flex; align-items:center; justify-content:center; font-size:13px;
     background:rgba(22,17,10,.55); color:#f0d9c0; opacity:0; transition:opacity .12s; }
-  #home .mapcard:hover .mc-del{ opacity:1; }
+  #home .mapcard:hover .mc-del, #home .mapcard:focus-within .mc-del{ opacity:1; }   /* 键盘聚焦也得看得见删除钮 */
   /* 图种角标：战略=靛、战术=朱；压缩略图左上角，缩略图有无都读得出 */
   #home .mc-kind{ position:absolute; left:9px; top:9px; z-index:2; font-size:12px; font-weight:bold; letter-spacing:.02em;
     padding:2px 9px; border-radius:9px; color:#f3ead6; background:rgba(44,56,86,.93);

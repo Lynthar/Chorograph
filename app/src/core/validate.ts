@@ -75,6 +75,12 @@ export function validateWorld(w: unknown): ValidateResult {
       || Math.abs(+b.lonMin) > 1e6 || Math.abs(+b.lonMax) > 1e6 || Math.abs(+b.latMin) > 1e6 || Math.abs(+b.latMax) > 1e6)
       F("meta.bbox", "范围跨度或坐标量级过大，无法生成地形网格（疑损坏或恶意档）");
   }
+  // 物理标定须为正数（normalizeWorld 对无效值剔键回默认，此处仅提示写手——负半径=负距离）
+  for (const k of ["planetRadiusKm", "kmPerDeg"] as const) {
+    const v = meta[k];
+    if (v != null && !(isFinite(+(v as number)) && +(v as number) > 0))
+      W(`meta.${k}`, `须为正数（现为 ${JSON.stringify(v)}），将按默认值处理`);
+  }
 
   const checkTimed = (path: string, m: Record<string, unknown>) => {
     for (const k of ["since", "until"]) if (m[k] != null && !isNum(m[k])) W(`${path}.${k}`, "不是数字，时段过滤将失准");
@@ -174,6 +180,11 @@ export function validateWorld(w: unknown): ValidateResult {
     if (!isValidTerrain(String(t.t))) W(`${p}.t`, `未知地形「${String(t.t)}」`);
     if (!isNum(t.lon) || !isNum(t.lat)) W(p, "涂改块经纬度无效");
     checkTimed(p, t);
+  });
+  (Array.isArray(o.heightOverrides) ? (o.heightOverrides as Record<string, unknown>[]) : []).forEach((h, i) => {
+    const p = `heightOverrides[${i}]`;   // 同 terrainOverrides 之规；应用端对非数字自会跳过，这里仅提示写手
+    if (!isNum(h.lon) || !isNum(h.lat) || !isNum(h.dh)) W(p, "高程涂改需要数字 lon/lat/dh，该项不生效");
+    checkTimed(p, h);
   });
 
   /* —— 部队（战术图） —— */

@@ -334,16 +334,16 @@ describe("编辑操作内核", () => {
     paintTerrainAt(sw, sg, 3000, 101.5, 31.5, "water", 1, false, null);
     assert.strictEqual(sw.terrainOverrides.length, 1);
     assert.ok(!("step" in sw.terrainOverrides[0]), "恰 1° 的涂改不带 step 键（v0.14 存档形状）");
-    // 战术图（步长=跨度/140）：记录 +step.toFixed(4)，与继承的 1° 粗块区分
+    // 战术图（步长=跨度/140）：记录 +step.toFixed(7)，与继承的 1° 粗块区分
     const tm = { mapKind: "tactical", bbox: { lonMin: 100, lonMax: 101.4, latMin: 30, latMax: 31.4 } } as never as import("../src/core/types.ts").Meta;
     const tg = buildGridCells(tm, [], 3000);
     const tw = mkWorld({ meta: tm });
     paintTerrainAt(tw, tg, 3000, 100.7, 30.7, "water", 1, false, null);
     assert.strictEqual(tw.terrainOverrides.length, 1);
-    assert.strictEqual(tw.terrainOverrides[0].step, +tg.step.toFixed(4), "战术涂改记录自身块尺寸");
+    assert.strictEqual(tw.terrainOverrides[0].step, +tg.step.toFixed(7), "战术涂改记录自身块尺寸");
     // 高程涂改同规则
     paintHeightAt(tw, tg, 100.7, 30.7, 0.02, 1, null);
-    assert.strictEqual(tw.heightOverrides![0].step, +tg.step.toFixed(4));
+    assert.strictEqual(tw.heightOverrides![0].step, +tg.step.toFixed(7));
     const sw2 = mkWorld({ meta: sm });
     paintHeightAt(sw2, sg, 101.5, 31.5, 0.02, 1, null);
     assert.ok(!("step" in sw2.heightOverrides![0]), "恰 1° 的高程涂改不带 step 键");
@@ -357,9 +357,36 @@ describe("编辑操作内核", () => {
     assert.ok(dg.step < 1, `前提：这张战略图的格细于 1°（实得 ${dg.step}）`);
     const dw = mkWorld({ meta: dm });
     paintTerrainAt(dw, dg, 3000, 101.5, 31.5, "water", 1, false, null);
-    assert.strictEqual(dw.terrainOverrides[0].step, +dg.step.toFixed(4), "细格战略涂改须记块尺寸");
+    assert.strictEqual(dw.terrainOverrides[0].step, +dg.step.toFixed(7), "细格战略涂改须记块尺寸");
     paintHeightAt(dw, dg, 101.5, 31.5, 0.02, 1, null);
-    assert.strictEqual(dw.heightOverrides![0].step, +dg.step.toFixed(4), "高程涂改同规则");
+    assert.strictEqual(dw.heightOverrides![0].step, +dg.step.toFixed(7), "高程涂改同规则");
+  });
+  it("细格 step 量化不扩格（2026-08 审查修正）：涂1格重建恰1格；旧4位量化章擦得掉、并得进", async () => {
+    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    /* 缺省半径(10000km)母图烘出的战术格边 0.000573°——toFixed(4)=0.0006 向上偏 4.7%，旧写法在
+       重建端被 1.001 容差判成粗块：一格涂改扩成 2×2、橡皮擦不掉、高程同格不合并（探针实证）。 */
+    const m = { mapKind: "tactical", worldModel: "flat", kmPerDeg: 174.5329, gridN: 60, terrain: "plain",
+      bbox: { lonMin: 100, lonMax: 100.03438, latMin: 30, latMax: 30.03438 } } as never as import("../src/core/types.ts").Meta;
+    const g = buildGridCells(m, [], 0);
+    assert.ok(+g.step.toFixed(4) > g.step * 1.001, `前提：这格边的 4 位量化会越过 1.001 容差（step=${g.step}）`);
+    const w = mkWorld({ meta: m });
+    const lon = g.bb.lonMin + 30.5 * g.step, lat = g.bb.latMin + 30.5 * g.step;
+    paintTerrainAt(w, g, 0, lon, lat, "water", 1, false, null);
+    assert.strictEqual(w.terrainOverrides[0].step, +g.step.toFixed(7));
+    const g1 = buildGridCells(m, w.terrainOverrides, 0);
+    let diff = 0;
+    for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) if (g1.cells[r][c] !== g.cells[r][c]) diff++;
+    assert.strictEqual(diff, 1, "涂 1 格重建后应恰变 1 格");
+    // 旧档里 4 位量化的同格章：靠 hit 判据的绝对容差被橡皮擦掉（自愈只发生在笔下）
+    w.terrainOverrides = [{ lon: +lon.toFixed(4), lat: +lat.toFixed(4), t: "water", step: +g.step.toFixed(4) }];
+    paintTerrainAt(w, g, 0, lon, lat, "water", 1, true, null);
+    assert.strictEqual(w.terrainOverrides.length, 0, "旧量化章应被擦除");
+    // 高程：同格两笔并成一条；旧量化章被并入且 step 校直
+    w.heightOverrides = [{ lon: +lon.toFixed(4), lat: +lat.toFixed(4), dh: 0.5, step: +g.step.toFixed(4) }];
+    paintHeightAt(w, g, lon, lat, 0.5, 1, null);
+    assert.strictEqual(w.heightOverrides.length, 1, "并进旧章而非另立新条");
+    assert.strictEqual(w.heightOverrides[0].dh, 1);
+    assert.strictEqual(w.heightOverrides[0].step, +g.step.toFixed(7), "并入时把量化 step 校直");
   });
   it("splitOverridesToStep 已删（2026-08-13 冻结批）：尺寸/密度创建后冻结,「改图幅=改格边」的迁移路不存在了", async () => {
     const ops = await import("../src/ui/editops.ts");
