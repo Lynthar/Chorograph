@@ -12,6 +12,13 @@
 
 </div>
 
+## 在线使用与下载
+
+- **在线使用**：<https://lynthar.github.io/Chorograph/> —— 可作 PWA 安装到桌面、离线可用。
+- **离线单文件**：到 [Releases](https://github.com/Lynthar/Chorograph/releases) 下载 `Chorograph.html`，双击即可运行，无需安装任何东西。
+
+数据只存在你的浏览器本地（IndexedDB）或你链接的本地文件夹，**不上传任何服务器**。
+
 ## 这是什么
 
 舆图把**距离、行军天数、势力范围、战役位置**这些容易写崩的设定，放进一张会自洽计算的地图里——同时具备 Inkarnate 式的手绘地形/布景编辑。它以 **WebGL2** 渲染地形（无可用 GPU 时自动退回 Canvas2D），**A\* 寻路跑在 Web Worker**，用 **IndexedDB** 或本地文件夹作图库，并可构建为一个**自包含的单文件 HTML**（离线可用、可作 PWA 安装、`file://` 双击即跑）。
