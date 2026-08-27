@@ -5,7 +5,7 @@ import { EVENT_TYPES } from "../core/constants.ts";
 import { calOf, fmtDayTime, fmtMD, fmtT, fmtWhen, fromT, type CalendarSpec } from "../core/calendar.ts";
 import { evCurrentAt, evFutureAt, phaseIndexAt, phasesOf } from "../core/time.ts";
 import { addPhaseAt, removePhaseAt, renamePhase } from "./editops.ts";
-import { clearOpSel, flyReqSig, isTacSig, mutateWorld, selSig, showToast, stopPlay, worldSig, yearSig } from "./state.ts";
+import { clearOpSel, flyReqSig, isTacSig, mutateWorld, selSig, showToast, stopPlay, worldSig, yearSig, readOnlySig } from "./state.ts";
 import type { World } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 
@@ -60,7 +60,9 @@ export function EventsPane() {
       <>
         {tac && <PhaseSec world={world} T={yearNow} cal={cal} />}
         <div class="empty"><span class="ph">史</span><b>时间线还空着</b>
-          <p>放一个事件点（绘 → 点 → 类型选「事件」），它会同时出现在这里与时间轴刻度上。</p></div>
+          <p>{readOnlySig.value
+            ? "这张图里还没有带年份的事件点——拖时间轴仍可看痆域与部队随纪年演变。"
+            : "放一个事件点（绘 → 点 → 类型选「事件」），它会同时出现在这里与时间轴刻度上。"}</p></div>
       </>
     );
   }

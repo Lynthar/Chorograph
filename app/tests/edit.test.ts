@@ -9,7 +9,7 @@ import { unitArm, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
-  paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, redoWorld, revealLayersFor, selMembers, selSig, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
+  modeSig, paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, railToolOf, readOnlySig, redoWorld, revealLayersFor, selMembers, selSig, setRailTool, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 
@@ -1190,5 +1190,69 @@ describe("时间步进粒度 timeStep", () => {
   it("战略图细档＝1/月数（不受一日时数影响）", () => {
     withWorld({ months: 10, dpm: 36, hoursPerDay: 10 }, false, () => assert.strictEqual(timeStep(), 1 / 10));
     withWorld({}, false, () => assert.strictEqual(timeStep(), 1 / 12));
+  });
+});
+
+describe("只读态（分享链接 / 导出的只读网页 / 演示投屏）", () => {
+  /* UI 门（工具轨只出览测、卡片不给编辑与删除钮）是主路径，这里锁的是它背后的不变量：
+     万一哪个门漏了，数据也不会被改坏——而不是静默改坏了却报「已保存」。 */
+  const setup = (): World => {
+    const w = mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2, 名称: "甲" }] });
+    setWorldState(w);
+    readOnlySig.value = false;
+    toastSig.value = null;
+    return w;
+  };
+
+  it("写入总入口一字不改：mutateWorld / mutateWorldLive / pushHistoryOnce 全部早退", () => {
+    setup();
+    mutateWorld(x => { x.nodes[0].lon = 99; });   // 先证明夹具本身是能改的
+    assert.strictEqual(worldSig.value!.nodes[0].lon, 99);
+    const before = worldSig.value, ver = editVerSig.value;
+    readOnlySig.value = true;
+    mutateWorld(x => { x.nodes[0].lon = 7; });
+    mutateWorldLive(x => { x.nodes[0].lat = 7; });
+    pushHistoryOnce();
+    assert.strictEqual(worldSig.value, before, "世界引用都不该换（换了就会触发重画与自动保存）");
+    assert.strictEqual(worldSig.value!.nodes[0].lon, 99);
+    assert.strictEqual(editVerSig.value, ver, "editVer 不动＝不触发自动保存与寻路上下文重发");
+    readOnlySig.value = false;
+  });
+
+  it("删除门面与撤销/重做同样拦得住", () => {
+    setup();
+    mutateWorld(x => { x.nodes[0].lon = 5; });
+    readOnlySig.value = true;
+    deleteNodeAt("a");
+    assert.strictEqual(worldSig.value!.nodes.length, 1, "删除门面走 mutateWorld，闸在同一处");
+    undoWorld();
+    assert.strictEqual(worldSig.value!.nodes[0].lon, 5, "只读态撤不回上一步——撤销也是写");
+    redoWorld();
+    assert.strictEqual(worldSig.value!.nodes[0].lon, 5);
+    readOnlySig.value = false;
+  });
+
+  it("拦下要给回执：静默不改是最难排查的那种失败", () => {
+    setup();
+    readOnlySig.value = true;
+    mutateWorld(x => { x.nodes[0].lon = 7; });
+    assert.match(toastSig.value?.text || "", /只读/);
+    toastSig.value = null;
+    mutateWorldLive(x => { x.nodes[0].lon = 8; });
+    assert.strictEqual(toastSig.value, null, "逐帧调用的 live 分支有意静默——起手的 pushHistoryOnce 已经报过");
+    readOnlySig.value = false;
+  });
+
+  it("工具轨：绘与军按不出来，览与测照常（与 ToolRail 只渲染两条同源）", () => {
+    setup();
+    readOnlySig.value = true;
+    setRailTool("draw");
+    assert.strictEqual(railToolOf(modeSig.value, editSubSig.value), "browse", "快捷键 3 也走这条门");
+    setRailTool("units");
+    assert.strictEqual(railToolOf(modeSig.value, editSubSig.value), "browse");
+    setRailTool("measure");
+    assert.strictEqual(railToolOf(modeSig.value, editSubSig.value), "measure", "分析工具在只读页照常可用");
+    readOnlySig.value = false;
+    setRailTool("browse");
   });
 });

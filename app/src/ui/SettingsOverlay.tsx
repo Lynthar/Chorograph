@@ -16,7 +16,7 @@ import type { CalendarCfg, GenStyle, Meta, TerrainMode, WorldModel } from "../co
 import { gridStepDeg } from "../core/grid.ts";
 import { kmPerDeg, flatKmPerDeg } from "../core/geo.ts";
 import { brushRadiusCells, brushActualKm, fmtBrushKm, BRUSH_NOTCHES } from "../core/brush.ts";
-import { calOverlaySig, calTemplatesSig, closeSettings, isTacSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, uiPrefsSig, worldSig, type SettingsMode } from "./state.ts";
+import { calOverlaySig, calTemplatesSig, closeSettings, isTacSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, uiPrefsSig, worldSig, readOnlySig, type SettingsMode } from "./state.ts";
 import { pickCalendarCfg } from "../data/calstore.ts";
 import { useModalFocus } from "./modal.ts";
 
@@ -315,15 +315,18 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       </div>
     </>
   );
+  /* 只读（分享/演示）：世界参数与一切写入动作整块让位，只留界面偏好 + 导出/出图/转发分享 */
+  const ro = readOnlySig.value;
   return (
     <div class="modal" ref={box} role="dialog" aria-modal="true" aria-labelledby="setTitle" tabIndex={-1}>
       <div class="mo-head">
         <span class="t" id="setTitle">{create ? "🆕 新建地图" : "⚙ 设置"}</span>
-        <span class="s">{create ? (tacNew ? "先定战场位置与尺度" : "先定世界形态与尺度") : "界面偏好 · 世界参数 · 数据与出图"}</span>
+        <span class="s">{create ? (tacNew ? "先定战场位置与尺度" : "先定世界形态与尺度") : ro ? "界面偏好 · 数据与出图（只读分享）" : "界面偏好 · 世界参数 · 数据与出图"}</span>
         <button class="x tr" aria-label="关闭" onClick={closeSettings}>✕</button>
       </div>
       <div class="mo-body" onInput={bumpRo}>
       {!create && prefsBlock}
+      {!ro && <>
       <h4 style={{ margin: "12px 0 4px" }}>世界参数</h4>
       {create && (
         <div class="setrow"><label>地图种类</label>
@@ -454,15 +457,19 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       {create && <div class="setrow"><label></label><span class="sub">真实历法=公元纪年（输入「前216」表公元前）、真实月长与闰年、1582 儒略→格里切换，战术图日程用真实日期。架空历法在「📅 历法」里自定月数/月长/月名/每日时数并命名存下，此处直接选用。<b>历法在创建后锁定</b>（更改会错位已保存的日戳）。</span></div>}
       {create && prefsBlock}
       <div class="setrow"><label>Obsidian 库名</label><input type="text" id="sw_vault" class="wide" defaultValue={d.vault} /><span class="sub">双链直开用</span></div>
+      </>}
       {!create && (
         <div id="setDataSec">
           <h4 style={{ margin: "14px 0 4px" }}>数据文件与出图</h4>
           <div class="seg">
-            <button type="button" class="tbtn" title="导入 JSON 数据文件，替换当前地图内容（可撤销）" onClick={() => fileRef.current?.click()}>📂 导入 JSON</button>
+            {!ro && <button type="button" class="tbtn" title="导入 JSON 数据文件，替换当前地图内容（可撤销）" onClick={() => fileRef.current?.click()}>📂 导入 JSON</button>}
             <button type="button" class="tbtn" title="导出当前数据为 JSON" onClick={() => acts?.exportCurrent()}>💾 导出 JSON</button>
+            {/* 只读分享两条：链接把整张图压进网址（不经服务端）；只读网页是自包含文件（离线可看，不受链接长度限制） */}
+            <button type="button" class="tbtn" title="复制一条只读分享链接：整张图压在网址里，对方点开即看（当前视角与纪年一并带上）" onClick={() => acts?.copyShareLink()}>🔗 复制只读链接</button>
+            <button type="button" class="tbtn" title="导出一个自包含的只读网页：双击即看，不需要联网，也不受链接长度限制" onClick={() => acts?.exportShareHtml()}>📄 导出只读网页</button>
             <button type="button" class="tbtn" title="把当前视图导出为 PNG 图片" onClick={() => acts?.exportPng()}>📷 出图 PNG</button>
             {isTacSig.value && <button type="button" class="tbtn" title="按「览 → 相位」清单逐相位各出一张 PNG（当前视角与图层；浏览器会请求一次连续下载授权）" onClick={() => acts?.exportFrames()}>🎞 分帧出图</button>}
-            <button type="button" class="tbtn" title="把当前地图内容重置为内置示例数据（可撤销）" onClick={() => acts?.resetToSample()}>↺ 重置为内置示例</button>
+            {!ro && <button type="button" class="tbtn" title="把当前地图内容重置为内置示例数据（可撤销）" onClick={() => acts?.resetToSample()}>↺ 重置为内置示例</button>}
             <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }}
               onChange={async e => {
                 const el = e.currentTarget as HTMLInputElement;
@@ -473,16 +480,19 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
                 catch (err) { alert("JSON 解析失败：" + (err as Error).message); }
               }} />
           </div>
-          <div class="hint">改动自动保存到本图的浏览器存档（保存态见顶栏）；「导出」才写回 .json 文件。此处「导入」替换当前图的内容——若想保留当前图，请回「⌂ 图库」用「📂 导入 JSON 为新图」。</div>
+          <div class="hint">{ro
+            ? "这是别人分享来的只读地图：改动无从谈起，也不会写进你的图库。想接着做，点顶栏「↓ 存入我的图库」存成自己的可编辑副本。"
+            : "改动自动保存到本图的浏览器存档（保存态见顶栏）；「导出」才写回 .json 文件。此处「导入」替换当前图的内容——若想保留当前图，请回「⌂ 图库」用「📂 导入 JSON 为新图」。"}</div>
         </div>
       )}
-      {!create && <div class="hint">「应用」保留全部地点/派系/战役数据，只改可变参数；尺寸与分辨率创建后锁定——「🆕 以此参数新建」带当前参数打开创建面板，在那里改尺寸开一张新图（当前图原样保留，随时从「⌂ 图库」回来）。</div>}
+      {!create && !ro && <div class="hint">「应用」保留全部地点/派系/战役数据，只改可变参数；尺寸与分辨率创建后锁定——「🆕 以此参数新建」带当前参数打开创建面板，在那里改尺寸开一张新图（当前图原样保留，随时从「⌂ 图库」回来）。</div>}
       </div>
       <div class="mo-foot">
         <button class="bt ghost tr" onClick={closeSettings}>{create ? "取消" : "关闭"}</button>
         <span class="sp" />
         {create
           ? <button class="bt zhu tr" onClick={doNew}>✔ 创建此地图</button>
+          : ro ? null
           : <>
               <button class="bt tr" onClick={doNew}>🆕 以此参数新建地图</button>
               <button class="bt zhu tr" onClick={apply}>✔ 应用到当前世界</button>

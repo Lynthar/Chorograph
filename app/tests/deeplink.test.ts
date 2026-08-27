@@ -81,6 +81,17 @@ describe("深链解析 parseHash", () => {
     assert.strictEqual(parseHash("").seed, null, "没给过＝不动 ctx.meta 的出厂种子");
   });
 
+  it("只读分享：#d= 原样取回（base64url 无须解码）、#ro=0 明确关掉", () => {
+    const payload = "eJyrVkrLz1eyUlBKSSxJVNJRykjNyQEAJlUFqQ";
+    assert.strictEqual(parseHash("#ro=1&d=" + payload).wantData, payload);
+    assert.strictEqual(parseHash("#ro=1&d=" + payload).wantRo, true);
+    assert.strictEqual(parseHash("#ro").wantRo, true, "裸 ro＝只读（同 #lib 之例）");
+    assert.strictEqual(parseHash("#ro=0").wantRo, false, "导出只读网页时用得上：内嵌数据但不强制只读");
+    assert.strictEqual(parseHash("").wantRo, false);
+    assert.strictEqual(parseHash("#d=").wantData, null, "空载荷＝没给过，不进只读分支");
+    assert.strictEqual(parseHash("#d=" + payload + "&year=3107").year, 3107, "长载荷不影响其后参数的解析");
+  });
+
   it("前导 # 可有可无（供测试与非浏览器环境直接喂串）", () => {
     assert.deepStrictEqual(parseHash("#year=100"), parseHash("year=100"));
   });

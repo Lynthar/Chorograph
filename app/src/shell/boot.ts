@@ -11,7 +11,7 @@ import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
   modeSig, armSig, routePtsSig, routeResSig, routeBusySig, setMode,
   editSubSig, editVerSig, isTacSig, linkTypeSig, tacReqSig,
   paintFactionSig, flyReqSig, helpOpenSig, openSettings, selectOp,
-  analysisSubSig, uiPrefsSig, subDaySig,
+  analysisSubSig, uiPrefsSig, subDaySig, readOnlySig, libActionsSig,
   selNode, selEdge, selUnit, selFaction,
   type EditSub }
   from "../ui/state.ts";
@@ -55,6 +55,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   bindLib();
   await boot();
   if (!ctx.grid) rebuild();
+  if (dl.wantRo) readOnlySig.value = true;   // #ro=1 单用＝演示/投屏只读；分享链接已在 boot 里落过只读
   if (dl.wantPreset) applyPreset(dl.wantPreset);
   if (dl.wantLib) { ctx.libOpen = true; refreshLib(); }
   if (dl.wantOvl === "help") helpOpenSig.value = true;
@@ -137,6 +138,13 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     if (par) bp.title = `返回上级战略图「${par.mapName || ""}」（当前战术图自动保存）`;
   });
   $("btnParent").onclick = () => openParentMap();
+  /* 只读态顶栏：图库入口让位给「存入我的图库」——只读页是别人的一张图，读者的图库要先接管才有意义 */
+  effect(() => {
+    const ro = readOnlySig.value;
+    $("btnAdopt").style.display = ro ? "inline-flex" : "none";
+    $("btnHome").style.display = ro ? "none" : "inline-flex";
+  });
+  $("btnAdopt").onclick = () => libActionsSig.peek()?.adoptShared();
   /* 顶栏「复位」（v0.14 btnReset；快捷键 0）：回世界初始视角 */
   const resetView = (): void => {
     const v = (ctx.meta || ({} as Meta)).view || { lon0: 108, lat0: 36, degPerPx0: 0.06 };
@@ -193,7 +201,8 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   });
 
   /* URL 直达分析：#analysis=route|measure&pts=lon,lat,…&arm= */
-  if (dl.wantAnalysis === "measure" || dl.wantAnalysis === "route" || dl.wantAnalysis === "edit") {
+  if ((dl.wantAnalysis === "measure" || dl.wantAnalysis === "route" || dl.wantAnalysis === "edit")
+    && !(dl.wantAnalysis === "edit" && readOnlySig.peek())) {
     setMode(dl.wantAnalysis);
     if (dl.wantAnalysis === "edit" && dl.wantSub) editSubSig.value = dl.wantSub as EditSub;
     if (dl.wantPts && dl.wantPts.length >= 4 && dl.wantPts.every(isFinite)) {

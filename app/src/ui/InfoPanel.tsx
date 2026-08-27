@@ -10,7 +10,7 @@ import { fmtStrength, unitArm, unitFacingAt, unitFireKm, unitFootKm, unitInherit
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm, tget } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
-import { clearOpSel, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
+import { clearOpSel, readOnlySig, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
 import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
@@ -28,8 +28,10 @@ function CardHead({ title }: { title: string }) {
   );
 }
 
-/** 是否显示编辑表单：卡片「编辑」钮随时开（inspEditSig）；编辑模式恒开（旧语义） */
-const editingNow = () => inspEditSig.value || modeSig.value === "edit";
+/** 是否显示编辑表单：卡片「编辑」钮随时开（inspEditSig）；编辑模式恒开（旧语义）。只读态一律卡片 */
+const editingNow = () => !readOnlySig.value && (inspEditSig.value || modeSig.value === "edit");
+/** 卡片上的写入类动作（编辑/删除/生成战术图）：只读态整条不出现——分析类动作照旧 */
+const canWrite = () => !readOnlySig.value;
 
 /** 可靠性胶囊文案（柱B）：确证＝不出胶囊（缺省无须声明），推断/传说才标出 */
 const certLabel = (v: unknown): string | null =>
@@ -133,10 +135,10 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
         {isEv && n.year != null && y !== n.year && (
           <button class="bt gold tr" onClick={() => { yearSig.value = n.year as number; }}>⇢ 跳到{tac ? "当日" : "当年"} {fmtWhen(cal, tac, n.year)}</button>
         )}
-        {isEv && n.tacmap && (
+        {isEv && n.tacmap && canWrite() && (
           <button class="bt tr" title="打开这场战役的战术图（当前图自动保存）" onClick={() => { tacReqSig.value = { type: "open", evId: n.id }; }}>⚔ 打开战术图 {n.tacmap.name ? `· ${n.tacmap.name}` : ""}</button>
         )}
-        {isBattle && !n.tacmap && !tac && (
+        {isBattle && !n.tacmap && !tac && canWrite() && (
           <span style={{ display: "inline-flex", gap: "5px", alignItems: "center" }}>
             <button class="bt tr" title="以此事件为中心生成小范围战场图（地形/地点/派系按当年快照继承）" onClick={() => {
               tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(diaRef.current?.value ?? "") || 60) };
@@ -145,10 +147,10 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
             <span class="sub">km</span>
           </span>
         )}
-        <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑{isEv ? "事件" : isLabel ? "标注" : "地点"}</button>
+        {canWrite() && <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑{isEv ? "事件" : isLabel ? "标注" : "地点"}</button>}
         {!isEv && !isLabel && <button class="bt ghost tr" onClick={setFrom}>⚑ 设为行军起点</button>}
         {!isEv && !isLabel && <button class="bt ghost tr" onClick={setTo}>设为行军终点</button>}
-        <button class="bt danger-ghost tr" onClick={del}>删除{isEv ? "事件" : isLabel ? "标注" : "地点"}</button>
+        {canWrite() && <button class="bt danger-ghost tr" onClick={del}>删除{isEv ? "事件" : isLabel ? "标注" : "地点"}</button>}
       </div>
     </>
   );
@@ -186,8 +188,8 @@ function FactionCard({ f, world }: { f: Faction; world: World }) {
       {typeof f.note === "string" && f.note && <div class="sub" style={{ lineHeight: 1.7 }}>{f.note}</div>}
       <LinkRow target={f.link} />
       <div class="in-actions">
-        <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑派系</button>
-        <button class="bt danger-ghost tr" onClick={del}>删除派系</button>
+        {canWrite() && <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑派系</button>}
+        {canWrite() && <button class="bt danger-ghost tr" onClick={del}>删除派系</button>}
       </div>
     </>
   );
@@ -220,8 +222,8 @@ function EdgeCard({ e, idx, world }: { e: Edge; idx: number; world: World }) {
       </div>
       {typeof e.note === "string" && e.note && <div class="sub" style={{ lineHeight: 1.7 }}>{e.note}</div>}
       <div class="in-actions">
-        <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑连线</button>
-        <button class="bt danger-ghost tr" onClick={del}>删除连线</button>
+        {canWrite() && <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑连线</button>}
+        {canWrite() && <button class="bt danger-ghost tr" onClick={del}>删除连线</button>}
       </div>
     </>
   );
@@ -352,8 +354,8 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
       {typeof u.note === "string" && u.note && <div class="sub" style={{ lineHeight: 1.7 }}>{u.note}</div>}
       {tac && <div class="hint">切到「军」工具（4）后，图上拖<b>右手柄</b>调火力圈、<b>左手柄</b>调视野圈（一次拖动＝一步撤销）</div>}
       <div class="in-actions">
-        <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑部队</button>
-        <button class="bt danger-ghost tr" onClick={del}>删除部队</button>
+        {canWrite() && <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑部队</button>}
+        {canWrite() && <button class="bt danger-ghost tr" onClick={del}>删除部队</button>}
       </div>
     </>
   );
@@ -375,7 +377,7 @@ function DecorCard({ d, world }: { d: Decor; world: World }) {
         <b>坐标</b><span class="num">{d.lon}° · {d.lat}°</span>
         {(d.since != null || d.until != null) && <><b>存在</b><span class="num">{d.since != null ? fmtWhen(cal, tac, d.since) : "远古"} – {d.until != null ? fmtWhen(cal, tac, d.until) : "至今"}</span></>}
       </div>
-      {!isImg && (
+      {!isImg && canWrite() && (
         <>
           <div class="sec" style={{ marginTop: "4px" }}>种类</div>
           <div class="chips">
@@ -385,15 +387,20 @@ function DecorCard({ d, world }: { d: Decor; world: World }) {
           </div>
         </>
       )}
-      <div class="setrow" style={{ marginTop: "6px" }}>
-        <label>大小</label>
-        <input type="range" min={0.5} max={2.5} step={0.1} value={String(size)}
-          onChange={e => patch({ size: +(e.currentTarget as HTMLInputElement).value })} />
-        <span class="num">×{size.toFixed(1)}</span>
-      </div>
-      <div class="hint">图上按住可拖移 · <kbd>Delete</kbd> 删除 · 与生态笔刷落下的印章完全一致</div>
+      {/* 卡片上的种类/大小是内联编辑（不经编辑表单），只读态连同提示一并让位 */}
+      {canWrite()
+        ? <>
+            <div class="setrow" style={{ marginTop: "6px" }}>
+              <label>大小</label>
+              <input type="range" min={0.5} max={2.5} step={0.1} value={String(size)}
+                onChange={e => patch({ size: +(e.currentTarget as HTMLInputElement).value })} />
+              <span class="num">×{size.toFixed(1)}</span>
+            </div>
+            <div class="hint">图上按住可拖移 · <kbd>Delete</kbd> 删除 · 与生态笔刷落下的印章完全一致</div>
+          </>
+        : <div class="kv2"><b>大小</b><span class="num">×{size.toFixed(1)}</span></div>}
       <div class="in-actions">
-        <button class="bt danger-ghost tr" onClick={() => deleteDecorAt(d.id)}>删除布景</button>
+        {canWrite() && <button class="bt danger-ghost tr" onClick={() => deleteDecorAt(d.id)}>删除布景</button>}
       </div>
     </>
   );
@@ -452,7 +459,7 @@ function MultiCard({ nodes, units, decors, world }: { nodes: WorldNode[]; units:
       <div class="hint">点名称查看单个对象 · <kbd>Delete</kbd> 批量删除 · 按住框选成员可整体拖移（部队＝改写当前时刻航点）</div>
       <div class="in-actions">
         <button class="bt ghost tr" onClick={() => { selSig.value = null; }}>清除选择</button>
-        <button class="bt danger-ghost tr" onClick={del}>删除全部 (Del)</button>
+        {canWrite() && <button class="bt danger-ghost tr" onClick={del}>删除全部 (Del)</button>}
       </div>
     </>
   );

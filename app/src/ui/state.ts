@@ -102,6 +102,9 @@ export interface LibActions {
   exportPng(): void;                                    // 设置弹层「出图 PNG」
   exportFrames(): void;                                 // 设置弹层「分帧出图」：逐相位各一张 PNG（战术图）
   resetToSample(): void;                                // 设置弹层「重置为内置示例」
+  copyShareLink(): void;                                // 设置弹层「复制只读链接」：整张图压进 hash
+  exportShareHtml(): void;                              // 设置弹层「导出只读网页」：应用产物 + 内嵌数据
+  adoptShared(): void;                                  // 只读态顶栏「存入我的图库」：接管成可编辑副本
   linkFolder(): void; backToBrowser(): void;
 }
 export const libActionsSig = signal<LibActions | null>(null);
@@ -212,10 +215,21 @@ function syncHistFlags(): void {
    注意 batch 冲刷是「后通知的 effect 先跑」，兄弟 effect 之间没有可依赖的次序——
    顺序敏感的反应已合并进 boot 的编排 effect（meta 同步→网格重建→legs 依内部语句序）。 —— */
 
+/* —— 只读态（分享链接 #ro=1&d= / 导出的只读网页 / 演示投屏）：分析全留，写入全禁。
+   闸设在编辑管线的入口处而非各调用点——UI 门是主路径，这里是不变量：一旦哪个门漏了，
+   数据也不会被改坏，而是当场给一句回执（read-only 却静默不改＝最难排查的那种失败）。 —— */
+export const readOnlySig = signal(false);
+/** 写入被只读态拦下＝真；顺带发回执（UI 门齐备时用户永远见不到它） */
+function roBlocked(): boolean {
+  if (!readOnlySig.peek()) return false;
+  showToast("这是只读分享的地图，未作改动　可先「↓ 存入我的图库」再编辑");
+  return true;
+}
+
 /** 一切编辑的总入口：快照 → 原地改 → 浅拷贝换引用广播。opts.grid=改了地形（须重建网格） */
 export function mutateWorld(fn: (w: World) => void, opts: { grid?: boolean } = {}): void {
   const w = worldSig.peek();
-  if (!w) return;
+  if (!w || roBlocked()) return;
   hist.push(w);
   try {
     fn(w);
@@ -302,13 +316,14 @@ export function deleteFactionAt(id: string, ask: (msg: string) => boolean = askC
 /** 拖动等连续操作：起手 pushHistoryOnce 记一步，随后每帧 mutateWorldLive（不进撤销栈） */
 export function pushHistoryOnce(): void {
   const w = worldSig.peek();
-  if (!w) return;
+  if (!w || roBlocked()) return;
   hist.push(w);
   syncHistFlags();
 }
 export function mutateWorldLive(fn: (w: World) => void | boolean): void {
   const w = worldSig.peek();
-  if (!w) return;
+  // 只读在此静默早退：拖拽/笔刷每帧调它，起手的 pushHistoryOnce 已经给过回执
+  if (!w || readOnlySig.peek()) return;
   if (fn(w) === false) return;   // fn 显式返回 false=本次无实际改动（空笔），不广播、不 editVer++（不触发自动保存）
   batch(() => {
     worldSig.value = { ...w };
@@ -343,13 +358,13 @@ function applyRestored(cur: World, snapshot: World): void {
 }
 export function undoWorld(): void {
   const cur = worldSig.peek();
-  if (!cur) return;
+  if (!cur || roBlocked()) return;
   const s = hist.undo(cur);
   if (s) applyRestored(cur, s);
 }
 export function redoWorld(): void {
   const cur = worldSig.peek();
-  if (!cur) return;
+  if (!cur || roBlocked()) return;
   const s = hist.redo(cur);
   if (s) applyRestored(cur, s);
 }
@@ -403,6 +418,7 @@ export function railToolOf(m: ShellMode, sub: EditSub): RailTool {
 /** 点工具轨/按 1~4：切工具并关「层」、展开抽屉（对齐设计 setTool）。units 由调用方保证仅战术图。
     画线态（opDraw）是临时武装态：任何工具轨操作一律解除——绘↔军同为 edit 模式、setMode 早退不会代劳。 */
 export function setRailTool(t: RailTool): void {
+  if (readOnlySig.peek() && (t === "draw" || t === "units")) return;   // 与 ToolRail 只渲染览/测同源
   batch(() => {
     layersOpenSig.value = false;
     drawerOpenSig.value = true;

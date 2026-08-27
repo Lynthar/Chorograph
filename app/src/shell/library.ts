@@ -16,6 +16,7 @@ import { createTacticalWorld } from "../core/tactical.ts";
 import { contourStepFor } from "../core/elev.ts";
 import { snowEOf } from "../render/material.ts";
 import { safeName, errText } from "../core/util.ts";
+import { SHARED_TAG_ID, embedShareHtml, packShare, shareHash, unpackShare } from "../core/share.ts";
 import { drawLegend } from "../render/legend.ts";
 import { pinnedStackH } from "../render/overlay.ts";
 import { pickBootEntry, planOpen, wantsDeepStart, type OpenSnap } from "./openplan.ts";
@@ -24,7 +25,7 @@ import { calOf, fmtT, fmtWhen } from "../core/calendar.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewSig, libActionsSig,
   playingSig, togglePlay, stopPlay, closeSettings, mutateWorld, pushHistoryOnce, clearOpSel, cancelOpDraw,
   routePtsSig, routeResSig, linkFromSig, unitLegsSig, uiPrefsSig,
-  gridVerSig, editVerSig, showToast, loadStageSig, saveConflictSig, type LibActions }
+  gridVerSig, editVerSig, showToast, loadStageSig, saveConflictSig, readOnlySig, type LibActions }
   from "../ui/state.ts";
 import type { ShellCtx, FolderHandle } from "./ctx.ts";
 import type { DeepLink } from "./deeplink.ts";
@@ -174,6 +175,38 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     const ok = await openMapById(id).catch(() => false);
     showToast(ok ? "已另存为副本　对方的改动原样留在原图"
                  : "副本已建好，但打开失败——请从图库里打开它", { err: !ok });
+  }
+
+  /* ================= 只读分享 ================= */
+  /* 两条入口同一道闸：导出的只读网页把整份 JSON 内嵌在 #sharedWorld 里（无长度限制），
+     分享链接把它压进 #d=（core/share）。两者都是**别人给的数据**，与存档同级不可信。 */
+  async function readShared(): Promise<unknown | null> {
+    const tag = typeof document === "undefined" ? null : document.getElementById(SHARED_TAG_ID);
+    const inline = tag && tag.textContent;
+    if (inline) {
+      try { return JSON.parse(inline); }
+      catch (e) { alert("这份只读网页里的地图数据已损坏：" + errText(e)); return null; }
+    }
+    if (!dl.wantData) return null;
+    try { return JSON.parse(await unpackShare(dl.wantData)); }
+    catch (e) {
+      // 失败要响：不说话的话，用户只会看见「点开分享链接却进了自己的图库」
+      alert(`这条只读分享链接打不开：${errText(e)}\n（链接可能被聊天软件截断——请让对方改发「只读网页」文件）`);
+      return null;
+    }
+  }
+  /** 只读分享直达：校验通过即开图并落只读态（不入库、不自动保存）。返回 false＝按常规启动继续 */
+  async function bootShared(): Promise<boolean> {
+    const raw = await readShared();
+    if (!raw) return false;
+    /* 与 #sample= 同规：只拦 fatal，warning 只进控制台——只读页的读者改不了数据，
+       逐条迁移提示对他毫无用处。 */
+    const v = validateWorld(raw);
+    if (!v.ok) { alert("这份只读分享的数据无法载入：\n" + formatIssues(v.fatal)); return false; }
+    if (v.warnings.length) console.warn(`只读分享有 ${v.warnings.length} 条数据提示：\n` + formatIssues(v.warnings));
+    setWorld(raw, null, null);
+    readOnlySig.value = true;
+    return true;
   }
 
   async function fetchSample(file: string): Promise<SampleWorld | null> {
@@ -533,6 +566,58 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     async newFromSample() {
       await importWorld(sampleWorld(), "内置示例");
     },
+    /* 只读分享链接：整张图压进 hash，对方点开即看——不经服务端，也不留副本在任何地方。
+       视角/纪年/选中一并带上，让对方看到的正是你现在看到的这一眼。 */
+    async copyShareLink() {
+      const w = worldSig.peek();
+      if (!w) return;
+      let url: string;
+      try {
+        const sel = selSig.peek();
+        url = location.href.replace(/#.*$/, "") + shareHash(await packShare(JSON.stringify(w)), {
+          lon: ctx.view.lon0, lat: ctx.view.lat0, z: ctx.view.degPerPx, year: yearSig.peek(),
+          sel: sel && sel.kind === "node" ? sel.id : null
+        });
+      } catch (e) { showToast("生成只读链接失败：" + errText(e), { err: true }); return; }
+      const kb = Math.round(url.length / 1024);
+      /* 8000 字符是「多数聊天软件不截断」的经验线，不是浏览器上限（Chrome 能吃到 MB 级）。
+         超线仍复制——截不截断由对方的软件说了算，我们只把风险和出路说清楚。 */
+      const long = url.length > 8000 ? `　⚠ 链接较长（约 ${kb} KB），部分聊天软件会截断——大图建议用「📄 导出只读网页」` : "";
+      try { await navigator.clipboard.writeText(url); showToast("已复制只读链接" + long); }
+      catch (e) { prompt("复制这条只读链接：", url); }   // 非安全上下文（file://）没有剪贴板权限
+    },
+    /* 只读网页：应用产物 + 内嵌整份数据，双击即看、不需要联网也不需要图库。
+       取自身产物只能靠 fetch(location.href)——离线单文件（file://）取不到，如实说明另找出路。 */
+    async exportShareHtml() {
+      const w = worldSig.peek();
+      if (!w) return;
+      if (import.meta.env.DEV) { showToast("dev 页面不是自包含产物，导出的网页离开 dev 服务就打不开", { err: true }); return; }
+      try {
+        const r = await fetch(location.href, { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const html = embedShareHtml(await r.text(), JSON.stringify(w));
+        downloadBlob(safeName(ctx.meta.名称 || "world") + "-只读.html", new Blob([html], { type: "text/html;charset=utf-8" }));
+        showToast("已导出只读网页　双击即看，不需要联网");
+      } catch (e) {
+        showToast(`导出只读网页失败：${errText(e)}（离线单文件下取不到自身——请用在线版导出，或改发「💾 导出 JSON」）`, { err: true });
+      }
+    },
+    /* 只读页「↓ 存入我的图库」：数据本就在读者手里，接管成自己的可编辑副本走与导入同一道闸。
+       ⚠ 先解只读再入库——importWorld 末尾要开图，开图路径上有编辑态的落地。 */
+    async adoptShared() {
+      const w = worldSig.peek();
+      if (!w) return;
+      if (!ctx.lib) { showToast("图库不可用，存不进去——可先「💾 导出 JSON」留一份", { err: true }); return; }
+      const nm = ctx.meta.名称 || "分享地图";
+      readOnlySig.value = false;
+      /* 清掉 #d=/#ro=：否则刷新一下又回到只读的那一份，用户会以为自己的副本没存上。
+         history 不可用（罕见的嵌入环境）不该拦下入库，故单独 try。 */
+      try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
+      dl.wantData = null; dl.wantRo = false;
+      await importWorld(JSON.parse(JSON.stringify(w)), nm);
+      if (!ctx.mapId) { readOnlySig.value = true; return; }   // 入库失败（已 alert 过）：退回只读，别留个假的可编辑态
+      showToast(`已存入图库「${nm}」　现在可以编辑了`);
+    },
     async linkFolder() {
       if (!fsSupported()) return;
       if (!(await leaveCurrent())) return;   // 换库＝mapId 作废，之后当前图再也存不进去——脏着不许静默切
@@ -620,12 +705,15 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       try { ctx.fcache = (await ctx.lib.kvGet<FolderCacheState>("foldercache")) || {}; }
       catch (e) { console.warn("文件夹缓存读取失败（按空缓存继续）：", e); ctx.fcache = {}; }
     }
+    if (ctx.lib) await tryFolderBoot();
+    /* 只读分享排在开图分流之前：它自带数据，图库开不开得了都能看（读者常常压根没有图库）。
+       ≠ 排在 tryFolderBoot 之前：否则文件夹图库的读者点「存入我的图库」会落进浏览器库——存到了别处。 */
+    if (await bootShared()) return;
     if (!ctx.lib) {
       const s = dl.wantSample ? await fetchSample(dl.wantSample) : null;
       if (s) setWorld(s, null, null); else host.rebuild();
       return;
     }
-    await tryFolderBoot();
     if (dl.wantSample && await bootSample(dl.wantSample)) return;   // 指定夹具优先
     let entries = await listMaps();
     /* v0.14 启动语义：URL 深链直达地图，否则进开始界面（判定与选图规则在 openplan，测试锁定） */

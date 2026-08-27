@@ -16,7 +16,7 @@ import { dataLon } from "../ui/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig,
-  routePtsSig, routeResSig, unitLegsSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig }
+  routePtsSig, routeResSig, unitLegsSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, readOnlySig }
   from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -146,7 +146,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       bs ? bs.x1 : -1, bs ? bs.y1 : -1, bs ? bs.moved : false,
       // 顶栏保存态文案的来源（同样不是 signal，漏了就会「已保存」迟迟不上屏）
       autosave.pending, ctx.savedAt, ctx.saveErr, ctx.bootNote, ctx.mapId, ctx.source, ctx.lib,
-      saveConflictSig.value, erodePhaseSig.value
+      saveConflictSig.value, erodePhaseSig.value, readOnlySig.value
     ];
   };
   const changed = (a: unknown[], b: unknown[]): boolean => a.length !== b.length || a.some((x, i) => x !== b[i]);
@@ -178,7 +178,10 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       : ep === "work" ? "⛰ 地势定形中… · " : ep === "ultra" ? "⛰ 地势精修中… · " : ep === "done" ? "✓ 地势已定形 · " : "";
     /* ⚠ 冲突自成一档，不能并进「自动保存失败」那句——那句尾巴写着「随下次改动重试」，
        而冲突态恰恰**不会**重试（守卫短路着，等用户在弹层里决断），并进去就是在说假话。 */
-    const ftTxt = epTxt + (saveConflictSig.value
+    const ftTxt = epTxt + (readOnlySig.value
+      // 只读态压过一切保存文案：这张图不入库，说「已自动保存」或「未保存」都是答非所问
+      ? "👁 只读分享 · 不写入图库"
+      : saveConflictSig.value
       ? "⚠ 保存已暂停——这张图在别处被改过，请在弹层中选择处置"
       : ctx.saveErr
       /* ⚠ 走 errText 而非直读 .message：真配额下 QuotaExceededError 的 message 是空串，
@@ -191,8 +194,8 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     if (ftTxt !== lastFtData) {
       lastFtData = ftTxt;
       $("ftData").textContent = ftTxt;
-      $("savest").classList.toggle("dirty", !!(ctx.saveErr || autosave.pending));
-      $("savest").title = `数据：${srcLabel}`;
+      $("savest").classList.toggle("dirty", !readOnlySig.value && !!(ctx.saveErr || autosave.pending));
+      $("savest").title = readOnlySig.value ? "数据：别人分享来的只读地图（可「↓ 存入我的图库」后编辑）" : `数据：${srcLabel}`;
     }
     const sel = selSig.value, hover = hoverSig.value;
     const selN = selNode(world, sel), selE = selEdge(world, sel), selU = selUnit(world, sel);

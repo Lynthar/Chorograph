@@ -1,4 +1,5 @@
 /* URL 直达（深链）解析：#map=&preset=&sel=&year=&lon=&lat=&z=&seed=&style=&force=cpu&lib=1&hold=ms
+   只读分享：#ro=1&d=<base64url 压缩的整张图>（core/share 编解码，链接自带数据、不需服务端）
    分析/编辑：#mode=measure|route|edit&sub=select|add|link|paint|terrain|decor|label|delete&pts=lon,lat,…&arm=&op=作战线序号&multi=名称1,名称2
 
    分两层（同 openplan 之例）：**parseHash 是纯函数**（hash 串 → DeepLink，可测），
@@ -38,6 +39,10 @@ export interface DeepLink {
   wantDrawer: string | null;
   /** #grain=hour｜month：直开细粒度（战术＝时轨展开、战略＝月档；截图/分享精确时刻用，增） */
   wantGrain: string | null;
+  /** #d=<base64url>：分享链接自带的整张图（deflate-raw 压缩，core/share 解包） */
+  wantData: string | null;
+  /** #ro=1：把本机图开成只读（演示/投屏）。带数据的分享不看它——那两条恒只读 */
+  wantRo: boolean;
   force: "cpu" | "webgl2" | undefined;
   /* —— 以下由 parseDeepLink 即时落地（ctx.meta / 信号 / DOM），纯函数只负责解析出来 —— */
   /** 程序化地形种子（ctx.meta.genSeed 是唯一真源） */
@@ -67,6 +72,7 @@ export function parseHash(hash: string): DeepLink {
     wantPreset: null, wantSel: null, wantMap: null, wantLib: false, urlView: false, urlYear: false,
     wantAnalysis: null, wantPts: null, wantSub: null, wantOp: null, wantMulti: null,
     wantSample: null, wantGenTac: null, wantDia: null, wantOvl: null, wantDrawer: null, wantGrain: null,
+    wantData: null, wantRo: false,
     force: undefined, seed: null, style: null, year: null, lon: null, lat: null, z: null, arm: null, hold: null
   };
   const dec = (s: string): string => { try { return decodeURIComponent(s); } catch { return s; } };  // 坏 %编码（分享链接被截断/含裸 %）不致启动崩溃
@@ -84,6 +90,8 @@ export function parseHash(hash: string): DeepLink {
     if (k === "sample") dl.wantSample = dec(v);   // 从仓库根 fetch 指定 .json 建/开（战术夹具/演示）
     if (k === "gentac") dl.wantGenTac = dec(v);   // 从战役事件名/id 生成战术图（无头，绕过 prompt）
     if (k === "dia" && v !== "") dl.wantDia = num(v);            // 战场直径 km（配合 #gentac）
+    if (k === "d" && v !== "") dl.wantData = v;   // 分享载荷：base64url 不含 & 与 =，无须解码
+    if (k === "ro") dl.wantRo = v !== "0";       // 只读态（只管 #map= 开本机图那条；带数据的分享恒只读）
     if (k === "lib") dl.wantLib = true;   // 启动即进开始界面（截图/演示用）
     if (k === "ovl") dl.wantOvl = oneOf(OVLS, v);         // help|settings|create：启动即开对应弹层（截图/演示用）
     if (k === "drawer") dl.wantDrawer = oneOf(DRAWERS, v);   // layers：启动即开抽屉「层」面（截图/演示用）

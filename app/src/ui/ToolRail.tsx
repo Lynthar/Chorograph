@@ -3,7 +3,7 @@
    朱=活动工具（三色分权：金不作选中、朱不作悬停）。
    图标：单色剪影内联 SVG（24 视框，fill:currentColor→随按钮 dim/hover/朱 自动变色，发行单文件内联）。
    眼睛=览、两脚规=测、毛笔=绘、军旗=军、三叠图页=层。 */
-import { drawerOpenSig, editSubSig, layersOpenSig, modeSig, railToolOf, setRailTool, type RailTool } from "./state.ts";
+import { drawerOpenSig, editSubSig, layersOpenSig, modeSig, railToolOf, readOnlySig, setRailTool, type RailTool } from "./state.ts";
 
 type IconName = RailTool | "layers";
 
@@ -56,9 +56,11 @@ const TOOLS: { t: RailTool; lab: string; kbd: string; tip: string }[] = [
 export function ToolRail() {
   const active = railToolOf(modeSig.value, editSubSig.value);
   const layersOn = layersOpenSig.value;
+  // 只读（分享/演示）：绘与军整条不出现——与 setRailTool 的同名门同源，快捷键 3/4 也按不出来
+  const tools = readOnlySig.value ? TOOLS.filter(x => x.t === "browse" || x.t === "measure") : TOOLS;
   return (
     <nav class="rail" aria-label="工具">
-      {TOOLS.map(({ t, lab, kbd, tip }) => (
+      {tools.map(({ t, lab, kbd, tip }) => (
         /* 部队工具两种图都可用（2026-07-31）：战略图摆基础部队、战术图摆全套兵棋 */
         <button key={t} class="rl tr"
           aria-pressed={!layersOn && active === t} aria-label={lab}
