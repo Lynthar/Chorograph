@@ -51,7 +51,8 @@ const wsUrl = await new Promise((res, rej) => {
   let buf = "";
   br.stderr.on("data", d => { buf += d; const m = buf.match(/DevTools listening on (ws:\/\/\S+)/); if (m) res(m[1]); });
   br.on("exit", () => rej(new Error("浏览器未启动（" + bin + "）")));
-  setTimeout(() => rej(new Error("等 DevTools 端口超时")), 20_000);
+  // 60s 而非 20s：CI 冷 runner 上浏览器首启动曾偷偷超过 20s，红的是机器不是产品
+  setTimeout(() => rej(new Error("等 DevTools 端口超时")), 60_000);
 }).catch(e => fail(e.message));
 
 /* —— CDP：直接连浏览器端点，再 attach 首个 page target（flatten 会话） —— */

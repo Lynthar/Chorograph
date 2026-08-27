@@ -17,6 +17,7 @@ import { HelpOverlay } from "./HelpOverlay.tsx";
 import { SettingsOverlay } from "./SettingsOverlay.tsx";
 import { SaveConflictOverlay } from "./SaveConflictOverlay.tsx";
 import { CalendarOverlay } from "./CalendarOverlay.tsx";
+import { GeoImportOverlay } from "./GeoImportOverlay.tsx";
 
 export function mountUI(): void {
   const rail = document.getElementById("railMount");
@@ -42,5 +43,5 @@ export function mountUI(): void {
   const hm = document.getElementById("homeMount");
   if (hm) render(<HomePanel />, hm);
   const ovl = document.getElementById("ovlMount");
-  if (ovl) render(<><HelpOverlay /><SettingsOverlay /><SaveConflictOverlay /><CalendarOverlay /></>, ovl);
+  if (ovl) render(<><HelpOverlay /><SettingsOverlay /><SaveConflictOverlay /><CalendarOverlay /><GeoImportOverlay /></>, ovl);
 }

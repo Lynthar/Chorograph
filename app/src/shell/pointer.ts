@@ -18,7 +18,7 @@ import { fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStrengthAt } from
 import { pickDecor, decorIdsInRadius, decorsInBox, ecoForeignIdsInDisc } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit, selMembers,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
-  inspEditSig, settingsSig, closeSettings, helpOpenSig, calOverlaySig, saveConflictSig, togglePlay, stopPlay,
+  inspEditSig, settingsSig, closeSettings, helpOpenSig, calOverlaySig, geoImportSig, saveConflictSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
   addTypeSig, paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, decorEraseSig, eraNewSig, heightStepMSig,
@@ -903,7 +903,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     /* ⌘K / Ctrl+K：聚焦顶栏搜索框。
        须在输入框守卫之前（正在打字也能召唤）；弹层/图库打开时让位（焦点别落进被盖住的顶栏）。 */
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "k" || e.key === "K")
-      && !settingsSig.peek() && !helpOpenSig.peek() && !calOverlaySig.peek() && !saveConflictSig.peek() && !ctx.libOpen) {
+      && !settingsSig.peek() && !helpOpenSig.peek() && !calOverlaySig.peek() && !geoImportSig.peek() && !saveConflictSig.peek() && !ctx.libOpen) {
       e.preventDefault();
       const sb = document.getElementById("searchBox") as HTMLInputElement | null;
       if (sb) { sb.focus(); sb.select(); }
@@ -920,6 +920,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (saveConflictSig.peek()) return;
     if (settingsSig.peek()) { if (e.key === "Escape") closeSettings(); return; }
     if (calOverlaySig.peek()) { if (e.key === "Escape") calOverlaySig.value = false; return; }
+    if (geoImportSig.peek()) { if (e.key === "Escape") geoImportSig.value = null; return; }
     if (helpOpenSig.peek()) { if (e.key === "Escape" || e.key === "?") helpOpenSig.value = false; return; }
     if (ctx.libOpen) {   // 开始界面可见：屏蔽地图快捷键；Esc=回当前图（v0.14 homeVisible 分支）
       if (e.key === "Escape" && ctx.mapId) hideHome();

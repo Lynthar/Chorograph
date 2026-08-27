@@ -14,6 +14,7 @@ export function HomePanel() {
   const v = libViewSig.value;
   const acts = libActionsSig.value;
   const fileRef = useRef<HTMLInputElement>(null);
+  const geoRef = useRef<HTMLInputElement>(null);
   if (!v.open) return null;
   return (
     <div id="home" style={{ display: "block" }}>
@@ -27,11 +28,20 @@ export function HomePanel() {
         <div class="hm-actions">
           <button type="button" class="hm-new" onClick={() => openSettings("create")}>🆕 新建地图</button>
           <button type="button" class="tbtn" title="选择一个导出过的 .json，作为一张新地图加入图库" onClick={() => fileRef.current?.click()}>📂 导入 JSON 为新图</button>
+          <button type="button" class="tbtn" title="导入 GeoJSON：点落成地点、线落成连线、面落成派系涂域或边界；可新建一张图，也可并入当前地图" onClick={() => geoRef.current?.click()}>🗺 导入 GeoJSON</button>
           <button type="button" class="tbtn" title="以内置示例大陆新开一张地图" onClick={() => acts?.newFromSample()}>📜 从内置示例新建</button>
           <button type="button" class="tbtn" title="自定义架空历法（月名/月长/每日时数）并命名存下，新建地图时可直接选用" onClick={() => { calOverlaySig.value = true; }}>📅 历法</button>
           {v.fsSupported && v.source !== "folder" && (
             <button type="button" class="tbtn" title="链接一个本地文件夹作为图库，直接读写其中的 .json（需 Edge/Chrome 经 localhost 或 https）" onClick={() => acts?.linkFolder()}>📁 链接文件夹</button>
           )}
+          {/* GeoJSON 一次只收一个：字段映射弹层是逐文件一份，多选会排出一串弹层 */}
+          <input ref={geoRef} type="file" accept=".geojson,.json,application/geo+json,application/json" style={{ display: "none" }}
+            onChange={e => {
+              const el = e.currentTarget as HTMLInputElement;
+              const f = el.files && el.files[0];
+              el.value = "";
+              if (f) acts?.importGeoFile(f, "lib");
+            }} />
           <input ref={fileRef} type="file" accept="application/json" multiple style={{ display: "none" }}
             onChange={e => {
               const el = e.currentTarget as HTMLInputElement;
@@ -73,11 +83,21 @@ export function HomePanel() {
               </article>
             );
           })}
-          {!v.entries.length && (
-            <div class="hm-empty">{v.source === "folder"
-              ? <>文件夹 <b>{v.folderName}</b> 里还没有地图。<br />点「🆕 新建地图」在此创建一张，或把导出的 .json 放进这个文件夹。</>
-              : <>图库还是空的。<br />点上方「🆕 新建地图」开一张，或「📜 从内置示例新建」看看样例。</>}</div>
-          )}
+          {!v.entries.length && (v.source === "folder"
+            ? <div class="hm-empty">文件夹 <b>{v.folderName}</b> 里还没有地图。<br />点「🆕 新建地图」在此创建一张，或把导出的 .json 放进这个文件夹。</div>
+            /* 首启二选一：图库为空＝首次到访（删光地图后重现属合理），给两张大卡代替空态小字 */
+            : <div class="hm-choice">
+                <button type="button" class="hc" onClick={() => acts?.newFromSample()}>
+                  <span class="ic">📜</span>
+                  <span class="t">打开示例地图</span>
+                  <span class="s">一张内置示例大陆，存入图库后直接打开——四处看看、随意改动</span>
+                </button>
+                <button type="button" class="hc" onClick={() => openSettings("create")}>
+                  <span class="ic">🆕</span>
+                  <span class="t">新建地图</span>
+                  <span class="s">从头定世界尺寸、纪年历法与地形起伏，开一张自己的图</span>
+                </button>
+              </div>)}
         </div>
         <div class="hm-foot">默认图库存在<b>此浏览器的本地存储</b>里（每张独立自动存档，打开即回到上次视角与纪年）；也可<b>「📁 链接文件夹」</b>把地图当作真正的 <b>.json 文件</b>直接读写、随其它软件/网盘管理。
           浏览器存档在换电脑/清数据前请用 ⚙ 设置「💾 导出 JSON」逐图备份；删除不可恢复。</div>

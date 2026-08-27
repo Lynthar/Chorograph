@@ -40,6 +40,7 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
   const box = useRef<HTMLDivElement>(null);
   useModalFocus(box);   // 卡片按 key={token} 每次打开重挂＝进场收焦点、关闭时还原（父件 st 为 null 时整件卸载）
   const fileRef = useRef<HTMLInputElement>(null);
+  const geoRef = useRef<HTMLInputElement>(null);
   /* 地形初稿联动（对齐旧 syncTerrDraftUI）：仅 auto 显示生成参数行；旧初稿只有正用时显形。
      ⚠ 未知/旧 id（如改名前的示例大陆）一律归 "sample"＝与 seedTerrain 的兜底分派同判——
      否则四个单选无一命中，readSettings 落回 "auto"，「打开设置只调起伏点应用」就把整块大陆
@@ -313,6 +314,15 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         <label><input type="checkbox" checked={uiP.legend !== false}
           onChange={e => setUiPrefs({ legend: (e.currentTarget as HTMLInputElement).checked })} /> 战术图导出附图例块（派系·兵种·状态，右下角）</label>
       </div>
+      <div class="setrow"><label>出图清晰度</label>
+        <div class="seg">
+          {[1, 2, 3, 4].map(n => (
+            <button type="button" class={"tbtn" + (uiP.exportScale === n ? " on" : "")} aria-pressed={uiP.exportScale === n}
+              title={n === 1 ? "按屏幕原样导出" : `像素密度放大 ${n} 倍导出（取景不变；PNG 记录物理尺寸，打印大小恒等于屏上所见）`}
+              onClick={() => setUiPrefs({ exportScale: n })}>{n === 1 ? "×1 屏幕" : n === 4 ? "×4 印刷" : `×${n}`}</button>
+          ))}
+        </div>
+      </div>
     </>
   );
   /* 只读（分享/演示）：世界参数与一切写入动作整块让位，只留界面偏好 + 导出/出图/转发分享 */
@@ -469,7 +479,17 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
             <button type="button" class="tbtn" title="导出一个自包含的只读网页：双击即看，不需要联网，也不受链接长度限制" onClick={() => acts?.exportShareHtml()}>📄 导出只读网页</button>
             <button type="button" class="tbtn" title="把当前视图导出为 PNG 图片" onClick={() => acts?.exportPng()}>📷 出图 PNG</button>
             {isTacSig.value && <button type="button" class="tbtn" title="按「览 → 相位」清单逐相位各出一张 PNG（当前视角与图层；浏览器会请求一次连续下载授权）" onClick={() => acts?.exportFrames()}>🎞 分帧出图</button>}
+            {!ro && <button type="button" class="tbtn" title="导入 GeoJSON 并入当前地图：点落成地点、线落成连线、面落成派系涂域或边界（算一步撤销）" onClick={() => geoRef.current?.click()}>🗺 导入 GeoJSON</button>}
             {!ro && <button type="button" class="tbtn" title="把当前地图内容重置为内置示例数据（可撤销）" onClick={() => acts?.resetToSample()}>↺ 重置为内置示例</button>}
+            <input ref={geoRef} type="file" accept=".geojson,.json,application/geo+json,application/json" style={{ display: "none" }}
+              onChange={e => {
+                const el = e.currentTarget as HTMLInputElement;
+                const f = el.files && el.files[0];
+                el.value = "";
+                if (!f) return;
+                acts?.importGeoFile(f, "map");
+                closeSettings();
+              }} />
             <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }}
               onChange={async e => {
                 const el = e.currentTarget as HTMLInputElement;

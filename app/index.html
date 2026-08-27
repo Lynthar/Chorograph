@@ -140,6 +140,18 @@
   .mc-del:hover{ background:#b0202a; color:#fff; }
   .hm-empty{ grid-column:1/-1; text-align:center; color:#9fb0c8; line-height:2.2;
     padding:72px 0; border:1.5px dashed #47506a; border-radius:10px; }
+  /* 首启二选一（浏览器图库为空时替代空态小字）：示例 / 新建 两张大卡 */
+  .hm-choice{ grid-column:1/-1; display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,330px));
+    justify-content:center; gap:22px; padding:48px 0 36px; }
+  .hm-choice .hc{ cursor:pointer; text-align:center; padding:32px 24px 28px; border:1.5px solid #47506a;
+    border-radius:12px; background:#222a3c; color:#cdd6e6; font:inherit;
+    transition:transform .13s ease, border-color .13s ease, box-shadow .13s ease; }
+  .hm-choice .hc:hover{ transform:translateY(-3px); border-color:var(--gold);
+    box-shadow:inset 0 0 0 1px rgba(202,164,90,.35), 0 12px 26px rgba(0,0,0,.5); }
+  .hm-choice .hc:focus-visible{ outline:2px solid var(--gold); outline-offset:2px; }
+  .hc .ic{ display:block; font-size:42px; line-height:1; }
+  .hc .t{ display:block; font-size:18px; font-weight:bold; color:#e6ecf7; margin-top:12px; letter-spacing:2px; }
+  .hc .s{ display:block; font-size:13px; color:#8fa0b8; margin-top:9px; line-height:1.8; }
   .hm-foot{ margin-top:28px; font-size:12.5px; color:#8fa0b8; line-height:1.7;
     border-top:1px dashed #47506a; padding-top:12px; }
   .hm-foot b{ color:#c8b070; }

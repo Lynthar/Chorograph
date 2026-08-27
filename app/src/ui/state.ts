@@ -13,6 +13,7 @@ import { normalizeWorld } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
 import { removeDecor, removeEdgeAt, removeFaction, removeNode, removeUnit } from "./editops.ts";
 import type { CalTemplate } from "../data/calstore.ts";
+import type { GeoMapping, GeoScan } from "../core/geojson.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Arm, Decor, Edge, Faction, Meta, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
@@ -97,6 +98,7 @@ export const libViewSig = signal<LibView>({ available: false, open: false, sourc
 export interface LibActions {
   toggle(): void; open(id: string): void; remove(id: string): void;
   importFiles(files: File[]): void; exportCurrent(): void; newFromSample(): void;
+  importGeoFile(file: File, from: "lib" | "map"): void;   // 「导入 GeoJSON」：扫描后开弹层定映射，再落成新图或并入当前图
   createWorld(w: World): void;                          // 设置弹层「创建此地图」→ 入库并打开
   replaceCurrent(json: unknown, srcName: string): void; // 设置弹层「导入 JSON」→ 替换当前图内容（可撤销）
   exportPng(): void;                                    // 设置弹层「出图 PNG」
@@ -137,6 +139,17 @@ export const helpOpenSig = signal(false);
 /* 历法弹层与本机模板（2026-08-19）：模板是建图时的模具，存 localStorage，见 data/calstore 头注 */
 export const calOverlaySig = signal(false);
 export const calTemplatesSig = signal<CalTemplate[]>([]);
+/* GeoJSON 导入弹层：扫描结果与字段映射在弹层里定，转换与入库全留外壳。
+   外部历史地理数据多禁再分发——只在本机转换，一个字节都不进仓库。 */
+export interface GeoImportReq {
+  srcName: string;
+  scan: GeoScan;
+  canMerge: boolean;                 // 有打开的图、且不是只读态
+  curName: string;
+  defaultTarget: "new" | "merge";
+  onApply(map: GeoMapping, target: "new" | "merge"): void;
+}
+export const geoImportSig = signal<GeoImportReq | null>(null);
 export type SettingsMode = "app" | "create";
 /** token 每次打开 +1：设置卡以其为 key 整体重挂，实现旧版 fillSettings 的「每次打开重灌表单」。
     from＝create 模式的预填参数（「以此参数新建」带当前图 meta 换到创建分支;2026-08-13 冻结批） */
@@ -461,10 +474,11 @@ export function pickLinkType(tp: Edge["type"]): void {
   batch(() => { linkTypeSig.value = tp; revealLayersFor("link"); });
 }
 
-/* —— 界面偏好：主题（亮·素笺默认/暗·漆）×密度（浏览·松/兵棋·紧）两轴 + 出图图例开关。
-   本机 localStorage 持久化、不入存档；boot 读写存储并把 data-theme/data-den 落到 #app。 —— */
-export interface UiPrefs { theme: "light" | "dark"; den: "loose" | "tight"; legend: boolean }
-export const uiPrefsSig = signal<UiPrefs>({ theme: "light", den: "loose", legend: true });
+/* —— 界面偏好：主题（亮·素笺默认/暗·漆）×密度（浏览·松/兵棋·紧）两轴 + 出图图例开关
+   + 出图清晰度（像素密度倍数 1–4，取景不变）。本机 localStorage 持久化、不入存档；
+   boot 读写存储并把 data-theme/data-den 落到 #app。 —— */
+export interface UiPrefs { theme: "light" | "dark"; den: "loose" | "tight"; legend: boolean; exportScale: number }
+export const uiPrefsSig = signal<UiPrefs>({ theme: "light", den: "loose", legend: true, exportScale: 1 });
 export function setUiPrefs(p: Partial<UiPrefs>): void { uiPrefsSig.value = { ...uiPrefsSig.peek(), ...p }; }
 
 /* —— toast：一次提交＝一步撤销的确认回执。错误一律朱、撤销键金（时间倒回语义）；

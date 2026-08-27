@@ -19,6 +19,8 @@ export interface TerrainRenderer {
       缺省=按 ELEV[类型] 示意常数合成粗格，旧行为） */
   uploadGrid(grid: Grid, field?: ElevField): void;
   render(viewBB: BBox, opts?: TerrainRenderOpts): void;
+  /** 单帧可渲染的最大画布边长 px（高清出图按此钳倍数；超限 GL 会静默给黑帧或裁切） */
+  maxDim(): number;
   rendererName(): string;
   dispose(): void;
 }

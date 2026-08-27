@@ -460,6 +460,10 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.uniform1f(U("uSnowE"), opts.snowE ?? 1e9);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },
+    maxDim() {
+      const vp = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array;
+      return Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) as number, vp[0], vp[1]);
+    },
     rendererName() {
       const ext = gl.getExtension("WEBGL_debug_renderer_info");
       return (ext && (gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string)) || (gl.getParameter(gl.RENDERER) as string) || "WebGL2";

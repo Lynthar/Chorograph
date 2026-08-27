@@ -9,13 +9,17 @@ import { migrateFromLocalStorage, migrateFolderHandle } from "../data/migrate.ts
 import { fsSupported, folderList, folderReadWorldAt, folderWriteWorld, folderCreate, folderRemove, folderMtime, fcachePatch, fcacheRemove }
   from "../data/folder.ts";
 import { isStaleError, staleError, type StaleInfo } from "../data/guard.ts";
-import { countsOf, normalizeWorld } from "../core/world.ts";
+import { blankWorld, clampWorldBBox, countsOf, normalizeWorld } from "../core/world.ts";
+import { convertGeoJSON, GEO_CAPS, padBBox, scanGeoJSON, type GeoMapping, type GeoResult, type GeoScan } from "../core/geojson.ts";
+import { paintStep } from "../core/territory.ts";
+import { FAC_PALETTE } from "../ui/editops.ts";
 import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import { contourStepFor } from "../core/elev.ts";
 import { snowEOf } from "../render/material.ts";
 import { safeName, errText } from "../core/util.ts";
+import { exportScaleFit, pngSetDpi } from "../core/png.ts";
 import { SHARED_TAG_ID, embedShareHtml, packShare, shareHash, unpackShare } from "../core/share.ts";
 import { drawLegend } from "../render/legend.ts";
 import { pinnedStackH } from "../render/overlay.ts";
@@ -25,12 +29,13 @@ import { calOf, fmtT, fmtWhen } from "../core/calendar.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewSig, libActionsSig,
   playingSig, togglePlay, stopPlay, closeSettings, mutateWorld, pushHistoryOnce, clearOpSel, cancelOpDraw,
   routePtsSig, routeResSig, linkFromSig, unitLegsSig, uiPrefsSig,
-  gridVerSig, editVerSig, showToast, loadStageSig, saveConflictSig, readOnlySig, type LibActions }
+  gridVerSig, editVerSig, showToast, loadStageSig, saveConflictSig, readOnlySig, geoImportSig, type LibActions }
   from "../ui/state.ts";
 import type { ShellCtx, FolderHandle } from "./ctx.ts";
 import type { DeepLink } from "./deeplink.ts";
 import type { Host } from "./host.ts";
-import type { Meta, World, WorldNode } from "../core/types.ts";
+import { DEFAULT_BBOX } from "../core/types.ts";
+import type { BBox, Meta, World, WorldNode } from "../core/types.ts";
 import type { MapEntry } from "../data/library.ts";
 import type { FolderMapEntry } from "../data/folder.ts";
 
@@ -79,7 +84,13 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   if (bc) bc.onmessage = e => tabs.receive(e.data);
   const autosave = createAutosave(async () => {
     const w = worldSig.peek();
-    if (!ctx.lib || !ctx.mapId || !w) return;
+    /* 这三种本就没有落盘一说，返回不算谎报：没开图＝无事可存；图库打不开与只读分享图
+       都从不置 savedAt，底栏落到来源名（「内置示例（只读）」/「👁 只读分享」）而非「已自动保存」。 */
+    if (!w || !ctx.lib || readOnlySig.peek()) return;
+    /* 孤图：切库或删掉当前图后 mapId 作废，而这张图还在内存里。⚠ 同下面冲突分支之规，
+       只能抛不能 return——return＝pending 归零＝底栏回落旧「已自动保存」，且 leaveCurrent 只认
+       pending，会把之后的改动当没脏一并换掉。现下被图库面板关住而看不见，但不变量得先立着。 */
+    if (!ctx.mapId) throw new Error("这张地图已不在当前图库里");
     /* 未决冲突：不再撞库（每 600ms 白跑一次往返没意义）。⚠ 只能抛不能 return——
        return＝pending 归零＝顶栏谎报「已自动保存」，而改动其实还困在内存里。 */
     const pend = saveConflictSig.peek();
@@ -380,6 +391,87 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     }
   }
 
+  /* ================= GeoJSON 导入 ================= */
+  /* 点→地点 · 线→连线 · 面→涂域与/或边界折线。扫描完先开弹层定字段映射，
+     再按落点分两条路：新建一张图走 importWorld，并入当前图走 mutateWorld＝一步撤销。
+     ⚠ 数据只在本机转换——外部历史地理数据多禁再分发，一个字节都不进图库以外的地方。 */
+  function applyGeo(w: World, r: GeoResult): void {
+    // 逐个 push 不用展开传参：六万个要素铺成实参会撞调用栈上限
+    for (const n of r.nodes) w.nodes.push(n);
+    for (const e of r.edges) w.edges.push(e);
+    for (const f of r.newFactions) w.factions.push(f);
+    for (const p of r.paintAdd) {
+      const f = w.factions.find(x => String(x.id) === p.fid);
+      if (f) f.paint = (f.paint || []).concat(p.layers);
+    }
+  }
+  /* 回执要报实得数量：静默导进去零个，比报错更难查。提示多行不适合 toast，详情留控制台。 */
+  function geoReceipt(r: GeoResult, srcName: string): void {
+    const layers = r.paintAdd.reduce((a, p) => a + p.layers.length, 0);
+    const parts: string[] = [];
+    if (r.nodes.length) parts.push(`${r.nodes.length} 个地点`);
+    if (r.edges.length) parts.push(`${r.edges.length} 条连线`);
+    if (layers) parts.push(`${layers} 层涂域`);
+    if (r.notes.length) console.warn(`导入「${srcName}」的提示：\n` + r.notes.join("\n"));
+    if (!parts.length) { showToast(`「${srcName}」没有导入任何内容　详情见浏览器控制台`, { err: true }); return; }
+    showToast(`已导入 ${parts.join("、")}` + (r.notes.length ? `　⚠ ${r.notes.length} 条提示见控制台` : ""));
+  }
+
+  async function newMapFromGeo(scan: GeoScan, map: GeoMapping, srcName: string): Promise<void> {
+    /* 地形留白（不是 auto）：真实地理数据底下再摇一张程序化大陆，两套地形谁也不认谁 */
+    const bb: BBox = clampWorldBBox("sphere", padBBox(scan.bbox!, 0.05));
+    const w = blankWorld({ 名称: srcName.replace(/\.(geo)?json$/i, "") || "导入的地图", worldModel: "sphere", terrain: "plain", bbox: bb },
+      new Date().toISOString().slice(0, 10));
+    w.meta.说明 = `由 ${srcName} 导入`;
+    const r = convertGeoJSON(scan, map, {
+      bbox: w.meta.bbox!, pd: paintStep(w.meta), palette: FAC_PALETTE,
+      existingIds: new Set<string>(), factionByName: new Map<string, string>(), caps: GEO_CAPS
+    });
+    applyGeo(w, r);
+    await importWorld(w, srcName);
+    geoReceipt(r, srcName);
+  }
+
+  async function mergeGeo(scan: GeoScan, map: GeoMapping, srcName: string): Promise<void> {
+    const cur = worldSig.peek();
+    if (!cur) { alert("当前没有打开的地图。"); return; }
+    if (readOnlySig.peek()) { showToast("这是只读分享的地图，未作改动　可先「↓ 存入我的图库」再编辑"); return; }
+    const ids = new Set<string>(), byName = new Map<string, string>();
+    for (const f of cur.factions) { ids.add(String(f.id)); if (f.名称) byName.set(String(f.名称), String(f.id)); }
+    for (const n of cur.nodes) ids.add(String(n.id));
+    for (const u of cur.units || []) ids.add(String(u.id));
+    for (const d of cur.decor || []) ids.add(String(d.id));
+    /* 先算完再改世界：栅格化若在 mutateWorld 里抛，撤销栈会留下一步半成品 */
+    const r = convertGeoJSON(scan, map, {
+      bbox: cur.meta.bbox || DEFAULT_BBOX, pd: paintStep(cur.meta), palette: FAC_PALETTE,
+      existingIds: ids, factionByName: byName, caps: GEO_CAPS
+    });
+    mutateWorld(w => applyGeo(w, r));
+    geoReceipt(r, srcName);
+  }
+
+  async function openGeoImport(file: File, from: "lib" | "map"): Promise<void> {
+    let raw: unknown;
+    try { raw = JSON.parse(await file.text()); }
+    catch (e) { alert(`「${file.name}」不是有效 JSON：${errText(e)}`); return; }
+    const scan = scanGeoJSON(raw, GEO_CAPS);
+    if (!scan.features.length || !scan.bbox) {
+      alert(`「${file.name}」里没有可用的 GeoJSON 要素。\n认 FeatureCollection、单个 Feature、裸几何三种写法。`);
+      return;
+    }
+    const cur = worldSig.peek();
+    geoImportSig.value = {
+      srcName: file.name, scan,
+      canMerge: !!cur && !readOnlySig.peek(),
+      curName: (cur && cur.meta.名称) || "当前地图",
+      defaultTarget: from === "map" ? "merge" : "new",
+      onApply(m, target) {
+        (target === "merge" ? mergeGeo(scan, m, file.name) : newMapFromGeo(scan, m, file.name))
+          .catch(e => alert(`「${file.name}」导入失败：${errText(e)}`));
+      }
+    };
+  }
+
   /* ================= 战术图：生成 / 打开 / 父子导航================= */
   /* 从战役事件点烘焙一张战术图，入库、在父图事件写双向链接、打开它。dia=战场直径 km */
   async function genTactical(ev: WorldNode, dia?: number | null): Promise<boolean> {
@@ -431,33 +523,69 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     alert("找不到上级战略图（可能已删除、改名或图库来源已切换）。可从图库手动打开。");
     return false;
   }
+  /* 出图钳制：合成用 2D 画布的稳妥边长上限与总像素预算（放大期间画布×3 张的内存账） */
+  const EXPORT_DIM_CAP = 16384, EXPORT_AREA_CAP = 64_000_000;
+  /** 出图实得倍数：偏好档按渲染器上限与像素预算钳；钳了给 ⚠ 回执（静默降档＝「选了 ×4 却糊」没法排查） */
+  function exportScaleNow(): number {
+    const want = uiPrefsSig.peek().exportScale;
+    const k = exportScaleFit(canvas.width, canvas.height, want, Math.min(ctx.R!.maxDim(), EXPORT_DIM_CAP), EXPORT_AREA_CAP);
+    if (k < want) showToast(`⚠ 超出本机画布上限，清晰度按 ×${Math.round(k * 10) / 10} 出图（偏好 ×${want}）`);
+    return k;
+  }
+  const scaleSuffix = (k: number): string => k === 1 ? "" : `_×${Math.round(k * 10) / 10}`;
+  /* 物理密度标记（所见即所得语义）：打印尺寸恒＝屏上 CSS 尺寸，清晰度只提密度。
+     标记失败不拦出图——像素已完好，降级为无标记并留痕。 */
+  async function stampDpi(b: Blob | null, dpi: number): Promise<Blob | null> {
+    if (!b) return b;
+    try { return new Blob([pngSetDpi(new Uint8Array(await b.arrayBuffer()), dpi)], { type: "image/png" }); }
+    catch (e) { console.warn("PNG 物理密度标记失败（按无标记导出）：", e); return b; }
+  }
   /* 合成当前时刻一帧（地形+叠加层;战术图按偏好附图例）——「出图 PNG」与「分帧出图」共用。
-     地形层开＝先渲后同任务内读回;关＝垫恒定纸色底（产物不随主题变,既定裁决）。 */
-  function composeFrame(): Promise<Blob | null> {
-    const R = layersSig.peek().terrain ? ctx.R : null;
-    if (R) {
-      const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
-      R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical", snowE: snowEOf(ctx.meta) });
-    }
-    const off = document.createElement("canvas");
-    off.width = canvas.width; off.height = canvas.height;
-    const g2 = off.getContext("2d")!;
-    if (R) g2.drawImage(canvas, 0, 0);
-    else { g2.fillStyle = "#d9d2c0"; g2.fillRect(0, 0, off.width, off.height); }
-    g2.drawImage(ov, 0, 0);
-    /* 图例块（战术·本机偏好可关）：内容自动取图内当刻实际出现的;按 DPR 折回 CSS 像素画右下角。
-       让开 se 屏幕角标注（图例不上画布，不让位就会压住画布上摆好的图注）——标注层关掉则无须让。 */
-    if (ctx.meta.mapKind === "tactical" && uiPrefsSig.peek().legend !== false) {
-      const w = worldSig.peek(), T = yearSig.peek(), s = selSig.peek();
-      if (w) {
-        const reserve = layersSig.peek().notes !== false
-          ? pinnedStackH(w, T, "se", s && s.kind === "node" ? s.id : null) : 0;
-        g2.save(); g2.scale(ctx.DPR, ctx.DPR);
-        drawLegend(g2, w, T, off.width / ctx.DPR, off.height / ctx.DPR, reserve, layersSig.peek(), ctx.meta);
-        g2.restore();
+     地形层开＝先渲后同任务内读回;关＝垫恒定纸色底（产物不随主题变,既定裁决）。
+     scale>1＝高清：CSS 尺寸不动（取景逐位一致），临时把 DPR 与画布像素放大重画、合成完
+     同任务还原——浏览器在任务结束才合成上屏，屏上无闪烁；这是 host.resize 之外唯一的改尺寸点。 */
+  function composeFrame(scale: number): Promise<Blob | null> {
+    const DPR0 = ctx.DPR, w0 = canvas.width, h0 = canvas.height;
+    try {
+      if (scale !== 1) {
+        ctx.DPR = DPR0 * scale;
+        canvas.width = Math.round(w0 * scale); canvas.height = Math.round(h0 * scale);
+        ov.width = canvas.width; ov.height = canvas.height;
+        if (ctx.repaint) ctx.repaint();   // 叠加层按新 DPR 重画（地形随即再渲一次，同帧幂等）
+      }
+      const R = layersSig.peek().terrain ? ctx.R : null;
+      if (R) {
+        const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);
+        R.render(host.viewBB(), { contour: layersSig.peek().contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical", snowE: snowEOf(ctx.meta) });
+      }
+      const off = document.createElement("canvas");
+      off.width = canvas.width; off.height = canvas.height;
+      const g2 = off.getContext("2d")!;
+      if (R) g2.drawImage(canvas, 0, 0);
+      else { g2.fillStyle = "#d9d2c0"; g2.fillRect(0, 0, off.width, off.height); }
+      g2.drawImage(ov, 0, 0);
+      /* 图例块（战术·本机偏好可关）：内容自动取图内当刻实际出现的;按 DPR 折回 CSS 像素画右下角。
+         让开 se 屏幕角标注（图例不上画布，不让位就会压住画布上摆好的图注）——标注层关掉则无须让。 */
+      if (ctx.meta.mapKind === "tactical" && uiPrefsSig.peek().legend !== false) {
+        const w = worldSig.peek(), T = yearSig.peek(), s = selSig.peek();
+        if (w) {
+          const reserve = layersSig.peek().notes !== false
+            ? pinnedStackH(w, T, "se", s && s.kind === "node" ? s.id : null) : 0;
+          g2.save(); g2.scale(ctx.DPR, ctx.DPR);
+          drawLegend(g2, w, T, off.width / ctx.DPR, off.height / ctx.DPR, reserve, layersSig.peek(), ctx.meta);
+          g2.restore();
+        }
+      }
+      const dpi = 96 * off.width / host.cssSize()[0];
+      return new Promise<Blob | null>(res => off.toBlob(b => res(b), "image/png")).then(b => stampDpi(b, dpi));
+    } finally {
+      /* toBlob 在调用当刻已取走位图快照，这里还原不影响编码中的产物 */
+      if (scale !== 1) {
+        ctx.DPR = DPR0;
+        canvas.width = w0; canvas.height = h0; ov.width = w0; ov.height = h0;
+        if (ctx.repaint) ctx.repaint();
       }
     }
-    return new Promise(res => off.toBlob(b => res(b), "image/png"));
   }
   function downloadBlob(name: string, b: Blob): void {
     const url = URL.createObjectURL(b);
@@ -515,8 +643,9 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     async exportPng() {
       if (!worldSig.peek()) return;
       closeSettings();
-      const b = await composeFrame();
-      if (b) downloadBlob(`${ctx.meta.名称 || "舆图"}_${fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", yearSig.peek())}.png`, b);
+      const k = exportScaleNow();
+      const b = await composeFrame(k);
+      if (b) downloadBlob(`${ctx.meta.名称 || "舆图"}_${fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", yearSig.peek())}${scaleSuffix(k)}.png`, b);
     },
     /* 「🎞 分帧出图」（2026-07 特化·相位批）：逐相位拨时间轴→信号同步冲刷（编排 effect 重建网格/腿账）→
        ctx.repaint 同步重画→同任务合成下载一张;末了拨回原时刻。产物=每相位一个 PNG
@@ -531,11 +660,12 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       const T0 = yearSig.peek();
       const nm = ctx.meta.名称 || "舆图";
       const cal = calOf(ctx.meta.calendar);
+      const k = exportScaleNow();
       for (let i = 0; i < ph.length; i++) {
         yearSig.value = ph[i].t;
         if (ctx.repaint) ctx.repaint();
-        const b = await composeFrame();
-        if (b) downloadBlob(`${nm}_帧${i + 1}_${safeName(ph[i].名称 || `相位${i + 1}`)}_${safeName(fmtT(cal, ph[i].t))}.png`, b);
+        const b = await composeFrame(k);
+        if (b) downloadBlob(`${nm}_帧${i + 1}_${safeName(ph[i].名称 || `相位${i + 1}`)}_${safeName(fmtT(cal, ph[i].t))}${scaleSuffix(k)}.png`, b);
       }
       yearSig.value = T0;
       if (ctx.repaint) ctx.repaint();
@@ -546,6 +676,9 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       if (!confirm("把当前地图的内容重置为内置示例数据？\n可用 Ctrl+Z 撤销；其他地图不受影响。")) return;
       closeSettings();
       libActions.replaceCurrent(sampleWorld(), "内置示例数据");
+    },
+    importGeoFile(file, from) {
+      openGeoImport(file, from).catch(e => alert(`「${file.name}」读取失败：${errText(e)}`));
     },
     async importFiles(files) {
       for (const f of files) {

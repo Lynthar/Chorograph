@@ -34,7 +34,8 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
      不入存档；先于首帧应用到 #app 的 data-theme/data-den，避免主题闪变。 */
   try {
     const ui = JSON.parse(localStorage.getItem("yutu2.ui") || "{}") || {};
-    uiPrefsSig.value = { theme: ui.theme === "dark" ? "dark" : "light", den: ui.den === "tight" ? "tight" : "loose", legend: ui.legend !== false };
+    uiPrefsSig.value = { theme: ui.theme === "dark" ? "dark" : "light", den: ui.den === "tight" ? "tight" : "loose", legend: ui.legend !== false,
+      exportScale: [2, 3, 4].includes(ui.exportScale) ? ui.exportScale : 1 };
   } catch (e) {}
   initCalTemplates();   // 本机历法模板（建图时的模具，见 data/calstore 头注）；读不到就是没有，不拦启动
   effect(() => {
@@ -46,7 +47,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     if (tc) tc.setAttribute("content", p.theme === "dark" ? "#1b1815" : "#f7f4ec");
     try {
       const cur = JSON.parse(localStorage.getItem("yutu2.ui") || "{}") || {};
-      localStorage.setItem("yutu2.ui", JSON.stringify({ ...cur, theme: p.theme, den: p.den, legend: p.legend }));
+      localStorage.setItem("yutu2.ui", JSON.stringify({ ...cur, theme: p.theme, den: p.den, legend: p.legend, exportScale: p.exportScale }));
     } catch (e) {}
   });
   resize();

@@ -385,6 +385,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         }
       }
     },
+    maxDim() { return 16384; },   // Canvas2D 各主流实现的稳妥边长
     rendererName() { return "CPU 瓦片（Canvas2D 兜底）"; },
     dispose() { tile = null; grid = null; field = null; cellMat = null; cellTint = null; cellTintHas = null; }
   };
