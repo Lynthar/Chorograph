@@ -2,6 +2,7 @@
   "name": "chorograph-app",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "description": "Chorograph app — Vite + TypeScript + WebGL2; tests via node:test (zero native deps).",
   "scripts": {

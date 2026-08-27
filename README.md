@@ -8,7 +8,7 @@
 
 <sub><i>A browser-based analytical world-map tool for worldbuilding &amp; fiction writing.</i></sub>
 
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) &nbsp;·&nbsp; WebGL2 · PWA · 单文件产物
+[![license: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE) &nbsp;·&nbsp; WebGL2 · PWA · 单文件产物
 
 </div>
 
@@ -74,4 +74,9 @@ npm run typecheck    # tsc --noEmit
 
 ## 许可
 
-以 [MIT](LICENSE) 授权 © 2026 Lynthar
+Copyright © 2026 Lynthar。以 [GNU AGPL-3.0-or-later](LICENSE) 授权——自由使用、修改与再分发，**衍生作品须以同样的协议开源**。
+
+选 AGPL 而非 GPL，是因为舆图是浏览器端应用：**把修改版架在网上供人使用，也须向使用者提供完整源码**（AGPL §13），GPL 不覆盖这一条。
+分发单文件产物 `Chorograph.html`（或其修改版）时，同样需告知对应源码的获取方式；本仓库即是。
+
+已发布的 v0.1.0 当时以 MIT 授权——已经发出去的授权收不回来，那一版仍可按 MIT 使用；本变更自之后的版本起生效。

@@ -67,7 +67,11 @@ const HELP_HTML = `
     <tr><td>Obsidian</td><td>检查器「🔗 打开」经 obsidian:// 直开对应笔记(库名在 ⚙ 设置)；「📋 复制双链」作后备。</td></tr>
   </table>
   <h4>尺度校准</h4>
-  <div class="kv">里程 = 世界形态参数(半径/每度里程) + 坐标密度共同决定。觉得某国该更大/更小，改 ⚙ 设置或拖动城池即可，天数随之更新。</div>`;
+  <div class="kv">里程 = 世界形态参数(半径/每度里程) + 坐标密度共同决定。觉得某国该更大/更小，改 ⚙ 设置或拖动城池即可，天数随之更新。</div>
+  <h4>关于</h4>
+  <div class="kv">舆图 Chorograph · 自由软件，以 <b>AGPL-3.0-or-later</b> 授权。
+    <a class="link" href="https://github.com/Lynthar/Chorograph" target="_blank" rel="noopener">获取完整源代码</a>——
+    你有权取得本程序及任何在线修改版的源码（AGPL §13）。</div>`;
 
 /* 卡片单独成件：弹层关就整件卸载，useModalFocus 的清理（摘监听 / 还原焦点）才跑得到 */
 function HelpCard() {
