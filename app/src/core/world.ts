@@ -23,6 +23,13 @@ export function normalizeWorld(w: unknown): World {
   ["factions", "nodes", "edges", "decor", "terrainOverrides", "units"].forEach(k => {
     o[k] = Array.isArray(o[k]) ? o[k].filter(isRec) : [];
   });
+  /* 嵌套集合的形状守卫（2026-08-31 审查）：顶层数组早有此门，嵌套的没有——消费端却一律直接
+     .filter/.map/.forEach（paintLayersAt / drawFactions 的 territory / drawRanges），一个字符串
+     就让每帧抛异常、红条常驻，且帧循环每帧重新踩进同一份坏数据＝无法局部恢复。
+     删键＝按「这一项没有」处理，是所有消费端都已支持的形状。 */
+  const dropIfNotArray = (m: any, keys: readonly string[]): void => {
+    for (const k of keys) if (m[k] != null && !Array.isArray(m[k])) delete m[k];
+  };
   // meta.bbox 防御：形状/序无效（非对象、含非有限数、min≥max）则剔键——消费方一律 `bbox || 默认`，
   // 键在而值坏会 NaN 网格；剔键才真正「按默认范围处理」（validate 的 warning 文案以此为实）。
   const bb = o.meta.bbox, num = (x: any) => typeof x === "number" && isFinite(x);
@@ -46,6 +53,7 @@ export function normalizeWorld(w: unknown): World {
   }
   // v0.14 部队（战术图兵棋）：航点数组补齐、剔除非对象航点（防 sort 对 null 崩）、按日戳排序
   o.units.forEach((u: any) => {
+    dropIfNotArray(u, ["ranges"]);
     u.track = Array.isArray(u.track) ? u.track.filter(isRec) : [];
     u.track.sort((a: any, b: any) => a.t - b.t);
     /* 旧兵种键就地升级（2026-07-30 整表换代，同上面 LEGACY_TYPE 之例）：旧速度/军种与新键不同者
@@ -68,12 +76,16 @@ export function normalizeWorld(w: unknown): World {
     }
   });
   o.factions.forEach((f: any) => {
+    dropIfNotArray(f, ["paint", "territory"]);
+    if (Array.isArray(f.territory)) f.territory = f.territory.filter((t: any) => typeof t === "string" && t);
     if (Array.isArray(f.paint)) f.paint = f.paint.filter(isRec).map((L: any) => {
       if (Array.isArray(L.cells)) L.cells = L.cells.filter((c: any) => Array.isArray(c));   // 剔除非数组格（territory 对 c[0] 崩）
       return L;
     });
   });
   o.nodes.forEach((n: any) => {
+    dropIfNotArray(n, ["owners", "ops", "ranges"]);
+    if (Array.isArray(n.ranges)) n.ranges = n.ranges.filter(isRec);   // 含 null 的防御圈会让 drawRanges 读 null.km 抛
     const lt = tget(LEGACY_TYPE, n.type); if (lt) n.type = lt;                  // 旧地点类型自动升级
     if (n.type === "event" && !tget(EVENT_TYPES, n.evtype)) n.evtype = "battle";   // v0.11：旧事件点默认=战役
     if (Array.isArray(n.owners)) n.owners = n.owners.filter(isRec);

@@ -391,8 +391,20 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform4fv(U("uMatB[0]"), mats.flatMap(m => [m.rough, m.albVar, m.rock, 0]));
     return true;
   }
-  function doUpload(grid: Grid, field?: ElevField) {
+  /* 纹理边长上限（2026-08-31 审查）：精修档 axisMax=16 只按总格数与单轴倍率封顶，不看设备能力——
+     细长战场（如手编/导入的 2048×1）算出的场是 32768×16，是常见 MAX_TEXTURE_SIZE(16384) 的两倍。
+     超限的 texImage2D 只置 GL 错误码、不抛异常，采样恒零＝整幅地形静默变白。超了就退回粗格场：
+     少的是侵蚀细节，不是整张图。 */
+  const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+  let texWarned = false;
+  const fieldFits = (f?: ElevField): boolean => {
+    if (!f || (f.cols <= maxTex && f.rows <= maxTex)) return true;
+    if (!texWarned) { texWarned = true; console.warn(`细分场 ${f.cols}×${f.rows} 超出本机纹理上限 ${maxTex}，退回粗格高程（地形仍可用，少的是侵蚀细节）`); }
+    return false;
+  };
+  function doUpload(grid: Grid, fieldIn?: ElevField) {
     if (!pr) return;
+    const field = fieldFits(fieldIn) ? fieldIn : undefined;
     if (tex) gl.deleteTexture(tex);
     if (ftex) gl.deleteTexture(ftex);
     /* 类型粗格纹理：G=复合索引 lf*5+eco（R 弃用恒 0——高程自此一律走场纹理） */

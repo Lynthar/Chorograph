@@ -597,6 +597,27 @@ describe("侵蚀场缓存（data/fieldcache）", () => {
       if (i >= over + 2) assert.ok(got, `近用条不该被淘汰：lru-${i}`);
     }
   });
+
+  /* 2026-08-31 审查：LRU 时间戳原先埋在场记录里，而 IDB 是整条覆盖——一次命中就把整份场
+     （4K 精修档 ~79MB）重写一遍。断言的是**结构**：场记录里不许再有 t，刷新只落在 touch 表。
+     ⚠ 必须排在 LRU 封顶测之后：本测留下的条目恒为全场最新，会挤掉那一测赖以计数的槽位。 */
+  it("命中只刷新 touch 表，场记录里不留 LRU 时间戳（否则每次命中重写整份场）", async () => {
+    // 哨兵时间戳取「未来」：本测之前每一次命中都已把存活条目背拍刷成 Date.now()，
+    // 用过去时刻存进去会当场被淘汰；未来值既保证不被淘汰，又能凭「变了」证明命中真写了 touch。
+    const key = ERODE_VER + "-touch", putT = Date.now() + 5_000;
+    await fieldCachePut(key, mkField(4), putT);
+    const raw = await openDB("yutu2-fieldcache", 2, () => {});
+    const rec = await reqP<Record<string, unknown> | undefined>(
+      raw.transaction("fields", "readonly").objectStore("fields").get(key));
+    assert.ok(rec, "刚存的场应在");
+    assert.strictEqual(rec!.t, undefined, "场记录不得携带 LRU 时间戳");
+    assert.ok(await fieldCacheGet(key), "应命中");
+    await new Promise(r => setTimeout(r, 30));   // touch 是背拍写
+    const tk = await reqP<{ t: number } | undefined>(
+      raw.transaction("touch", "readonly").objectStore("touch").get(key));
+    assert.ok(tk && tk.t > 0 && tk.t !== putT, `命中应把 touch 时间戳刷成真实时钟，实得 ${JSON.stringify(tk)}`);
+    raw.close();
+  });
 });
 
 describe("历法模板库 data/calstore（2026-08-19：图库页存模具，建图时整份拷进 meta）", () => {

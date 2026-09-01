@@ -9,8 +9,11 @@ import { CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } fr
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
 
-export const newNodeId = (): string => "n" + Date.now().toString(36);
-export const newEventId = (): string => "ev" + Date.now().toString(36);
+/* 随机后缀同 newUnitId 之规：纯 Date.now 在同一毫秒内创建两个即撞号，而重复 id 会让
+   「选中的」与「点到的」是两个对象、删一个连带清掉另一个的全部连线。 */
+const idSalt = (): string => Math.floor(Math.random() * 1296).toString(36);
+export const newNodeId = (): string => "n" + Date.now().toString(36) + idSalt();
+export const newEventId = (): string => "ev" + Date.now().toString(36) + idSalt();
 
 /** 数据经度：球面折回 ±180、平面原样（对应旧 wrapLonData） */
 export const dataLon = (meta: Meta | undefined, lon: number): number =>
@@ -403,7 +406,7 @@ export function removeAsset(w: World, id: string): boolean {
 export const FAC_PALETTE = ["#c9a227", "#3aa675", "#8a5cd0", "#3d7bd0", "#c0392b", "#e07b3a", "#2a9d8f", "#b5651d", "#6d6875", "#457b9d"];
 
 export function addFaction(w: World): Faction {
-  const f: Faction = { id: "f" + Date.now().toString(36), 名称: "新派系", color: FAC_PALETTE[w.factions.length % FAC_PALETTE.length] };
+  const f: Faction = { id: "f" + Date.now().toString(36) + idSalt(), 名称: "新派系", color: FAC_PALETTE[w.factions.length % FAC_PALETTE.length] };
   w.factions.push(f);
   return f;
 }

@@ -25,7 +25,9 @@ export function pickEdge(
   cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
   x: number, y: number, layers?: Record<string, boolean>
 ): { edge: Edge; idx: number } | null {
-  const byId = new Map(world.nodes.map(n => [n.id, n]));
+  // 首个命中优先（同 render/overlay 与 core/grid.roadCellSet）：重复 id 的档上拾取与绘制须指同一对象
+  const byId = new Map<string, WorldNode>();
+  for (const n of world.nodes) if (!byId.has(n.id)) byId.set(n.id, n);
   let best: { edge: Edge; idx: number } | null = null, bd = Infinity;
   for (const shift of visibleWorldCopies(cam, meta)) {
     const c2: Camera = { ...cam, lonShift: shift };

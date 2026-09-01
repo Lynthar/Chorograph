@@ -60,7 +60,10 @@ export function drawOverlay(
   /* try/finally：任一绘制域抛异常也须归位画布状态——否则下帧 save+scale 在残留变换上复利，
      叠加层永久失控放大；末尾 setTransform 兜底「内层 save 未配对」时单次 restore 不够的情形。 */
   try {
-    const byId = new Map<string, WorldNode>(world.nodes.map(n => [n.id, n]));
+    /* 首个命中优先（同 core/grid.roadCellSet 的同名纪律）：`nodes.find` 取首个同 id 者，而
+       `new Map(nodes.map(…))` 是后者覆盖前者——重复 id 的档上「选中的」与「画出来/点到的」会是两个对象。 */
+    const byId = new Map<string, WorldNode>();
+    for (const n of world.nodes) if (!byId.has(n.id)) byId.set(n.id, n);
     const fcolor = (id: string | null) => (id && world.factions.find(f => f.id === id)?.color) || "#6b6b6b";
     const multiSet = new Set(opts.multiIds || []);
     const decorSel = { id: opts.decorSelId, ids: opts.decorMultiIds ? new Set(opts.decorMultiIds) : null };

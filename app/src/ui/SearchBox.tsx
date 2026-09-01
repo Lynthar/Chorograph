@@ -43,7 +43,11 @@ function gotoResult(w: World, r: Hit): void {
     flyReqSig.value = { lon: n.lon, lat: n.lat, degPerPx: 0.045, ifAbove: 0.05 };
     selSig.value = { kind: "node", id: n.id };
     if (n.type === "event" && n.year != null) yearSig.value = n.year;                       // 搜到战役→跳到战役当年
-    else if (!activeAt(n, yearSig.peek()) && n.since != null) yearSig.value = n.since;      // 别的年代的地点→跳到它存在的年代
+    // 别的年代的地点→跳到它存在的年代；只写了讫点的对象退一刻（[since, until) 半开，until 那一刻已经不在了）
+    else if (!activeAt(n, yearSig.peek())) {
+      const t = n.since != null ? n.since : n.until != null ? n.until - 1 : null;
+      if (t != null) yearSig.value = t;
+    }
   } else if (r.kind === "edge") {
     const a = w.nodes.find(n => n.id === r.ref.from), b = w.nodes.find(n => n.id === r.ref.to);
     if (a && b) flyReqSig.value = { lon: (a.lon + b.lon) / 2, lat: (a.lat + b.lat) / 2 };

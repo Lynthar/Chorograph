@@ -84,6 +84,9 @@ export function validateWorld(w: unknown): ValidateResult {
 
   const checkTimed = (path: string, m: Record<string, unknown>) => {
     for (const k of ["since", "until"]) if (m[k] != null && !isNum(m[k])) W(`${path}.${k}`, "不是数字，时段过滤将失准");
+    // [since, until) 半开区间：起 ≥ 讫 ⇒ 这个对象在任何时刻都不存在，而 UI 与导入原先一声不吭
+    if (isNum(m.since) && isNum(m.until) && (m.since as number) >= (m.until as number))
+      W(path, `起讫倒置（起 ${m.since} ≥ 讫 ${m.until}），该项在任何时刻都不会出现`);
   };
   /* 可靠性档位（柱B）：未知值按「确证」渲染——只提示，不改数据（同未知地形/兵种之规） */
   const checkCertainty = (path: string, m: Record<string, unknown>) => {
@@ -102,7 +105,8 @@ export function validateWorld(w: unknown): ValidateResult {
     if (f.color != null && !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(f.color)))
       W(`${p}.color`, `颜色 ${JSON.stringify(f.color)} 不是 #rgb/#rrggbb 格式`);
     checkTimed(p, f);
-    if (f.paint != null && !Array.isArray(f.paint)) W(`${p}.paint`, "涂域层不是数组");
+    if (f.territory != null && !Array.isArray(f.territory)) W(`${p}.territory`, "范围地点表不是数组，打开时将被丢弃");
+    if (f.paint != null && !Array.isArray(f.paint)) W(`${p}.paint`, "涂域层不是数组，打开时将被丢弃");
     else (f.paint || []).forEach((L, k) => {
       /* ⚠ 层成员可为 null/原始值（normalizeWorld 会剔除）——先挡再取 runs，否则 null.runs 直接
          抛 TypeError＝损坏档把「返回错误」的契约打穿（2026-08 审查坐实）。 */
@@ -137,6 +141,14 @@ export function validateWorld(w: unknown): ValidateResult {
       W(`${p}.evtype`, `未知事件子类「${String(n.evtype)}」（将按"战役"处理）`);
     refFaction(`${p}.faction`, n.faction);
     checkCertainty(p, n);
+    /* 嵌套集合的形状（2026-08-31 审查）：非数组时消费端直接 .filter/.forEach 抛异常，而这里原先
+       owners/ops/ranges 三个一字不提。normalizeWorld 已统一删键，故一律 warning（不 fatal：旧版能开的档不许拒）。 */
+    for (const k of ["owners", "ops", "ranges"] as const)
+      if (n[k] != null && !Array.isArray(n[k])) W(`${p}.${k}`, `${{ owners: "归属沿革", ops: "作战线", ranges: "防御圈" }[k]}不是数组，打开时将被丢弃`);
+    if (Array.isArray(n.ranges)) n.ranges.forEach((rg, j) => {
+      if (!isObj(rg)) { W(`${p}.ranges[${j}]`, "防御圈成员不是对象，打开时将被剔除"); return; }
+      if (!(+(rg.km as number) > 0)) W(`${p}.ranges[${j}].km`, "防御圈需要正数半径 km，该圈不会绘制");
+    });
     if (Array.isArray(n.owners)) n.owners.forEach((ow, j) => {
       if (isObj(ow)) { refFaction(`${p}.owners[${j}].faction`, ow.faction); checkTimed(`${p}.owners[${j}]`, ow); }
       else W(`${p}.owners[${j}]`, "归属沿革成员不是对象");
@@ -169,8 +181,10 @@ export function validateWorld(w: unknown): ValidateResult {
     if (typeof a.src === "string" && a.src && !/^(data|blob):/.test(a.src))   // 渲染端同判（render/decor.assetImg）：外链不请求不绘制
       W(`assets[${i}].src`, "印章资产不是内嵌数据（data:/blob:），将不显示");
   });
+  const decorIds = new Set<string>();
   (Array.isArray(o.decor) ? (o.decor as Record<string, unknown>[]) : []).forEach((d, i) => {
     const k = String(d.kind);
+    if (typeof d.id === "string" && d.id) { if (decorIds.has(d.id)) W(`decor[${i}]`, `布景 id「${d.id}」重复`); else decorIds.add(d.id); }
     if (k.startsWith("img:")) { if (!assetIds.has(k.slice(4))) W(`decor[${i}].kind`, `自定义印章缺资产「${k}」`); }   // 悬空引用
     else if (!tget(DECOR, k)) W(`decor[${i}].kind`, `未知布景印章「${k}」`);
     checkTimed(`decor[${i}]`, d);
@@ -188,8 +202,13 @@ export function validateWorld(w: unknown): ValidateResult {
   });
 
   /* —— 部队（战术图） —— */
+  const unitIds = new Set<string>();
   (Array.isArray(o.units) ? (o.units as Record<string, unknown>[]) : []).forEach((u, i) => {
     const p = `units[${i}]`;
+    if (typeof u.id === "string" && u.id) { if (unitIds.has(u.id)) W(p, `部队 id「${u.id}」重复`); else unitIds.add(u.id); }
+    // 负速度会让 unitLegs 的 need 变负、再被「need <= days」判成不超速——负的行军耗时无意义
+    if (u.speed != null && !(isFinite(+(u.speed as number)) && +(u.speed as number) > 0))
+      W(`${p}.speed`, `行军速度须为正数（现为 ${JSON.stringify(u.speed)}），耗时账将失准`);
     const uk = tget(LEGACY_KIND as Record<string, { to: string }>, String(u.kind));
     if (u.kind != null && !uk && !tget(UNIT_KINDS, String(u.kind))) W(`${p}.kind`, `未知兵种「${String(u.kind)}」（移动方式按陆行处理）`);
     /* 兵力已是数值字段：非数值的旧文本照常打开，但要说清它会被 normalizeWorld 挪走（同上「会补齐/改写的」之级） */
@@ -202,9 +221,15 @@ export function validateWorld(w: unknown): ValidateResult {
     refFaction(`${p}.faction`, u.faction);
     if (u.track != null && !Array.isArray(u.track)) W(`${p}.track`, "航点不是数组，将被清空");
     if (Array.isArray(u.track) && u.track.length > 100000) F(`${p}.track`, "航点数过多（疑损坏或恶意档）");   // 位置插值逐帧遍历航点
-    else if (Array.isArray(u.track)) u.track.forEach((pt, j) => {
-      if (!isObj(pt) || !isNum(pt.t) || !isNum(pt.lon) || !isNum(pt.lat)) W(`${p}.track[${j}]`, "航点需要数字 t/lon/lat");
-    });
+    else if (Array.isArray(u.track)) {
+      const seen = new Set<number>();
+      u.track.forEach((pt, j) => {
+        if (!isObj(pt) || !isNum(pt.t) || !isNum(pt.lon) || !isNum(pt.lat)) { W(`${p}.track[${j}]`, "航点需要数字 t/lon/lat"); return; }
+        // 同刻两点＝位置不唯一：显示取末一个、编辑也取末一个（已同源），但写手多半不是有意的
+        if (seen.has(pt.t as number)) W(`${p}.track[${j}]`, `时刻 ${pt.t} 上有多个航点，只有最后一个生效`);
+        else seen.add(pt.t as number);
+      });
+    }
   });
 
   if (fOver) fatal.push({ path: "", msg: `……另有 ${fOver} 条致命问题从略` });

@@ -82,6 +82,51 @@ export function adjacentPhaseT(ph: Phase[], T: number, dir: -1 | 1): number | nu
   return null;
 }
 
+/** 战略图 until 的「至今」哨兵：≥ 此值＝不设终点（UI 三处 `until >= 9999` 的同一约定）。
+    ⚠ 不计入上界——否则任何一条「至今」时段都会把时间轴撑到近万年。 */
+const FOREVER = 9999;
+
+/* 时段极值收集（2026-08-31 审查）：战略时间轴的范围原先只看 事件年 / 派系·地点·连线的 since 四样，
+   于是「只用 owners 记归属沿革」「只用 paint 记疆域变迁」「只写 until」「战略图摆了部队」这四类图
+   一律落回默认 3000–3100 —— 真史料在 100–200 年，而时间轴钳在 2980–3107，用户根本走不过去
+   （TimeDock 每次交互都过 quantTime(r.min, r.max)）。这里把全世界每一处有限时刻并成一个包络。
+   ⚠ 只管战略图：战术图的范围由烘焙时写死的 meta.tacSpan 给，且它的时刻是日戳——两种量纲混进
+   同一个包络会被一条从战略图带过来的「年」直接撑爆。 */
+export function strategicExtent(world: World): { lo: number; hi: number } | null {
+  let lo = Infinity, hi = -Infinity, seen = false;
+  const put = (v: unknown): void => {
+    if (typeof v !== "number" || !isFinite(v)) return;   // 0/负年也算（0＝公元前 1 年合法）
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+    seen = true;
+  };
+  const span = (o: Timed | null | undefined): void => {
+    if (!o) return;
+    put(o.since);
+    if (!(typeof o.until === "number" && o.until >= FOREVER)) put(o.until);
+  };
+  for (const n of world.nodes || []) {
+    span(n);
+    if (n.type === "event") put(n.year);
+    for (const ow of n.owners || []) span(ow);
+    for (const op of n.ops || []) span(op);
+  }
+  for (const e of world.edges || []) span(e);
+  for (const f of world.factions || []) {
+    span(f);
+    for (const L of f.paint || []) span(L);
+  }
+  for (const u of world.units || []) {
+    span(u);
+    for (const q of u.track || []) put(q.t);
+  }
+  // 涂改/布景可带时段（「山川随时间变化」），量级大但只是一趟线性扫；战略图的涂改数远低于战术图
+  for (const d of world.decor || []) span(d);
+  for (const t of world.terrainOverrides || []) span(t);
+  for (const h of world.heightOverrides || []) span(h);
+  return seen ? { lo, hi } : null;
+}
+
 export interface YearRange { min: number; max: number; year: number }
 
 /** 时间轴范围推导（对应旧 updateYearRange，纯化）：
@@ -100,13 +145,9 @@ export function yearRangeOf(world: World, yearNow: number): YearRange {
     for (const t of ts) { if (t < lo) lo = t; if (t > hi) hi = t; }   // 循环取极值（避免 spread 大数组栈溢出）
     return { min: lo, max: hi, year: (!isFinite(yearNow) || yearNow < lo || yearNow > hi) ? lo : yearNow };
   }
-  const num = (v: unknown): v is number => typeof v === "number" && isFinite(v);   // 0/负年也算（0=公元前 1 年合法；原 v>0 让只有 BC 时段的图被锁在默认 3000..3100，事件年份却走 isFinite——不对称）
-  const yrs = [...(world.nodes || []).filter(n => n.type === "event" && isFinite(n.year as number)).map(n => n.year as number),
-               ...(world.factions || []).filter(f => num(f.since)).map(f => f.since as number),
-               ...[...(world.nodes || []), ...(world.edges || [])].filter(o => num(o.since)).map(o => o.since as number)
-              ].filter(y => isFinite(y));
+  const ex = strategicExtent(world);
   let lo = 3000, hi = 3100;
-  if (yrs.length) { lo = hi = yrs[0]; for (const y of yrs) { if (y < lo) lo = y; if (y > hi) hi = y; } }   // 同上，循环取极值
+  if (ex) { lo = ex.lo; hi = ex.hi; }
   const min = Math.floor((lo - 20) / 10) * 10, max = hi + 7;
   return { min, max, year: (!isFinite(yearNow) || yearNow < min || yearNow > max) ? hi : yearNow };
 }

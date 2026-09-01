@@ -39,6 +39,11 @@ export function astar(meta: Meta | undefined, grid: Grid, roads: Set<string> | u
   startLL: LL, goalLL: LL, arm: Arm): RouteResult | null {
   const [sr, sc] = lonlatToCell(grid, startLL[0], startLL[1]);
   const [gr, gc] = lonlatToCell(grid, goalLL[0], goalLL[1]);
+  /* 起格通行门（2026-08-31 审查）：终格早有守卫——下方邻格代价门让不可通行的格永远进不了开放集；
+     起格却是直接置 gScore=0 入集的，∞ 起格的首步代价是 ∞ 却仍满足 `!gScore.has(nk)` 被压进堆，
+     一路 ∞ 松弛下去最终返回一条几何上存在、规则上非法的航路（水军自陆格起步可达相邻水域）。
+     ⚠ 同时盖住「起终同格且该格不可通行」：那条路径连一次邻格判定都不经过，旧码返 dist:0 谎报可达。 */
+  if (!isFinite(cellCost(grid, roads, sr, sc, arm))) return null;
   const key = (r: number, c: number) => r * grid.cols + c;
   /* 开集＝二叉堆＋懒删除（2026-08-13 规模引擎批）：旧实现每次弹出线性扫全 open 取最小 f
      （平手取 Map 插入序里最早者,严格小于）——4.6 万格图无感,196 万格图上长途一单分钟级。
@@ -131,6 +136,23 @@ export function astar(meta: Meta | undefined, grid: Grid, roads: Set<string> | u
   return null;
 }
 
+/** 把 astar 的格心折线接上精确端点，返回完整折线与它的总长。**行军里程口径的单一真源。**
+    ⚠ 格心折线漏掉两端「精确端点 → 自家格心」的连接段：端点靠近格边时算出的行程会**短过直线**
+      （迂回率 <1，几何上不可能），而这个里程直接喂各速度档耗时与 unitLegs 的超速判定。
+    ⚠ 起讫同格（astar 给不出第二个格心）＝端点直连：那一格内本就无路可绕，绕去格心是凭空多算。
+    ⚠ 端点恰落在格心上时去重，免留零长段（下游 projectSeq 与 routeReport 都按段遍历）。 */
+export function endToEnd(meta: Meta | undefined, res: RouteResult, A: LL, B: LL): RouteResult {
+  const raw: LL[] = res.path.length >= 2 ? [A, ...res.path, B] : [A, B];
+  const path: LL[] = [];
+  for (const q of raw) {
+    const last = path[path.length - 1];
+    if (!last || last[0] !== q[0] || last[1] !== q[1]) path.push(q);
+  }
+  let dist = 0;
+  for (let i = 1; i < path.length; i++) dist += distKm(meta, path[i - 1][0], path[i - 1][1], path[i][0], path[i][1]);
+  return { path, dist };
+}
+
 export interface RouteReport { terr: Record<string, number>; via: WorldNode[] }
 
 /** 行军沿途报告：地形分段里程 + 途经地点（endIds=起讫点自身，不列入途经；只列当年存在的地点） */
@@ -191,7 +213,9 @@ export function computeRoute(meta: Meta | undefined, grid: Grid, roads: Set<stri
   const straight = distKm(meta, A.lon, A.lat, B.lon, B.lat);
   if (res) {
     const endIds = new Set([A, B].filter(p => p.node).map(p => p.node!.id));
-    return { ...res, straight, arm, report: routeReport(meta, grid, world.nodes, yearNow, res, endIds) };
+    // 端到端口径（见 endToEnd 头注）；修在消费层不修 astar——格心折线的总长本就是 astar 的契约
+    const full = endToEnd(meta, res, [A.lon, A.lat], [B.lon, B.lat]);
+    return { ...full, straight, arm, report: routeReport(meta, grid, world.nodes, yearNow, full, endIds) };
   }
   return { path: null, dist: null, straight, arm, fail: true };
 }

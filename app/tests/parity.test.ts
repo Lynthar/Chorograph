@@ -374,13 +374,31 @@ describe("寻路/行军/时间轴范围一致", () => {
     for (const s of R.cellHelpers.center) assert.deepStrictEqual(cellCenter(G.grid, s.r, s.c), s.v);
     for (const s of R.cellHelpers.toCell) assert.deepStrictEqual(lonlatToCell(G.grid, s.lon, s.lat), s.v);
   });
+  /* ⚠ **sanctioned 平价偏离（2026-08-31 端到端里程）**：computeRoute / unitLegs 原先只累计**格心
+     之间**的距离，两端「精确端点 → 自家格心」的连接段从不计入——端点靠近格边时算出的行程会
+     **短过直线**（内置示例图实测 直线 8km / 行程 5km / 迂回 ×0.69，几何上不可能），而这个里程
+     直接喂各速度档耗时与 unitLegs 的超速判定。astar 本身一字未动（它的契约就是格心折线）。
+     golden 冻的是**格心序列与它的总长**，故断言改成：新 path 剥掉两端精确端点后与旧 path 逐位
+     相同，新 dist 恰等于旧 dist 加上两段连接段——格心序列或任一段里程漂移照红。 */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 夹具网格是 any，meta 随之
+  const linkKm = (meta: any, p: number[], q: number[]) => distKm(meta, p[0], p[1], q[0], q[1]);
   it("computeRoute（陆/空/水，含沿途报告）", () => {
     for (const c of R.computeRoute) {
       const G: any = grids[c.world];
       const byId = (id: string) => G.world.nodes.find((n: any) => n.id === id);
       const res = computeRoute(G.meta, G.grid, G.roads, G.world, G.yearNow,
         { lon: c.A.lon, lat: c.A.lat, node: byId(c.A.nodeId) }, { lon: c.B.lon, lat: c.B.lat, node: byId(c.B.nodeId) }, c.arm);
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(res)), c.route, c.arm);
+      const g = c.route;
+      if (!g.path) { assert.deepStrictEqual(JSON.parse(JSON.stringify(res)), g, c.arm); continue; }   // 空军直线/水军不可达：逐位原样
+      const A = [c.A.lon, c.A.lat], B = [c.B.lon, c.B.lat];
+      assert.deepStrictEqual(res.path, [A, ...g.path, B], `${c.arm}：格心序列须逐位不变，只在两端接上精确端点`);
+      const want = g.dist + linkKm(G.meta, A, g.path[0]) + linkKm(G.meta, g.path[g.path.length - 1], B);
+      assert.ok(Math.abs(res.dist! - want) < 1e-9, `${c.arm}：里程须恰为旧格心里程加两段连接段（期望 ${want}，实得 ${res.dist}）`);
+      assert.strictEqual(res.straight, g.straight, `${c.arm}：直线里程一字不动`);
+      assert.deepStrictEqual(res.report!.via.map(n => n.id), g.report.via.map((n: any) => n.id), `${c.arm}：途经地点不变`);
+      const terrSum = Object.values(res.report!.terr).reduce((a, b) => a + b, 0);
+      assert.ok(Math.abs(terrSum - res.dist!) < 1e-9, `${c.arm}：沿途地形分段须恰好铺满全程`);
+      assert.ok(res.dist! >= res.straight - 1e-9, `${c.arm}：行程不可能短过直线`);
     }
   });
   it("unitLegs（骑兵超速/水师回退直线/飞舟/零间隔）", () => {
@@ -390,7 +408,22 @@ describe("寻路/行军/时间轴范围一致", () => {
          断言仍是腿账逐位一致，即「换表不动行军账房」这条硬承诺（改写期望反而测不出它）。 */
       const raw = { id: c.id, kind: c.kind, speed: c.speed, track: clone(c.track) };
       const u = normalizeWorld({ meta: {}, units: [raw] }).units[0];
-      assert.deepStrictEqual(JSON.parse(JSON.stringify(unitLegs(G.meta, G.grid, G.roads, u as never))), c.legs, c.id);
+      const legs = unitLegs(G.meta, G.grid, G.roads, u as never);
+      assert.strictEqual(legs.length, c.legs.length, c.id);
+      legs.forEach((L, i) => {
+        const g = c.legs[i];
+        // 走直线的腿（飞行/不可达回退）不受端到端口径影响：逐位原样
+        if (!g.route) { assert.deepStrictEqual(JSON.parse(JSON.stringify(L)), g, `${c.id}[${i}]`); return; }
+        const r = astar(G.meta, G.grid, G.roads, [g.a.lon, g.a.lat], [g.b.lon, g.b.lat], (u as { arm: string }).arm as never)!;
+        const want = r.path.length >= 2
+          ? g.km + linkKm(G.meta, [g.a.lon, g.a.lat], r.path[0]) + linkKm(G.meta, r.path[r.path.length - 1], [g.b.lon, g.b.lat])
+          : g.km;   // 起讫同格：端点直连，夹具那条（同点零间隔）恰为 0
+        assert.ok(Math.abs(L.km - want) < 1e-9, `${c.id}[${i}]：里程须恰为旧值加两段连接段（期望 ${want}，实得 ${L.km}）`);
+        assert.deepStrictEqual({ i: L.i, a: L.a, b: L.b, days: L.days, route: L.route },
+          { i: g.i, a: g.a, b: g.b, days: g.days, route: g.route }, `${c.id}[${i}]：里程以外的腿账字段一字不动`);
+        // need 是 km 的纯函数：按同一比例走，才证明改的只是里程口径、不是耗时公式
+        if (g.km > 0) assert.ok(Math.abs(L.need - g.need * (L.km / g.km)) < 1e-9, `${c.id}[${i}]：耗时公式须与旧式同构`);
+      });
     }
   });
   it("yearRangeOf ↔ updateYearRange", () => {

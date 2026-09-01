@@ -7,7 +7,7 @@
    · create＝从图库新建（隐藏数据区与应用钮）；带**实时尺度读数**（格边/最小笔刷/档数——
      物理在创建那一刻可见、可谈、然后定死，与「地势定形」同一个可读性哲学）。
    卡片以 token 为 key 整体重挂=每次打开重灌表单。 */
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { blankWorld, clampWorldBBox, WORLD_KM_PER_DEG, WORLD_RADIUS_KM, type BlankWorldSpec } from "../core/world.ts";
 import { blankTacticalWorld, TAC_DIA_KM, type BlankTacSpec } from "../core/tactical.ts";
 import { calOf, parseYearForm } from "../core/calendar.ts";
@@ -18,6 +18,7 @@ import { kmPerDeg, flatKmPerDeg } from "../core/geo.ts";
 import { brushRadiusCells, brushActualKm, fmtBrushKm, BRUSH_NOTCHES } from "../core/brush.ts";
 import { calOverlaySig, calTemplatesSig, closeSettings, isTacSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, uiPrefsSig, worldSig, readOnlySig, type SettingsMode } from "./state.ts";
 import { pickCalendarCfg } from "../data/calstore.ts";
+import { fmtBytes, requestPersist, storageState, type StorageState } from "../data/persist.ts";
 import { useModalFocus } from "./modal.ts";
 
 const randSeed = () => Math.floor(Math.random() * 99999) + 1;
@@ -503,6 +504,7 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
           <div class="hint">{ro
             ? "这是别人分享来的只读地图：改动无从谈起，也不会写进你的图库。想接着做，点顶栏「↓ 存入我的图库」存成自己的可编辑副本。"
             : "改动自动保存到本图的浏览器存档（保存态见顶栏）；「导出」才写回 .json 文件。此处「导入」替换当前图的内容——若想保留当前图，请回「⌂ 图库」用「📂 导入 JSON 为新图」。"}</div>
+          {!ro && <StoragePane />}
         </div>
       )}
       {!create && !ro && <div class="hint">「应用」保留全部地点/派系/战役数据，只改可变参数；尺寸与分辨率创建后锁定——「🆕 以此参数新建」带当前参数打开创建面板，在那里改尺寸开一张新图（当前图原样保留，随时从「⌂ 图库」回来）。</div>}
@@ -518,6 +520,39 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
               <button class="bt zhu tr" onClick={apply}>✔ 应用到当前世界</button>
             </>}
       </div>
+    </div>
+  );
+}
+
+/* 存储耐久面板：报浏览器图库的耐久档位与用量。
+   ⚠ 申请只挂在按钮上，不随开图自动发起——部分浏览器为此弹权限框。 */
+function StoragePane() {
+  const [st, setSt] = useState<StorageState | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { void storageState().then(setSt); }, []);
+  if (!st) return null;
+  const ask = async () => {
+    setBusy(true);
+    const ok = await requestPersist();
+    setSt(await storageState());
+    setBusy(false);
+    showToast(ok ? "已申请到持久存储：本站数据会被优先保留" : "⚠ 浏览器未授予持久存储（仍是尽力而为，建议定期导出 JSON 备份）");
+  };
+  return (
+    <div id="setStoreSec">
+      <h4 style={{ margin: "14px 0 4px" }}>浏览器存储</h4>
+      <div class="kv2">
+        <b>耐久</b><span>{!st.supported ? "无从得知（此浏览器不报）" : st.persisted ? "持久 · 本站数据会被优先保留" : "尽力而为 · 磁盘吃紧时可能被浏览器清掉"}</span>
+        <b>已用 / 配额</b><span class="num">{fmtBytes(st.usage)} / {fmtBytes(st.quota)}</span>
+      </div>
+      {st.supported && !st.persisted && (
+        <div class="seg">
+          <button type="button" class="tbtn" disabled={busy} title="请求浏览器把本站数据标记为持久，磁盘吃紧时不会被顺手清掉（部分浏览器会弹一次授权框）" onClick={ask}>
+            {busy ? "申请中…" : "🔒 申请持久存储"}
+          </button>
+        </div>
+      )}
+      <div class="hint">图库存在浏览器本地，换浏览器/清站点数据都带不走它。重要的图请用上面的「💾 导出 JSON」另存一份，或在开始界面改用「📁 链接文件夹」直接读写本地文件。</div>
     </div>
   );
 }

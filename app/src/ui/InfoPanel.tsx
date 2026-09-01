@@ -101,10 +101,11 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
       </div>
       {n.owners && n.owners.length > 0 && (
         <div class="hist"><div class="h">归属沿革 · 金＝当前{tac ? "时刻" : "纪年"}</div>
+          {/* 「当前」只标首个命中段——与 ownerAt 同源（它也取首个）。逐段独判会在重叠 owners 上
+              把两段一起标金，而地图上只认其中一个＝检查器与画布互相矛盾。 */}
           {n.owners.map((o, i) => {
             const of = o.faction ? world.factions.find(x => x.id === o.faction) : null;
-            const a = o.since ?? -Infinity, b = o.until ?? Infinity;
-            const now = y >= a && y < b;
+            const now = i === n.owners!.findIndex(q => y >= (q.since ?? -Infinity) && y < (q.until ?? Infinity));
             const so = o.since == null ? "远古" : fmtWhen(cal, tac, o.since);
             const uo = (o.until == null || (!tac && o.until >= 9999)) ? "至今" : fmtWhen(cal, tac, o.until);
             return (
@@ -177,7 +178,7 @@ function FactionCard({ f, world }: { f: Faction; world: World }) {
         <span class="tg" style={{ background: f.color || "#888" }}>{f.阵营 || "派系"}</span>
       </div>
       <div class="kv2">
-        <b>存续</b><span class="num">{f.since ? fmtWhen(cal, tac, f.since, true) : "远古"} – {f.until == null || (!tac && f.until >= 9999) ? "至今" : fmtWhen(cal, tac, f.until, true)}</span>
+        <b>存续</b><span class="num">{f.since != null ? fmtWhen(cal, tac, f.since, true) : "远古"} – {f.until == null || (!tac && f.until >= 9999) ? "至今" : fmtWhen(cal, tac, f.until, true)}</span>
         <b>据点({fmtWhen(cal, tac, y)})</b><span>{ns.length ? ns.map(n => n.名称 || n.id).join("、") : "—"}</span>
       </div>
       {nb > 0

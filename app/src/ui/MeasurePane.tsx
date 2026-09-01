@@ -68,7 +68,8 @@ function Route({ meta }: { meta: Meta }) {
         return (
           <>
             <div class="kv2">
-              <b>行程</b><span class="num">{fmtKm(d)} {res.arm === "air" ? "· 直飞" : `· 迂回 ×${(d / straight).toFixed(2)}`}</span>
+              {/* straight=0（同一点取了两次）时不报迂回率：0/0 会印出「迂回 ×NaN」 */}
+              <b>行程</b><span class="num">{fmtKm(d)} {res.arm === "air" ? "· 直飞" : straight > 0 ? `· 迂回 ×${(d / straight).toFixed(2)}` : ""}</span>
             </div>
             <div class="mtable">
               <div class="mr hd"><span class="l">各速度档耗时</span><span class="v">A* · 当年道路</span></div>

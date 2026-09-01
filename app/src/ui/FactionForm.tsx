@@ -37,7 +37,7 @@ export function FactionForm({ f }: { f: Faction }) {
         </div></div>
       <div class="frow"><label>存续 · 起 / 止（留空＝远古 / 至今）</label>
         <div class="fx2">
-          <input class="fld" id="ff_since" type={eraTy(cal, tac)} placeholder={`起(${eraPh(cal, tac)})`} defaultValue={f.since != null && f.since !== 0 ? fmtWhenForm(cal, tac, f.since) : ""} />
+          <input class="fld" id="ff_since" type={eraTy(cal, tac)} placeholder={`起(${eraPh(cal, tac)})`} defaultValue={f.since != null ? fmtWhenForm(cal, tac, f.since) : ""} />
           <input class="fld" id="ff_until" type={eraTy(cal, tac)} placeholder={`止(${eraPh(cal, tac)})`} defaultValue={f.until != null && (tac || f.until < 9999) ? fmtWhenForm(cal, tac, f.until) : ""} />
         </div></div>
       <div class="frow"><label>说明</label>

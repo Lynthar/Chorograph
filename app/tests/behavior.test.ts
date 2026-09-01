@@ -6,7 +6,7 @@ import { calOf, fmtDayTime, fmtMD, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearF
 import { distKm, haversine, kmPerDeg, kmPerDegLat, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
 import { genTerrainAt, seedTerrain } from "../src/core/terrain.ts";
-import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, yearRangeOf } from "../src/core/time.ts";
+import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
 import { buildElevField, contourStepFor, elevBilinear, elevSmooth, elevUnitM, heightStepM } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, type Grid } from "../src/core/grid.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
@@ -14,7 +14,8 @@ import { ELEV } from "../src/core/constants.ts";
 import { clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, errText, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
 import { ARM_OPT_KINDS, EDGE_STYLE, LEGACY_KIND, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
-import { fmtStrength, parseStrength, unitInheritedAt, unitMoraleAt, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
+import { fmtStrength, parseStrength, setUnitPoint, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
+import { astar, computeRoute } from "../src/core/route.ts";
 import { wallTeeth } from "../src/render/edges.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, WORLD_KM_PER_DEG, WORLD_RADIUS_KM } from "../src/core/world.ts";
@@ -2083,5 +2084,206 @@ describe("缩放极限 minDppFor（比例尺档位 + 小图护栏 + 物理地板
       assert.ok(isFinite(v) && v > 0, `fit=${f} 应有有限正值`);
       assert.ok(Math.abs(kmPx(STRAT, v) - 50 / 110) < 1e-9);
     }
+  });
+});
+
+
+/* 端点契约（2026-08-31 审查）：A* 的返回是**格心口径**——它的头注就这么写。坏的是消费端
+   把格心里程当端到端里程用，故断言分两层：astar 保持格心语义（黄金基准锁着），
+   computeRoute/unitLegs 必须把退化情形翻译成用户读得懂的里程。 */
+describe("寻路端点契约（起格通行门与同格退化）", () => {
+  const META: Meta = { worldModel: "flat", kmPerDeg: 100 };
+  const mkGrid = (cells: string[][]): Grid => ({
+    bb: { lonMin: 0, latMin: 0, lonMax: cells[0].length, latMax: cells.length },
+    step: 1, cols: cells[0].length, rows: cells.length, cells
+  });
+  const fill = (t: string) => Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => t));
+  const LAND = mkGrid(fill("plain"));
+  const world = { meta: META, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] } as unknown as World;
+  const cr = (g: Grid, a: [number, number], b: [number, number], arm: "land" | "water" | "air") =>
+    computeRoute(META, g, undefined, world, 0, { lon: a[0], lat: a[1] }, { lon: b[0], lat: b[1] }, arm);
+
+  it("起讫同格：astar 仍是单点格心 dist=0（格心口径不变）", () => {
+    const r = astar(META, LAND, undefined, [1.1, 1.1], [1.9, 1.9], "land")!;
+    assert.deepStrictEqual(r.path, [[1.5, 1.5]]);
+    assert.strictEqual(r.dist, 0);
+  });
+  it("起讫同格：computeRoute 报端点直线而非 0（0 km/0 日/迂回 ×0 是谎报）", () => {
+    const c = cr(LAND, [1.1, 1.1], [1.9, 1.9], "land");
+    assert.ok(c.dist != null && c.dist > 100, `同格里程应≈113km，实得 ${c.dist}`);
+    assert.strictEqual(c.dist, c.straight);
+  });
+  it("起讫同格：unitLegs 不把同格行军记成零里程，route 仍记可达", () => {
+    const u = { id: "u", kind: "infantry", speed: 30, track: [{ t: 0, lon: 1.1, lat: 1.1 }, { t: 5, lon: 1.9, lat: 1.9 }] };
+    const [leg] = unitLegs(META, LAND, undefined, u as never);
+    assert.ok(leg.km > 100, `同格腿里程应≈113km，实得 ${leg.km}`);
+    assert.strictEqual(leg.route, true);
+  });
+  it("完全同一点：里程 0 且不产 NaN（迂回率的 0/0 由读数层守）", () => {
+    const c = cr(LAND, [1.5, 1.5], [1.5, 1.5], "land");
+    assert.strictEqual(c.dist, 0);
+    assert.strictEqual(c.straight, 0);
+  });
+
+  const water = fill("plain"); water[5][5] = "water"; water[5][6] = "water";
+  const SEA = mkGrid(water);
+  it("起格不可通行＝不可达：水军不得自陆格起步（旧码沿 ∞ 松弛给出非法航路）", () => {
+    assert.strictEqual(astar(META, SEA, undefined, [4.5, 4.5], [6.5, 5.5], "water"), null);
+    assert.strictEqual(cr(SEA, [4.5, 4.5], [6.5, 5.5], "water").fail, true);
+  });
+  it("终格不可通行＝不可达（邻格代价门本就守着，防回归）", () => {
+    assert.strictEqual(astar(META, SEA, undefined, [5.5, 5.5], [4.5, 4.5], "water"), null);
+  });
+  it("起讫同格且该格不可通行：返回不可达，不是 dist=0", () => {
+    assert.strictEqual(astar(META, SEA, undefined, [7.2, 7.2], [7.8, 7.8], "water"), null);
+    assert.strictEqual(cr(SEA, [7.2, 7.2], [7.8, 7.8], "water").fail, true);
+  });
+  it("合法水路不受起格门影响（防守卫把正常航路一起挡了）", () => {
+    const r = astar(META, SEA, undefined, [5.5, 5.5], [6.5, 5.5], "water");
+    assert.ok(r && r.path.length === 2, "相邻两水格应连通");
+  });
+
+  /* 端到端里程（2026-08-31）：格心折线漏掉两端连接段，端点靠近格边时行程会短过直线
+     ——迂回率 <1 几何上不可能，而这个里程直接喂耗时档与超速判定。 */
+  it("行程恒不短于直线（旧口径在细格上会算出迂回 ×0.69）", () => {
+    // 相邻两格、两端各贴一侧格边：格心距 100km，而端点直线接近 200km
+    const c = cr(LAND, [1.01, 5.5], [2.99, 5.5], "land");
+    assert.ok(c.dist != null && c.dist >= c.straight - 1e-9, `行程 ${c.dist} 短过直线 ${c.straight}`);
+  });
+  it("路径以精确起点开头、精确终点结束（画布上起终记号与路线不留断口）", () => {
+    const c = cr(LAND, [1.01, 5.5], [4.99, 5.5], "land");
+    assert.deepStrictEqual(c.path![0], [1.01, 5.5]);
+    assert.deepStrictEqual(c.path![c.path!.length - 1], [4.99, 5.5]);
+    assert.ok(c.path!.length > 2, "中间仍走格心");
+  });
+  it("端点恰在格心上时不留零长段", () => {
+    const c = cr(LAND, [1.5, 5.5], [4.5, 5.5], "land");
+    const dup = c.path!.some((q, i) => i > 0 && q[0] === c.path![i - 1][0] && q[1] === c.path![i - 1][1]);
+    assert.strictEqual(dup, false, "折线里不该有重合点");
+  });
+  it("沿途地形分段恰好铺满全程（连接段也计入）", () => {
+    const c = cr(LAND, [1.01, 5.5], [4.99, 5.5], "land");
+    const sum = Object.values(c.report!.terr).reduce((a, b) => a + b, 0);
+    assert.ok(Math.abs(sum - c.dist!) < 1e-9, `分段合计 ${sum} ≠ 全程 ${c.dist}`);
+  });
+});
+
+/* 时间轴范围（2026-08-31 审查）：原先只看 事件年 / 派系·地点·连线的 since 四样，于是「归属沿革」
+   「涂绘疆域」「只写讫点」「战略图部队」四类图的真史料在时间轴上根本走不到（钳在默认 2980–3107）。 */
+describe("战略时间轴范围涵盖全部时段来源（strategicExtent）", () => {
+  const W = (o: Partial<World>): World =>
+    ({ meta: {}, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [], ...o }) as World;
+  const rangeOf = (o: Partial<World>) => { const r = yearRangeOf(W(o), NaN); return [r.min, r.max]; };
+
+  it("只有归属沿革 owners 的图：范围罩住 100–200，不再落回默认", () => {
+    const w = W({ nodes: [{ id: "n", type: "city", lon: 1, lat: 1, owners: [{ faction: "f", since: 100, until: 200 }] }] as WorldNode[] });
+    const r = yearRangeOf(w, 150);
+    assert.ok(r.min <= 100 && r.max >= 200, `实得 ${r.min}–${r.max}`);
+    assert.strictEqual(r.year, 150, "当前年在范围内就不该被弹走");
+  });
+  it("只有涂绘疆域 paint 时段的图", () => {
+    assert.deepStrictEqual(rangeOf({ factions: [{ id: "f", paint: [{ since: 500, until: 600, cells: [] }] }] as never }), [480, 607]);
+  });
+  it("战略图部队航点撑开范围（原先只有战术分支收航点）", () => {
+    assert.deepStrictEqual(rangeOf({ units: [{ id: "u", track: [{ t: 700, lon: 1, lat: 1 }, { t: 800, lon: 2, lat: 2 }] }] as never }), [680, 807]);
+  });
+  it("只写讫点的地点：范围留出看得见它的余量", () => {
+    const w = W({ nodes: [{ id: "n", type: "city", lon: 1, lat: 1, until: 150 }] as WorldNode[] });
+    const r = yearRangeOf(w, NaN);
+    assert.ok(r.min < 150, `应能拨到 until 之前，实得 min=${r.min}`);
+    assert.ok(activeAt(w.nodes[0], r.min), "范围下限上该地点必须真看得见");
+  });
+  it("作战线时段与涂改时段同样计入", () => {
+    assert.deepStrictEqual(rangeOf({ nodes: [{ id: "e", type: "event", lon: 1, lat: 1, ops: [{ kind: "attack", pts: [[0, 0], [1, 1]], since: 900, until: 910 }] }] as never }), [880, 917]);
+    assert.deepStrictEqual(rangeOf({ terrainOverrides: [{ lon: 1, lat: 1, t: "water", since: 1200 }] as never }), [1180, 1207]);
+  });
+  it("「至今」哨兵 until>=9999 不计入上界（否则时间轴撑到近万年）", () => {
+    assert.deepStrictEqual(rangeOf({ factions: [{ id: "f", since: 3000, until: 9999 }] as never }), [2980, 3007]);
+  });
+  it("全无时段＝仍回默认区间（旧档零变化）", () => {
+    assert.strictEqual(strategicExtent(W({ nodes: [{ id: "n", type: "city", lon: 1, lat: 1 }] as WorldNode[] })), null);
+    assert.deepStrictEqual(rangeOf({ nodes: [{ id: "n", type: "city", lon: 1, lat: 1 }] as WorldNode[] }), [2980, 3107]);
+  });
+});
+
+/* 嵌套集合形状守卫（2026-08-31 审查）：坏档的一个字符串就能让帧循环每帧抛异常且无法局部恢复。 */
+describe("嵌套集合非数组＝删键（normalizeWorld 统一守卫）", () => {
+  const BAD = () => ({
+    meta: {},
+    factions: [{ id: "f", paint: "坏", territory: "坏" }],
+    nodes: [{ id: "n", type: "city", lon: 1, lat: 1, owners: "坏", ops: "坏", ranges: [null, { km: 3 }] }],
+    units: [{ id: "u", kind: "inf", ranges: "坏" }]
+  });
+  it("五个嵌套集合非数组一律删键，消费端拿到的形状都是「没有」", () => {
+    const w = normalizeWorld(BAD()) as unknown as Record<string, never[]>;
+    assert.strictEqual((w.factions[0] as Record<string, unknown>).paint, undefined);
+    assert.strictEqual((w.factions[0] as Record<string, unknown>).territory, undefined);
+    assert.strictEqual((w.nodes[0] as Record<string, unknown>).owners, undefined);
+    assert.strictEqual((w.nodes[0] as Record<string, unknown>).ops, undefined);
+    assert.strictEqual((w.units[0] as Record<string, unknown>).ranges, undefined);
+  });
+  it("防御圈里的 null 成员被剔除（drawRanges 读 null.km 会抛）", () => {
+    const w = normalizeWorld(BAD());
+    assert.deepStrictEqual(w.nodes[0].ranges, [{ km: 3 }]);
+  });
+  it("坏档走完 normalize 后，消费端不再抛（原先每帧红条）", () => {
+    const w = normalizeWorld(BAD());
+    assert.deepStrictEqual(paintLayersAt(w.factions[0], 100), []);
+    assert.strictEqual(ownerAt(w.nodes[0], 100), null);
+    assert.doesNotThrow(() => (w.nodes[0].ranges || []).forEach(r => void (+r.km || 0)));
+  });
+  it("一次 normalize 即到位：再跑一遍不再变（这些键的不动点）", () => {
+    const a = JSON.parse(JSON.stringify(normalizeWorld(BAD())));
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(normalizeWorld(JSON.parse(JSON.stringify(a))))), a);
+  });
+  it("validate 对这五个都出声（旧版能开的档不许 fatal）", () => {
+    const v = validateWorld(BAD());
+    assert.strictEqual(v.ok, true, "不许升为 fatal");
+    const paths = v.warnings.map(w => w.path);
+    for (const k of ["factions[0].paint", "factions[0].territory", "nodes[0].owners", "nodes[0].ops"])
+      assert.ok(paths.includes(k), `缺 ${k} 的提示：${paths.join(" / ")}`);
+  });
+});
+
+/* 数据不变量提示（2026-08-31 审查）：这些原先一声不吭地进库，坏在看不见的地方。 */
+describe("导入不变量提示（一律 warning，不拒开）", () => {
+  const V = (o: object) => validateWorld({ meta: {}, nodes: [], ...o }).warnings.map(w => `${w.path}|${w.msg}`);
+  it("起讫倒置：该对象在任何时刻都不存在", () => {
+    assert.ok(V({ nodes: [{ id: "n", type: "city", lon: 1, lat: 1, since: 300, until: 100 }] }).some(m => m.includes("起讫倒置")));
+  });
+  it("负行军速度：need 会变负并被判成不超速", () => {
+    assert.ok(V({ units: [{ id: "u", kind: "inf", speed: -0.1 }] }).some(m => m.includes("speed")));
+  });
+  it("部队 / 布景 id 重复", () => {
+    assert.ok(V({ units: [{ id: "u", kind: "inf" }, { id: "u", kind: "inf" }] }).some(m => m.includes("部队 id")));
+    assert.ok(V({ decor: [{ id: "d", kind: "tree" }, { id: "d", kind: "tree" }] }).some(m => m.includes("布景 id")));
+  });
+  it("同刻多个航点：只有最后一个生效", () => {
+    assert.ok(V({ units: [{ id: "u", kind: "inf", track: [{ t: 5, lon: 1, lat: 1 }, { t: 5, lon: 9, lat: 9 }] }] }).some(m => m.includes("只有最后一个生效")));
+  });
+  it("合法档零噪音（防守卫把正常数据也报一遍）", () => {
+    assert.deepStrictEqual(V({ nodes: [{ id: "n", type: "city", lon: 1, lat: 1, since: 100, until: 200 }],
+      units: [{ id: "u", kind: "inf", speed: 30, track: [{ t: 1, lon: 1, lat: 1 }, { t: 2, lon: 2, lat: 2 }] }] }), []);
+  });
+});
+
+/* 同刻航点的改写与显示同源（2026-08-31 审查）：unitPos 反向扫描取末一个，setUnitPoint 原先用
+   findIndex 改首个＝「选中当日拖一下」画面纹丝不动。 */
+describe("同刻航点：改写与显示指同一点", () => {
+  const mkU = (track: { t: number; lon: number; lat: number }[]) =>
+    ({ id: "u", kind: "inf", track }) as unknown as Parameters<typeof setUnitPoint>[0];
+  it("拖动改的是 unitPos 显示的那一个", () => {
+    const u = mkU([{ t: 5, lon: 1, lat: 1 }, { t: 5, lon: 9, lat: 9 }]);
+    assert.deepStrictEqual(unitPos(u, 5), { lon: 9, lat: 9, i: 1 });
+    setUnitPoint(u, 5, 4, 4);
+    assert.deepStrictEqual(unitPos(u, 5), { lon: 4, lat: 4, i: 1 });
+  });
+  it("无重复时刻时行为不变（异日插入仍按日排序、同日只改坐标）", () => {
+    const u = mkU([{ t: 1, lon: 1, lat: 1 }]);
+    setUnitPoint(u, 3, 2, 2);
+    setUnitPoint(u, 2, 5, 5);
+    assert.deepStrictEqual((u.track || []).map(q => q.t), [1, 2, 3]);
+    setUnitPoint(u, 1, 7, 7);
+    assert.deepStrictEqual((u.track || [])[0], { t: 1, lon: 7, lat: 7 });
   });
 });

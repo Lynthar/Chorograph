@@ -4,7 +4,7 @@
 import { UNIT_KINDS } from "./constants.ts";
 import { tget } from "./util.ts";
 import { distKm, kmPerDegLat, toRad } from "./geo.ts";
-import { astar } from "./route.ts";
+import { astar, endToEnd } from "./route.ts";
 import type { Grid } from "./grid.ts";
 import type { Arm, Meta, TrackPt, Unit } from "./types.ts";
 
@@ -111,7 +111,10 @@ export function unitPos(u: Unit, T: number): UnitPos | null {
 export function setUnitPoint(u: Unit, T: number, lon: number, lat: number): void {
   u.track = u.track || [];
   const p: TrackPt = { t: +T, lon: +(+lon).toFixed(4), lat: +(+lat).toFixed(4) };
-  const i = u.track.findIndex(q => q.t === +T);
+  /* 取**末**一个同日航点：unitPos 反向扫描返回的正是它，用 findIndex 取首个则「选中当日拖一下」
+     改的是看不见的那一点＝画面纹丝不动（绘制与拾取同源之规）。lib=ES2022 无 findLastIndex。 */
+  let i = -1;
+  for (let k = u.track.length - 1; k >= 0; k--) if (u.track[k].t === +T) { i = k; break; }
   if (i >= 0) u.track[i] = { ...u.track[i], ...p };
   else { u.track.push(p); u.track.sort((a, b) => a.t - b.t); }
 }
@@ -208,7 +211,8 @@ export function unitLegs(meta: Meta | undefined, grid: Grid, roads: Set<string> 
     let km = distKm(meta, a.lon, a.lat, b.lon, b.lat), route = false;
     if (arm !== "air") {
       const r = astar(meta, grid, roads, [a.lon, a.lat], [b.lon, b.lat], arm);
-      if (r && isFinite(r.dist)) { km = r.dist; route = true; }
+      // 端到端口径与量距面同一处（core/route.endToEnd）：格心里程漏掉两端连接段，会把腿账记短
+      if (r && isFinite(r.dist)) { km = endToEnd(meta, r, [a.lon, a.lat], [b.lon, b.lat]).dist; route = true; }
     }
     const need = km > v ? km / v : km / (v * 24 / MARCH_H);
     legs.push({ i, a, b, km, days, need, ok: days > 0 && need <= days + 1e-9, route });
