@@ -1,82 +1,84 @@
 <div align="center">
 
-<img src="app/public/icon.svg" alt="" width="88" height="88">
+<img src="app/public/icon.svg" alt="舆图" width="96">
 
-# 舆图 · Chorograph
+# Chorograph
 
-**浏览器端的「分析型」世界地图工具 —— 为世界观搭建与小说创作而生**
-
-<sub><i>A browser-based analytical world-map tool for worldbuilding &amp; fiction writing.</i></sub>
-
-[![license: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE) &nbsp;·&nbsp; WebGL2 · PWA · 单文件产物
+[![license](https://img.shields.io/github/license/Lynthar/Chorograph)](LICENSE)
+[![tests](https://img.shields.io/github/actions/workflow/status/Lynthar/Chorograph/test.yml?branch=main&label=tests)](https://github.com/Lynthar/Chorograph/actions/workflows/test.yml)
+[![release](https://img.shields.io/github/v/release/Lynthar/Chorograph)](https://github.com/Lynthar/Chorograph/releases)
+[![pages](https://img.shields.io/github/deployments/Lynthar/Chorograph/github-pages?label=pages)](https://lynthar.github.io/Chorograph/)
 
 </div>
 
-## 在线使用与下载
+浏览器端分析型世界地图：疆域按纪年演变、A* 寻路算行军天数、战役烘焙成战术兵棋图
 
-- **在线使用**：<https://lynthar.github.io/Chorograph/> —— 可作 PWA 安装到桌面、离线可用。
-- **离线单文件**：到 [Releases](https://github.com/Lynthar/Chorograph/releases) 下载 `Chorograph.html`，双击即可运行，无需安装任何东西。
+我做它是给写小说、搭世界观、复原历史战役的人用的。整个程序是一个 HTML 文件，
+数据在你自己机器上，不上传任何服务器。
 
-数据只存在你的浏览器本地（IndexedDB）或你链接的本地文件夹，**不上传任何服务器**。
+比起画一张好看的幻想地图，我更在意时间这一维：这里几乎每个对象都带存在时段，
+拖动纪年时间轴，城池会换旗、势力范围会伸缩、寻路会按那一年的路网重算。
 
-## 这是什么
+<img src="docs/screenshots/tactical.png" alt="舆图的战术图：自动生成的海岸与山体、公里比例尺，底部是细到日与时的时间轴" width="100%">
 
-舆图把**距离、行军天数、势力范围、战役位置**这些容易写崩的设定，放进一张会自洽计算的地图里——同时具备 Inkarnate 式的手绘地形/布景编辑。它以 **WebGL2** 渲染地形（无可用 GPU 时自动退回 Canvas2D），**A\* 寻路跑在 Web Worker**，用 **IndexedDB** 或本地文件夹作图库，并可构建为一个**自包含的单文件 HTML**（离线可用、可作 PWA 安装、`file://` 双击即跑）。
+<sub>一张新建的战术图——海岸、山体与生态带都由种子生成，左下是公里比例尺，
+右下是光标处的高程读数，底下那条时间轴细到日与时。</sub>
 
-- ⏳ **时间为基底**：几乎每个对象都能带存在时段（`since/until`）。拖动纪年时间轴，城池换旗、势力范围伸缩、战役依年份显隐，寻路也按当年的道路与地形计算。支持自定义历法（纪元/月长可配）或真实地球历（儒略/格里高利、公元前）。时间轴粒度随图分档：世界图按**年 / 月**、战场图按**日 / 时**，时段与年份也可写成「3107-3」这样的年月。
-- 🌍 **双世界模型**：`球面星球`（大圆距离 + 经度环绕）或 `平面·天圆地方`（直角坐标、有边界）。切换即全局重算里程 / 天数。
-- 🧭 **A\* 地形寻路 + 行军报告**：陆军翻山慢、水军只走水域、飞行直线；给出里程 / 迂回率 / 各速度档天数 / 沿途地形与途经地。
-- 🗺 **程序化生成地形**：新建地图可按种子生成海岸线 / 山川 / 生态的可信大陆，可选**大陆 / 群岛**风格，一键换一块；另有内置示例大陆与「空白平原」起手。
-- ⛰ **高程场与河流真宽**：程序化地势起伏 + 高程画笔 + 等高距标定；河流可按真实水面宽度渲染，也可自由描线成河。
-- ⚔ **战术地图·兵棋推演**：战役事件点一键**生成小范围战场图**（地形 / 地点 / 派系按当年快照继承、网格加密），也可**直接新建一张战场**——时间轴细化到日与时、公里方格网，**部队**（十四类兵种）逐日记航点、回放行军、**A\* 可达性校验**（按每日行军时数折算，超速标红），**兵力 / 速度 / 士气可逐航点改写**（自该航点起生效，伤亡、分兵、强行军都记得下来），视野与火力射程圈（火力只属有远程投射能力的兵种）、交战 / 对峙 / 溃退状态，正面宽度够大时兵棋自动画成带朝向的**阵位条**；与战略图**双向链接**互跳。世界图上也能摆**基础部队**（名称 / 归属 / 兵种 / 兵力 / 速度），按年记位置，用来表现一支军团的多年推进。
-- 🎞 **相位与分帧出图**：把战役的关键时刻记成**命名相位**，时间轴上一点即到，一键**逐相位各导出一张 PNG**（自动附图例：当刻在场派系 / 兵种 / 状态 / 可靠性档位）。
-- 🔍 **可靠性分级**：地点与连线可标**推断 / 传说**，图上以虚描、淡显、问号浮标如实示人——复原图该说清哪些是考据、哪些是猜测。
-- 🎨 **手绘编辑**：地点（定居 / 军事 / 自然 / 特殊四类共 16 种记号）、连线（道路 / 河流 / 商路 / 壁垒长城）、势力涂域、地貌 / 生态 / 高程三笔刷地形（生态笔随手撒下真实布景印章）、布景印章（可上传自定义图形，可单独选中 / 框选 / 调整）、战役作战线（攻势 / 防线）、自由文本标注。
-- 👁 **只读分享**：一键复制**只读链接**（整张图压进网址，对方点开即看，**不经任何服务器**），或导出**自包含的只读网页**（一个 `.html`，双击即看、离线可用、不受链接长度限制）。收到的人看得见全图、能量距与推演行军，但改不动数据；想接着做，一键存进自己的图库成为可编辑副本。
-- 📁 **两种图库**：默认浏览器本地存储（IndexedDB），或把某个本地文件夹当图库、**直接读写其中的 `.json`**（需 Edge / Chrome 经 localhost / https）。
-- 🔗 **回链 Obsidian**：地点可用 `obsidian://` 双链直开你的设定库。
+<!-- 战略示例图：docs/screenshots/strategic.png，重拍后补在这里 -->
 
-## 快速开始
+## 拿它做什么
 
-```bash
-cd app
-npm install
-npm run dev          # 开发服务器（http://localhost:5173，HMR）
-npm run build        # 构建单文件产物 app/dist/index.html（JS/CSS/Worker 全内联 + PWA 伴生件）
-npm run preview      # 本地验证构建产物（http://localhost:4173）
+**同一张图按年份演变。** 对象带 `since` / `until`，拖时间轴就能看疆域怎么变。
+支持自定义历法，也支持真实地球历（儒略 / 格里高利，含公元前）。
+
+**A\* 地形寻路，算的是行军。** 路径吃地形权重，给出里程、迂回率，以及按不同速度档
+折算的天数。寻路跑在 Web Worker 里，不卡界面。
+
+**战役烘焙成战术兵棋图。** 战略图上的一个事件点，可以一键展开成小范围的战术图：
+时间粒度细到日与时，部队按天走航点，A\* 负责校验可达性。十四类兵种，四类共十六种记号。
+
+**分享与出图。** 一条自带整张图的链接、一个自包含的只读网页、一个演示态，对方不用装
+任何东西。通用 GeoJSON 导入用一条管线统一处理 CHGIS、OHM、Azgaar；出图 ×1 到 ×4，PNG 带
+pHYs 物理密度，可以直接进印刷流程。
+
+## 安装
+
+**在线版**，打开就能用，也可以装成 PWA：
+
+```
+https://lynthar.github.io/Chorograph/
 ```
 
-构建出的 `dist/index.html` 自包含，可直接双击（`file://`）运行；托管到任意静态服务器即可作 PWA 安装、离线使用。推荐 **Edge / Chrome** 以获得完整功能（「文件夹图库」依赖 File System Access API）。**舆图为桌面浏览器设计，暂不适配移动端窄屏与触控。**开发模式下可用 URL 深链直达，例如 `#map=<地图名>` 打开图库中的指定地图。
+**离线单文件**，从 [Releases](https://github.com/Lynthar/Chorograph/releases) 下
+`Chorograph.html`，双击就能打开，也可以放在 U 盘里。
 
-## 示例 · 战术推演图
-
-战术图用于复原真实战役：战役当年快照、时间轴逐日回放、部队航点与 A\* 可达性校验、相位分帧出图、工事线与史料可靠性三档（确证实描 / 推断虚描）。随仓库附带的示例战术图（井陉之战 / 鄱阳湖之战 / 长平之战）正在按新的尺度与网格法则重做，后续版本恢复；届时可在仓库根放置 `.json` 后经深链 `#sample=<文件名>` 直接载入。
-
-## 测试
+**从源码构建**（需要 Node 23.6+）：
 
 ```bash
-cd app
-npm test             # node:test 套件（需 Node ≥ 23.6，零原生依赖）
-npm run typecheck    # tsc --noEmit
+git clone https://github.com/Lynthar/Chorograph.git
+cd Chorograph/app
+npm ci
+npm run build
 ```
 
-核心数学（投影 / 噪声 / 地形判定 / 历法 / 距离 / 寻路）以**黄金基准**回归锁定——断言逐位复现，保证程序化地形与既有存档不随重构走样。每次 push / PR 由 GitHub Actions 自动跑测试、类型检查与单文件构建。
+产物是 `app/dist/index.html`。没有配置文件：世界本身的设置（历法、地形种子、图的类型）
+存在地图数据里，界面偏好存在浏览器 localStorage。
 
-## 项目结构
+## 能力边界
 
-| 路径 | 作用 |
-|---|---|
-| `app/` | 应用本体（Vite + TypeScript + Preact / signals） |
-| `app/src/core/` | 纯逻辑：几何 / 投影 / 噪声 / 地形 / 历法 / 距离 / A\* 寻路（黄金基准平价锁定） |
-| `app/src/render/` | 渲染层：WebGL2 地形 + Canvas2D 覆盖层 / 兵棋 / 布景 / 分析 |
-| `app/src/data/` | IndexedDB 图库 / 文件夹图库 |
-| `app/src/worker/` | 寻路与侵蚀 Web Worker |
+- **不支持移动端和触屏。** 这是明确的取舍，不是还没做。
+- **文件夹图库只在 Chromium 系浏览器上可用**，因为它依赖 File System Access。
+  用别的浏览器会退回 IndexedDB。
+- **地形是程序化生成加水文启发式侵蚀，不是地质气候模拟。** 它追求的是可信的制图观感，
+  别拿它的地貌当科学结论。
+- **行军天数是简化模型。** 选路会吃地形权重，但耗时目前恒等于几何里程除以速度——
+  所以走官道绕远反而算出更久。别把那个天数当精确值。
+- **只能出 PNG，没有矢量导出。界面只有中文。**
+- **离线单文件下有几件事做不了**：导出只读网页要读取自身产物，`file://` 下取不到；
+  剪贴板也会退化成手动复制。这些在在线版上都正常。
+- **只读分享链接把整张图编码在 URL 里**，大图的链接会很长，可能被聊天软件截断。
 
-## 许可
+## 许可证
 
-Copyright © 2026 Lynthar。以 [GNU AGPL-3.0-or-later](LICENSE) 授权——自由使用、修改与再分发，**衍生作品须以同样的协议开源**。
-
-选 AGPL 而非 GPL，是因为舆图是浏览器端应用：**把修改版架在网上供人使用，也须向使用者提供完整源码**（AGPL §13），GPL 不覆盖这一条。
-分发单文件产物 `Chorograph.html`（或其修改版）时，同样需告知对应源码的获取方式；本仓库即是。
-
-早期版本曾以 MIT 发布——已经发出去的授权不受本变更影响；此后的版本一律适用本协议。
+GNU Affero 通用公共许可证 v3.0 或更高版本 —— 见 [LICENSE](LICENSE)。
+Copyright (c) 2026 Lynthar。
