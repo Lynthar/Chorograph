@@ -16,13 +16,15 @@ import type { CalTemplate } from "../data/calstore.ts";
 import type { GeoMapping, GeoScan } from "../core/geojson.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
+import type { ElevField } from "../core/elev.ts";
+import type { UnitMasks } from "../core/viewshed.ts";
 import type { TerrainStyle } from "../render/renderer.ts";
 import type { Arm, Decor, Edge, Faction, Meta, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 
 /** 新壳已实现的图层子集（未实现的不出现在面板上）。trails/ranges/vision 为战术图专属（tacOnly）；
     units 两种图都画（2026-07-31 起战略图可摆基础部队） */
-export const IMPL_LAYERS = ["terrain", "contour", "decor", "graticule", "politics", "range", "road", "river", "trade", "wall", "nodes", "labels", "notes", "events", "arrows", "units", "trails", "ranges", "vision"];
+export const IMPL_LAYERS = ["terrain", "contour", "decor", "graticule", "politics", "range", "road", "river", "trade", "wall", "nodes", "labels", "notes", "events", "arrows", "units", "trails", "ranges", "vision", "radar"];
 
 export const worldSig = signal<World | null>(null);
 export const yearSig = signal(3107);
@@ -74,6 +76,8 @@ export const selMembers = (s: Sel): SelMembers =>
 export const isTacSig = computed(() => (worldSig.value?.meta || {}).mapKind === "tactical");
 /** 部队可达性预算缓存（外壳按网格/编辑版本重算填入；渲染层只读，帧内不算路）。键=部队 id */
 export const unitLegsSig = signal<Map<string, Leg[]>>(new Map());
+/* —— 视域（视线掩膜；shell/viewshed 独写）：部队 id → 视野圈/直射火力圈各一张；无掩膜＝画整圆 —— */
+export const visMaskSig = signal<Map<string, UnitMasks>>(new Map());
 
 /** 战术图请求桥（组件→外壳）：InfoPanel 战役卡按钮设值，外壳 effect 消费做库链接/生成/导航
    （生成/打开涉及 IndexedDB/文件夹 IO，只能在外壳做；组件不碰库）。 */
@@ -138,6 +142,9 @@ export const saveConflictSig = signal<SaveConflict | null>(null);
 /* —— 地势定形相位（顶栏胶囊；host 独写）：work=工作档演算中 / ultra=4K 静置精修中 /
    done=刚落定（host 2s 后自动归 idle）。缓存命中不置相位——瞬时完成的事不值得一枚胶囊。 —— */
 export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
+/** 落定的规则场（host 独写）：门关＝粗格、门开＝工作档落地后的那份；演算中为 null。
+    规则消费者只认它——ctx.ruleField 在等待窗里是过渡合成，视域算在上面就是「落笔即变、落地又变」。 */
+export const ruleFieldSig = signal<ElevField | null>(null);
 
 /* —— 弹层：帮助 / 设置（v0.14 .ovl；设置分 app=改当前世界参数 / create=新建地图）—— */
 export const helpOpenSig = signal(false);
@@ -367,6 +374,7 @@ function applyRestored(cur: World, snapshot: World): void {
     linkFromSig.value = null;
     cancelOpDraw(); clearOpSel();
     unitLegsSig.value = new Map();                          // 部队可达性缓存失效（外壳按新网格重算）
+    visMaskSig.value = new Map();
     worldSig.value = restored;
     yearSig.value = yearRangeOf(restored, yearSig.peek()).year;
     if (gridChanged) gridVerSig.value++;
@@ -398,6 +406,7 @@ export function setWorldState(w: World): void {
     linkFromSig.value = null;
     cancelOpDraw(); clearOpSel();
     unitLegsSig.value = new Map();
+    visMaskSig.value = new Map();
     worldSig.value = w;
     yearSig.value = yearRangeOf(w, yearSig.peek()).year;
   });

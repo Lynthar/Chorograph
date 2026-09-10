@@ -49,6 +49,7 @@ export interface BlankTacSpec {
   relief?: number;
   contourM?: number;             // 最细等高距 米（战场常用 10~100；缺省不落盘=10m）
   vault?: string;
+  period?: "modern";             // 时代：现代解锁雷达等近现代账目；缺省不落盘＝古代
 }
 
 /** 新建一张空白战术战场（恒平面）。today=YYYY-MM-DD（外部传入以保持纯函数，同 blankWorld） */
@@ -79,6 +80,7 @@ export function blankTacticalWorld(s: BlankTacSpec, today: string): World {
   if (relief > 0) meta.relief = relief;
   if (s.contourM != null && s.contourM > 0) meta.contourM = s.contourM;
   if (s.vault) meta.vault = s.vault;
+  if (s.period === "modern") meta.period = "modern";
   meta.gridN = autoGridN(meta);   // 尺度身份盖章（创建时定形）：此后法则常数演进不动旧图
   return { meta, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] };
 }
@@ -199,6 +201,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   if (m.elevUnitM != null) meta.elevUnitM = m.elevUnitM;
   if (m.contourM != null) meta.contourM = m.contourM;
   if (m.climate) meta.climate = m.climate;                // 气候档随图继承（子图恒平面＝只取档值，不随纬度）
+  if (m.period === "modern") meta.period = "modern";      // 时代随图继承（母图一般没有；设置里可改）
   if (m.vault) meta.vault = m.vault;
   meta.gridN = autoGridN(meta);   // 尺度身份盖章（同 blankTacticalWorld）
 

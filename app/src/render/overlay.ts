@@ -7,6 +7,7 @@ import { project, SCALE_BAR_PX, unproject, visibleWorldCopies, type Camera } fro
 import { distKm, kmPerDegLat, toRad, wrapLon } from "../core/geo.ts";
 import { calOf, fmtT, fmtYear } from "../core/calendar.ts";
 import { fmtKm } from "../core/util.ts";
+import { isModern } from "../core/units.ts";
 import { drawDecor } from "./decor.ts";
 import { drawRanges, drawUnits } from "./units.ts";
 import { drawFactions } from "./factions.ts";
@@ -15,6 +16,7 @@ import { drawNodes, drawNodeRanges, drawPinnedNotes } from "./nodes.ts";
 import { createLabelField } from "./labels.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Leg } from "../core/units.ts";
+import type { UnitMasks } from "../core/viewshed.ts";
 import type { Meta, World, WorldNode } from "../core/types.ts";
 
 /* 门面再导出（拆层不改调用点）：绘制单线 drawOp 供画线预览（frame），拾取全家（pointer） */
@@ -44,9 +46,17 @@ export interface OverlayOpts {
   decorSelId?: string | null;         // 选中布景 id（虚线金框）
   decorMultiIds?: string[] | null;    // 框选的布景 id（同款金框）
   unitLegs?: Map<string, Leg[]>;      // 部队可达性预算（外壳缓存；供尾迹标超速）
+  visMasks?: Map<string, UnitMasks>;  // 视线掩膜（外壳编排；有掩膜的圈只填视线可达的格）
   smooth?: number;                    // 涂域边界平滑档（Chaikin 轮数 0–3；缺省 2，笔刷框调）
   edgeSelIdx?: number | null;         // 选中连线下标（红晕高亮，对齐旧 isSelEdge）
   editing?: boolean;                  // 编辑模式：全部地点可见（对齐旧 nodeVisible）
+}
+
+/** 焦点部队＝选中 + 框选的部队 id；空＝无焦点态（各圈平铺） */
+function unitFocus(opts: OverlayOpts): ReadonlySet<string> | undefined {
+  const s = new Set<string>(opts.multiUnitIds || []);
+  if (opts.unitSelId) s.add(opts.unitSelId);
+  return s.size ? s : undefined;
 }
 
 export function drawOverlay(
@@ -72,8 +82,9 @@ export function drawOverlay(
       if (on("decor")) drawDecor(ctx, c2, world, yearNow, opts.grid ? opts.grid.step : 1, decorSel);   // 手绘布景（印章尺度随格距 step；生态笔刷落的真实印章同此层）
       if (on("politics")) drawFactions(ctx, c2, meta, world, yearNow, opts.smooth ?? 2);
       if (on("range")) drawNodeRanges(ctx, c2, meta, world, yearNow, opts.selId);   // 地点范围虚线圈
-      if (on("ranges") || on("vision")) drawRanges(ctx, c2, meta, world, yearNow, {   // 火力射程/视野圈：垫在连线/地点之下
-        fire: on("ranges"), vision: on("vision"),
+      if (on("ranges") || on("vision") || on("radar")) drawRanges(ctx, c2, meta, world, yearNow, {   // 火力射程/视野/雷达圈：垫在连线/地点之下
+        fire: on("ranges"), vision: on("vision"), radar: on("radar") && isModern(meta), masks: opts.visMasks,   // 雷达层随时代（层面板同门）
+        focus: unitFocus(opts),                                          // 选中/框选的部队＝焦点：斜纹加粗，其余只留描边
         handleUnit: opts.editing ? (opts.unitSelId || null) : null,     // 编辑态选中对象的圈带半径拖动手柄
         handleNode: opts.editing ? (opts.selId || null) : null
       });

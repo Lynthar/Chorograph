@@ -8,8 +8,8 @@ import { paperOf, shadeGain, snowSpec, type SnowSpec } from "./material.ts";
 import { createTerrainGL } from "./terrainGL.ts";
 import { createTerrainCPU } from "./terrainCPU.ts";
 
-/** 底图样式：shaded＝观感底图（域扭曲＋晕渲＋材质，地类边界揉成有机走向）；
-    flat＝推演底图（逐格类型平色，像素颜色＝光标读数与寻路读到的那一格；等高线与纸色照画） */
+/** 底图样式：shaded＝观感底图（域扭曲＋晕渲＋材质，地类边界揉成有机走向；画面场可为精修档）；
+    flat＝推演底图（逐格类型平色，像素颜色＝光标读数与寻路读到的那一格；高程与等高线取规则场＝与读数同源；纸色照画） */
 export type TerrainStyle = "shaded" | "flat";
 
 /** flat=推演底图（见 TerrainStyle）；cMinor=细曲线等距（抽象单位，contourStepFor 产出）；cFade=下一细分档淡入 0..1（×2 阶梯嵌套过渡）；
@@ -29,11 +29,12 @@ export function terrainOpts(meta: Meta, degPerPx: number, layers: Record<string,
 export interface TerrainRenderer {
   canvas: HTMLCanvasElement;
   kind: "webgl2" | "cpu";
-  /** field=高程场含几何（粗格=coarseField 包装；细分=erode 产出，可带 shadow 遮蔽通道；
-      缺省=按 ELEV[类型] 示意常数合成粗格，旧行为） */
-  /** 传网格与高程场。wsurf=每格水面高程（core/elev.waterSurface，海 0／内陆湖在岸线高度）：
+  /** 传网格与高程场。field=画面场含几何（粗格=coarseField 包装；细分=erode 产出，可带 shadow 遮蔽通道；
+      精修档也在此；缺省=按 ELEV[类型] 示意常数合成粗格，旧行为）。
+      rule=规则场（工作档）：推演底图的高程与等高线取它＝与光标读数同源；缺省＝field。
+      wsurf=每格水面高程（core/elev.waterSurface，海 0／内陆湖在岸线高度）：
       水陆判据与深浅色都以它为基准，必传——漏了内陆湖会静默沉回海平面。 */
-  uploadGrid(grid: Grid, wsurf: Float32Array, field?: ElevField): void;
+  uploadGrid(grid: Grid, wsurf: Float32Array, field?: ElevField, rule?: ElevField): void;
   render(viewBB: BBox, opts?: TerrainRenderOpts): void;
   /** 单帧可渲染的最大画布边长 px（高清出图按此钳倍数；超限 GL 会静默给黑帧或裁切） */
   maxDim(): number;

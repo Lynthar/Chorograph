@@ -53,6 +53,7 @@ export interface Meta {
   vault?: string;
   mapKind?: "tactical";
   outside?: "land";           // 图幅外是陆地：碰到图幅边的水体也按内陆湖定水面，图幅外铺纸色（缺键=海）
+  period?: "modern";          // 时代（战术图）：现代解锁雷达等近现代账目；缺键＝古代＝既有图一字不变。⚠ 与 calendar.era（纪元前缀）无关
   climate?: Climate;          // 气候档：雪线基准，球面图再随纬度在图幅内变化（缺键=出厂 2050 m 不随纬度，旧图观感不变）
   calendar?: CalendarCfg;     // 战术图历法（默认 12 月 × 30 日）
   parent?: TacParent;
@@ -175,6 +176,14 @@ export interface Unit extends Timed {
   ranges?: { 名称?: string; km: number }[];   // 旧多圈火力（v0.14 遗留）：只读回退——渲染取首条，表单保存归一为 range
   range?: number;             // 火力投射半径 km（与 vision 同机制：数字输入+圈上手柄拖动、拖近零清除）
   vision?: number;            // 视野/侦察半径 km（浅色半透明圆；选中后圈左手柄可拖动调节）
+  /* 视域：视野圈按视线裁；火力圈直射按视线裁、曲射按固定射角的弹道裁（缺键＝曲射 45°）。 */
+  fire?: "direct" | "arc";    // 直射＝火力圈按视线裁、曲射＝按射角弹道裁；缺键＝按兵种缺省（FIRE_DIRECT_KIND，古代兵种一律曲射）
+  arcDeg?: number;            // 曲射射角（度，0–90 开区间）；缺键＝ARC_DEG（core/units.unitArcDeg）
+  eyeM?: number;              // 观察高度（地面以上，米）；缺键＝兵种缺省（core/units.unitEyeM）
+  /* 雷达（现代战术图 meta.period==="modern" 才出表单行与图层）：视线判定换折射系数 1/4，眼位＝天线高度，目标＝假定高度 */
+  radar?: number;             // 探测半径 km（缺键＝无雷达）
+  radarM?: number;            // 天线高度 m；缺键＝RADAR_M
+  radarTgtM?: number;         // 假定目标高度 m；缺键＝RADAR_TGT_M
   /* 阵形足印（柱B）：正面宽与纵深（km），缺省＝无足印＝标准兵棋框逐位不变。
      放大到足印够宽（>BAR_MIN_PX）才改画按比例的阵位条——万人步阵与二千轻骑不再同框等大。 */
   frontKm?: number;

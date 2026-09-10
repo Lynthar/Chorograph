@@ -35,12 +35,17 @@ export function fmtKm(km: number): string {
   return Math.round(km * 1000) + " m";
 }
 
-/** #rgb/#rrggbb → rgba(r,g,b,a)；非法色值原样返回（不产出 rgba(NaN)） */
-export function hexA(hex: string | undefined, a: number): string {
-  if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex || "")) return hex || "#888";
+/** #rgb/#rrggbb → [r,g,b]；非法色值 null */
+export function hexRGB(hex: string | undefined): [number, number, number] | null {
+  if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex || "")) return null;
   const h = (hex as string).replace("#", "");
   const n = parseInt(h.length === 3 ? h.split("").map(x => x + x).join("") : h, 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+/** #rgb/#rrggbb → rgba(r,g,b,a)；非法色值原样返回（不产出 rgba(NaN)） */
+export function hexA(hex: string | undefined, a: number): string {
+  const c = hexRGB(hex);
+  return c ? `rgba(${c[0]},${c[1]},${c[2]},${a})` : hex || "#888";
 }
 
 /** 文件名净化：去非法字符/前导点/尾随点空格、限 60 字符，空白回退「未命名」（文件夹图库落盘用）。

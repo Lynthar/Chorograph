@@ -4,12 +4,14 @@
    世界拷贝循环逐拷贝调用（同 drawEco/drawDecor）；pickUnit 独立，自带拷贝循环（同 pickNode）。 */
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { kmPerDegLat, toRad } from "../core/geo.ts";
-import { fmtStrength, footCornersLL, unitFacingAt, unitFireKm, unitFootKm, unitKind, unitPos, unitStatusAt, unitStrengthAt, type Leg, type UnitPos } from "../core/units.ts";
+import { fmtStrength, footCornersLL, isModern, unitArcDeg, unitFacingAt, unitFireDirect, unitFireKm, unitFootKm, unitKind, unitPos, unitRadarKm, unitStatusAt, unitStrengthAt, type Leg, type UnitPos } from "../core/units.ts";
+import { maskContour, maskCoverage } from "./maskraster.ts";
 import { pointInPoly } from "../core/geometry.ts";
 import { UNIT_STATUS } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
-import { hexA, tget } from "../core/util.ts";
+import { hexA, hexRGB, tget } from "../core/util.ts";
 import type { LabelField } from "./labels.ts";
+import type { UnitMasks, VisMask } from "../core/viewshed.ts";
 import type { Meta, Unit, World } from "../core/types.ts";
 
 /** 单位框色=所属派系色（缺省暗红） */
@@ -68,9 +70,9 @@ function drawUnitSymbol(ctx: CanvasRenderingContext2D, x: number, y: number, wor
   ctx.restore();
 }
 
-/** 阵位条（柱B）：按真实正面×纵深画的旋转矩形——派系色三成填充+实描边，**前缘加粗一道**即见朝向；
-    兵种字正立在阵中（不随条转,斜排汉字不可读）,状态语言与标准框同规（溃退虚框/交战红芯/徽章）。 */
-function drawUnitBar(ctx: CanvasRenderingContext2D, pts: [number, number][], world: World, u: Unit, selMe: boolean, st?: string | null): void {
+/** 阵位条（柱B）：按真实正面×纵深画的旋转矩形——派系色三成填充+实描边，**前缘加粗一道**即见朝向（现代图的
+    防区是防御地段不是战列，不画前缘）；兵种字正立在阵中（不随条转,斜排汉字不可读）,状态语言与标准框同规。 */
+function drawUnitBar(ctx: CanvasRenderingContext2D, pts: [number, number][], world: World, u: Unit, selMe: boolean, st: string | null | undefined, frontEdge: boolean): void {
   const col = boxColor(world, u);
   const sd = tget(UNIT_STATUS, st) || null;
   const trace = () => { ctx.beginPath(); pts.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath(); };
@@ -93,8 +95,10 @@ function drawUnitBar(ctx: CanvasRenderingContext2D, pts: [number, number][], wor
     ctx.closePath();
     ctx.lineWidth = 1.3; ctx.strokeStyle = hexA(sd.color, .85); ctx.stroke();
   }
-  ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(pts[1][0], pts[1][1]);   // 前缘
-  ctx.lineWidth = 3.6; ctx.strokeStyle = col; ctx.stroke();
+  if (frontEdge) {   // 前缘
+    ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(pts[1][0], pts[1][1]);
+    ctx.lineWidth = 3.6; ctx.strokeStyle = col; ctx.stroke();
+  }
   /* 兵种字随纵深收缩——薄条（纵深缺省＝正面÷6）里 11px 会溢出条外 */
   const dpx = Math.hypot(pts[0][0] - pts[3][0], pts[0][1] - pts[3][1]);
   const k = unitKind(u);
@@ -197,7 +201,7 @@ export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
     const selMe = opts.selId === u.id || !!(opts.multiIds && opts.multiIds.includes(u.id));
     if (opts.trails) drawTrail(ctx, cam, world, u, T, p, opts.legs && opts.legs.get(u.id));
     const st = unitStatusAt(u, T);
-    if (foot) drawUnitBar(ctx, foot, world, u, selMe, st);
+    if (foot) drawUnitBar(ctx, foot, world, u, selMe, st, !isModern(meta));
     else drawUnitSymbol(ctx, x, y, world, u, selMe, st);
     if (opts.labels) {
       /* 标签仍在图面直立、仍走共用避让场；阵位条态改锚其外接盒的上下缘（条比框大得多，贴框距会压在阵中） */
@@ -264,37 +268,155 @@ function drawHandle(ctx: CanvasRenderingContext2D, x: number, y: number, col: st
 export interface RangesOpts {
   fire?: boolean;                  // 火力射程圈（ranges 层；缺省开——兼容旧调用）
   vision?: boolean;                // 视野圈（vision 层）
+  radar?: boolean;                 // 雷达覆盖圈（radar 层 × 现代图；调用方已并门）
   handleUnit?: string | null;      // 编辑态选中部队 id → 其圈上画拖动手柄
   handleNode?: string | null;      // 编辑态选中地点 id → 其火力圈画手柄
+  masks?: Map<string, UnitMasks>;  // 视线掩膜：有掩膜的圈只填可达的格（圈线仍画名义半径）
+  focus?: ReadonlySet<string>;     // 选中的部队 id：有则它们的可达区域斜纹加粗描边、其余只留描边（多队相邻靠点选分辨）
 }
 
-/** 火力/视野圈＝派系色半透明**实心圆**（视野浅而透、火力深；描边细线区分：火力实线/视野点线）。
+/* 掩膜的屏幕栅格（位图 + 等值线路径），按 (掩膜, 缩放档, 派系色) 缓存：缩放档＝每格像素数取半倍频程阶梯，
+   连续缩放不逐帧重建；≥1 一档＝逐格。派系色烙进位图、覆盖率进 alpha，透明度画时给。 */
+interface MaskRaster { key: number; col: string; w: number; h: number; img: HTMLCanvasElement; path: Path2D }
+const RASTER = new WeakMap<VisMask, MaskRaster>();
+const scaleKey = (s: number): number => s >= 1 ? 1 : Math.pow(2, Math.round(Math.log2(s) * 2) / 2);
+function maskRaster(mask: VisMask, col: string, s: number): MaskRaster | null {
+  const key = scaleKey(s), hit = RASTER.get(mask);
+  if (hit && hit.key === key && hit.col === col) return hit;
+  if (typeof document === "undefined") return null;
+  const cv = maskCoverage(mask, key), rgb = hexRGB(col) || [136, 136, 136];
+  const img = document.createElement("canvas");
+  img.width = cv.w; img.height = cv.h;
+  const g = img.getContext("2d");
+  if (!g) return null;
+  const id = g.createImageData(cv.w, cv.h), px = id.data;
+  for (let i = 0; i < cv.cov.length; i++) {
+    const o = i * 4;
+    px[o] = rgb[0]; px[o + 1] = rgb[1]; px[o + 2] = rgb[2]; px[o + 3] = Math.round(255 * cv.cov[i]);
+  }
+  g.putImageData(id, 0, 0);
+  const seg = maskContour(cv), path = new Path2D();
+  for (let i = 0; i < seg.length; i += 4) { path.moveTo(seg[i], seg[i + 1]); path.lineTo(seg[i + 2], seg[i + 3]); }
+  const r = { key, col, w: cv.w, h: cv.h, img, path };
+  RASTER.set(mask, r);
+  return r;
+}
+
+/* 斜纹（焦点态）：屏幕空间 7 px 一道、1.3 px 粗，纹向按焦点序轮换（多选时分得开）；经掩膜位图
+   source-in 只落在可达处。图案按 (色, 纹向) 缓存；临时画布一张复用，按视口相交部分与 DPR 建。 */
+const HATCH_DEG = [45, 135, 0, 90], HATCH_PX = 7;
+const PATTERNS = new Map<string, CanvasPattern>();
+let hatchTmp: HTMLCanvasElement | null = null;
+function hatchPattern(col: string, deg: number): CanvasPattern | null {
+  const k = col + "@" + deg, hit = PATTERNS.get(k);
+  if (hit) return hit;
+  const p = document.createElement("canvas");
+  p.width = HATCH_PX; p.height = HATCH_PX;
+  const g = p.getContext("2d");
+  if (!g) return null;
+  g.strokeStyle = col; g.lineWidth = 1.3; g.lineCap = "square";
+  g.translate(HATCH_PX / 2, HATCH_PX / 2); g.rotate(deg * Math.PI / 180); g.translate(-HATCH_PX / 2, -HATCH_PX / 2);
+  g.beginPath();
+  for (const o of [-HATCH_PX, 0, HATCH_PX]) { g.moveTo(-HATCH_PX, o + HATCH_PX / 2); g.lineTo(2 * HATCH_PX, o + HATCH_PX / 2); }
+  g.stroke();
+  const pat = g.createPattern(p, "repeat");
+  if (pat) PATTERNS.set(k, pat);
+  return pat;
+}
+function drawHatch(ctx: CanvasRenderingContext2D, ras: MaskRaster, x0: number, y0: number, x1: number, y1: number,
+  smooth: boolean, col: string, deg: number, alpha: number): void {
+  const pat = hatchPattern(col, deg);
+  if (!pat) return;
+  const k = ctx.getTransform().a || 1;
+  const X0 = Math.max(0, x0), Y0 = Math.max(0, y0), X1 = Math.min(ctx.canvas.width / k, x1), Y1 = Math.min(ctx.canvas.height / k, y1);
+  if (!(X1 > X0 && Y1 > Y0)) return;
+  const t = hatchTmp || (hatchTmp = document.createElement("canvas"));
+  t.width = Math.ceil((X1 - X0) * k); t.height = Math.ceil((Y1 - Y0) * k);   // 赋尺寸即清空
+  const g = t.getContext("2d");
+  if (!g) return;
+  g.setTransform(k, 0, 0, k, -X0 * k, -Y0 * k);
+  g.imageSmoothingEnabled = smooth;
+  g.drawImage(ras.img, x0, y0, x1 - x0, y1 - y0);
+  g.globalCompositeOperation = "source-in";
+  g.fillStyle = pat;
+  g.fillRect(X0, Y0, X1 - X0, Y1 - Y0);
+  ctx.save(); ctx.globalAlpha = alpha; ctx.drawImage(t, X0, Y0, X1 - X0, Y1 - Y0); ctx.restore();
+}
+
+type RingKind = "fire" | "vision" | "radar";
+/* 透明度：掩膜填按覆盖率再乘 FILL；整圆兜底（演算中/飞行/据点）DISC 更淡；等值线描边 LINE。圈线虚线式样按圈种区分。 */
+const FILL: Record<RingKind, number> = { fire: .30, vision: .18, radar: .15 };
+const DISC: Record<RingKind, number> = { fire: .18, vision: .07, radar: .06 };
+const LINE: Record<RingKind, number> = { fire: .95, vision: .75, radar: .6 };
+const DASH: Record<RingKind, number[]> = { fire: [5, 4], vision: [2, 3.5], radar: [6, 3, 1.5, 3] };
+
+/** 火力/视野/雷达圈：有掩膜的圈按可达区域画——按面积平均的填色（格比像素小时不丢格）+ 覆盖率 0.5 等值线
+    描边（裁进名义圆内 2 px：圆周本身不描，它就是虚线圈）；虚线圈＝名义半径。掩膜未到/飞行部队/据点＝整圆淡填。
+    焦点态（选中部队）：可达区域斜纹加粗描边、标签带可达读数；其余部队只留描边。
     部队按当日位置——火力=单值 range（旧多圈回退首条）、视野=vision，两者同机制；据点=nodes[].ranges 多圈照旧。
+    标签火力在圈上、视野在圈下、雷达在圈右（相邻不打架）；雷达圈最大故垫最底。
     编辑态选中对象的圈带拖动手柄（火力=圈右、视野=圈左），配合外壳 pickRangeHandle 拖动调半径。 */
 export function drawRanges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined, world: World, T: number, opts: RangesOpts = {}): void {
-  const fire = opts.fire !== false, vision = !!opts.vision;
-  const fillRing = (lon: number, lat: number, km: number, col: string, kind: "fire" | "vision", label: string, handle: boolean): void => {
+  const fire = opts.fire !== false, vision = !!opts.vision, radar = !!opts.radar, focus = opts.focus;
+  /** role：null＝无焦点态；true＝焦点；false＝陪衬 */
+  const fillRing = (lon: number, lat: number, km: number, col: string, kind: RingKind, label: string, handle: boolean,
+    mask?: VisMask, role: boolean | null = null, hatchDeg = 0): void => {
     const [cx, cy, rx, ry] = ringPx(cam, meta, lon, lat, km);
     if (rx < 3 && ry < 3) return;
     ctx.save();
     ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, 7);
-    ctx.fillStyle = hexA(col, kind === "fire" ? .18 : .07); ctx.fill();   // 实心半透明：火力深、视野浅
-    if (kind === "fire") { ctx.lineWidth = 1.4; ctx.strokeStyle = hexA(col, .6); }
-    else { ctx.lineWidth = 1.1; ctx.strokeStyle = hexA(col, .4); ctx.setLineDash([2, 3.5]); }
+    let ras: MaskRaster | null = null, x0 = 0, y0 = 0, x1 = 0, y1 = 0, smooth = false;
+    if (mask) {
+      [x0, y0] = project(cam, mask.bb.lonMin, mask.bb.latMax); [x1, y1] = project(cam, mask.bb.lonMax, mask.bb.latMin);
+      const s = Math.min((x1 - x0) / mask.cols, (y1 - y0) / mask.rows);
+      smooth = s < 1;
+      ras = maskRaster(mask, col, s);
+    }
+    if (ras) {
+      if (role !== false) {
+        ctx.save(); ctx.clip();
+        ctx.globalAlpha = role ? FILL[kind] * .4 : FILL[kind]; ctx.imageSmoothingEnabled = smooth;
+        ctx.drawImage(ras.img, x0, y0, x1 - x0, y1 - y0);
+        ctx.globalAlpha = 1;
+        if (role) drawHatch(ctx, ras, x0, y0, x1, y1, smooth, col, hatchDeg, .75);
+        ctx.restore();
+      }
+      const p = new Path2D();
+      p.addPath(ras.path, new DOMMatrix([(x1 - x0) / ras.w, 0, 0, (y1 - y0) / ras.h, x0, y0]));
+      ctx.save();
+      ctx.beginPath(); ctx.ellipse(cx, cy, Math.max(1, rx - 2), Math.max(1, ry - 2), 0, 0, 7); ctx.clip();
+      ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.lineWidth = role ? 1.6 : role === false ? 1 : kind === "fire" ? 1.3 : 1.1;
+      ctx.strokeStyle = hexA(col, role ? 1 : role === false ? LINE[kind] * .6 : LINE[kind]);
+      ctx.stroke(p);
+      ctx.restore();
+    } else if (role !== false) { ctx.fillStyle = hexA(col, DISC[kind]); ctx.fill(); }
+    ctx.lineWidth = role ? 1.2 : 1; ctx.strokeStyle = hexA(col, role ? .6 : role === false ? .35 : .45); ctx.setLineDash(DASH[kind]);
     ctx.stroke(); ctx.setLineDash([]);
-    ctx.font = "10px system-ui,sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = hexA(col, kind === "fire" ? .85 : .7);
-    if (kind === "fire") ctx.fillText(label, cx, cy - ry - 3);            // 火力标签在圈上、视野在圈下（相邻不打架）
-    else ctx.fillText(label, cx, cy + ry + 11);
+    if (role !== false) {   // 陪衬部队不标半径：焦点标签更长，同半径相邻的圈会撞在同一行上
+      ctx.font = "10px system-ui,sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = hexA(col, kind === "fire" ? .85 : .7);
+      if (kind === "fire") ctx.fillText(label, cx, cy - ry - 3);
+      else if (kind === "vision") ctx.fillText(label, cx, cy + ry + 11);
+      else { ctx.textAlign = "left"; ctx.fillText(label, cx + rx + 4, cy + 3); }
+    }
     if (handle) drawHandle(ctx, kind === "fire" ? cx + rx : cx - rx, cy, col);
     ctx.restore();
   };
+  const pctOf = (m: VisMask): string => m.nIn > 0 ? ` ${Math.round(100 * m.nVis / m.nIn)}%` : "";
+  let nFocus = 0;
   (world.units || []).forEach(u => {
-    const fk = unitFireKm(u), vk = +(u.vision as number) || 0;
-    if (!((fire && fk > 0) || (vision && vk > 0))) return;
+    const fk = unitFireKm(u), vk = +(u.vision as number) || 0, rk = unitRadarKm(u);
+    if (!((fire && fk > 0) || (vision && vk > 0) || (radar && rk > 0))) return;
     const p = unitPos(u, T); if (!p) return;
-    const col = boxColor(world, u), withHandle = u.id === opts.handleUnit;
-    if (fire && fk > 0) fillRing(p.lon, p.lat, fk, col, "fire", `火力 ${fk}km`, withHandle);
-    if (vision && vk > 0) fillRing(p.lon, p.lat, vk, col, "vision", `视野 ${vk}km`, withHandle);
+    const col = boxColor(world, u), withHandle = u.id === opts.handleUnit, mk = opts.masks && opts.masks.get(u.id);
+    const role = focus ? focus.has(u.id) : null, deg = role ? HATCH_DEG[nFocus++ % HATCH_DEG.length] : 0;
+    const readout = (m: VisMask | undefined, 名: string): string => role && m ? ` · ${名}${pctOf(m)}` : "";   // 焦点态才带读数
+    if (radar && rk > 0) fillRing(p.lon, p.lat, rk, col, "radar", `雷达 ${rk}km${readout(mk && mk.radar, "视线可达")}`, false, mk && mk.radar, role, deg);
+    if (fire && fk > 0) {
+      const how = unitFireDirect(u) ? "直射 · 视线可达" : `曲射 ${unitArcDeg(u)}° · 弹道可达`;
+      fillRing(p.lon, p.lat, fk, col, "fire", `火力 ${fk}km${readout(mk && mk.fire, how)}`, withHandle, mk && mk.fire, role, deg);
+    }
+    if (vision && vk > 0) fillRing(p.lon, p.lat, vk, col, "vision", `视野 ${vk}km${readout(mk && mk.vision, "视线可达")}`, withHandle, mk && mk.vision, role, deg);
   });
   if (fire) world.nodes.forEach(n => {
     if (!(n.ranges || []).length || !activeAt(n, T)) return;

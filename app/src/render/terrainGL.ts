@@ -395,9 +395,12 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
 
   let pr: WebGLProgram | null = null;
   let tex: WebGLTexture | null = null;    // 类型粗格纹理（TEXTURE0）
-  let ftex: WebGLTexture | null = null;   // 高程场+遮蔽纹理（TEXTURE1；侵蚀细分后维度 ≠ 粗格）
+  /* 高程场+遮蔽纹理（TEXTURE1；侵蚀细分后维度 ≠ 粗格）：画面场与规则场各一份，render 按底图样式绑其一——
+     观感底图画画面场（精修档在此），推演底图画规则场（与光标读数同源）。两场同一对象时只建一份。 */
+  interface FieldTex { tex: WebGLTexture | null; cols: number; rows: number; step: number; eroded: number }
+  let fDisp: FieldTex | null = null, fRule: FieldTex | null = null;
   let g: Grid | null = null;
-  let lastField: ElevField | undefined;   // 存最近高程场：上下文丢失恢复时重传
+  let lastField: ElevField | undefined, lastRule: ElevField | undefined;   // 存最近两场：上下文丢失恢复时重传
   let lastWS: Float32Array = new Float32Array(0);
   const U = (n: string) => gl.getUniformLocation(pr!, n);
 
@@ -429,11 +432,45 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     if (!texWarned) { texWarned = true; console.warn(`细分场 ${f.cols}×${f.rows} 超出本机纹理上限 ${maxTex}，退回粗格高程（地形仍可用，少的是侵蚀细节）`); }
     return false;
   };
-  function doUpload(grid: Grid, wsurf: Float32Array, fieldIn?: ElevField) {
+  /* 高程场纹理：R=高程 G=遮蔽（未传场＝按类型合成粗格，旧行为；遮蔽全零）。在 1 号单元上建、建完还原到 0 号 */
+  function fieldTex(grid: Grid, field?: ElevField): FieldTex {
+    const fc = field ? field.cols : grid.cols, fr = field ? field.rows : grid.rows;
+    const fd = new Float32Array(fc * fr * 2);
+    if (field) {
+      for (let k = 0; k < fc * fr; k++) { fd[k * 2] = field.data[k]; fd[k * 2 + 1] = field.shadow ? field.shadow[k] : 0; }
+    } else {
+      for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++) fd[(r * grid.cols + c) * 2] = terrainProps(grid.cells[r][c]).elev;
+    }
+    const t = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, fc, fr, 0, gl.RG, gl.FLOAT, fd);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.activeTexture(gl.TEXTURE0);   // 常规活动纹理还原到 0 号（类型纹理绑定预期）
+    return { tex: t, cols: fc, rows: fr, step: field ? field.step : grid.step, eroded: field && field.shadow ? 1 : 0 };
+  }
+  const dropFieldTex = (): void => {
+    if (fDisp) gl.deleteTexture(fDisp.tex);
+    if (fRule && fRule !== fDisp) gl.deleteTexture(fRule.tex);
+    fDisp = fRule = null;
+  };
+  /** 绑定本帧采样的场（观感＝画面场、推演＝规则场）并同步它的几何 uniform */
+  function bindField(f: FieldTex): void {
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, f.tex);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform2i(U("uFDim"), f.cols, f.rows);
+    gl.uniform1f(U("uFStep"), f.step);
+    gl.uniform1f(U("uEroded"), f.eroded);
+  }
+  function doUpload(grid: Grid, wsurf: Float32Array, fieldIn: ElevField | undefined, ruleIn: ElevField | undefined) {
     if (!pr) return;
     const field = fieldFits(fieldIn) ? fieldIn : undefined;
+    const rule = ruleIn === fieldIn ? field : fieldFits(ruleIn) ? ruleIn : undefined;
     if (tex) gl.deleteTexture(tex);
-    if (ftex) gl.deleteTexture(ftex);
+    dropFieldTex();
     /* 类型粗格纹理：R=水面高程（core/elev.waterSurface）G=复合索引 lf*5+eco */
     const data = new Float32Array(grid.cols * grid.rows * 2);
     for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++) {
@@ -448,27 +485,10 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, grid.cols, grid.rows, 0, gl.RG, gl.FLOAT, data);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    /* 高程场纹理：R=高程 G=遮蔽（未传场＝按类型合成粗格，旧行为；遮蔽全零） */
-    const fc = field ? field.cols : grid.cols, fr = field ? field.rows : grid.rows;
-    const fd = new Float32Array(fc * fr * 2);
-    if (field) {
-      for (let k = 0; k < fc * fr; k++) { fd[k * 2] = field.data[k]; fd[k * 2 + 1] = field.shadow ? field.shadow[k] : 0; }
-    } else {
-      for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++) fd[(r * grid.cols + c) * 2] = terrainProps(grid.cells[r][c]).elev;
-    }
-    ftex = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, ftex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, fc, fr, 0, gl.RG, gl.FLOAT, fd);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.activeTexture(gl.TEXTURE0);   // 常规活动纹理还原到 0 号（后续 doUpload 的类型纹理绑定预期）
+    fDisp = fieldTex(grid, field);
+    fRule = rule === field ? fDisp : fieldTex(grid, rule);
     gl.uniform4f(U("uGridBB"), grid.bb.lonMin, grid.bb.latMin, grid.step, (grid.bb.lonMin + grid.bb.lonMax) / 2);
     gl.uniform2i(U("uGridDim"), grid.cols, grid.rows);
-    gl.uniform2i(U("uFDim"), fc, fr);
-    gl.uniform1f(U("uFStep"), field ? field.step : grid.step);
-    gl.uniform1f(U("uEroded"), field && field.shadow ? 1 : 0);
     gl.uniform2f(U("uGridSpan"), grid.bb.lonMax - grid.bb.lonMin, grid.bb.latMax - grid.bb.latMin);
   }
 
@@ -478,16 +498,21 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
      preventDefault 才有 restored；恢复后 program/纹理全失效，重建并重传网格——
      下一帧 rAF 自动出图，外壳零改动。缺此则地形永久空白（审计）。 */
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; ftex = null; if (initProgram() && g) doUpload(g, lastWS, lastField); };
+  const onRestored = () => { tex = null; fDisp = fRule = null; if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
   return {
     canvas, kind: "webgl2",
-    uploadGrid(grid: Grid, wsurf: Float32Array, field?: ElevField) { g = grid; lastWS = wsurf; lastField = field; doUpload(grid, wsurf, field); },
+    uploadGrid(grid: Grid, wsurf: Float32Array, field?: ElevField, rule?: ElevField) {
+      g = grid; lastWS = wsurf; lastField = field; lastRule = rule || field;
+      doUpload(grid, wsurf, field, lastRule);
+    },
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
-      if (!g || !pr) return;
+      const f = opts.flat ? fRule : fDisp;
+      if (!g || !pr || !f) return;
       gl.viewport(0, 0, canvas.width, canvas.height);
+      bindField(f);
       gl.uniform4f(U("uViewBB"), viewBB.lonMin, viewBB.latMin, viewBB.lonMax, viewBB.latMax);
       gl.uniform2f(U("uRes"), canvas.width, canvas.height);
       gl.uniform1f(U("uPXPD"), canvas.width / (viewBB.lonMax - viewBB.lonMin));
@@ -518,7 +543,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);
       if (tex) gl.deleteTexture(tex);
-      if (ftex) gl.deleteTexture(ftex);
+      dropFieldTex();
       if (pr) gl.deleteProgram(pr);
     }
   };

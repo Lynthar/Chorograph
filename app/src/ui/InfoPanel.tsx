@@ -6,11 +6,11 @@ import { useRef } from "preact/hooks";
 import { ARM_NAME, CERTAINTY, DECOR, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
 import { edgeLenKm, polylineKm } from "../core/geometry.ts";
 import { calOf, fmtT, fmtWhen, fmtWhenRange } from "../core/calendar.ts";
-import { fmtStrength, unitArm, unitFacingAt, unitFireKm, unitFootKm, unitInheritedAt, unitKind, unitMoraleAt, unitPos, unitSpeedAt, unitStatusAt, unitStrengthAt } from "../core/units.ts";
+import { fmtStrength, isModern, unitArcDeg, unitArm, unitEyeM, unitFacingAt, unitFireDirect, unitFireKm, unitFootKm, unitInheritedAt, unitKind, unitMoraleAt, unitPos, unitRadarKm, unitRadarM, unitRadarTgtM, unitSpeedAt, unitStatusAt, unitStrengthAt } from "../core/units.ts";
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm, tget } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
-import { clearOpSel, readOnlySig, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, worldSig, yearSig } from "./state.ts";
+import { clearOpSel, readOnlySig, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, visMaskSig, worldSig, yearSig } from "./state.ts";
 import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
@@ -344,16 +344,25 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
         {morale != null && <><b>士气</b><span class="num">{morale} / 100</span></>}
         <b>速度</b><span class="num">{unitSpeedAt(u, T)} km/日 · {tget(ARM_NAME, unitArm(u)) || "陆行"}</span>
         <b>当前({fmtWhen(cal, tac, T)})</b><span class="num">{p ? `${p.lon.toFixed(3)}° · ${p.lat.toFixed(3)}°` : "未入场 / 已离场"}</span>
-        {unitFireKm(u) > 0 && <><b>火力圈</b><span class="num">{unitFireKm(u)} km</span></>}
-        {typeof u.vision === "number" && u.vision > 0 && <><b>视野圈</b><span class="num">{u.vision} km</span></>}
+        {(() => {   // 视域读数：各圈带「可达」占比（掩膜由外壳算好，未到＝不显示占比；飞行部队不判）
+          const mk = visMaskSig.value.get(u.id), air = unitArm(u) === "air";
+          const pct = (m: { nVis: number; nIn: number; eyeOff: number } | undefined, 名: string) => !air && m && m.nIn > 0
+            ? ` · ${名} ${Math.round(100 * m.nVis / m.nIn)}%${m.eyeOff > 0 ? `（眼位偏 ${Math.round(m.eyeOff)} m）` : ""}` : "";
+          const direct = unitFireDirect(u);
+          return <>
+            {unitFireKm(u) > 0 && <><b>火力圈</b><span class="num">{unitFireKm(u)} km · {direct ? "直射" : `曲射 · 射角 ${unitArcDeg(u)}°`}{pct(mk && mk.fire, direct ? "视线可达" : "弹道可达")}</span></>}
+            {typeof u.vision === "number" && u.vision > 0 && <><b>视野圈</b><span class="num">{u.vision} km · 观察高度 {unitEyeM(u)} m{air ? " · 飞行不判视线" : pct(mk && mk.vision, "视线可达")}</span></>}
+            {isModern(world.meta) && unitRadarKm(u) > 0 && <><b>雷达</b><span class="num">{unitRadarKm(u)} km · 天线 {unitRadarM(u)} m · 目标 {unitRadarTgtM(u)} m{air ? " · 飞行不判" : pct(mk && mk.radar, "视线可达")}</span></>}
+          </>;
+        })()}
         {(() => { const ft = unitFootKm(u); return ft
-          ? <><b>阵形</b><span class="num">正面 {+ft.front.toFixed(2)} × 纵深 {+ft.depth.toFixed(2)} km · 朝向 {Math.round(unitFacingAt(world.meta, u, T))}°</span></>
+          ? <><b>{isModern(world.meta) ? "防区" : "阵形"}</b><span class="num">正面 {+ft.front.toFixed(2)} × 纵深 {+ft.depth.toFixed(2)} km · 朝向 {Math.round(unitFacingAt(world.meta, u, T))}°</span></>
           : null; })()}
       </div>
       {bad.length > 0 && <div class="err">⚠ {bad.length} 段行程超出速度上限——拉长间隔天数、绕开险地或调整速度（超速段在图上标红）</div>}
       <TrackList u={u} editable={false} />
       {typeof u.note === "string" && u.note && <div class="sub" style={{ lineHeight: 1.7 }}>{u.note}</div>}
-      {tac && <div class="hint">切到「军」工具（4）后，图上拖<b>右手柄</b>调火力圈、<b>左手柄</b>调视野圈（一次拖动＝一步撤销）</div>}
+      {tac && <div class="hint">切到「军」工具（4）后，图上拖<b>右手柄</b>调火力圈、<b>左手柄</b>调视野圈（一次拖动＝一步撤销）。视野圈与雷达只填<b>视线可达</b>的格，火力圈直射按视线、曲射按<b>射角弹道</b>裁，圈线是名义半径；看得见不等于打得到，各圈按自己的半径判</div>}
       <div class="in-actions">
         {canWrite() && <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑部队</button>}
         {canWrite() && <button class="bt danger-ghost tr" onClick={del}>删除部队</button>}

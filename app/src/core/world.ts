@@ -1,7 +1,7 @@
 /* 世界数据的规范化与构造（自 v0.14 index.html 原样迁移，黄金基准平价锁定）。
    normalizeWorld 是"单点迁移"哲学的载体：外部导入/旧存档缺什么补什么、旧字段就地升级，
    改这里的任何分支都是行为变更——旧档打开后的内容会跟着变，先想兼容。 */
-import { LEGACY_KIND, LEGACY_TYPE, EVENT_TYPES, UNIT_KINDS } from "./constants.ts";
+import { ALL_KINDS, LEGACY_KIND, LEGACY_TYPE, EVENT_TYPES, UNIT_KINDS } from "./constants.ts";
 import { autoGridN } from "./grid.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
@@ -64,7 +64,7 @@ export function normalizeWorld(w: unknown): World {
       if (!u.arm) u.arm = lg.arm;
       u.kind = lg.to;
     }
-    if (!u.arm) u.arm = (tget(UNIT_KINDS, u.kind) || {}).arm || "land";
+    if (!u.arm) u.arm = (tget(ALL_KINDS, u.kind) || {}).arm || "land";
     /* 兵力归一为「人」数值（2026-07-30）：旧的自由文本多是史料注记（「号称二十万（实数无定论）」
        「中军·大将旗」），换成数值字段不能把它们凭空丢掉——挪进「说明」保住内容再删键。 */
     const sv = parseStrength(u.strength);

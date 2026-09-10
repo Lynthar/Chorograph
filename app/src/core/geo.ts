@@ -1,6 +1,6 @@
 /* 地理/距离（双世界模型）：sphere=Haversine 大圆距离 + 经度环绕；flat=直角坐标直线距离。
    所有函数以 meta 为显式参数（旧实现读全局 state.world.meta）。 */
-import type { Meta } from "./types.ts";
+import type { BBox, Meta } from "./types.ts";
 
 export const toRad = (d: number): number => d * Math.PI / 180;
 
@@ -27,6 +27,14 @@ export function flatKmPerDeg(meta: Meta | undefined): number {
 export function kmPerDeg(meta: Meta | undefined): number {
   const m = meta || {};
   return m.worldModel === "flat" ? flatKmPerDeg(m) : 2 * Math.PI * (+(m.planetRadiusKm ?? 0) || 10000) / 360;
+}
+
+/** 经/纬向 km/度：纬向同 kmPerDeg；经向球面按图幅中央纬度折算、平面同纬向。侵蚀与视域的格距度量同源。 */
+export function kmPerDegXY(meta: Meta | undefined, bb: BBox): { kmx: number; kmy: number } {
+  const m = meta || {};
+  const kmy = kmPerDeg(m);
+  const kmx = m.worldModel === "flat" ? kmy : kmy * Math.cos((bb.latMin + bb.latMax) / 2 * Math.PI / 180);
+  return { kmx, kmy };
 }
 
 /** 统一距离入口：球面=大圆；平面=直线 */

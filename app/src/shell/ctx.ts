@@ -32,6 +32,10 @@ export interface ShellCtx {
   /** 高程场（含几何；底栏光标高程/等高线/晕渲同源）。rebuild 先落粗格（同步、旧行为），
       relief>0 的图随后由 Worker 侵蚀重铸成细分场换入（core/erode，异步细化） */
   elevField: ElevField | null;
+  /** 规则场：规则与光标读数的**唯一**读取源——工作档侵蚀场（预算按图种是常量＝同一存档在任何机器、
+      任何时刻同值），落地前为粗格场。精修档只进 elevField、永不进它：精修预算随本机内存分档，
+      读它＝读数随机器变，规则引擎建不到它上面。 */
+  ruleField: ElevField | null;
   /** 地形渲染器（boot 创建；无 WebGL2 自动退 CPU 瓦片） */
   R: TerrainRenderer | null;
   /** `${mapId}@${year}@${gridVer}`——年份/换图/地形改动重建网格的去重键 */
@@ -63,7 +67,7 @@ export function createShellCtx(canvas: HTMLCanvasElement, ov: HTMLCanvasElement,
     DPR: Math.max(1, devicePixelRatio || 1),
     meta: { terrain: "auto", genSeed: 1234, genStyle: "continent" },
     view: { lon0: 106, lat0: 38, degPerPx: 0.06 },
-    grid: null, elevField: null, R: null, builtFor: null, repaint: null,
+    grid: null, elevField: null, ruleField: null, R: null, builtFor: null, repaint: null,
     lib: null, mapId: null, baseVer: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
   };

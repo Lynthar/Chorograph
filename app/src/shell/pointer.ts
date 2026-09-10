@@ -3,7 +3,7 @@
    按住地点/布景/部队=拖移；连线可点点或拖拽成线；其余工具空白按下只作点击。
    模块内闭持全部拖拽/笔迹瞬态；frame 经 PointerView 只读画线笔迹/框选/光标位。 */
 import { unproject, clampView, minDppFor, zoomAtView, panByView } from "../core/projection.ts";
-import { CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_KINDS, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite, terrainProps } from "../core/constants.ts";
+import { ALL_KINDS, CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite, terrainProps } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
 import { BRUSH_NOTCHES, brushRadiusCells, brushDabStepDeg, interpolatePath } from "../core/brush.ts";
 import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
@@ -103,7 +103,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const certSuf = (v: unknown): string => { const c = tget(CERTAINTY, v); return c ? ` · ${esc(c.名)}` : ""; };
     let html = "";
     if (un) {
-      const k = tget(UNIT_KINDS, un.kind), f = un.faction ? world.factions.find(q => q.id === un.faction) : null;
+      const k = tget(ALL_KINDS, un.kind), f = un.faction ? world.factions.find(q => q.id === un.faction) : null;
       const st = tget(UNIT_STATUS, unitStatusAt(un, yearNow) || "");
       const sf = fmtStrength(unitStrengthAt(un, yearNow));
       const str = sf ? ` · 兵力 ${esc(sf)}` : "";
@@ -616,9 +616,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const dec = ctx.view.degPerPx < 0.002 ? 4 : 2;
       let hTxt = "";
       if (ctx.grid) {
-        const g = ctx.grid, f = ctx.elevField, lonD = dataLon(ctx.meta, ll[0]);
+        const g = ctx.grid, f = ctx.ruleField, lonD = dataLon(ctx.meta, ll[0]);
         if (lonD >= g.bb.lonMin && lonD <= g.bb.lonMax && ll[1] >= g.bb.latMin && ll[1] <= g.bb.latMax) {
-          if (f) hTxt = ` ｜ 高程≈${Math.round(elevSmooth(f.data, f, lonD, ll[1]) * elevUnitM(ctx.meta))}m`;   // 场自带几何（侵蚀细分后读数带谷线细节）
+          if (f) hTxt = ` ｜ 高程≈${Math.round(elevSmooth(f.data, f, lonD, ll[1]) * elevUnitM(ctx.meta))}m`;   // 规则场（工作档；精修只进画面）——读数不随机器与时序变
           /* 光标处的地貌·生态（2026-08-19 用户点单，接在高程之后）：读**网格现值**＝初稿叠涂改，与画布
              所见同源；显示名一律走 terrainProps.名 单一真源（纯地貌／plain 基底取生态名／其余「地貌·生态」）。 */
           const row = g.cells[Math.floor((ll[1] - g.bb.latMin) / g.step)];

@@ -13,8 +13,8 @@ import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRad
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, errText, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
-import { ARM_OPT_KINDS, EDGE_STYLE, LEGACY_KIND, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
-import { fmtStrength, parseStrength, setUnitPoint, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
+import { ALL_KINDS, ARM_OPT_KINDS, EDGE_STYLE, EYE_M_KIND, FIRE_DIRECT_KIND, LEGACY_KIND, MODERN_KINDS, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
+import { fmtStrength, parseStrength, setUnitPoint, unitFireDirect, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { astar, computeRoute } from "../src/core/route.ts";
 import { wallTeeth } from "../src/render/edges.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
@@ -990,6 +990,31 @@ describe("战场表达（柱B）：微地物/工事线/主帅", () => {
   it("工事线型与指挥兵种就位（渲染先行，寻路不吃 wall）", () => {
     assert.deepStrictEqual(EDGE_STYLE.wall, { color: "#55504a", w: 2.8, 名: "工事" });
     assert.deepStrictEqual(UNIT_KINDS.cmd, { 名: "指挥", glyph: "帅", v: 60, arm: "land" });
+  });
+  it("现代兵种另立一表：与古代表键不相交、合表按 id 解析、符号互不相同、附表的键都在合表里", () => {
+    assert.strictEqual(Object.keys(MODERN_KINDS).length, 30, "陆军九 + 空军五 + 海军十六");
+    for (const k of Object.keys(MODERN_KINDS)) assert.ok(!UNIT_KINDS[k], `现代键「${k}」与古代表撞了——撞了就无从按 id 解析`);
+    assert.strictEqual(Object.keys(ALL_KINDS).length, Object.keys(UNIT_KINDS).length + 30);
+    const glyphs = Object.values(ALL_KINDS).map(d => d.glyph);
+    assert.strictEqual(new Set(glyphs).size, glyphs.length, "合表内符号必须互不相同（图上靠它认兵种）");
+    for (const [k, d] of Object.entries(MODERN_KINDS)) {
+      assert.ok(["land", "water", "air"].includes(d.arm), `「${k}」移动方式非法`);
+      assert.ok(d.v > 0 && d.名, `「${k}」速度或名缺`);
+    }
+    for (const k of FIRE_DIRECT_KIND) {
+      assert.ok(ALL_KINDS[k], `火力缺省表里的「${k}」不在合表里`);
+      assert.ok(!UNIT_KINDS[k], `古代兵种「${k}」不得进直射缺省表——旧档缺键必须仍是曲射`);
+      assert.ok(!ALL_KINDS[k].noFire, `「${k}」无火力却列了直射缺省`);
+    }
+    for (const k of Object.keys(EYE_M_KIND)) assert.ok(ALL_KINDS[k], `观察高度表里的「${k}」不在合表里`);
+  });
+  it("火力缺省随兵种：缺键查表、显式 direct/arc 优先、古代兵种缺键仍是曲射", () => {
+    assert.strictEqual(unitFireDirect({ id: "a", kind: "marmor", track: [] }), true, "装甲缺键＝直射");
+    assert.strictEqual(unitFireDirect({ id: "a", kind: "mart", track: [] }), false, "火炮缺键＝曲射");
+    assert.strictEqual(unitFireDirect({ id: "a", kind: "rng", track: [] }), false, "古代远程缺键＝曲射（2026-09-09 拍板不破）");
+    assert.strictEqual(unitFireDirect({ id: "a", kind: "marmor", fire: "arc", track: [] }), false, "显式曲射压过兵种缺省");
+    assert.strictEqual(unitFireDirect({ id: "a", kind: "mart", fire: "direct", track: [] }), true, "显式直射压过兵种缺省");
+    assert.strictEqual(unitFireDirect({ id: "a", kind: "__proto__", track: [] }), false, "原型键不得当成直射兵种");
   });
   it("兵种换代：旧键全可解析、新表恰十四类、旧速度与移动方式由 normalizeWorld 就地保住", () => {
     assert.strictEqual(Object.keys(UNIT_KINDS).length, 14);

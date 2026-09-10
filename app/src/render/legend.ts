@@ -4,7 +4,7 @@
    于是长平相位0 的图例里列着 t7 才入场的辎重)。代价=各帧图例高矮不一,如实即可。
    右下角锚、宣纸底衬同比例尺;色调恒定不随主题（同「出图垫纸色」裁决:产物不随主题变）。
    坐标系=CSS 像素（调用方先按 DPR scale,同 drawOverlay 之约）。 */
-import { CERTAINTY, CERTAINTY_ORDER, UNIT_KINDS, UNIT_STATUS } from "../core/constants.ts";
+import { ALL_KINDS, CERTAINTY, CERTAINTY_ORDER, UNIT_STATUS } from "../core/constants.ts";
 import { activeAt } from "../core/time.ts";
 import { tget } from "../core/util.ts";
 import { unitPos, unitStatusAt } from "../core/units.ts";
@@ -25,7 +25,7 @@ export function legendItems(world: World, T: number, layers?: Record<string, boo
   const facsVisible = on("politics") || on("nodes") || on("units");
   const facs = facsVisible ? (world.factions || []).filter(f => activeAt(f, T)) : [];
   const live = on("units") ? (world.units || []).filter(u => unitPos(u, T)) : [];   // 未入场/已离场的部队不进图例
-  const kinds = [...new Set(live.map(u => u.kind))].filter(k => tget(UNIT_KINDS, k));
+  const kinds = [...new Set(live.map(u => u.kind))].filter(k => tget(ALL_KINDS, k));
   const stats = [...new Set(live.map(u => unitStatusAt(u, T) || ""))].filter(s => tget(UNIT_STATUS, s));
   const certs = CERTAINTY_ORDER.filter(k =>
     (on("nodes") && (world.nodes || []).some(n => n.certainty === k && activeAt(n, T))) ||
@@ -43,11 +43,11 @@ export function drawLegend(g: CanvasRenderingContext2D, world: World, T: number,
     g.fillStyle = f.color || "#888"; g.fillRect(x, y - 5, 14, 10);
     g.strokeStyle = "rgba(60,48,30,.5)"; g.lineWidth = 1; g.strokeRect(x, y - 5, 14, 10);
   } });
-  for (const k of kinds) rows.push({ label: UNIT_KINDS[k].名, draw: (x, y) => {   // 迷你单位框（同 drawUnitSymbol 形制;兵种不属派系=灰边）
+  for (const k of kinds) rows.push({ label: ALL_KINDS[k].名, draw: (x, y) => {   // 迷你单位框（同 drawUnitSymbol 形制;兵种不属派系=灰边）
     g.fillStyle = "rgba(24,26,30,.78)"; g.strokeStyle = "#6b6b6b"; g.lineWidth = 1.3;
     g.fillRect(x, y - 5.5, 16, 11); g.strokeRect(x, y - 5.5, 16, 11);
     g.fillStyle = "#f2ede2"; g.font = "bold 8px system-ui,sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
-    g.fillText(UNIT_KINDS[k].glyph, x + 8, y + 0.5);
+    g.fillText(ALL_KINDS[k].glyph, x + 8, y + 0.5);
   } });
   for (const s of stats) rows.push({ label: UNIT_STATUS[s].名, draw: (x, y) => drawStatusBadge(g, x + 7, y, s, UNIT_STATUS[s].color) });
   /* 可靠性（柱B）：图内真出现的档位才列——「诚实性」要在图上说得出，读图人才知道虚线不是别的意思 */

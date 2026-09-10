@@ -1,14 +1,14 @@
 /* 兵棋部队（v0.14 战术图）：位置插值、航点写入、行军可达性校验。
    自旧实现原样迁移并纯化——unitLegs 不再内建缓存（渲染帧不许触发 A*，
    缓存与失效由调用层管理，同旧版 state._legs 的角色）。 */
-import { UNIT_KINDS } from "./constants.ts";
+import { ALL_KINDS, ARC_DEG, EYE_M, EYE_M_KIND, FIRE_DIRECT_KIND, RADAR_M, RADAR_TGT_M, VANTAGE_M } from "./constants.ts";
 import { tget } from "./util.ts";
 import { distKm, kmPerDegLat, toRad } from "./geo.ts";
 import { astar, endToEnd } from "./route.ts";
 import type { Grid } from "./grid.ts";
 import type { Arm, Meta, TrackPt, Unit } from "./types.ts";
 
-export function unitKind(u: Unit) { return tget(UNIT_KINDS, u.kind) || null; }
+export function unitKind(u: Unit) { return tget(ALL_KINDS, u.kind) || null; }
 export function unitArm(u: Unit): Arm { return (u.arm || (unitKind(u) || {} as { arm?: Arm }).arm || "land") as Arm; }
 export function unitSpeed(u: Unit): number { return +(u.speed || 0) || (unitKind(u) || {} as { v?: number }).v || 30; }
 
@@ -85,6 +85,33 @@ export function unitFireKm(u: Unit): number {
   const legacy = +((u.ranges || [])[0] || {}).km || 0;
   return legacy > 0 ? legacy : 0;
 }
+
+/** 直射＝火力圈按视线裁；缺键＝曲射＝整圆。判据只此一处（渲染、检查器、视域编排同走） */
+/** 直射（按视线裁）还是曲射（按射角弹道裁）：显式值优先，缺键按兵种缺省（判据只此一处） */
+export function unitFireDirect(u: Unit): boolean {
+  return u.fire === "direct" ? true : u.fire === "arc" ? false : FIRE_DIRECT_KIND.has(String(u.kind));
+}
+/** 观察高度（米）：显式值优先（0 合法＝伏地），否则兵种缺省 */
+export function unitEyeM(u: Unit): number {
+  const v = +(u.eyeM as number);
+  return isFinite(v) && v >= 0 ? v : (tget(EYE_M_KIND, u.kind) ?? EYE_M);
+}
+/** 眼位可挑的驻地半径（米）：有阵形足印按其长边的一半，否则 VANTAGE_M——视线类圈从驻地最高处判（判据只此一处） */
+export function unitVantageM(u: Unit): number {
+  const ft = unitFootKm(u);
+  return ft ? 500 * Math.max(ft.front, ft.depth) : VANTAGE_M;
+}
+/** 曲射射角（度）：档外/缺键＝ARC_DEG */
+export function unitArcDeg(u: Unit): number {
+  const a = +(u.arcDeg as number);
+  return a > 0 && a < 90 ? a : ARC_DEG;
+}
+/** 雷达探测半径 km；无雷达＝0 */
+export function unitRadarKm(u: Unit): number { const r = +(u.radar as number); return r > 0 ? r : 0; }
+export function unitRadarM(u: Unit): number { const v = +(u.radarM as number); return isFinite(v) && v >= 0 ? v : RADAR_M; }
+export function unitRadarTgtM(u: Unit): number { const v = +(u.radarTgtM as number); return isFinite(v) && v >= 0 ? v : RADAR_TGT_M; }
+/** 时代：现代才有雷达等近现代账目；缺键＝古代（判据只此一处） */
+export function isModern(meta: Meta | undefined): boolean { return (meta || {}).period === "modern"; }
 
 export interface UnitPos { lon: number; lat: number; i: number }
 

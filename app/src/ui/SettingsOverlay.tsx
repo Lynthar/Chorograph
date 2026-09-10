@@ -10,10 +10,11 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { blankWorld, clampWorldBBox, WORLD_KM_PER_DEG, WORLD_RADIUS_KM, type BlankWorldSpec } from "../core/world.ts";
 import { blankTacticalWorld, TAC_DIA_KM, type BlankTacSpec } from "../core/tactical.ts";
+
 import { calOf, parseYearForm } from "../core/calendar.ts";
 import { DEFAULT_BBOX } from "../core/types.ts";
 import type { CalendarCfg, Climate, GenStyle, Meta, TerrainMode, WorldModel } from "../core/types.ts";
-import { CLIMATE, CLIMATE_ORDER } from "../core/constants.ts";
+import { CLIMATE, CLIMATE_ORDER, PERIOD_NAME } from "../core/constants.ts";
 import { SNOW_M } from "../render/material.ts";
 import { tget } from "../core/util.ts";
 import { gridStepDeg } from "../core/grid.ts";
@@ -25,6 +26,17 @@ import { fmtBytes, requestPersist, storageState, type StorageState } from "../da
 import { useModalFocus } from "./modal.ts";
 
 const randSeed = () => Math.floor(Math.random() * 99999) + 1;
+
+/** 时代（战术图专有；创建与设置同一行）：现代解锁雷达等近现代账目。普通函数直接返回节点，不是组件（同 KeyRow 之训） */
+function PeriodRow({ modern }: { modern: boolean }) {
+  return (
+    <div class="setrow"><label>时代</label>
+      <label><input type="radio" name="sw_period" value="ancient" defaultChecked={!modern} /> {PERIOD_NAME.ancient}</label>
+      <label><input type="radio" name="sw_period" value="modern" defaultChecked={modern} /> {PERIOD_NAME.modern}</label>
+      <span class="sub">现代：部队表单多出雷达（探测半径 / 天线高度 / 目标高度），层面板多「雷达覆盖」；飞行高度与机械化速度将来也挂在这里。随时可改；改回古代只收起这些行，已填的数据不丢。</span>
+    </div>
+  );
+}
 
 /** 一份 meta 的笔刷兑现读数（创建面板实时行与 app 摘要共用）：格边/最小档实得/互异档数 */
 function brushReadout(mm: Meta): { cellKm: number; minKm: number; distinct: number } {
@@ -213,6 +225,8 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       if (outEl) { if (outEl.value === "land") mm.outside = "land"; else delete mm.outside; }   // 图幅外（缺键=海）
       const climEl = box.current!.querySelector<HTMLSelectElement>("#sw_climate");
       if (climEl) { if (tget(CLIMATE, climEl.value)) mm.climate = climEl.value as Climate; else delete mm.climate; }   // 气候档（缺键=出厂雪线）
+      const perEl = periodEl();
+      if (perEl) { if (perEl.value === "modern") mm.period = "modern"; else delete mm.period; }   // 时代（缺键=古代；改回古代只收起表单行，数据不动）
       /* 纪元前缀（custom 既有图可改，纯显示层；kind/月长锁定不动）。默认 SE 不落盘 */
       const eraEl = box.current!.querySelector<HTMLInputElement>("#sw_era_app");
       if (eraEl) {
@@ -239,9 +253,12 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       diaKm: num("sw_dia", 20),
       battleYear: yr == null ? 0 : yr,
       calendar: s.calendar, terrain: s.terrain, genSeed: s.genSeed, genStyle: s.genStyle,
-      relief: s.relief, contourM: cm > 0 ? cm : undefined, vault: s.vault
+      relief: s.relief, contourM: cm > 0 ? cm : undefined, vault: s.vault,
+      period: periodEl()?.value === "modern" ? "modern" : undefined
     };
   };
+  /** 时代单选（战术图才渲染；不在＝古代） */
+  const periodEl = () => box.current!.querySelector<HTMLInputElement>("[name=sw_period]:checked");
   const doNew = () => {
     if (!create) {
       /* 以此参数新建＝换到 create 模式并带当前图 meta 预填（token +1＝卡片整体重挂重灌表单）。
@@ -421,8 +438,10 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
           <div class="setrow"><label>最细等高距 米</label>
             <input type="number" id="sw_contourm" min={0} step={5} defaultValue={base && base.contourM != null ? String(base.contourM) : ""} placeholder="留空＝10" />
             <span class="sub">等高线的最细一档；平原战场 10、山地战场 50~100</span></div>
+          <PeriodRow modern={!!(base && base.period === "modern")} />
         </>
       )}
+      {!create && m.mapKind === "tactical" && <PeriodRow modern={m.period === "modern"} />}
       <div class="setrow"><label>地形初稿</label>
         <label><input type="radio" name="sw_terr" value="auto" defaultChecked={terr === "auto"} onChange={() => setTerr("auto")} /> 自动生成</label>
         <label><input type="radio" name="sw_terr" value="plain" defaultChecked={terr === "plain"} onChange={() => setTerr("plain")} /> 空白平原</label>

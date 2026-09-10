@@ -1,0 +1,180 @@
+/* 视域编排（shell/viewshed）：谁成单（视野圈恒判、火力圈直射按视线/曲射按射角、雷达只在现代图、飞行不判、未入场不判、层关不判）、
+   只在规则场落定时算（ruleFieldSig null＝沿用上一份）、规则场只推送一次、拒绝臂放闸。
+   fake routeClient 按观察者回可辨认的掩膜；规则场用粗格包装。 */
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { wireViewshed, visObservers } from "../src/shell/viewshed.ts";
+import { landWorld } from "../src/shell/orchestrate.ts";
+import { normalizeWorld } from "../src/core/world.ts";
+import { buildGridCells } from "../src/core/grid.ts";
+import { coarseField, type ElevField } from "../src/core/elev.ts";
+import { layersSig, mutateWorld, ruleFieldSig, visMaskSig, worldSig, yearSig } from "../src/ui/state.ts";
+import type { ShellCtx } from "../src/shell/ctx.ts";
+import type { VisReq, VisRes } from "../src/worker/routeProto.ts";
+import type { VisMask } from "../src/core/viewshed.ts";
+import type { World } from "../src/core/types.ts";
+
+const settle = (): Promise<void> => new Promise(r => setTimeout(r, 130));   // 防抖 80 + 微任务
+
+interface Seen { pushes: number; calls: VisReq[][]; reject: boolean }
+function mkCtx(): { ctx: ShellCtx; seen: Seen } {
+  const seen: Seen = { pushes: 0, calls: [], reject: false };
+  const fakeMask = (o: VisReq): VisMask =>
+    ({ bb: { lonMin: o.lon, lonMax: o.lon, latMin: o.lat, latMax: o.lat }, cols: 1, rows: 1, vis: new Uint8Array([1]), nVis: 1, nIn: 1, eyeOff: 0 });
+  const ctx = {
+    canvas: {}, ov: {},
+    routeClient: {
+      setContext: () => {},
+      setViewField: () => { seen.pushes++; },
+      viewshed: (obs: VisReq[]): Promise<VisRes[] | null> => {
+        seen.calls.push(obs);
+        return seen.reject ? Promise.reject(new Error("dead")) : Promise.resolve(obs.map(o => ({ id: o.id, ring: o.ring, mask: fakeMask(o) })));
+      }
+    },
+    DPR: 1, meta: {}, view: { lon0: 100.5, lat0: 30.5, degPerPx: 0.001 },
+    grid: null, elevField: null, ruleField: null, R: null, builtFor: null, repaint: null,
+    lib: null, mapId: null, source: "browser", folderDir: null, fcache: {},
+    bootNote: "", savedAt: null, saveErr: null, libOpen: false
+  } as unknown as ShellCtx;
+  return { ctx, seen };
+}
+const TAC = (units: object[], meta: object = {}): World => normalizeWorld({
+  meta: { 名称: "战", worldModel: "flat", kmPerDeg: 111.19, terrain: "plain", mapKind: "tactical",
+    bbox: { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 }, ...meta },
+  units
+});
+/** 开图 + 手工给规则场（不走 host：这里测的是编排，不是场记账） */
+function open(ctx: ShellCtx, w: World, T = 3050): ElevField {
+  landWorld(ctx, w, "t1", T);
+  ctx.grid = buildGridCells(ctx.meta, w.terrainOverrides, T);
+  const f = coarseField(ctx.grid, new Float32Array(ctx.grid.cols * ctx.grid.rows));
+  ctx.ruleField = f; ruleFieldSig.value = f;
+  return f;
+}
+const U = (id: string, extra: object = {}) => ({ id, kind: "rng", track: [{ t: 3050, lon: 100.5, lat: 30.5 }], ...extra });
+
+describe("视域编排（shell/viewshed）", () => {
+  it("视线类圈带驻地半径（无足印 100 m、有足印按长边一半），曲射不带", () => {
+    const w = TAC([U("a", { vision: 3, range: 2, fire: "direct" }), U("b", { range: 2, frontKm: 2 }), U("c", { vision: 3, frontKm: 1, depthKm: 3 })]);
+    const obs = visObservers(w, 3050, { vision: true, ranges: true }, w.meta);
+    assert.deepEqual(obs.map(o => `${o.id}:${o.ring}:${o.vantageM ?? "-"}:${o.gainM ?? "-"}`), ["a:vision:100:1", "a:fire:100:1", "b:fire:-:-", "c:vision:1500:1"]);
+  });
+
+  let ctx: ShellCtx, seen: Seen, unwire: () => void;
+  beforeEach(() => { ({ ctx, seen } = mkCtx()); ruleFieldSig.value = null; unwire = wireViewshed(ctx); });
+  afterEach(() => { unwire(); ruleFieldSig.value = null; });
+
+  it("成单规则：视野圈恒判、火力圈直射与曲射都判、飞行/未入场/层关不判；掩膜按 id→圈落 sig", async () => {
+    const w = TAC([
+      U("v", { vision: 3 }),
+      U("fd", { range: 2, fire: "direct" }),
+      U("fi", { range: 2 }),
+      U("air", { kind: "air", vision: 5, range: 2, fire: "direct" }),
+      U("late", { vision: 3, track: [{ t: 3060, lon: 100.5, lat: 30.5 }] }),
+      U("both", { vision: 4, range: 1, fire: "direct", eyeM: 12 })
+    ]);
+    open(ctx, w);
+    await settle();
+    assert.equal(seen.calls.length, 1, "一次防抖归并成一单");
+    const obs = seen.calls[0].map(o => `${o.id}:${o.ring}:${o.km}:${o.eyeM}`).sort();
+    assert.deepEqual(obs, ["both:fire:1:12", "both:vision:4:12", "fd:fire:2:2", "fi:fire:2:2", "v:vision:3:2"]);
+    assert.deepEqual([...visMaskSig.peek().keys()].sort(), ["both", "fd", "fi", "v"]);
+    assert.equal(seen.calls[0].find(o => o.id === "fi")!.arcDeg, 45, "曲射缺键按 45° 成单");
+    assert.equal(seen.calls[0].find(o => o.id === "fd")!.arcDeg, undefined, "直射不带射角");
+    assert.ok(visMaskSig.peek().get("both")!.vision && visMaskSig.peek().get("both")!.fire, "两圈各一张");
+    assert.equal(visMaskSig.peek().get("fd")!.vision, undefined, "只直射无视野＝只有火力掩膜");
+    assert.equal(seen.pushes, 1, "规则场推送一次");
+    layersSig.value = { ...layersSig.peek(), vision: false };
+    await settle();
+    assert.deepEqual(seen.calls[1].map(o => o.ring), ["fire", "fire", "fire"], "视野层关＝只剩火力单");
+    layersSig.value = { ...layersSig.peek(), vision: true };
+    await settle();
+  });
+
+  it("规则场演算中（sig 为 null）不发单、沿用上一份；落定换引用再算且再推送一次", async () => {
+    const w = TAC([U("v", { vision: 3 })]);
+    const f0 = open(ctx, w);
+    await settle();
+    assert.equal(seen.calls.length, 1);
+    const kept = visMaskSig.peek();
+    ruleFieldSig.value = null;
+    mutateWorld(x => { x.units[0].track[0].lon = 100.6; });   // 演算中拖部队
+    await settle();
+    assert.equal(seen.calls.length, 1, "不发单");
+    assert.equal(visMaskSig.peek(), kept, "掩膜沿用上一份");
+    const f1 = coarseField(ctx.grid!, new Float32Array(ctx.grid!.cols * ctx.grid!.rows).fill(0.1));
+    ruleFieldSig.value = f1;
+    await settle();
+    assert.equal(seen.calls.length, 2, "落定即算");
+    assert.equal(seen.calls[1][0].lon, 100.6, "按最新位置");
+    assert.equal(seen.pushes, 2, "换引用再推送一次");
+    ruleFieldSig.value = f0;
+    await settle();
+    assert.equal(seen.pushes, 3, "换回 f0＝与上次推送的不同引用，再推");
+    ruleFieldSig.value = f1;
+    await settle();
+    assert.equal(seen.pushes, 4);
+    assert.equal(seen.calls.length, 4, "每次落定各算一次");
+  });
+
+  it("拖部队（editVer）重算；无成单部队或战略图＝清空且不发单", async () => {
+    const w = TAC([U("v", { vision: 3 })]);
+    open(ctx, w);
+    await settle();
+    mutateWorld(x => { x.units[0].track[0].lat = 30.6; });
+    await settle();
+    assert.equal(seen.calls.length, 2);
+    assert.equal(seen.calls[1][0].lat, 30.6);
+    mutateWorld(x => { delete x.units[0].vision; });
+    await settle();
+    assert.equal(seen.calls.length, 2, "无圈可判＝不发单");
+    assert.equal(visMaskSig.peek().size, 0, "掩膜清空");
+    const strat = normalizeWorld({ meta: { 名称: "略", terrain: "plain", gridN: 48 }, units: [U("v", { vision: 3 })] });
+    open(ctx, strat);
+    await settle();
+    assert.equal(seen.calls.length, 2, "战略图不算");
+    assert.equal(visMaskSig.peek().size, 0);
+  });
+
+  it("拒绝臂放闸：一单失败后下一次改动照常发单", async () => {
+    const w = TAC([U("v", { vision: 3 })]);
+    seen.reject = true;
+    const warn = console.warn; console.warn = () => {};
+    try {
+      open(ctx, w);
+      await settle();
+      assert.equal(seen.calls.length, 1);
+      assert.equal(visMaskSig.peek().size, 0, "失败＝无掩膜");
+      seen.reject = false;
+      mutateWorld(x => { x.units[0].track[0].lat = 30.6; });
+      await settle();
+      assert.equal(seen.calls.length, 2, "闸已放");
+      assert.equal(visMaskSig.peek().size, 1);
+    } finally { console.warn = warn; }
+  });
+
+  it("visObservers：曲射按射角成单（缺键 45°）、直射不带射角；观察高度走兵种缺省（舰船 15 m）", () => {
+    const w = TAC([U("n", { kind: "navy", vision: 2, range: 1 }), U("d", { kind: "navy", range: 1, fire: "direct" }), U("a", { kind: "siege", range: 8, arcDeg: 70 })]);
+    const obs = visObservers(w, 3050, layersSig.peek(), w.meta);
+    assert.deepEqual(obs.map(o => `${o.id}:${o.ring}:${o.eyeM}:${o.arcDeg ?? "-"}:${o.tgtM}`), ["n:vision:15:-:2", "n:fire:15:45:0", "d:fire:15:-:2", "a:fire:2:70:0"]);
+    yearSig.value = 3050;
+  });
+
+  it("visObservers：雷达只在现代战术图且层开时成单，眼位＝天线高度、目标＝假定高度、折射 1/4；古代图与飞行部队不成单", () => {
+    const units = [U("r", { radar: 40 }), U("rr", { radar: 30, radarM: 25, radarTgtM: 500 }), U("air", { kind: "air", radar: 50 })];
+    const anc = TAC(units), mod = TAC(units, { period: "modern" });
+    assert.deepEqual(visObservers(anc, 3050, layersSig.peek(), anc.meta), [], "古代图：雷达不成单");
+    const obs = visObservers(mod, 3050, layersSig.peek(), mod.meta);
+    assert.deepEqual(obs.map(o => `${o.id}:${o.ring}:${o.km}:${o.eyeM}:${o.tgtM}:${o.refract.toFixed(2)}`), ["r:radar:40:10:100:0.25", "rr:radar:30:25:500:0.25"]);
+    assert.deepEqual(visObservers(mod, 3050, { ...layersSig.peek(), radar: false }, mod.meta), [], "雷达层关＝不成单");
+  });
+
+  it("现代图上开图即算雷达掩膜，落 sig 的 radar 槽", async () => {
+    const w = TAC([U("r", { radar: 40, vision: 3 })], { period: "modern" });
+    open(ctx, w);
+    await settle();
+    assert.deepEqual(seen.calls[0].map(o => o.ring).sort(), ["radar", "vision"]);
+    const m = visMaskSig.peek().get("r")!;
+    assert.ok(m.radar && m.vision && !m.fire);
+  });
+});

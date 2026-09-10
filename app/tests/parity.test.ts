@@ -51,7 +51,7 @@ describe("常量与旧实现深度一致", () => {
   it("图层/预设/布景", () => {
     /* LAYERS：新增 "notes"/"vision"/"wall"（柱B 工事）、移除 "eco"（自动生态点缀改为生态笔刷落真实印章）、
        units 单独比（2026-07-31 去 tacOnly）后与旧版逐位一致 */
-    const LAY_SKIP = ["notes", "vision", "wall", "units"];
+    const LAY_SKIP = ["notes", "vision", "wall", "units", "radar"];   // radar：2026-09-09 视域第二批（现代战术图雷达覆盖）
     assert.deepStrictEqual(C.LAYERS.filter(l => !LAY_SKIP.includes(l.id)),
       g.LAYERS.filter((l: { id: string }) => l.id !== "eco" && l.id !== "units"));
     /* units 的 sanctioned 偏离＝**只**去掉 tacOnly（战略图可摆基础部队），其余字段仍由 golden 推出——
@@ -63,16 +63,19 @@ describe("常量与旧实现深度一致", () => {
     assert.strictEqual(C.LAYERS.filter(l => l.id === "wall").length, 1);
     assert.strictEqual(C.LAYERS.find(l => l.id === "eco"), undefined, "eco 自动点缀层已移除（生态改由笔刷落真实印章）");
     assert.strictEqual(C.LAYERS.find(l => l.id === "vision")!.tacOnly, true, "vision 应为战术图专属");
+    assert.strictEqual(C.LAYERS.filter(l => l.id === "radar").length, 1);
+    assert.strictEqual(C.LAYERS.find(l => l.id === "radar")!.tacOnly, true, "radar 应为战术图专属");
     assert.strictEqual(C.LAYERS.find(l => l.id === "wall")!.tacOnly, undefined, "工事不设 tacOnly（长城属战略语汇）");
     // PRESETS：每个预设剔除新增 notes/vision/wall、移除 eco 后与旧版一致；标注全预设开、视野与工事按白名单
     assert.deepStrictEqual(Object.keys(C.PRESETS), Object.keys(g.PRESETS));
     for (const k of Object.keys(C.PRESETS)) {
       // 战术预设另剔 contour（2026-07 特化 P0 白名单：战场地文=棱线/凹路,等高线默认开）——只豁免战术,地理/全部的 contour 漂移照红
-      assert.deepStrictEqual(stripKeys(C.PRESETS[k], k === "战术" ? ["notes", "vision", "contour", "wall"] : ["notes", "vision", "wall"]), stripKeys(g.PRESETS[k], ["eco"]), `预设「${k}」旧键漂移`);
+      assert.deepStrictEqual(stripKeys(C.PRESETS[k], k === "战术" ? ["notes", "vision", "contour", "wall", "radar"] : ["notes", "vision", "wall", "radar"]), stripKeys(g.PRESETS[k], ["eco"]), `预设「${k}」旧键漂移`);
       assert.strictEqual(C.PRESETS[k].notes, 1, `预设「${k}」应含标注层`);
       assert.strictEqual(C.PRESETS[k].eco, undefined, `预设「${k}」eco 已移除`);
       assert.strictEqual(C.PRESETS[k].vision, ["军事", "战术", "全部"].includes(k) ? 1 : undefined, `预设「${k}」vision 白名单`);
       assert.strictEqual(C.PRESETS[k].wall, ["军事", "战术", "全部"].includes(k) ? 1 : undefined, `预设「${k}」wall 白名单（柱B）`);
+      assert.strictEqual(C.PRESETS[k].radar, ["军事", "战术"].includes(k) ? 1 : undefined, `预设「${k}」radar 白名单（视域第二批）`);
     }
     assert.strictEqual(C.PRESETS.战术.contour, 1, "战术预设应含等高线（白名单成员须真在,防豁免空转）");
     assert.deepStrictEqual(C.DECOR, g.DECOR);

@@ -66,14 +66,16 @@ export const LAYERS: LayerDef[] = [
   { id: "trails", 名: "军事·行军尾迹", on: true, tacOnly: true },
   { id: "ranges", 名: "军事·火力射程", on: true, tacOnly: true },
   /* 视野（v0.15 新增，平价白名单）：部队侦察/瞭望半径点线圈 */
-  { id: "vision", 名: "军事·视野范围", on: true, tacOnly: true }
+  { id: "vision", 名: "军事·视野范围", on: true, tacOnly: true },
+  /* 雷达覆盖（2026-09-09 视域第二批，平价白名单）：现代战术图（meta.period）才画、层面板才出行 */
+  { id: "radar", 名: "军事·雷达覆盖", on: true, tacOnly: true }
 ];
 export const PRESETS: Record<string, Record<string, 1>> = {
   "政治": { terrain: 1, politics: 1, range: 1, road: 1, nodes: 1, labels: 1, notes: 1 },
-  "军事": { terrain: 1, politics: 1, range: 1, road: 1, river: 1, wall: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },
+  "军事": { terrain: 1, politics: 1, range: 1, road: 1, river: 1, wall: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1, radar: 1 },
   "经济": { terrain: 1, road: 1, river: 1, trade: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
   "地理": { terrain: 1, contour: 1, decor: 1, graticule: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
-  "战术": { terrain: 1, contour: 1, decor: 1, road: 1, river: 1, wall: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 },   // contour: 战场地文=棱线/凹路,等高线即战术图的骨架（2026-07 特化 P0 白名单）；wall=柱B 同批白名单
+  "战术": { terrain: 1, contour: 1, decor: 1, road: 1, river: 1, wall: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1, radar: 1 },   // contour: 战场地文=棱线/凹路,等高线即战术图的骨架（2026-07 特化 P0 白名单）；wall=柱B 同批白名单
   "全部": { terrain: 1, contour: 1, decor: 1, graticule: 1, politics: 1, range: 1, road: 1, river: 1, trade: 1, wall: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 }
 };
 
@@ -245,6 +247,78 @@ export const UNIT_KINDS: Record<string, { 名: string; glyph: string; v: number;
   spec:  { 名: "特殊", glyph: "✦", v: 30, arm: "land" },
   cmd:   { 名: "指挥", glyph: "帅", v: 60, arm: "land" }
 };
+
+/* 现代兵种（2026-09-10 用户给的清单；`meta.period==="modern"` 的战术图用这张表）。
+   ⚠ **另立一张表，古代 UNIT_KINDS 被平价基线逐位锁着，一个字都不许动**；两表键不相交，
+   查表一律走合表 ALL_KINDS（按 id 解析，与时代无关）——时代只决定表单下拉给哪张清单。
+   `v` 是行军速度 km/日（舰船按 15~20 节折算、航空器按一次出动的转场量级）；`noFire` 同古代表之义。 */
+export const MODERN_KINDS: Record<string, { 名: string; glyph: string; v: number; arm: Arm; noFire?: boolean }> = {
+  /* 陆军 */
+  mcomb:  { 名: "合成部队",     glyph: "合", v: 100, arm: "land" },
+  minf:   { 名: "轻步兵",       glyph: "步", v: 40,  arm: "land" },
+  mmech:  { 名: "机械化步兵",   glyph: "机", v: 150, arm: "land" },
+  marmor: { 名: "装甲部队",     glyph: "甲", v: 150, arm: "land" },
+  mart:   { 名: "火炮部队",     glyph: "炮", v: 100, arm: "land" },
+  maa:    { 名: "防空部队",     glyph: "防", v: 100, arm: "land" },
+  mavn:   { 名: "陆军航空兵",   glyph: "旋", v: 600, arm: "air" },
+  mmsl:   { 名: "导弹部队",     glyph: "弹", v: 80,  arm: "land" },
+  meng:   { 名: "工兵部队",     glyph: "工", v: 80,  arm: "land", noFire: true },
+  /* 空军 */
+  mftr:   { 名: "战斗机",       glyph: "歼", v: 1500, arm: "air" },
+  mbmb:   { 名: "轰炸机",       glyph: "轰", v: 2000, arm: "air" },
+  mawc:   { 名: "预警机",       glyph: "警", v: 1200, arm: "air", noFire: true },
+  mtkr:   { 名: "加油机",       glyph: "油", v: 1200, arm: "air", noFire: true },
+  muav:   { 名: "无人机",       glyph: "无", v: 1000, arm: "air" },
+  /* 海军 */
+  mcv:    { 名: "航空母舰",     glyph: "航", v: 700, arm: "water" },
+  mddg:   { 名: "驱逐舰",       glyph: "驱", v: 800, arm: "water" },
+  mbb:    { 名: "战列舰",       glyph: "列", v: 600, arm: "water" },
+  mcg:    { 名: "巡洋舰",       glyph: "巡", v: 750, arm: "water" },
+  mffg:   { 名: "护卫舰",       glyph: "护", v: 700, arm: "water" },
+  mpgg:   { 名: "导弹艇",       glyph: "艇", v: 900, arm: "water" },
+  mpat:   { 名: "巡逻舰",       glyph: "逻", v: 700, arm: "water" },
+  mssbn:  { 名: "战略核潜艇",   glyph: "核", v: 600, arm: "water" },
+  mssn:   { 名: "攻击核潜艇",   glyph: "攻", v: 750, arm: "water" },
+  mssk:   { 名: "常规潜艇",     glyph: "潜", v: 400, arm: "water" },
+  mlha:   { 名: "两栖攻击舰",   glyph: "栖", v: 600, arm: "water" },
+  mlst:   { 名: "登陆舰",       glyph: "登", v: 500, arm: "water" },
+  msup:   { 名: "补给舰",       glyph: "补", v: 550, arm: "water", noFire: true },
+  moil:   { 名: "油船",         glyph: "燃", v: 500, arm: "water", noFire: true },
+  mhosp:  { 名: "医疗船",       glyph: "医", v: 500, arm: "water", noFire: true },
+  mmcm:   { 名: "扫雷舰",       glyph: "扫", v: 350, arm: "water" }
+};
+/** 合表：兵种查表的唯一入口（两表键不相交，按 id 解析与时代无关）。时代只决定表单下拉给哪张清单，
+    否则把地图改回古代就会让现代部队的符号、速度、移动方式集体失效。 */
+export const ALL_KINDS: Record<string, { 名: string; glyph: string; v: number; arm: Arm; noFire?: boolean }> =
+  { ...UNIT_KINDS, ...MODERN_KINDS };
+
+/* 火力缺省按兵种（2026-09-10）：缺 `Unit.fire` 时查这里——在表内＝直射（视线），不在＝曲射（弹道）。
+   古代兵种一个都不在表内＝缺键仍是曲射，旧档逐位不变（2026-09-09 拍板未破）。⚠ 另立一张表，
+   不给平价逐位比对的 UNIT_KINDS 加字段；判据只在 core/units.unitFireDirect 一处。 */
+export const FIRE_DIRECT_KIND = new Set(["minf", "mmech", "marmor", "maa", "mavn", "mftr", "muav", "mpat", "mlst", "mmcm"]);
+
+/* 观察高度缺省（米）：兵种未列者取 EYE_M（站立的人）；舰船按桅顶／舰桥瞭望，装甲与防空按车顶。另立一张表，
+   不给平价逐位比对的 UNIT_KINDS 加字段（同 ARM_OPT_KINDS 之规）；判据只在 core/units.unitEyeM 一处。 */
+export const EYE_M = 2;
+export const EYE_M_KIND: Record<string, number> = {
+  navy: 15,
+  mmech: 2.5, marmor: 2.5, maa: 3,
+  mcv: 40, mddg: 20, mbb: 25, mcg: 22, mffg: 18, mpgg: 8, mpat: 10,
+  mssbn: 8, mssn: 8, mssk: 8, mlha: 30, mlst: 12, msup: 18, moil: 18, mhosp: 18, mmcm: 10
+};
+/** 眼位可挑的驻地半径（米）：无阵形足印时视线从这么大范围内最高的格心判——33 m 格的 DEM 削平脊线、眼位又在格心，
+    站在「脊上」其实站在脊下一点 */
+export const VANTAGE_M = 100;
+/** 挪眼位的最小抬升（米）：亚米级起伏是侵蚀场的细节噪声不是高地，为它挪几百米＝掠射几何整个换一遍、
+    实测净亏（琉森湖平原上为 0.22 m 挪 495 m，可达格 +188 −246） */
+export const VANTAGE_GAIN_M = 1;
+/** 曲射缺省射角（度）：最大射程射角，弹道最高点＝射程的四分之一 */
+export const ARC_DEG = 45;
+/** 雷达缺省：天线高度 / 假定目标高度（米，低空） */
+export const RADAR_M = 10;
+export const RADAR_TGT_M = 100;
+/** 时代显示名（设置项「时代」；数据键 meta.period 缺键＝古代） */
+export const PERIOD_NAME = { ancient: "古代", modern: "现代" } as const;
 /* 移动方式（旧称「军种」，数据键仍是 Arm/u.arm＝存档兼容）显示名：检查器卡片与部队表单同源，免两处漂移 */
 export const ARM_NAME: Record<Arm, string> = { land: "陆行", water: "水行", air: "飞行" };
 

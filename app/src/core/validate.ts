@@ -3,7 +3,7 @@
    · fatal：旧版导入门槛拒绝的（无 meta/nodes 非数组）+ 会让 normalize/渲染直接崩的（数组成员不是对象）；
    · warning：normalizeWorld 会补齐/改写的、以及悬空引用等数据质量问题——照常打开，仅提示写手。
    注意分级红线：凡旧版能打开的档，这里绝不能报 fatal（"旧档无损打开"是 验收）。 */
-import { CERTAINTY, CLIMATE, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_KIND, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
+import { ALL_KINDS, CERTAINTY, CLIMATE, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_KIND, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
 
@@ -212,12 +212,12 @@ export function validateWorld(w: unknown): ValidateResult {
     if (u.speed != null && !(isFinite(+(u.speed as number)) && +(u.speed as number) > 0))
       W(`${p}.speed`, `行军速度须为正数（现为 ${JSON.stringify(u.speed)}），耗时账将失准`);
     const uk = tget(LEGACY_KIND as Record<string, { to: string }>, String(u.kind));
-    if (u.kind != null && !uk && !tget(UNIT_KINDS, String(u.kind))) W(`${p}.kind`, `未知兵种「${String(u.kind)}」（移动方式按陆行处理）`);
+    if (u.kind != null && !uk && !tget(ALL_KINDS, String(u.kind))) W(`${p}.kind`, `未知兵种「${String(u.kind)}」（移动方式按陆行处理）`);
     /* 兵力已是数值字段：非数值的旧文本照常打开，但要说清它会被 normalizeWorld 挪走（同上「会补齐/改写的」之级） */
     if (u.strength != null && String(u.strength).trim() && parseStrength(u.strength) == null)
       W(`${p}.strength`, `兵力「${String(u.strength).trim()}」不是数值，将移入「说明」`);
     /* 无远程投射能力的兵种带着火力半径：数据留着但一律不画（unitFireKm 判据），说一声免得写手以为图坏了 */
-    const nk = tget(UNIT_KINDS, uk ? uk.to : String(u.kind));
+    const nk = tget(ALL_KINDS, uk ? uk.to : String(u.kind));
     if (nk && nk.noFire && (u.range != null || u.ranges != null))
       W(`${p}.range`, `「${nk.名}」无远程投射能力，火力圈不会绘制`);
     refFaction(`${p}.faction`, u.faction);

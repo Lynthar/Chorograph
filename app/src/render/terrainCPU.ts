@@ -130,7 +130,8 @@ function elevRamp(e: number, ws: number): [number, number, number] {
 export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   const ctx = canvas.getContext("2d")!;
   let grid: Grid | null = null;
-  let field: ElevField | null = null;   // 高程场含几何（粗格或侵蚀细分；缺省=按 ELEV[类型] 合成粗格,旧行为）
+  let field: ElevField | null = null;   // 画面场含几何（粗格或侵蚀细分，精修档在此；缺省=按 ELEV[类型] 合成粗格,旧行为）
+  let rule: ElevField | null = null;    // 规则场（工作档）：推演底图的等高线取它＝与光标读数同源；缺省＝画面场
   let tile: { cv: HTMLCanvasElement; bb: BBox; pxpd: number; key: string } | null = null;
   /* 逐格材质/色调（uploadGrid 预算；7 浮点=canopy,dune,ridge,marsh,rough,albVar,rock + tint 3 通道与有无） */
   let cellMat: Float32Array | null = null;
@@ -233,7 +234,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       for (let x = 0; x < W; x++) {
         const i = y * W + x, q = i * 4, c = row && cols[x] >= 0 ? rgbOf(row[cols[x]]) : out;
         d[q] = c[0]; d[q + 1] = c[1]; d[q + 2] = c[2]; d[q + 3] = 255;
-        if (ed && row && cols[x] >= 0) ed[i] = elevSmooth(field!.data, field!, lons[x], lat);
+        if (ed && row && cols[x] >= 0) ed[i] = elevSmooth(rule!.data, rule!, lons[x], lat);   // 规则场：线＝读数
       }
     }
     if (ed) for (let y = 0; y < H; y++) {
@@ -398,8 +399,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
 
   return {
     canvas, kind: "cpu",
-    uploadGrid(g: Grid, wsurf: Float32Array, f?: ElevField) {
-      grid = g; field = f || coarseField(g, fieldOfTypes(g)); tile = null; cellWS = wsurf;
+    uploadGrid(g: Grid, wsurf: Float32Array, f?: ElevField, r?: ElevField) {
+      grid = g; field = f || coarseField(g, fieldOfTypes(g)); rule = r || field; tile = null; cellWS = wsurf;
       const n = g.rows * g.cols;   // 逐格材质/色调预算（renderTile 每像素四角查表）
       cellMat = new Float32Array(n * 7); cellTint = new Float32Array(n * 3); cellTintHas = new Uint8Array(n);
       for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {

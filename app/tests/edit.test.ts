@@ -1026,6 +1026,22 @@ describe("部队编辑内核（战术图）", () => {
     applyUnitForm(u, { 名称: "", faction: "", kind: "inf", strength: "", speed: "", note: "", vision: "" });
     assert.ok(!("vision" in u), "留空=删键");
   });
+  it("applyUnitForm：视域各键——直射落键/曲射删键、射角只收 (0,90)、观察高度与雷达三项 0 合法、缺席不动、noFire 连 fire/射角一起清", () => {
+    const w = mkWorld();
+    const u = addUnit(w, "炮", 1, 1, 0, "u2");
+    const base = { 名称: "", faction: "", kind: "rng", strength: "", speed: "", note: "" };
+    applyUnitForm(u, { ...base, range: "6", fire: "direct", arcDeg: "60", eyeM: "0", radar: "40", radarM: "12", radarTgtM: "0" });
+    assert.strictEqual(u.fire, "direct"); assert.strictEqual(u.arcDeg, 60); assert.strictEqual(u.eyeM, 0);
+    assert.strictEqual(u.radar, 40); assert.strictEqual(u.radarM, 12); assert.strictEqual(u.radarTgtM, 0);
+    applyUnitForm(u, { ...base });
+    assert.strictEqual(u.fire, "direct", "缺席不动"); assert.strictEqual(u.radar, 40);
+    applyUnitForm(u, { ...base, fire: "", arcDeg: "95", radar: "0", radarM: "", radarTgtM: "-3" });
+    assert.ok(!("fire" in u), "曲射＝删键"); assert.ok(!("arcDeg" in u), "档外射角删键回落缺省");
+    assert.ok(!("radar" in u) && !("radarM" in u) && !("radarTgtM" in u), "空/非正/负＝删键");
+    u.fire = "direct"; u.arcDeg = 50; u.range = 3;
+    applyUnitForm(u, { ...base, kind: "linf" });
+    assert.ok(!("fire" in u) && !("arcDeg" in u) && !("range" in u), "无远程投射能力的兵种连火力档位与射角一起清");
+  });
 });
 
 describe("归属沿革编辑（owners）", () => {

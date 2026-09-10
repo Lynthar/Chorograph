@@ -8,8 +8,8 @@
    applyUnitForm 才不会把手编档里的这些键当成「清空」删掉。
    字段带持久小标签（.frow>label，对齐设计；填值后仍有标识）。 */
 import { useRef, useState } from "preact/hooks";
-import { ARM_NAME, UNIT_KINDS, armOptional } from "../core/constants.ts";
-import { DEPTH_RATIO, unitArm, unitFireKm, unitFootKm, unitKind } from "../core/units.ts";
+import { ALL_KINDS, ARC_DEG, ARM_NAME, MODERN_KINDS, RADAR_M, RADAR_TGT_M, UNIT_KINDS, armOptional } from "../core/constants.ts";
+import { DEPTH_RATIO, isModern, unitArm, unitEyeM, unitFireDirect, unitFireKm, unitFootKm, unitKind } from "../core/units.ts";
 import { applyUnitForm } from "./editops.ts";
 import { deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, noteFormWarn, showToast, worldSig } from "./state.ts";
 import type { Arm, Unit } from "../core/types.ts";
@@ -22,9 +22,17 @@ export function UnitForm({ u }: { u: Unit }) {
   /* 兵种在表单里是**受控**的：换兵种要即时改变「有没有火力行/移动方式行」与速度占位的默认值，
      纯非受控的话切到步兵后火力行还杵在那儿、提交时又被清掉＝眼见与落库不一致。
      移动方式同为受控——它随兵种出现/消失，靠 querySelector 写 DOM 会在「刚出现的那一帧」扑空。 */
-  const [kind, setKind] = useState(u.kind || "linf");
+  const modern = isModern(world.meta);
+  const [kind, setKind] = useState(u.kind || (modern ? "mcomb" : "linf"));
   const [arm, setArm] = useState<Arm>(unitArm(u));
-  const kd = tget(UNIT_KINDS, kind) || UNIT_KINDS.linf;
+  /* 直射/曲射同为受控：射角那一格只在曲射时出现，靠 DOM 查不到「刚出现的那一帧」（同 arm 之规） */
+  const [fireMode, setFireMode] = useState<"arc" | "direct">(unitFireDirect(u) ? "direct" : "arc");
+  const fw = modern ? "防区" : "阵形";   // 现代图的正面·纵深叫防区（防御地段，不是战列），数据键不变
+  /* 兵种下拉按时代给清单（古代表被平价基线锁着，现代另立一张）；查表仍走合表。
+     当前兵种不在本代清单里时**必须另立一项**——否则「打开表单什么都不改就保存」会把它静默换成清单第一项。 */
+  const kindList = modern ? MODERN_KINDS : UNIT_KINDS;
+  const kd = tget(ALL_KINDS, kind) || UNIT_KINDS.linf;
+  const offEra = tget(kindList, kind) ? null : tget(ALL_KINDS, kind);
   const kDef = kd.v;
   const armOn = armOptional(kind);
   const foot = unitFootKm(u);
@@ -52,16 +60,22 @@ export function UnitForm({ u }: { u: Unit }) {
     warnNum("uf_speed", "速度", "已回落兵种默认");
     warnNum("uf_morale", "士气", "该项已清空", true);
     warnNum("uf_range", "火力半径", "该项已清空");
+    warnNum("uf_arc", "射角", `已回落 ${ARC_DEG}°`);
     warnNum("uf_vision", "视野半径", "该项已清空");
-    warnNum("uf_front", "阵形正面", "该项已清空");
-    warnNum("uf_depth", "阵形纵深", "该项已清空");
+    warnNum("uf_eye", "观察高度", "已回落兵种缺省", true);
+    warnNum("uf_radar", "雷达探测半径", "该项已清空");
+    warnNum("uf_radarm", "天线高度", `已回落 ${RADAR_M} m`, true);
+    warnNum("uf_radartgt", "雷达目标高度", `已回落 ${RADAR_TGT_M} m`, true);
+    warnNum("uf_front", `${fw}正面`, "该项已清空");
+    warnNum("uf_depth", `${fw}纵深`, "该项已清空");
     mutateWorld(w => {
       const target = (w.units || []).find(x => x.id === u.id);
       if (!target) return;
       applyUnitForm(target, {
         名称: val("uf_name"), faction: val("uf_fac"), kind, arm: armOn ? arm : "",
         strength: val("uf_str"), strengthUnit: val("uf_strunit"), speed: val("uf_speed"), morale: valOpt("uf_morale"),
-        range: valOpt("uf_range"), vision: valOpt("uf_vision"), note: val("uf_note"),
+        range: valOpt("uf_range"), fire: valOpt("uf_fire"), arcDeg: valOpt("uf_arc"), vision: valOpt("uf_vision"), eyeM: valOpt("uf_eye"),
+        radar: valOpt("uf_radar"), radarM: valOpt("uf_radarm"), radarTgtM: valOpt("uf_radartgt"), note: val("uf_note"),
         frontKm: valOpt("uf_front"), depthKm: valOpt("uf_depth")
       });
     });
@@ -84,10 +98,11 @@ export function UnitForm({ u }: { u: Unit }) {
           onChange={e => {
             const nk = (e.currentTarget as HTMLSelectElement).value;
             setKind(nk);
-            const d = UNIT_KINDS[nk];
+            const d = tget(ALL_KINDS, nk);
             if (d) setArm(d.arm);   // 移动方式跟到新兵种的默认（受控，不必摸 DOM）
           }}>
-          {Object.entries(UNIT_KINDS).map(([k, d]) => <option key={k} value={k} selected={kind === k}>{d.glyph} {d.名}（{d.v}km/日）</option>)}
+          {offEra && <option value={kind} selected>{offEra.glyph} {offEra.名}（他代 · {offEra.v}km/日）</option>}
+          {Object.entries(kindList).map(([k, d]) => <option key={k} value={k} selected={kind === k}>{d.glyph} {d.名}（{d.v}km/日）</option>)}
         </select></div>
       {armOn && (
         <div class="frow"><label>移动方式（换兵种即回默认，可另择）</label>
@@ -118,26 +133,58 @@ export function UnitForm({ u }: { u: Unit }) {
         {kd.noFire
           ? <div class="frow"><label>火力投射半径</label>
               <div class="sub">「{kd.名}」无远程投射能力，不设火力圈——视野/侦察圈照常可用</div></div>
-          : <div class="frow"><label>火力投射半径 km（留空＝不画）</label>
-              <input class="fld" id="uf_range" type="number" min={0} step={0.1}
-                defaultValue={unitFireKm(u) > 0 ? String(unitFireKm(u)) : ""}
-                placeholder="弓弩/火炮投射 · 派系色深填充圆"
-                title="弓弩/火炮等投射半径：图上画派系色深填充圆；「军」工具下选中部队可直接拖动圈右侧手柄调节（与视野同机制）" /></div>}
-        <div class="frow"><label>视野/侦察半径 km（留空＝不画）</label>
-          <input class="fld" id="uf_vision" type="number" min={0} step={0.1}
-            defaultValue={typeof u.vision === "number" && u.vision > 0 ? String(u.vision) : ""}
-            placeholder="斥候瞭望/侦骑警戒 · 派系色浅填充圆"
-            title="斥候瞭望/侦骑警戒半径：图上画派系色浅填充圆；「军」工具下选中部队可直接拖动圈左侧手柄调节" /></div>
-        <div class="frow"><label>阵形正面 · 纵深 km（留空＝标准兵棋框；纵深留空＝正面÷{DEPTH_RATIO}）</label>
+          : <div class="frow"><label>火力投射半径 km（留空＝不画）· 直射 / 曲射{fireMode === "arc" ? " · 射角°" : ""}</label>
+              <div class="fx2">
+                <input class="fld" id="uf_range" type="number" min={0} step={0.1}
+                  defaultValue={unitFireKm(u) > 0 ? String(unitFireKm(u)) : ""}
+                  placeholder="弓弩/火炮投射 · 按视线或弹道裁"
+                  title="弓弩/火炮等投射半径：图上只填打得到的格，圈线是名义半径；「军」工具下选中部队可直接拖动圈右侧手柄调节（与视野同机制）" />
+                <select class="fld" id="uf_fire" value={fireMode} onChange={e => setFireMode((e.currentTarget as HTMLSelectElement).value === "direct" ? "direct" : "arc")}
+                  title="直射＝按视线裁（眼位＝所在处高程＋观察高度）；曲射＝按固定射角的弹道裁，弹道最高点＝射程×tan(射角)/4，挡在弹道之上的山打不过去">
+                  <option value="arc" selected={fireMode === "arc"}>曲射（弹道）</option>
+                  <option value="direct" selected={fireMode === "direct"}>直射（视线）</option>
+                </select>
+                {fireMode === "arc" && <input class="fld" id="uf_arc" type="number" min={5} max={85} step={1}
+                  defaultValue={typeof u.arcDeg === "number" && u.arcDeg > 0 && u.arcDeg < 90 ? String(u.arcDeg) : ""}
+                  placeholder={`射角 缺省 ${ARC_DEG}°`}
+                  title={`曲射射角（度）：${ARC_DEG}° 是最大射程射角；迫击炮 45～85、榴弹炮高角 45、投石机约 45。留空＝${ARC_DEG}°`} />}
+              </div></div>}
+        <div class="frow"><label>视野/侦察半径 km（留空＝不画）· 观察高度 m</label>
+          <div class="fx2">
+            <input class="fld" id="uf_vision" type="number" min={0} step={0.1}
+              defaultValue={typeof u.vision === "number" && u.vision > 0 ? String(u.vision) : ""}
+              placeholder="斥候瞭望/侦骑警戒 · 按视线裁"
+              title="斥候瞭望/侦骑警戒半径：圈内只填视线可达的格（地形遮挡与地平线都计入），圈线是名义半径；「军」工具下选中部队可直接拖动圈左侧手柄调节。飞行部队不判视线" />
+            <input class="fld" id="uf_eye" type="number" min={0} step="any"
+              defaultValue={typeof u.eyeM === "number" && u.eyeM >= 0 ? String(u.eyeM) : ""}
+              placeholder={`观察高度 缺省 ${unitEyeM({ ...u, eyeM: undefined })} m`}
+              title="眼位离地面的高度（米）：瞭望塔/桅顶/高地上的哨位填高些；留空＝兵种缺省（陆行 2 m、舰船 15 m）。视野圈与直射火力圈共用" />
+          </div></div>
+        {modern && <div class="frow"><label>雷达 探测半径 km（留空＝无）· 天线高度 m · 目标高度 m</label>
+          <div class="fx2">
+            <input class="fld" id="uf_radar" type="number" min={0} step={1}
+              defaultValue={typeof u.radar === "number" && u.radar > 0 ? String(u.radar) : ""}
+              placeholder="探测半径 如 40"
+              title="雷达探测半径：图上只填雷达视线可达的格（折射按 4/3 地球半径），圈线点划。飞行部队不判" />
+            <input class="fld" id="uf_radarm" type="number" min={0} step="any"
+              defaultValue={typeof u.radarM === "number" && u.radarM >= 0 ? String(u.radarM) : ""}
+              placeholder={`天线 缺省 ${RADAR_M} m`}
+              title={`天线离地面的高度（米）；留空＝${RADAR_M} m`} />
+            <input class="fld" id="uf_radartgt" type="number" min={0} step="any"
+              defaultValue={typeof u.radarTgtM === "number" && u.radarTgtM >= 0 ? String(u.radarTgtM) : ""}
+              placeholder={`目标 缺省 ${RADAR_TGT_M} m`}
+              title={`假定目标离地面的高度（米）：低空 ${RADAR_TGT_M}、中空数千；目标越高，地平线越远。留空＝${RADAR_TGT_M} m`} />
+          </div></div>}
+        <div class="frow"><label>{fw}正面 · 纵深 km（留空＝标准兵棋框；纵深留空＝正面÷{DEPTH_RATIO}）</label>
           <div class="fx2">
             <input class="fld" id="uf_front" type="number" min={0} step={0.1}
               defaultValue={typeof u.frontKm === "number" && u.frontKm > 0 ? String(u.frontKm) : ""}
               placeholder="正面 如 2"
-              title="阵形正面宽 km：放大到正面够宽时，兵棋框改画按比例的阵位条（朝向取航点 facing，缺省=行进方向）" />
+              title={`${fw}正面宽 km：放大到正面够宽时，兵棋框改画按比例的${modern ? "防区框" : "阵位条"}（朝向取航点 facing，缺省=行进方向）；视线眼位可在其长边一半内挑最高处`} />
             <input class="fld" id="uf_depth" type="number" min={0} step={0.1}
               defaultValue={typeof u.depthKm === "number" && u.depthKm > 0 ? String(u.depthKm) : ""}
               placeholder={foot ? `纵深 缺省 ${+foot.depth.toFixed(2)}` : "纵深"}
-              title="阵形纵深 km：留空按正面派生（战列常见观感）" />
+              title={`${fw}纵深 km：留空按正面派生${modern ? "" : "（战列常见观感）"}`} />
           </div></div>
       </>}
       <div class="frow"><label>说明</label>

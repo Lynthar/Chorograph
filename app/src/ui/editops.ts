@@ -4,8 +4,8 @@
 import { wrapLon } from "../core/geo.ts";
 import { parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
-import { setUnitPoint, unitKind } from "../core/units.ts";
-import { CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
+import { isModern, setUnitPoint, unitKind } from "../core/units.ts";
+import { ALL_KINDS, CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
 
@@ -456,14 +456,14 @@ export const newUnitId = (): string => "u" + Date.now().toString(36) + Math.floo
 
 /** 新建未入场部队（track 空＝不在图上）：军面板「＋ 新增部队」用——先入列表改名设属性，再从列表拖入地图落首航点 */
 export function addUnitUnplaced(w: World, 名称: string, id = newUnitId()): Unit {
-  const u: Unit = { id, 名称, faction: null, kind: "linf", arm: "land", track: [] };
+  const u: Unit = { id, 名称, faction: null, kind: isModern(w.meta) ? "mcomb" : "linf", arm: "land", track: [] };
   (w.units || (w.units = [])).push(u);
   return u;
 }
 
 /** 新建部队：默认步兵、track 首航点=当日 T（对齐旧 addUnitAt；名称由外壳 prompt 后传入） */
 export function addUnit(w: World, 名称: string, lon: number, lat: number, T: number, id = newUnitId()): Unit {
-  const u: Unit = { id, 名称, faction: null, kind: "linf", arm: "land",
+  const u: Unit = { id, 名称, faction: null, kind: isModern(w.meta) ? "mcomb" : "linf", arm: "land",
     track: [{ t: +T, lon: +(+lon).toFixed(4), lat: +(+lat).toFixed(4) }] };
   (w.units || (w.units = [])).push(u);
   return u;
@@ -561,7 +561,7 @@ export function formatRanges(ranges: { 名称?: string; km: number }[] | undefin
 
 /** 部队表单一次提交（旧 uf_save 语义：名称空则保留、速度>0 才设否则删；火力/视野同机制：>0 才设否则删。
     提交火力时一并清掉旧多圈 ranges（归一为单值 range；旧档只读回退在渲染层）。 */
-export interface UnitFormValues { 名称: string; faction: string; kind: string; arm?: string; strength: string; strengthUnit?: string; speed: string; morale?: string; note: string; range?: string; vision?: string; frontKm?: string; depthKm?: string }
+export interface UnitFormValues { 名称: string; faction: string; kind: string; arm?: string; strength: string; strengthUnit?: string; speed: string; morale?: string; note: string; range?: string; fire?: string; arcDeg?: string; vision?: string; eyeM?: string; radar?: string; radarM?: string; radarTgtM?: string; frontKm?: string; depthKm?: string }
 export function applyUnitForm(u: Unit, v: UnitFormValues): void {
   if (v.名称) u.名称 = v.名称;
   u.faction = v.faction || null;
@@ -569,7 +569,7 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
   /* 移动方式（旧称军种）：只对「可选」兵种收表单值（后勤/运输/侦察/特殊/指挥——编制上真有陆运水运空运之分）；
      其余兵种的移动方式由本体决定，一律**删键**回落兵种默认（unitArm 以 u.arm 优先）——
      否则换成步兵后留着个够不着又与兵种矛盾的水行，同 noFire 清 range 之规。 */
-  const kindArm = ((tget(UNIT_KINDS, u.kind) || {}).arm || "land") as Arm;
+  const kindArm = ((tget(ALL_KINDS, u.kind) || {}).arm || "land") as Arm;
   if (armOptional(u.kind)) u.arm = (v.arm === "land" || v.arm === "water" || v.arm === "air") ? v.arm : kindArm;
   else delete u.arm;
   /* 兵力＝「人」数值单值：输入 × 单位倍率（人/千/万）后取整（人数无小数），>0 才存否则删键（同速度/火力之规） */
@@ -583,13 +583,25 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
     if (isFinite(mv)) u.morale = Math.min(100, Math.max(0, Math.round(mv))); else delete u.morale;
   }
   /* 火力：无投射能力的兵种连表单行都不出，故提交即清键——否则换成步兵后留着个够不着又不生效的半径 */
-  if ((tget(UNIT_KINDS, u.kind) || {}).noFire) { delete u.range; delete u.ranges; }
+  if ((tget(ALL_KINDS, u.kind) || {}).noFire) { delete u.range; delete u.ranges; delete u.fire; delete u.arcDeg; }
   else if (v.range !== undefined) {
     const rk = parseFloat(v.range);
     if (rk > 0) u.range = rk; else delete u.range;
     delete u.ranges;   // 表单保存即归一（旧多圈并入单值）
   }
+  /* 视域各键：缺席＝不动。两档都落键（缺键＝按兵种缺省，现代装甲缺键是直射）；射角只收 (0,90)，档外删键回落 45°；
+     观察高度 / 天线高度 / 目标高度 0 合法，空/非法＝删键回落缺省；雷达半径 >0 才设 */
+  if (v.fire !== undefined) { if (v.fire === "direct") u.fire = "direct"; else if (v.fire === "arc") u.fire = "arc"; else delete u.fire; }
+  if (v.arcDeg !== undefined) { const a = parseFloat(v.arcDeg); if (a > 0 && a < 90) u.arcDeg = a; else delete u.arcDeg; }
   if (v.vision !== undefined) { const vk = parseFloat(v.vision); if (vk > 0) u.vision = vk; else delete u.vision; }
+  const nonNeg = (s: string | undefined, key: "eyeM" | "radarM" | "radarTgtM"): void => {
+    if (s === undefined) return;
+    const x = parseFloat(s);
+    if (isFinite(x) && x >= 0) u[key] = x; else delete u[key];
+  };
+  nonNeg(v.eyeM, "eyeM");
+  if (v.radar !== undefined) { const rk = parseFloat(v.radar); if (rk > 0) u.radar = rk; else delete u.radar; }
+  nonNeg(v.radarM, "radarM"); nonNeg(v.radarTgtM, "radarTgtM");
   /* 阵形足印（柱B）：>0 才存否则删键——无正面＝无足印＝标准框逐位不变 */
   if (v.frontKm !== undefined) { const fk = parseFloat(v.frontKm); if (fk > 0) u.frontKm = fk; else delete u.frontKm; }
   if (v.depthKm !== undefined) { const dk = parseFloat(v.depthKm); if (dk > 0) u.depthKm = dk; else delete u.depthKm; }
@@ -599,7 +611,7 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
 /** 改兵种（立即生效那一步；同步移动方式，对齐旧 uf_kind——不可选的兵种删键回落默认，同 applyUnitForm） */
 export function changeUnitKind(u: Unit, kind: string): void {
   u.kind = kind;
-  if (armOptional(kind)) u.arm = ((tget(UNIT_KINDS, kind) || {}).arm || "land") as Arm;
+  if (armOptional(kind)) u.arm = ((tget(ALL_KINDS, kind) || {}).arm || "land") as Arm;
   else delete u.arm;
 }
 

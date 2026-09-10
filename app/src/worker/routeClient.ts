@@ -2,12 +2,13 @@
    同步回退跑同一协议函数。ctx 始终同镜像到回退态——Worker 中途挂掉也能续算。
    Worker 经 `?worker&inline` 内联进主包（Vite）——单文件产物自包含、无外部 worker 文件。 */
 import RouteWorker from "./routeWorker.ts?worker&inline";
-import { handleRouteMsg, type RouteCtx, type RouteReply, type RouteRequest } from "./routeProto.ts";
+import { handleRouteMsg, type RouteCtx, type RouteReply, type RouteRequest, type VisReq, type VisRes } from "./routeProto.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Grid } from "../core/grid.ts";
 import type { ErodeInput } from "../core/erode.ts";
 import type { ElevField } from "../core/elev.ts";
+import type { ViewField } from "../core/viewshed.ts";
 import type { Arm, Meta, Unit, World } from "../core/types.ts";
 
 export interface RouteContext { meta: Meta | undefined; grid: Grid; roads: Set<string>; world: World; yearNow: number }
@@ -23,6 +24,10 @@ export interface RouteClient {
   /** 4K 静置精修（第三车道，懒建）：几十秒的精修单不许挤占工作档侵蚀车道。
       ⚠ 建不出 Worker 一律返 null **绝不同步回退**——30s 的同步演算＝冻死主线程，宁可不精修 */
   erodeUltra(input: ErodeInput): Promise<ElevField | null>;
+  /** 视线判定用的规则场：同 setContext 惰性推送（下一个 viewshed 单之前才克隆），规则场换引用时调一次 */
+  setViewField(field: ViewField): void;
+  /** 一批观察者的视线掩膜（寻路车道）；Worker 挂掉时返 null——调用方保持上一份 */
+  viewshed(obs: VisReq[]): Promise<VisRes[] | null>;
   dispose(): void;
 }
 
@@ -99,8 +104,12 @@ export function createRouteClient(): RouteClient {
      故 setContext 只同步镜像到回退态（存引用,零克隆）并**记下待送件**,真正 postMessage 推迟到
      下一个 route/legs 请求之前（flushCtx）——查询永远先于自己看到最新上下文（同信道保序），
      没有查询的连笔一次都不用克隆。 */
-  let ctxMsg: RouteRequest | null = null;
-  const flushCtx = () => { if (ctxMsg && w) { w.postMessage(ctxMsg); ctxMsg = null; } };
+  let ctxMsg: RouteRequest | null = null, vfMsg: RouteRequest | null = null;
+  const flushCtx = () => {
+    if (!w) return;
+    if (ctxMsg) { w.postMessage(ctxMsg); ctxMsg = null; }
+    if (vfMsg) { w.postMessage(vfMsg); vfMsg = null; }
+  };
   function ask(msg: RouteRequest & { id: number }): Promise<RouteReply> {
     if (w) { flushCtx(); return new Promise(res => { pending.set(msg.id, res); w!.postMessage(msg); }); }
     return Promise.resolve(handleRouteMsg(fallback, msg)!);
@@ -120,6 +129,15 @@ export function createRouteClient(): RouteClient {
     async legs(unit, roads) {
       const r = await ask(roads ? { t: "legs", id: ++seq, unit, roads } : { t: "legs", id: ++seq, unit });
       return r.t === "legs" ? r.legs : null;
+    },
+    setViewField(field) {
+      const msg: RouteRequest = { t: "vfield", field };
+      handleRouteMsg(fallback, msg);
+      if (w) vfMsg = msg;
+    },
+    async viewshed(obs) {
+      const r = await ask({ t: "viewshed", id: ++seq, obs });
+      return r.t === "viewshed" ? r.res : null;
     },
     async erode(input) {
       /* 优先走侵蚀专用 worker；它死了退回主 worker/同步回退。任一 worker 死时对应 kill 以

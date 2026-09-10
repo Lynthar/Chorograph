@@ -13,7 +13,7 @@ import { baseElev, elevBilinear, elevUnitM, LAND_FLOOR, WATER_CEIL, type ElevFie
 import { gnoise, makeRelief, mountainness, type ReliefSampler, RELIEF_CARVE_K, RELIEF_GATE_HI, RELIEF_GATE_LO, RELIEF_LAMBDA_KM, RELIEF_M,
   RELIEF_ROUGH_HI, RELIEF_ROUGH_LO, RELIEF_STRIKE, RELIEF_W, RELIEF_E0, RELIEF_E1, RIDGED_MEAN } from "./relief.ts";
 import { terrainProps } from "./constants.ts";
-import { flatKmPerDeg } from "./geo.ts";
+import { kmPerDegXY } from "./geo.ts";
 import { activeAt } from "./time.ts";
 import type { Grid } from "./grid.ts";
 import type { BBox, HeightOverride, Meta } from "./types.ts";
@@ -218,8 +218,7 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
   if (amp <= 0 && !hasHov) return null;
   const elev0 = baseElev(m, grid), water = new Uint8Array(rows * cols);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) water[r * cols + c] = terrainProps(cells[r][c]).lf === "water" ? 1 : 0;
-  const kmy = m.worldModel === "flat" ? flatKmPerDeg(m) : 2 * Math.PI * (+(m.planetRadiusKm ?? 0) || 10000) / 360;
-  const kmx = m.worldModel === "flat" ? kmy : kmy * Math.cos((bb.latMin + bb.latMax) / 2 * Math.PI / 180);
+  const { kmx, kmy } = kmPerDegXY(m, bb);
   const cap = m.mapKind === "tactical" ? MAX_FINE_TAC : MAX_FINE;
   return { bb, step, cols, rows, elev0, water, amp, seed: ((m.genSeed as number) | 0) || 1, kmx, kmy, hovGrid,
     cap, axisMax: 8, acrit: ACRIT_CELLS, bandS: 1, unitM: elevUnitM(m) };
