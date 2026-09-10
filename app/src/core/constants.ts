@@ -1,7 +1,7 @@
 /* 领域常量（自 v0.14 index.html 原样迁移；黄金基准测试与旧实现深度比对——
    改这里的任何数值都是行为变更，须先想清楚旧存档兼容）。 */
 import { tget } from "./util.ts";
-import type { Arm, Ecotype, Landform, TerrainId } from "./types.ts";
+import type { Arm, Climate, Ecotype, Landform, TerrainId } from "./types.ts";
 
 /* 8 种地形：显示名 / 陆军寻路代价 / 底色 */
 export const TERRAIN: Record<TerrainId, { 名: string; land: number; color: string }> = {
@@ -280,22 +280,19 @@ export const TINT: Partial<Record<TerrainId, [number, number, number]>> = {
   coast: [214, 203, 150], plain: [176, 196, 120], desert: [224, 206, 150],
   forest: [110, 150, 96], hill: [178, 168, 110], marsh: [150, 186, 170], mountain: [168, 150, 128]
 };
-/* 各类型起伏半幅（×meta.relief；渲染层高程场用，非黄金锁定）：山地最起伏、水域恒平 */
-export const RELIEF_AMP: Partial<Record<TerrainId, number>> = {
-  mountain: 0.30, hill: 0.14, forest: 0.06, desert: 0.06, plain: 0.05, coast: 0.02, marsh: 0.02
-};
 
 /* ── 两轴地形（重构 A）：地貌 LANDFORM × 生态 ECO；设计见 docs/设计/地形重构-设计.md ──
    核心不变式：8 个 canonical 旧复合串经 terrainProps **回退上面的旧四表取值＝逐位精确**
    （保 cellCost/黄金基准）；新组合（hill/forest、plain/grassland… 仅手绘产出）走此二表计算。 */
 export type EcoScatter = { k: string; p: number; s: number; dx?: number; dy?: number };
-/** 地貌（eco=none 时复合即旧同名类，逐位复现）：陆军代价/底色/生态色调/示意高程/起伏幅度 */
-export const LANDFORM: Record<Landform, { 名: string; land: number; color: string; tint: [number, number, number] | null; elev: number; relief: number }> = {
-  plain:    { 名: "平原", land: 1.0, color: "#d7e3b8", tint: [176, 196, 120], elev: 0.16, relief: 0.05 },
-  coast:    { 名: "沿海", land: 1.1, color: "#cfe6cf", tint: [214, 203, 150], elev: 0.06, relief: 0.02 },
-  hill:     { 名: "丘陵", land: 1.6, color: "#c9cf9a", tint: [178, 168, 110], elev: 0.5,  relief: 0.14 },
-  mountain: { 名: "山地", land: 3.2, color: "#c2b199", tint: [168, 150, 128], elev: 0.9,  relief: 0.30 },
-  water:    { 名: "水域", land: 9.0, color: "#a9c7de", tint: null,            elev: -0.35, relief: 0 }
+/** 地貌（eco=none 时复合即旧同名类，逐位复现）：陆军代价/底色/生态色调/示意高程 */
+export const LANDFORM: Record<Landform, { 名: string; land: number; color: string; tint: [number, number, number] | null; elev: number }> = {
+  plain:    { 名: "平原", land: 1.0, color: "#d7e3b8", tint: [176, 196, 120], elev: 0.16 },
+  coast:    { 名: "沿海", land: 1.1, color: "#cfe6cf", tint: [214, 203, 150], elev: 0.06 },
+  hill:     { 名: "丘陵", land: 1.6, color: "#c9cf9a", tint: [178, 168, 110], elev: 0.5 },
+  mountain: { 名: "山地", land: 3.2, color: "#c2b199", tint: [168, 150, 128], elev: 0.9 },
+  alpine:   { 名: "高山", land: 5.0, color: "#d3cdc6", tint: [182, 178, 174], elev: 1.5 },
+  water:    { 名: "水域", land: 9.0, color: "#a9c7de", tint: null,            elev: -0.35 }
 };
 /** 生态（eco≠none 覆盖 color/tint/scatter 并施 costMul/elevBias；none 时全回退地貌）。
     高程只由地貌轴给，生态不抬不降——唯沼泽例外（低洼是其地貌含义）；森林/荒漠 elevBias=0 与上面 ELEV 同源。 */
@@ -334,7 +331,7 @@ export function flattenTerrain(cell: string): TerrainId {
   return (tget(TERRAIN, lf) ? lf : "plain") as TerrainId;
 }
 
-export interface TerrainProps { lf: Landform; eco: Ecotype; 名: string; land: number; color: string; tint: [number, number, number] | null; elev: number; relief: number; water: boolean; scatter: EcoScatter[] }
+export interface TerrainProps { lf: Landform; eco: Ecotype; 名: string; land: number; color: string; tint: [number, number, number] | null; elev: number; water: boolean; scatter: EcoScatter[] }
 const PROPS_CACHE = new Map<string, TerrainProps>();   // 按 cell 串记忆（distinct cell 极少；渲染/高程/寻路热路径免逐格分配）
 /** 解析复合地形的有效属性（记忆化，返回对象请只读）。**8 个 canonical 旧复合串回退旧四表＝逐位精确**
     （cellCost/golden 全保）；其余（新组合）由 LANDFORM×ECO 计算。旧 TerrainId 直接传入亦可（内部归一）。 */
@@ -349,12 +346,12 @@ export function terrainProps(cell: string): TerrainProps {
   if (LEGACY_COMPOSITES.has(canon)) {
     const t = flattenTerrain(canon);
     p = { lf, eco, 名, land: TERRAIN[t].land, color: TERRAIN[t].color,
-      tint: TINT[t] || null, elev: ELEV[t], relief: RELIEF_AMP[t] || 0,
+      tint: TINT[t] || null, elev: ELEV[t],
       water: t === "water" || t === "marsh" || t === "coast", scatter: TERRAIN_ECO[t] || [] };
   } else {
     const L = LANDFORM[lf], E = ECO[eco];
     p = { lf, eco, 名, land: L.land * E.costMul,
-      color: E.color ?? L.color, tint: E.tint ?? L.tint, elev: L.elev + E.elevBias, relief: L.relief,
+      color: E.color ?? L.color, tint: E.tint ?? L.tint, elev: L.elev + E.elevBias,
       water: lf === "water" || lf === "coast" || eco === "marsh",
       scatter: eco === "none" ? (TERRAIN_ECO[lf as TerrainId] || []) : E.scatter };
   }
@@ -363,13 +360,25 @@ export function terrainProps(cell: string): TerrainProps {
 }
 
 /* GPU G 通道编码：复合 → 整数索引 lf*5+eco（0–24），shader 据此查 uTColor/uTint（25 项）。 */
-export const LANDFORM_ORDER: Landform[] = ["plain", "coast", "hill", "mountain", "water"];
+export const LANDFORM_ORDER: Landform[] = ["plain", "coast", "hill", "mountain", "alpine", "water"];
 export const ECO_ORDER: Ecotype[] = ["none", "forest", "grassland", "marsh", "desert"];
+
+/** 气候档 → 雪线基准（米，图幅中心纬度处；只进材质色，不进规则）。取地球各带常见值：极地贴海平面、北欧约 1200、
+    阿尔卑斯不到 3000、喜马拉雅南坡 4500～5000、赤道安第斯约 4800、干旱副热带（阿塔卡马、藏北）最高。缺键＝出厂 2050 不随纬度。 */
+export const CLIMATE: Record<Climate, { 名: string; snowM: number }> = {
+  polar:       { 名: "极地",   snowM: 300 },
+  boreal:      { 名: "寒带",   snowM: 1200 },
+  temperate:   { 名: "温带",   snowM: 2900 },
+  subtropical: { 名: "亚热带", snowM: 4600 },
+  tropical:    { 名: "热带",   snowM: 4800 },
+  arid:        { 名: "干旱",   snowM: 5700 }
+};
+export const CLIMATE_ORDER: Climate[] = ["polar", "boreal", "temperate", "subtropical", "tropical", "arid"];
 
 /** 全部生态散布 kind 的并集（生态笔替换语义的清扫范围：刷别的生态时扫掉这些；
     手放的山峰/丘/自定义图章不在并集里＝永不被生态笔扫掉）。派生量、不动平价表。 */
 export const ECO_SCATTER_KINDS: ReadonlySet<string> = new Set(Object.values(ECO).flatMap(e => e.scatter.map(s => s.k)));
-export const COMPOSITE_COUNT = LANDFORM_ORDER.length * ECO_ORDER.length;   // 25
+export const COMPOSITE_COUNT = LANDFORM_ORDER.length * ECO_ORDER.length;   // 30
 export function compositeIndex(cell: string): number {
   const [lf, eco] = parseComposite(cell);
   return LANDFORM_ORDER.indexOf(lf) * ECO_ORDER.length + ECO_ORDER.indexOf(eco);

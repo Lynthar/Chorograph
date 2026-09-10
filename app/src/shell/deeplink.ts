@@ -1,4 +1,4 @@
-/* URL 直达（深链）解析：#map=&preset=&sel=&year=&lon=&lat=&z=&seed=&style=&force=cpu&lib=1&hold=ms
+/* URL 直达（深链）解析：#map=&preset=&base=shaded|flat&sel=&year=&lon=&lat=&z=&seed=&style=&force=cpu&lib=1&hold=ms
    只读分享：#ro=1&d=<base64url 压缩的整张图>（core/share 编解码，链接自带数据、不需服务端）
    分析/编辑：#mode=measure|route|edit&sub=select|add|link|paint|terrain|decor|label|delete&pts=lon,lat,…&arm=&op=作战线序号&multi=名称1,名称2
 
@@ -16,6 +16,7 @@ import { PRESETS, ARM_NAME } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
 import type { ShellCtx } from "./ctx.ts";
 import type { Arm, GenStyle } from "../core/types.ts";
+import type { TerrainStyle } from "../render/renderer.ts";
 
 export interface DeepLink {
   wantPreset: string | null;
@@ -37,6 +38,8 @@ export interface DeepLink {
   wantOvl: string | null;
   /** #drawer=layers：启动即开抽屉「层」面（截图/演示用，增） */
   wantDrawer: string | null;
+  /** #base=shaded｜flat：底图样式（flat＝推演底图，逐格平色；分享推演视图/无头验收用） */
+  wantBase: TerrainStyle | null;
   /** #grain=hour｜month：直开细粒度（战术＝时轨展开、战略＝月档；截图/分享精确时刻用，增） */
   wantGrain: string | null;
   /** #d=<base64url>：分享链接自带的整张图（deflate-raw 压缩，core/share 解包） */
@@ -62,6 +65,7 @@ const SUBS = ["select", "add", "link", "paint", "terrain", "decor", "label", "un
 const ANALYSIS = ["measure", "route", "edit"];
 const OVLS = ["help", "settings", "create"];
 const DRAWERS = ["layers"];
+const BASES = ["shaded", "flat"];
 const GRAINS = ["hour", "month"];
 const FORCES = ["cpu", "webgl2"];
 const STYLES = ["continent", "archipelago"];
@@ -71,7 +75,7 @@ export function parseHash(hash: string): DeepLink {
   const dl: DeepLink = {
     wantPreset: null, wantSel: null, wantMap: null, wantLib: false, urlView: false, urlYear: false,
     wantAnalysis: null, wantPts: null, wantSub: null, wantOp: null, wantMulti: null,
-    wantSample: null, wantGenTac: null, wantDia: null, wantOvl: null, wantDrawer: null, wantGrain: null,
+    wantSample: null, wantGenTac: null, wantDia: null, wantOvl: null, wantDrawer: null, wantBase: null, wantGrain: null,
     wantData: null, wantRo: false,
     force: undefined, seed: null, style: null, year: null, lon: null, lat: null, z: null, arm: null, hold: null
   };
@@ -95,6 +99,7 @@ export function parseHash(hash: string): DeepLink {
     if (k === "lib") dl.wantLib = true;   // 启动即进开始界面（截图/演示用）
     if (k === "ovl") dl.wantOvl = oneOf(OVLS, v);         // help|settings|create：启动即开对应弹层（截图/演示用）
     if (k === "drawer") dl.wantDrawer = oneOf(DRAWERS, v);   // layers：启动即开抽屉「层」面（截图/演示用）
+    if (k === "base") dl.wantBase = oneOf(BASES, v) as TerrainStyle | null;   // 底图样式：flat＝推演底图
     if (k === "grain") dl.wantGrain = oneOf(GRAINS, v);      // hour=战术「时」/ month=战略「月」（截图/分享用）
     if (k === "analysis" || k === "mode") dl.wantAnalysis = oneOf(ANALYSIS, v);   // measure|route|edit
     if (k === "sub") dl.wantSub = oneOf(SUBS, v);                                 // 编辑子工具

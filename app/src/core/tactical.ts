@@ -198,6 +198,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   if (m.relief != null) meta.relief = m.relief;           // 地势起伏与高程标定随图继承
   if (m.elevUnitM != null) meta.elevUnitM = m.elevUnitM;
   if (m.contourM != null) meta.contourM = m.contourM;
+  if (m.climate) meta.climate = m.climate;                // 气候档随图继承（子图恒平面＝只取档值，不随纬度）
   if (m.vault) meta.vault = m.vault;
   meta.gridN = autoGridN(meta);   // 尺度身份盖章（同 blankTacticalWorld）
 

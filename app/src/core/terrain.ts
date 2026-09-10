@@ -3,16 +3,24 @@
    ⚠ 判定阈值与旧实现逐位一致（黄金基准锁定）；手绘涂改(terrainOverrides)叠加在初稿之上，不在本模块。 */
 import { fbm } from "./noise.ts";
 import { LEGACY_TO_COMPOSITE } from "./constants.ts";
-import { DEFAULT_BBOX, type Meta, type TerrainId } from "./types.ts";
+import { DEFAULT_BBOX, type Landform, type Meta, type TerrainId } from "./types.ts";
 
 /* 程序化生成（meta.terrain==="auto"）：分形噪声高程场 + 径向落水掩膜（陆地居中、四周环海）
-   + 独立湿度场 → 判定地形类型。风格 continent=单块大陆 / archipelago=群岛（更碎、海平面更高）。 */
-export function genTerrainAt(meta: Meta | undefined, lon: number, lat: number): TerrainId {
+   + 独立湿度场 → 判定地形类型。风格 continent=单块大陆 / archipelago=群岛（更碎、海平面更高）。
+   ⚠ 连续高程 h 与分类阈值都从这里出（genHeightAt / GEN_*）：渲染基底按同一 h 取值，分类不动。 */
+export const GEN_COAST_BAND = 0.035, GEN_HILL = 0.61, GEN_MOUNTAIN = 0.77;
+export const genSeaLevel = (meta: Meta | undefined): number => (meta && meta.genStyle) === "archipelago" ? 0.44 : 0.40;
+
+interface GenFrame { u: number; v: number; sx: number; sy: number; isle: boolean }
+function genFrame(meta: Meta | undefined, lon: number, lat: number): GenFrame {
   const m = meta || {}, bb = m.bbox || DEFAULT_BBOX;
   const seed = ((m.genSeed as number) | 0) || 1, isle = m.genStyle === "archipelago";
   // seed → 噪声采样相位偏移（错开不同世界的噪声，实现"换一块大陆"）
   const sx = (seed % 233) * 0.371 + 13.7, sy = (Math.floor(seed / 233) % 233) * 0.531 + 7.13;
   const u = (lon - bb.lonMin) / ((bb.lonMax - bb.lonMin) || 1), v = (lat - bb.latMin) / ((bb.latMax - bb.latMin) || 1);
+  return { u, v, sx, sy, isle };
+}
+function genH({ u, v, sx, sy, isle }: GenFrame): number {
   const F = isle ? 7.0 : 4.2;   // 群岛特征更碎
   // 高程：三个倍频叠加（粗轮廓+中细节+细碎）
   let h = 0.55 * fbm(u * F + sx, v * F + sy)
@@ -21,12 +29,29 @@ export function genTerrainAt(meta: Meta | undefined, lon: number, lat: number): 
   // 径向落水掩膜：中心高、边缘低（群岛掩膜更强）
   const dx = (u - 0.5) * 2, dy = (v - 0.5) * 2, d = Math.min(1, Math.sqrt(dx * dx + dy * dy) / 1.18);
   h = h * (1.12 - (isle ? 1.05 : 0.86) * d * d);
-  h = Math.max(0, Math.min(1, (h - 0.06) * 1.35));
+  return Math.max(0, Math.min(1, (h - 0.06) * 1.35));
+}
+/** 程序化连续高程 h∈[0,1]（分类前的场；genTerrainAt 的阈值切在它上面，二者同一份算式） */
+export function genHeightAt(meta: Meta | undefined, lon: number, lat: number): number {
+  return genH(genFrame(meta, lon, lat));
+}
+/** h → 地貌轴（与 genTerrainAt 的判定同序同阈值；生态轴不在此） */
+export function genLandformOf(h: number, meta: Meta | undefined): Landform {
+  const SEA = genSeaLevel(meta);
+  if (h < SEA) return "water";
+  if (h < SEA + GEN_COAST_BAND) return "coast";
+  if (h > GEN_MOUNTAIN) return "mountain";
+  if (h > GEN_HILL) return "hill";
+  return "plain";
+}
+export function genTerrainAt(meta: Meta | undefined, lon: number, lat: number): TerrainId {
+  const fr = genFrame(meta, lon, lat), { u, v, sx, sy, isle } = fr;
+  const h = genH(fr);
   const SEA = isle ? 0.44 : 0.40;
   if (h < SEA) return "water";
-  if (h < SEA + 0.035) return "coast";
-  if (h > 0.77) return "mountain";
-  if (h > 0.61) return "hill";
+  if (h < SEA + GEN_COAST_BAND) return "coast";
+  if (h > GEN_MOUNTAIN) return "mountain";
+  if (h > GEN_HILL) return "hill";
   // 低地/中地：由独立湿度场决定 荒漠/平原/森林/水泽
   let mo = 0.6 * fbm(u * 3.1 + sx * 0.7 + 120, v * 3.1 + sy * 0.9 + 120)
          + 0.4 * fbm(u * 6.3 + sx + 160, v * 6.3 + sy + 160);

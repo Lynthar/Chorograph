@@ -1,7 +1,7 @@
 /* 画布宿主：画布尺寸、相机取景、地形网格/高程场重建。
    全部经 ctx 共享态工作；rebuild 同步把寻路上下文送进 Worker（官道格按当年连线重算）。 */
 import { buildGridCells, roadCellSet, type Grid } from "../core/grid.ts";
-import { buildElevField, coarseField, fieldMix, fieldPlusDelta, type ElevField } from "../core/elev.ts";
+import { buildElevField, coarseField, fieldMix, fieldPlusDelta, waterSurface, type ElevField } from "../core/elev.ts";
 import { erodeGate, erodeInput, erodeKey, ultraInput, type ErodeInput } from "../core/erode.ts";
 import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { worldSig, yearSig, gridVerSig, erodePhaseSig } from "../ui/state.ts";
@@ -99,6 +99,9 @@ export function createHost(ctx: ShellCtx): Host {
        作废＝语义不变，只是侵蚀 worker 白算（它已独占一线，不再堵路由/腿账） */
     erodeTimer = setTimeout(fireErode, 60);
   }
+  /* 上传口收一处：水面高程随网格同拍取（core/elev.waterSurface 按 Grid 记忆＝重复取零成本）。
+     漏传它内陆湖会静默沉回海平面，故不留第二条上传路径。 */
+  const upload = (f: ElevField): void => ctx.R!.uploadGrid(ctx.grid!, waterSurface(ctx.meta, ctx.grid!), f);
   /* 落地渐变（fieldMix 注有病历：硬切读感像「出错了自己纠正」）：约 0.4s 六帧缓动换场。
      远处两场逐位相同＝渐变只在真变了的区域发生；帧间任何重建（buildN 变）即中止——
      rebuild 已按 fine(=终场)+增量接管显示，动画不许再覆盖它。fine/fineBase 在落地一拍
@@ -110,7 +113,7 @@ export function createHost(ctx: ShellCtx): Host {
     const from = ctx.elevField;
     if (!from) {   // 无在屏场（不该发生）＝直接换
       ctx.elevField = to;
-      ctx.R!.uploadGrid(ctx.grid!, to);
+      upload(to);
       if (ctx.repaint) ctx.repaint();
       return;
     }
@@ -121,7 +124,7 @@ export function createHost(ctx: ShellCtx): Host {
       k++;
       const t = k / FADE_STEPS;
       ctx.elevField = fieldMix(from, to, t * t * (3 - 2 * t));   // 末帧 t=1 ＝ to 本身（真场引用）
-      ctx.R!.uploadGrid(ctx.grid, ctx.elevField);
+      upload(ctx.elevField);
       if (ctx.repaint) ctx.repaint();
       if (k < FADE_STEPS) fadeTimer = setTimeout(tick, FADE_MS / FADE_STEPS);
     };
@@ -141,7 +144,9 @@ export function createHost(ctx: ShellCtx): Host {
        世界/年份变化都会先走 rebuild 刷新它们,故结算时组装与「rebuild 同拍组装」逐位同单 */
     if (!pendInp) {
       pendInp = erodeInput(ctx.meta, pendHovs, ctx.grid, pendYear);
-      pendUInp = pendInp && ctx.meta.mapKind === "tactical" ? ultraInput(pendInp, ULTRA_CAP) : null;   // 精修档只给战术图（战略观感已验收，不碰）
+      /* 2026-09-02 起战略图同享精修档，但**预算减半**：大陆级图（105 万粗格）在全额预算下取 3×＝
+         950 万细格、单次要跑一两分钟；减半后恰取 2×＝420 万，几秒可得，内存也只要一半。 */
+      pendUInp = pendInp ? ultraInput(pendInp, ctx.meta.mapKind === "tactical" ? ULTRA_CAP : ULTRA_CAP / 2) : null;
     }
     if (!pendInp) { dropPhase(); return; }   // 门与组装理论上同判（erodeGate 锁）；防御留一手
     eroding = true;
@@ -169,7 +174,7 @@ export function createHost(ctx: ShellCtx): Host {
           if (early) {
             clearTimeout(fadeTimer);
             ctx.elevField = hit;
-            ctx.R!.uploadGrid(ctx.grid, hit);
+            upload(hit);
             if (ctx.repaint) ctx.repaint();
           } else startFade(hit);
           scheduleUltra();
@@ -232,7 +237,7 @@ export function createHost(ctx: ShellCtx): Host {
     fine = f; fineBase = baseC; fineKey = key;
     clearTimeout(fadeTimer);
     ctx.elevField = f;
-    ctx.R!.uploadGrid(ctx.grid!, f);
+    upload(f);
     if (ctx.repaint) ctx.repaint();
     if (computed) setPhase("done"); else dropPhase();
   }
@@ -257,7 +262,7 @@ export function createHost(ctx: ShellCtx): Host {
     if (!pendGate || fineKey !== key) { fine = null; fineBase = null; fineKey = ""; }
     ctx.elevField = fine && fineBase ? fieldPlusDelta(fine, fineBase, coarse, ctx.grid, ctx.grid.cells) : coarseField(ctx.grid, coarse);
     const ms = performance.now() - t0;
-    ctx.R!.uploadGrid(ctx.grid, ctx.elevField);   // rebuild 只在渲染器就绪后发生（boot 先建 R）；缺 R=启动即错
+    upload(ctx.elevField);   // rebuild 只在渲染器就绪后发生（boot 先建 R）；缺 R=启动即错
     ctx.builtFor = ctx.mapId + "@" + yearSig.value + "@" + gridVerSig.value;
     $("hud").dataset.grid = `${ctx.grid.cols}×${ctx.grid.rows} 网格 ${ms.toFixed(0)} ms`;
     // 寻路上下文随网格重建同步进 Worker（官道格按当年连线重算）

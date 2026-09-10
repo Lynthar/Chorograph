@@ -4,10 +4,9 @@
 import { project, projectSeq, unproject, visibleWorldCopies } from "../core/projection.ts";
 import { EDGE_STYLE } from "../core/constants.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
-import { contourStepFor } from "../core/elev.ts";
 import { hexA, errText } from "../core/util.ts";
 import { drawOverlay, drawOp } from "../render/overlay.ts";
-import { snowEOf } from "../render/material.ts";
+import { terrainOpts } from "../render/renderer.ts";
 import { drawAnalysis } from "../render/analysis.ts";
 import { drawPaintCells, drawBrushRing, drawSelectBox } from "../render/editHud.ts";
 import { paintStep } from "../core/territory.ts";
@@ -16,7 +15,7 @@ import { dataLon } from "../ui/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig,
-  routePtsSig, routeResSig, unitLegsSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, readOnlySig }
+  routePtsSig, routeResSig, unitLegsSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, readOnlySig, uiPrefsSig, terrainStyleSig }
   from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -36,10 +35,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
      经 ResizeObserver 逐帧触发 resize，空白帧与画面帧交替＝整屏闪烁）。 */
   const paint = (): void => {
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
-    if (layers.terrain) {
-      const cs = contourStepFor(ctx.view.degPerPx, ctx.meta);   // 等高距随缩放（×2 阶梯+过渡淡入）
-      ctx.R!.render(viewBB(), { contour: layers.contour, cMinor: cs.minor, cFade: cs.fade, wrap: ctx.meta.worldModel !== "flat", paper: ctx.meta.mapKind === "tactical", snowE: snowEOf(ctx.meta) });
-    }
+    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value));
     if (world) {
       const octx = ov.getContext("2d")!;
       const selIdForOps = (selSig.value && selSig.value.kind === "node") ? selSig.value.id : null;
@@ -146,7 +142,9 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       bs ? bs.x1 : -1, bs ? bs.y1 : -1, bs ? bs.moved : false,
       // 顶栏保存态文案的来源（同样不是 signal，漏了就会「已保存」迟迟不上屏）
       autosave.pending, ctx.savedAt, ctx.saveErr, ctx.bootNote, ctx.mapId, ctx.source, ctx.lib,
-      saveConflictSig.value, erodePhaseSig.value, readOnlySig.value
+      saveConflictSig.value, erodePhaseSig.value, readOnlySig.value,
+      uiPrefsSig.value.relief,   // 地形立体感（本机偏好）进晕渲增益：改了必须重画
+      terrainStyleSig.value      // 底图样式（观感/推演）
     ];
   };
   const changed = (a: unknown[], b: unknown[]): boolean => a.length !== b.length || a.some((x, i) => x !== b[i]);

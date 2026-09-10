@@ -2,8 +2,11 @@
    反照率抖动 / 坡度岩化敏感度。GL（uniform 数组）与 CPU 兜底（直接调用）共用同一张表与同一个
    八度门控——两端观感同构的判据收在这里，别在渲染器里各写一份数值。
    ⚠ 另立一张表、不给 LANDFORM/ECO/terrainProps 加字段（它们是平价逐位比对对象，同 NODE_CATS 之例）。 */
-import { parseComposite, allComposites } from "../core/constants.ts";
+import { CLIMATE, parseComposite, allComposites } from "../core/constants.ts";
 import { elevUnitM } from "../core/elev.ts";
+import { tget } from "../core/util.ts";
+import { kmPerDegLat } from "../core/geo.ts";
+import { gridStepDeg } from "../core/grid.ts";
 import type { Landform, Meta } from "../core/types.ts";
 
 export interface Material {
@@ -21,8 +24,9 @@ export interface Material {
 const LF_MAT: Record<Landform, Material> = {
   plain:    { canopy: 0, dune: 0, ridge: 0,    marsh: 0, rough: 0.05, albVar: 0.06, rock: 0.55 },
   coast:    { canopy: 0, dune: 0, ridge: 0,    marsh: 0, rough: 0.03, albVar: 0.05, rock: 0.25 },
-  hill:     { canopy: 0, dune: 0, ridge: 0.30, marsh: 0, rough: 0.14, albVar: 0.04, rock: 0.85 },
-  mountain: { canopy: 0, dune: 0, ridge: 1.0,  marsh: 0, rough: 0.24, albVar: 0.03, rock: 1.0 },
+  hill:     { canopy: 0, dune: 0, ridge: 0.12, marsh: 0, rough: 0.14, albVar: 0.04, rock: 0.85 },
+  mountain: { canopy: 0, dune: 0, ridge: 0.4,  marsh: 0, rough: 0.24, albVar: 0.03, rock: 1.0 },   // 棱脊纹理降档：山系形自 2026-09 由连续基底与侵蚀给，屏幕锚定纹理只作补充
+  alpine:   { canopy: 0, dune: 0, ridge: 0.4,  marsh: 0, rough: 0.28, albVar: 0.03, rock: 1.0 },
   water:    { canopy: 0, dune: 0, ridge: 0,    marsh: 0, rough: 0,    albVar: 0,    rock: 0 }
 };
 
@@ -38,14 +42,123 @@ export function materialFor(cell: string): Material {
   return b;
 }
 
-/** 全 25 复合的材质，顺序与 compositeIndex 对齐（GL 填 uniform 数组用） */
+/** 全 30 复合的材质，顺序与 compositeIndex 对齐（GL 填 uniform 数组用） */
 export function materialTable(): Material[] { return allComposites().map(materialFor); }
 
-/** 雪的起始海拔（米）。雪线按真实米数经 elevUnitM 折算成抽象高程（渲染端 uSnowE）——
+/** 雪的起始海拔（米）出厂值。雪线按真实米数经 elevUnitM 折算成抽象高程（渲染端 uSnowE）——
     旧色阶 0.82 抽象档起发白，在标定 900m 的战术图上≈740m 即成雪山（井陉秋季 38°N 战场实证之病）；
-    按米定雪线后战术图自然无雪，战略图（标定 2000m）只剩最高峰挂雪。 */
+    按米定雪线后战术图自然无雪。设了气候档（meta.climate）改用档值，见 snowSpec。 */
 export const SNOW_M = 2050;
-export function snowEOf(meta: Meta | undefined): number { return SNOW_M / elevUnitM(meta); }
+/** 地球气候雪线随 |纬度| 的参考曲线（米，分段线性）：赤道约 4800、副热带干旱带隆到 5200、45° 约 2900（阿尔卑斯）、
+    60° 约 1200（北欧）、极地贴海平面。只给图幅内的纬向梯度用，绝对值由气候档定；GL 由 snowLatGLSL() 生成同式。 */
+export const SNOW_LAT_M: readonly (readonly [number, number])[] = [[0, 4800], [20, 5200], [30, 4600], [45, 2900], [60, 1200], [70, 600], [80, 200], [90, 0]];
+export function snowLatM(absLat: number): number {
+  const K = SNOW_LAT_M, n = K.length - 1;
+  if (absLat <= K[0][0]) return K[0][1];
+  for (let i = 0; i < n; i++) { const a = K[i], b = K[i + 1]; if (absLat <= b[0]) return a[1] + (absLat - a[0]) / (b[0] - a[0]) * (b[1] - a[1]); }
+  return K[n][1];
+}
+/** SNOW_LAT_M 生成的 GLSL：`float snowLatM(float a)`，a＝|纬度|（度），返回米 */
+export function snowLatGLSL(): string {
+  const K = SNOW_LAT_M, n = K.length - 1, f = (x: number) => x.toFixed(1);
+  let g = `float snowLatM(float a){
+  if(a<=${f(K[0][0])}) return ${f(K[0][1])};
+`;
+  for (let i = 0; i < n; i++) {
+    const a = K[i], b = K[i + 1];
+    g += `  if(a<=${f(b[0])}) return mix(${f(a[1])},${f(b[1])},(a-${f(a[0])})/${f(b[0] - a[0])});
+`;
+  }
+  return g + `  return ${f(K[n][1])};
+}`;
+}
+/** 雪线参数（GL 与 CPU 同式：snow = max(0, base + (lat ? (snowLatM(|纬度|) − refM)/unitM : 0))）。
+    base＝气候档雪线（缺键或档外＝出厂 SNOW_M）经 elevUnitM 折算；lat 只在球面图且设了气候档时开——
+    平面图的纬度不是气候纬度，旧图缺键则逐位不变；refM＝参考曲线在图幅中心纬度的值（米）。 */
+export interface SnowSpec { base: number; lat: boolean; refM: number; unitM: number }
+export function snowSpec(meta: Meta | undefined): SnowSpec {
+  const m = meta || {}, unitM = elevUnitM(meta), c = tget(CLIMATE, m.climate as string);
+  const lat = !!c && m.worldModel !== "flat" && !!m.bbox;
+  return { base: (c ? c.snowM : SNOW_M) / unitM, lat, refM: lat ? snowLatM(Math.abs((m.bbox!.latMin + m.bbox!.latMax) / 2)) : 0, unitM };
+}
+/** 图幅中心处的雪线抽象高程（snowSpec.base 的门面） */
+export function snowEOf(meta: Meta | undefined): number { return snowSpec(meta).base; }
+
+/* —— 陆地分层设色（抽象高程 → RGB 0..255）——
+   段内线性；相邻两档同高程＝一道色阶台阶（滩带→绿）。GL 由 rampGLSL() 生成同式的着色器函数、
+   CPU 兜底走 rampColor()：改分界只动这张表。水段不在此表（渲染器按水面深度另算）。
+   转折按 2026-09-02 真实地区对照标定（绿转褐曾早 200 m、褐转灰早 900 m、顶端只到 206 灰）：
+   出厂 elevUnitM 2000 下 0.09＝180 m 滩带、0.40＝800 m 绿顶、0.75＝1500 m、1.25＝2500 m 褐顶、1.80＝3600 m 近白。 */
+export const ELEV_RAMP: readonly (readonly [number, number, number, number])[] = [
+  [0.09, 214, 205, 168],   // 滩带 <180 m（其下恒此色；压灰半档——原 224,216,172 在整幅下发白光）
+  [0.09, 132, 174, 98],    // 绿 180→800 m
+  [0.40, 170, 172, 110],
+  [0.40, 170, 166, 110],   // 黄褐 800→1500 m（同高程两档＝旧表留下的一道浅台阶，随色保留）
+  [0.75, 178, 154, 106],
+  [0.75, 178, 152, 118],   // 褐 1500→2500 m
+  [1.25, 150, 128, 96],
+  [1.50, 183, 172, 168],   // 岩灰 3000 m
+  [1.80, 240, 239, 240]    // 近白 3600 m 顶满（原 3200 m 只到 206 灰＝四千米级读不出高）
+];
+/** 陆地色阶取色（CPU 兜底；GL 走 rampGLSL 生成的同式函数） */
+export function rampColor(e: number): [number, number, number] {
+  const R = ELEV_RAMP, n = R.length - 1;
+  if (e < R[0][0]) return [R[0][1], R[0][2], R[0][3]];
+  for (let i = 0; i < n; i++) {
+    const a = R[i], b = R[i + 1];
+    if (e < b[0]) { const t = (e - a[0]) / (b[0] - a[0]); return [a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2]), a[3] + t * (b[3] - a[3])]; }
+  }
+  return [R[n][1], R[n][2], R[n][3]];
+}
+/** ELEV_RAMP 生成的 GLSL：`vec3 elevLand(float e)`，返回 0..1 色 */
+export function rampGLSL(): string {
+  const R = ELEV_RAMP, n = R.length - 1;
+  const v = (s: readonly number[]) => `vec3(${s[1]}.0,${s[2]}.0,${s[3]}.0)`;
+  const f = (x: number) => x.toFixed(6);
+  let g = `vec3 elevLand(float e){
+  if(e<${f(R[0][0])}) return ${v(R[0])}/255.0;
+`;
+  for (let i = 0; i < n; i++) {
+    const a = R[i], b = R[i + 1];
+    if (b[0] === a[0]) continue;   // 同高程两档＝台阶，不成段
+    g += `  if(e<${f(b[0])}){ float t=(e-${f(a[0])})/${f(b[0] - a[0])}; return mix(${v(a)},${v(b)},t)/255.0; }
+`;
+  }
+  return g + `  return ${v(R[n])}/255.0;
+}`;
+}
+
+/** 图幅外是否铺纸色：战术图恒铺（战场四周不该是汪洋），战略图看 meta.outside＝内陆图声明。
+    ⚠ 与 core/elev 的海/湖判据同一个 meta.outside，两处措辞须一致——一处说图幅外是陆、
+    另一处仍把边缘水体当海，就是「岸上铺着纸、湖却沉在海平面」。 */
+export function paperOf(meta: Meta | undefined): boolean {
+  const m = meta || {};
+  return m.mapKind === "tactical" || m.outside === "land";
+}
+
+/* —— 晕渲夸张：显示坡度 = E × 真实坡度，E = 格边档 × 缩放档。
+   格边档 exagCell(格边 km)：战术 100 m 格 16 倍、战略 6.67 km 格 96 倍，对数插值、封顶 exagMax——格越粗，
+   图上一格代表的真实坡越缓，要同样读得出山，夸张就得越大（小比例尺制图的常规）；4 倍对 6.67 km 格
+   是纯分层设色（用户实报「地形层次完全没有了」）。
+   缩放档 zoomK：一格在屏上 ≥ zoomPxHi 像素（放大看细节）×1，≤ zoomPxLo 像素（整幅）× zoomKLo，对数插值。
+   ⚠ 用户拍板的「8 或 4」是在软膝 bug（膝下微坡一律拉到膝点）之下看的图；bug 修掉后 8 倍偏淡（用户实报
+   「不如之前」），锚点按 ×2 取，再由本机偏好「地形立体感」乘 0.5～2 供用户自调。
+   ⚠ 格边取 gridStepDeg(meta)＝地形粗格，不取细分场格：精修落地不许换夸张。
+   ⚠ 旧式法线 nrm=4.5·uPXPD/14 的量纲是「每(抽象/度)」，在战术图上等于 64 倍夸张、且不随比例尺变——
+   增益必须由三个 render 调用点按 shadeGain 传入。 —— */
+export const NRM0 = 4.5 / 14;
+export function exagFor(cellKm: number, kmPerPx: number): number {
+  const p = Math.log(FX.exagE1 / FX.exagE0) / Math.log(FX.exagCellKm1 / FX.exagCellKm0);
+  const eCell = Math.max(FX.exagE0, Math.min(FX.exagMax, FX.exagE0 * Math.pow(Math.max(1e-9, cellKm) / FX.exagCellKm0, p)));
+  const pxPerCell = cellKm / Math.max(1e-9, kmPerPx);
+  const t = Math.max(0, Math.min(1, (Math.log(Math.max(1e-9, pxPerCell)) - Math.log(FX.zoomPxLo)) / (Math.log(FX.zoomPxHi) - Math.log(FX.zoomPxLo))));
+  return eCell * (FX.zoomKLo + (1 - FX.zoomKLo) * t);
+}
+/** 渲染器法线增益：旧式每度法线（细节路 2·NRM0 + 宏观路 ×macroW）换算成 E 倍真实坡度 */
+export function shadeGain(meta: Meta | undefined, degPerPx: number): number {
+  const kmd = kmPerDegLat(meta), U = elevUnitM(meta);
+  return exagFor(gridStepDeg(meta) * kmd, degPerPx * kmd) * U / (2 * NRM0 * (1 + FX.macroW) * kmd * 1000);
+}
 
 /** 微八度基频（1/度）：接续宏观 fbm4 频谱（1.1×2³=8.8/度）的下一档 */
 export const MICRO_F0 = 17.6;
@@ -63,24 +176,24 @@ export function octaveGate(pxPerDeg: number, freq: number): number {
     ⚠ 单一真源：两端各写一份数值＝观感分家的温床；调参只动这里。
     *Px=屏幕锚定波长（像素）；*Amp=纹理进法线的幅度；micro*=世界锚定微八度。 */
 export const FX = {
+  exagCellKm0: 0.1, exagE0: 16,                // 格边档锚点一：战术 100 m 格 → 16 倍（见 exagFor 头注）
+  exagCellKm1: 20 / 3, exagE1: 96,             // 格边档锚点二：战略 6.67 km 格 → 96 倍
+  exagMax: 128,                                // 全球级粗格（22 km）封顶
+  zoomPxLo: 0.5, zoomPxHi: 5, zoomKLo: 0.5,    // 缩放档：一格 ≤0.5 px ×0.5、≥5 px ×1
+  rockSlopeLo: 1.2, rockSlopeHi: 3.0,          // 坡度岩化的显示 tan 区间（8 倍下真实 8.5°～20° 起露岩）
+  snowSlopeLo: 1.5, snowSlopeHi: 3.5,          // 陡坡挂不住雪的显示 tan 区间
   microAmp: 0.34,   // 微八度总幅（×材质 rough）——过大即「抓挠感」
   microPers: 0.42,  // 微八度持续度（<0.5=高频档法线贡献递减）
   warpF: 0.77,      // 域扭曲主频（1/格）；副频 ×3.1、幅 ×0.35
   warpAmp: 0.7,     // 域扭曲总幅（×格距；主+副合成后 <半格）
-  canopyPx: 30, canopyAmp: 3.2,   // 林冠鼓包
+  canopyPx: 30, canopyAmp: 2.0,   // 林冠鼓包（2026-09-02 起软鼓包：阈值化值噪声是迷宫蠕虫纹，夸张降到 4～8 倍后一眼可辨）
   dunePx: 26,   duneAmp: 2.0,     // 沙丘波纹（纵向拉伸 0.3）
   ridgePx: 52,  ridgeAmp: 5.5,    // 山地棱脊（主脉 ×0.36 波长调制支脉）
   marshPx: 34,  marshAmp: 1.0,    // 沼泽墩洼
   texW: 2.0,        // 屏幕锚定纹理 → 法线幅度的折算分子（÷像素密度＝明暗对比不随缩放）
-  /* 陡坡增纹（2026-08-08）：战术尺度上宏观坡可达 90/度、法线量级 ~58，而屏幕锚定纹理只有 ~0.3
-     ——1:200 的悬殊，纹理在晕渲里根本读不出来，这就是「越放大越空」的真因（把 texW 临时拉到 30
-     即纹理铺满全图＝通路本身没问题，只是幅度不够）。⚠ 不是「软压吃掉了纹理」，那条已实证证伪，
-     见软压处头注。
-     律＝**细节占宏观一个大致固定的比例**：缓坡（smac≤Lo）恒 1×＝战略图与平缓战术图观感逐位不变，
-     超过 Lo 才按 (smac−Lo)×k 抬幅。Lo=4 取在「河洛中位 2.5 不受影响、其 p90 19.9 已明显补纹」处。
-     ⚠ 批5 曾把 Lo 误留 0.0＝增纹从坡度 0 就开吃、中位缓坡也被抬到 6×——正是「纹理太多、
-     只是杂乱装饰」的直接来源（批6 用户点单实证）；k 同步 2.0→1.2＝真高差入场后纹理只作补充 */
-  texSlopeLo: 4.0, texSlope: 1.2, texSlopeMax: 10.0,
+  /* 陡坡增纹已删（2026-09-02）：它是给 64 倍夸张下「宏观坡 90/度 vs 纹理 0.3」补的 ×7 幅度；夸张
+     降到 4～8 倍后宏观坡本就在线性区，再乘 7 倍就是战略图满屏蠕虫纹（用户实报）。纹理自此只按
+     基础幅度随 gain 走，是补充不是主体。 */
   /* 纹理疏密（2026-08-19，用户实报「一大片都是规律的细密的纹理，观感不好」）：材质纹理按**屏幕**
      波长锚定（明暗对比不随缩放变的既有契约），代价是无论放多大都是同一个像素尺度的均匀颗粒——
      一整片林/沼/山全是一个密度。加一层**世界锚定**的低频调制，让同一片有疏有密。
@@ -96,29 +209,40 @@ export const FX = {
   wavePx: 38,   waveAmp: 0.07,    // 水面静态波纹
   shoreMix: 0.28,   // 近岸浅水带混入
   rockMix: 0.55,    // 坡度岩化最大混入
-  cavAmp: 6.0,      // 谷影幅度（帐篷差 × 此系数，钳 [-0.10, 0.16]）
+  /* 谷影（2026-09-02 改按真实坡度）：帐篷差是「半格距上的高差」，格越大差越大——6.67 km 战略格上
+     类型台阶的帐篷差 0.17 × 6 恒饱和，夸张降到 4 倍后它成了画面里唯一的强项＝满屏蠕虫纹。
+     现按 (帐篷差 ÷ 场格边) × 增益 × 2·NRM0·(1+macroW) 折成「E 倍真实坡度」再乘此系数；0.019 使
+     战术 8 倍下与旧 6.0 同量（50 m 细格），战略 4 倍下自然近零。 */
+  cavAmp: 0.019,
   /* —— 2026-08 光照与色彩批 —— */
-  shadeLo: 0.50, shadeHi: 1.22,   // 光照响应两端（旧 0.6+0.75·d 最亮:最暗仅 2.2:1＝整图挤中灰）
+  /* 背光底 0.50→0.62（2026-09-02）：晕渲的背光面按制图惯例不低于六成亮，0.50 叠上冷调、谷影与
+     烘焙投影三层后山体阴面近黑＝读成一团暗物而不是山（实拍）。 */
+  shadeLo: 0.62, shadeHi: 1.22,   // 光照响应两端（旧 0.6+0.75·d 最亮:最暗仅 2.2:1＝整图挤中灰）
   shadeKnee: -0.55,               // 响应软肩（smoothstep 下界；上界恒 1.0）
   cool: [0.83, 0.88, 1.03], warm: [1.05, 1.0, 0.92],   // 暖冷晕渲（Imhof：受光面暖、背光面冷紫）
   macroW: 0.8,      // 宏观场法线权重（±1 格、无噪声的地貌坡再计一份——压低噪声皱纹在光照里的话语权）
   snowBand: 0.22,   // 雪线过渡带宽（抽象高程；起点见 SNOW_M/snowEOf）
+  /* 空气透视（Imhof）：高处清冷明亮、低处厚重——山体的「宏伟」有一半来自这条纵深线索，
+     不是来自更强的明暗。按抽象高程渐入，只动地表色不动光照。 */
+  airLo: 0.45, airHi: 1.50, airMix: 0.20, airC: [0.88, 0.91, 0.98],
   warp2F: 0.16, warp2Amp: 1.7,    // 长波扭曲（λ≈6 格、幅≈±0.85 格）——只喂色调/材质查找，把多格
                                   //   涂改色块的直边揉出有机走向；有意超半格（warpOf 守半格是为晕渲高程）
   /* 边缘碎化（2026-08-08）：长波扭曲只能把长直边推成缓弯，跨十几格的涂改边界照旧一眼是直的
      （井陉中景成片矩形色块实拍）。补一档高频小幅（λ≈1.1 格、幅≈±0.23 格）打碎边缘读感——
      幅度有意远小于长波：色调若跑离地貌太远，山脊上会出现不属于它的地类色 */
   warp3F: 0.9, warp3Amp: 0.45,
-  shoreLo: 35, shoreHi: 120,      // 近岸浅水带渐隐区间（px/°）：整幅视角的贴纸大光环由此归零
-  shadowK: 0.42,     // 烘焙遮蔽（erode 定向天光通道）压暗上限——背光谷底连同暖冷响应一起走 lt
+  shoreLo: 2.5, shoreHi: 7,       // 近岸浅水带渐显区间（px/格）：一格不到两三像素时归零——按 px/° 判在战术图上恒开（0.54° 图整幅已 2000 px/°）
+  shadowK: 0.25,     // 烘焙遮蔽（erode 定向天光通道）压暗上限——背光谷底连同暖冷响应一起走 lt（0.42 与新背光底叠成近黑）
   /* 坡度补材质（|∇e|/度 → 糙度/棱脊权重）：手雕的高山常落在平原/草原类型上，材质只认类型
      就还是草地质感的光滑圆包（河洛实证）——山的质感跟着坡走，与类型取大 */
   slopeRough: 0.013, slopeRoughMax: 0.24,   // 山地档 rough=0.24；坡 18/度 拉满
-  slopeRidge: 0.055,                         // 坡 18/度 → 棱脊权重 1.0（山地档）
-  /* 陡坡软压（光照响应用的总坡度：膝点内原样，超出部分渐近压缩到 +slopeSoft）——手雕悬崖
-     坡度动辄 8..16，法线归一化后 dot 饱和在响应区间外＝整面纯暗/纯亮，微地形隐形（河洛实证：
-     「光滑圆包」其实是剪裁）。膝点 1.4 保住缓坡观感逐位（战略图/井陉大部分坡 <1.4） */
-  slopeKnee: 1.4, slopeSoft: 1.3,
+  slopeRidge: 0.022,                         // 坡 18/度 → 棱脊权重 0.4（与山地档表值同上限；1.0 时战略图类型缓坡也满屏棱脊蠕虫）
+  /* 陡坡软压（光照响应用的总坡度：膝点内原样，超出部分渐近压缩到 +slopeSoft）：夸张 ≤8 倍后
+     只有真实 27° 以上（8 倍）/45° 以上（4 倍）才进压缩区，山坡的明暗层次留在线性段。
+     ⚠ 2026-09-02 修正：原实现 `slc = knee + 压缩(超出)` 在膝点以下不是恒等而是把任何微坡拉长到
+     膝点——几米的起伏也按 54°（旧膝 1.4）显示，这是「平原褶皱」「几米高差也显示」的元凶；
+     现 `min(sl, knee) + …`。 */
+  slopeKnee: 4.0, slopeSoft: 2.0,
   /* 装饰高程噪声跟坡走（2026-08-08 批7 下半，见 decoGate）：fbm4 宏观档与微八度不进读数/等高线
      却进晕渲法线，在平坦低地画出 ±15~35m 的假起伏——「读数只差几米、图上褶皱十几米/几十米、
      零高差处也有褶皱」（用户真机实证）。坡门=宏观坡 smac 渐入（平原内部平地 p50 0.1~0.4、
@@ -131,7 +255,7 @@ export const FX = {
      水洼/湿泥按 px/° 渐显（整幅视角斑点读不出、徒增噪）。 */
   sandMix: 0.42, sandC: [0.855, 0.745, 0.52],    // 荒漠暖沙定调
   marshMix: 0.30, marshC: [0.44, 0.54, 0.47],    // 沼泽湿绿定调（比 tint 更沉的水草绿）
-  poolLo: 30, poolHi: 110,                        // 水洼随 px/° 渐显区间
+  poolLo: 2, poolHi: 7,                           // 水洼随 px/格 渐显区间（同 shoreLo/Hi 之规：战略 6.67 km 格整幅 2 px 即归零）
   poolF: 0.4,                                     // 水洼斑块频率（周期/格＝格锚定；0.8 时屏上 ~8px 斑点=细碎噪点而非浅水滩，放宽成 ~2.5 格的塘）
   poolMix: 0.62, poolC: [0.36, 0.50, 0.50],       // 积水色（青灰，近岸带同族更沉）
   mudMix: 0.30, mudC: [0.40, 0.37, 0.29]          // 洼间湿泥压暗

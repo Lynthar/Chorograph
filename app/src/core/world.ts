@@ -5,7 +5,7 @@ import { LEGACY_KIND, LEGACY_TYPE, EVENT_TYPES, UNIT_KINDS } from "./constants.t
 import { autoGridN } from "./grid.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
-import type { BBox, CalendarCfg, GenStyle, TerrainMode, World, WorldModel } from "./types.ts";
+import type { BBox, CalendarCfg, Climate, GenStyle, TerrainMode, World, WorldModel } from "./types.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- 入参是任意外部 JSON，宽松索引即语义 */
 
@@ -141,6 +141,7 @@ export interface BlankWorldSpec {
   vault?: string;
   calendar?: CalendarCfg;   // 纪年历法：缺省不落盘（=custom SE 12×30）；earth/自定义纪元才写 meta
   relief?: number;          // 程序化地势起伏幅度 0..1：>0 才写 meta（缺省=无，旧图渲染不变）
+  climate?: Climate;        // 气候档（雪线基准）：定了才写 meta（缺省＝出厂雪线，不随纬度）
 }
 
 /** 按世界参数生成空白世界。today=今日日期串(YYYY-MM-DD)——旧实现内联 new Date()，
@@ -190,6 +191,7 @@ export function blankWorld(s: BlankWorldSpec, today: string): World {
   if (s.vault) w.meta.vault = s.vault;
   if (s.calendar) w.meta.calendar = s.calendar;   // 历法创建时定死（改 kind 会重释一切已存日戳）
   if (s.relief != null && s.relief > 0) w.meta.relief = s.relief;
+  if (s.climate) w.meta.climate = s.climate;
   /* 尺度身份盖章（2026-08-13 创建定形批）：网格密度在创建时解算并写进存档——尺寸输入（bbox/
      kmPerDeg/半径）创建后冻结,公式却会演进;盖章后旧图永远按建图当天的格边打开,法则常数
      此后只影响新图。⚠ 对黄金基准属 sanctioned 附加键：parity 比对时剥掉此键另断言其值。 */

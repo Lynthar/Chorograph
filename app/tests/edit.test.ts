@@ -8,7 +8,7 @@ import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEve
 import { unitArm, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
-import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive,
+import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive, setTerrainStyle, terrainStyleSig,
   modeSig, paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, railToolOf, readOnlySig, redoWorld, revealLayersFor, selMembers, selSig, setRailTool, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
@@ -1113,6 +1113,16 @@ describe("子工具自动开图层（隐藏层上放置＝幽灵编辑，切入�
     applyPreset("战术");
     assert.strictEqual(layersSig.peek().wall, true);
     layersSig.value = s0;
+  });
+  it("底图样式缺省观感；切推演不动图层开关（等高线/经纬网仍由图层行说了算）", () => {
+    const s0 = snap();
+    assert.strictEqual(terrainStyleSig.peek(), "shaded");
+    setTerrainStyle("flat");
+    assert.strictEqual(terrainStyleSig.peek(), "flat");
+    assert.deepStrictEqual(layersSig.peek(), s0);
+    applyPreset("地理");
+    assert.strictEqual(terrainStyleSig.peek(), "flat", "预设只管图层，不改底图样式");
+    setTerrainStyle("shaded"); layersSig.value = s0;
   });
 });
 

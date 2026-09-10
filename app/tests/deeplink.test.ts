@@ -42,6 +42,9 @@ describe("深链解析 parseHash", () => {
     assert.strictEqual(parseHash("#ovl=x").wantOvl, null);
     assert.strictEqual(parseHash("#drawer=layers").wantDrawer, "layers");
     assert.strictEqual(parseHash("#drawer=x").wantDrawer, null);
+    assert.strictEqual(parseHash("#base=flat").wantBase, "flat");
+    assert.strictEqual(parseHash("#base=shaded").wantBase, "shaded");
+    assert.strictEqual(parseHash("#base=推演").wantBase, null);
     assert.strictEqual(parseHash("#grain=month").wantGrain, "month");
     assert.strictEqual(parseHash("#grain=x").wantGrain, null);
     assert.strictEqual(parseHash("#force=cpu").force, "cpu");
@@ -57,10 +60,10 @@ describe("深链解析 parseHash", () => {
 
   it("原型键名：枚举参数一个都不许放行（否则查表取到继承成员＝图层全灭/切工具即崩）", () => {
     for (const k of PROTO_KEYS) {
-      const d = parseHash(`#preset=${k}&sub=${k}&arm=${k}&style=${k}&mode=${k}&ovl=${k}&drawer=${k}&grain=${k}&force=${k}`);
+      const d = parseHash(`#preset=${k}&sub=${k}&arm=${k}&style=${k}&mode=${k}&ovl=${k}&drawer=${k}&base=${k}&grain=${k}&force=${k}`);
       assert.deepStrictEqual(
-        [d.wantPreset, d.wantSub, d.arm, d.style, d.wantAnalysis, d.wantOvl, d.wantDrawer, d.wantGrain, d.force],
-        [null, null, null, null, null, null, null, null, undefined], k);
+        [d.wantPreset, d.wantSub, d.arm, d.style, d.wantAnalysis, d.wantOvl, d.wantDrawer, d.wantBase, d.wantGrain, d.force],
+        [null, null, null, null, null, null, null, null, null, undefined], k);
     }
   });
 

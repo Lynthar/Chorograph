@@ -15,7 +15,7 @@
    ⚠ 噪声坐标一律用图幅局部坐标（ll-网格原点），深放大高频档才不在 fp32 下失谐；
    ⚠ fwidth 只喂 e/es 两个一致控制流值，材质分支里不得调用。 */
 import { ELEV, terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
-import { materialTable, MICRO_F0, MICRO_OCTAVES, FX } from "./material.ts";
+import { materialTable, rampGLSL, snowLatGLSL, MICRO_F0, MICRO_OCTAVES, NRM0, FX } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { ElevField } from "../core/elev.ts";
 import type { BBox } from "../core/types.ts";
@@ -27,7 +27,7 @@ const FS = `#version 300 es
 precision highp float; precision highp int;
 const float SEA_E=float(${ELEV.water});                        // 深海高程（构建期注入，与 core 常量同源）
 const float SEA_T=float(${compositeIndex("water")});           // water 复合索引（G 通道）
-uniform sampler2D uGrid;          // RG32F: R=弃用(恒 0) G=复合索引(lf*5+eco)——类型仍粗格最近取
+uniform sampler2D uGrid;          // RG32F: R=水面高程(海 0/内陆湖岸线高) G=复合索引(lf*5+eco)——均粗格最近取
 uniform sampler2D uField;         // RG32F: R=高程场 G=定向遮蔽 0..1（粗格=coarseField 全零；细分=erode 产出）
 uniform vec4 uGridBB;             // lonMin,latMin,step,wrap中心经度
 uniform ivec2 uGridDim;           // cols,rows（类型粗格）
@@ -41,12 +41,15 @@ uniform float uPXPDY;             // 纵向像素/度（对齐旧 drawTile 经 p
 uniform float uCMinor;            // 细曲线等距（抽象单位；contourStepFor 缩放自适应 ×2 阶梯）
 uniform float uCFade;             // 下一细分档淡入 0..1（×2 嵌套：新线在旧线正中浮现）
 uniform vec3 uLight;
-uniform int uMode;                // 0=着色 1=诊断平色
+uniform int uMode;                // 0=观感底图 1=推演底图（逐格平色）
 uniform int uContour;
 uniform int uWrap;                // 1=球面经度环绕（把片元经度折回世界本初域），0=平面
 uniform int uPaper;               // 1=图幅外铺宣纸色（战术图；色=出图垫纸色 #d9d2c0 同源）
-uniform float uSnowE;             // 雪线抽象高程（material.snowEOf 按米折算；不落雪=1e9）
-uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合诊断平色（G=lf*5+eco 索引）
+uniform float uSnowE;             // 雪线抽象高程（图幅中心；material.snowSpec.base；不落雪=1e9）
+uniform float uSnowLat, uSnowRef, uSnowUnit;   // 随纬度：开关 0/1（球面图且设了气候档）、参考曲线在中心纬度的米值、1/elevUnitM
+uniform float uGain;              // 晕渲法线增益（material.shadeGain：夸张 E∈[4,8] 倍真实坡度）
+uniform float uEroded;            // 1=场经侵蚀（带遮蔽通道）：装饰噪声按坡门控、宏观 fbm4 降到四分之一——真形自己带起伏
+uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合平色＝terrainProps.color（推演底图用；G=lf*5+eco 索引）
 uniform vec3 uTint[${COMPOSITE_COUNT}];     // 各复合生态色调（无=vec3(-1)）
 uniform vec4 uMatA[${COMPOSITE_COUNT}];     // 材质纹理权重(canopy,dune,ridge,marsh)——render/material.ts 真源
 uniform vec4 uMatB[${COMPOSITE_COUNT}];     // (微起伏rough, 反照率抖动albVar, 岩化rock, 0)
@@ -76,6 +79,10 @@ float ridged(float n){ return 1.0-abs(2.0*n-1.0); }
 /* 屏幕波长 tpx 锚定的两档世界频率 + crossfade（×2 阶梯嵌套，缩放连续无跳档） */
 vec3 lodF(float tpx){ float fi=max(MF0, uPXPD/tpx); float f=MF0*exp2(floor(log2(fi/MF0)));
   return vec3(f, f*2.0, fract(log2(fi/MF0))); }
+/* 出界判据看**未扭曲**位置：gWarp＝当前采样族的域扭曲量（main 里扭曲族置 wp、制图面族置 0）。
+   按扭曲后的点判，贴边像素被推出图幅就掉进深海、图幅外的被推进来就长出陆地＝图廓两侧各啃一圈锯齿。 */
+vec2 gWarp=vec2(0.0);
+bool outside(vec2 rel){ vec2 u=rel-gWarp; return u.x<0.0||u.y<0.0||u.x>uGridSpan.x||u.y>uGridSpan.y; }
 /* 域扭曲（类型/色调查找用）：双频、幅度 <半格、格空间标定=缩放稳定 */
 vec2 warpOf(vec2 rel){
   float wf=float(${FX.warpF})/uGridBB.z;
@@ -111,8 +118,8 @@ float micro(vec2 rel){
 float texAt(vec2 rel, vec4 tw){
   float h=0.0;
   if(tw.x>0.003){ vec3 L=lodF(float(${FX.canopyPx})); float g=gate(L.x);
-    if(g>0.0){ float a=smoothstep(0.35,0.8,vnoise2(rel*L.x+vec2(7.7,3.1)));
-      float b=smoothstep(0.35,0.8,vnoise2(rel*L.y+vec2(3.3,8.9)));
+    if(g>0.0){ float a=vnoise2(rel*L.x+vec2(7.7,3.1))-0.5;   // 软鼓包（阈值化＝迷宫蠕虫纹）
+      float b=vnoise2(rel*L.y+vec2(3.3,8.9))-0.5;
       h+=tw.x*float(${FX.canopyAmp})*g*mix(a,b,L.z); } }
   if(tw.y>0.003){ vec3 L=lodF(float(${FX.dunePx})); float g=gate(L.x);
     if(g>0.0){ float a=rg(gnoise2(vec2(rel.x*0.3,rel.y)*L.x+vec2(11.1,0.7)));
@@ -156,10 +163,9 @@ Mat matAt(vec2 rw){   // rw=已扭曲的局部坐标（调用方算一次 warp�
 
 vec2 cellAt(vec2 ll){ // (双线性高程, 最近格类型索引)——高程走细分场纹理、类型仍粗格最近取
   // 网格 bbox 之外=深海（对齐 CPU 兜底先铺深水的行为；用真实跨度而非 cols×step——后者 ceil 多出 <1 格边缘条带）。
-  // 纸模式（战术图）出界改走 clamp 延伸＝CPU elevBilinear 同语义：图幅外没有海，域扭曲把边缘采样点
-  // 推出图幅时不得掉进深水（否则图廓内侧随 warp 场亮出断续蓝斑）
+  // 纸模式（战术图）出界改走 clamp 延伸＝CPU elevBilinear 同语义：图幅外没有海。
   vec2 rel=ll-uGridBB.xy;
-  if(uPaper==0 && (rel.x<0.0||rel.y<0.0||rel.x>uGridSpan.x||rel.y>uGridSpan.y)) return vec2(SEA_E, SEA_T);
+  if(uPaper==0 && outside(rel)) return vec2(SEA_E, SEA_T);
   vec2 f=rel/uFStep-0.5;
   ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uFDim-1);
   ivec2 c1=min(c0+1, uFDim-1);
@@ -172,7 +178,7 @@ vec2 cellAt(vec2 ll){ // (双线性高程, 最近格类型索引)——高程走
 }
 float occAt(vec2 ll){ // 烘焙遮蔽双线性（uField G；粗格全零＝无影响；出幅=0）
   vec2 rel=ll-uGridBB.xy;
-  if(rel.x<0.0||rel.y<0.0||rel.x>uGridSpan.x||rel.y>uGridSpan.y) return 0.0;
+  if(outside(rel)) return 0.0;
   vec2 f=rel/uFStep-0.5;
   ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uFDim-1);
   ivec2 c1=min(c0+1, uFDim-1);
@@ -185,7 +191,7 @@ float occAt(vec2 ll){ // 烘焙遮蔽双线性（uField G；粗格全零＝无�
 /* 高程细节场：双线性数据面 + 宏观 fbm4（旧式逐位）+ 微八度；dk=装饰噪声门（判据见 material.decoGate） */
 float eAt(vec2 ll, float mrough, float dk){
   float e=cellAt(ll).x;
-  float rough=e>0.4?0.24:(e>0.2?0.08:0.025);
+  float rough=(e>0.4?0.24:(e>0.2?0.08:0.025))*mix(1.0,0.25,uEroded);
   e+=(fbm4(ll*1.1)-0.5)*rough*2.0*dk;
   return e+micro(ll-uGridBB.xy)*mrough*float(${FX.microAmp})*dk;
 }
@@ -198,29 +204,46 @@ float elevSmooth(vec2 ll){ // 制图面：±半场格 4 抽头帐篷平滑（与
 float cwMinor(float eh,float itv,float aa){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(0.8,1.5,d); }
 float cwIndex(float eh,float itv,float aa){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(1.3,2.4,d); }
 float oddK(float eh,float itv){ return mod(round(eh/itv),2.0); }
-vec3 elevRamp(float e){
-  if(e<-0.02){ float t=clamp((e+0.35)/0.33,0.0,1.0); return vec3(40.0+t*60.0,90.0+t*70.0,132.0+t*66.0)/255.0; }
-  if(e<0.09) return vec3(214.0,205.0,168.0)/255.0;   // 滩带压灰半档（原 224,216,172 在整幅下发白光）
-  if(e<0.30){ float t=(e-0.09)/0.21; return vec3(132.0+t*38.0,174.0-t*2.0,98.0+t*12.0)/255.0; }
-  if(e<0.55){ float t=(e-0.30)/0.25; return vec3(170.0+t*8.0,166.0-t*12.0,110.0-t*4.0)/255.0; }
-  if(e<0.82){ float t=(e-0.55)/0.27; return vec3(178.0-t*28.0,152.0-t*24.0,118.0-t*22.0)/255.0; }
-  // 顶带收灰岩（原顶带冲到 240,236,242 的雪白＝雪与岩混为一谈；雪自此按米另落，见 uSnowE）
-  float t=min(1.0,(e-0.82)/0.30); return vec3(140.0+t*62.0,132.0+t*66.0,124.0+t*70.0)/255.0;
+/* 水面高程（粗格最近取，同类型索引）：海=0，内陆湖=岸线高度，陆格取相邻水体水面
+   （core/elev.waterSurface 已晕开一格＝湖岸线随细分场摆动，不被粗格边切成方块）。
+   图幅外恒 0＝按海处理，与 cellAt 出界返 SEA_E 同调。 */
+float wsAt(vec2 ll){
+  vec2 rel=ll-uGridBB.xy;
+  if(outside(rel)) return 0.0;
+  ivec2 n=clamp(ivec2(floor(rel/uGridBB.z)), ivec2(0), uGridDim-1);
+  return texelFetch(uGrid,n,0).r;
+}
+${rampGLSL()}
+${snowLatGLSL()}
+vec3 elevRamp(float e,float ws){
+  if(e<ws-0.02){ float t=clamp((e-ws+0.35)/0.33,0.0,1.0); return vec3(40.0+t*60.0,90.0+t*70.0,132.0+t*66.0)/255.0; }
+  return elevLand(e);   // 陆地分层设色＝material.ELEV_RAMP 一张表（CPU 同源）
 }
 void main(){
   float x=gl_FragCoord.x-0.5, yTop=uRes.y-gl_FragCoord.y-0.5;   // 与 CPU 版角点采样对齐
   vec2 ll=vec2(uViewBB.x+x/uPXPD, uViewBB.w-yTop/uPXPDY);
   // 球面环绕：经度折回以网格中心为轴的 ±180° 域——单次绘制即无缝跨越 ±180° 经线
   if(uWrap==1) ll.x-=360.0*floor((ll.x-uGridBB.w+180.0)/360.0);
-  vec2 cd=cellAt(ll);   // (双线性数据面高程, 最近格类型索引)：等高线/诊断用，晕渲另走带噪声的 eAt
-  if(uMode==1){ int ti=int(cd.y+0.5); fragColor=vec4(uTColor[ti],1.0); return; }
-  float px=1.0/uPXPD, py=1.0/uPXPDY;
+  vec2 cd=cellAt(ll);   // (双线性数据面高程, 所在格类型索引)：等高线与推演平色用，晕渲另走带噪声的 eAt
   vec2 rel=ll-uGridBB.xy;
+  float es=elevSmooth(ll);   // 制图面（帐篷平滑数据面，与光标读数同源；未扭曲族，此时 gWarp 恒 0）
+  float ad=fwidth(es)+1e-7;  // 等高线线宽：两种底图共用，故在 uMode 分支之前取（分支内 fwidth 未定义，软渲返 0）
+  vec3 col; float ws, e;
+  if(uMode==1){
+    /* 推演底图：所在格的类型平色（uTColor＝terrainProps.color），不扭曲、不晕渲、不铺纹理——
+       像素的颜色就是光标读数与寻路读到的那一格；等高线与纸色在下方照画 */
+    ws=wsAt(ll); e=cd.x;
+    // 图幅外＝深海（同 CPU 兜底的底色；水域格的浅蓝只给格子，图幅界才看得见）；纸模式由末尾纸色覆盖
+    col=outside(rel) ? vec3(40.0,90.0,132.0)/255.0 : uTColor[int(cd.y+0.5)];
+  } else {
+  float px=1.0/uPXPD, py=1.0/uPXPDY;
   /* 域扭曲一次共用：色调/材质查找与晕渲高程同一形变（涂改方块的直角沟壑随之弯成有机走向）。
      等高线/光标读数仍走未扭曲制图面 es——「晕渲是画、等高线是尺」，画可以形变，尺不动。
      邻点采样共用中心 warp（波长≈1.3 格≫1px，雅可比≈常数，法线误差可忽略）。 */
   vec2 wp=warpOf(rel);
   vec2 llw=ll+wp;
+  gWarp=wp;   // 此后的采样全属扭曲族
+  ws=wsAt(llw);   // 水陆判据、深浅色与近岸带的基准（内陆湖不在海平面）；与晕渲高程同取扭曲后坐标
   Mat mt=matAt(rel+wp+warp2Of(rel));   // 色调/材质权重中心取一次，五点采样共用（边界差 1px 可忽略）
   /* 宏观场坡先行（±1 格、无噪声）：①光照里再计一份基础坡，压低噪声皱纹话语权；
      ②陡处按坡度补糙度/棱脊——手雕高山常落在平原类型上，材质只认类型＝草地质感的光滑圆包 */
@@ -229,26 +252,26 @@ void main(){
   float smac=length(mgv)/(2.0*uGridBB.z);   // |∇e| 每度
   float roughEff=max(mt.rough, min(float(${FX.slopeRoughMax}), smac*float(${FX.slopeRough})));
   vec4 twEff=vec4(mt.tw.xy, max(mt.tw.z, min(1.0, smac*float(${FX.slopeRidge}))), mt.tw.w);
-  // 屏幕锚定纹理的幅度按 1/像素密度折算（明暗对比恒定不随缩放）× 陡坡增纹（见 FX.texSlope 头注）
-  float texW=float(${FX.texW})/uPXPD*(1.0+min(float(${FX.texSlopeMax}), max(0.0, smac-float(${FX.texSlopeLo}))*float(${FX.texSlope})));
+  // 屏幕锚定纹理的幅度按 1/像素密度折算（明暗对比恒定不随缩放）；陡坡增纹已删（见 FX.texW 注）
+  float texW=float(${FX.texW})/uPXPD;
   // 纹理疏密：世界锚定两八度低频调制（见 FX.texPatchF 头注）——五点采样共用此 texW，故不添假坡
   float pf=float(${FX.texPatchF})/uGridBB.z;
   float pn=0.65*vnoise2(rel*pf+vec2(19.3,5.7))+0.35*vnoise2(rel*pf*2.7+vec2(63.1,28.9));
   texW*=mix(float(${FX.texPatchLo}), float(${FX.texPatchHi}), smoothstep(0.32,0.68,pn));
   // 装饰噪声门（decoGate 同式；land 平滑过渡防岸线阶跃；fine 纯 uniform=一致控制流,粗格恒 1）
-  float fine=uFStep<uGridBB.z*0.999?1.0:0.0;
+  float fine=max(uFStep<uGridBB.z*0.999?1.0:0.0, uEroded);   // 1× 细分的侵蚀场（60 km 缺省战场）同样过门
   float dk0=max(smoothstep(float(${FX.decoSlopeLo}),float(${FX.decoSlopeHi}),smac),
-                smoothstep(float(${FX.decoRoughLo}),float(${FX.decoRoughHi}),mt.rough));
-  float decoK=1.0+(dk0-1.0)*smoothstep(-0.02,0.02,cd.x)*fine;
-  float e  =eAt(llw, roughEff, decoK);
+                smoothstep(float(${FX.decoRoughLo}),float(${FX.decoRoughHi}),mt.rough)*(1.0-uEroded));
+  float decoK=1.0+(dk0-1.0)*smoothstep(ws-0.02,ws+0.02,cd.x)*fine;
+  e=eAt(llw, roughEff, decoK);
   float eL=eAt(llw+vec2(-px,0.0),roughEff,decoK)+texAt(rel+vec2(-px,0.0),twEff)*texW;
   float eR=eAt(llw+vec2( px,0.0),roughEff,decoK)+texAt(rel+vec2( px,0.0),twEff)*texW;
   float eU=eAt(llw+vec2(0.0, py),roughEff,decoK)+texAt(rel+vec2(0.0, py),twEff)*texW;
   float eD=eAt(llw+vec2(0.0,-py),roughEff,decoK)+texAt(rel+vec2(0.0,-py),twEff)*texW;
-  float nrm=4.5*(uPXPD/14.0);
+  float nrm=4.5*(uPXPD/14.0)*uGain;
   vec3 nv=vec3((eL-eR)*nrm,(eU-eD)*nrm,1.0);
   /* 0.3214=nrm 对基础坡度的响应系数之半（2·nrm/uPXPD ÷2），两套法线同量纲可直接相加 */
-  float mnk=0.3214/uGridBB.z*float(${FX.macroW});
+  float mnk=0.3214/uGridBB.z*float(${FX.macroW})*uGain;
   vec2 mn=mgv*mnk;
   /* 暖冷晕渲（Imhof）：受光面暖、背光面冷紫，软肩响应拉开明暗——旧 0.6+0.75·d 线性乘法
      最亮:最暗仅 2.2:1，整图无深度。总坡度过陡坡软压（见 FX.slopeKnee 注）再进光照 */
@@ -260,24 +283,24 @@ void main(){
   vec2 sv=nv.xy+mn;
   float sl=length(sv);
   float sx2=max(0.0,sl-float(${FX.slopeKnee}));
-  float slc=float(${FX.slopeKnee})+sx2*float(${FX.slopeSoft})/(float(${FX.slopeSoft})+sx2);
+  float slc=min(sl,float(${FX.slopeKnee}))+sx2*float(${FX.slopeSoft})/(float(${FX.slopeSoft})+sx2);   // 膝内恒等：原式 knee+… 把任何微坡都拉到膝点长度＝平原褶皱的元凶
   float dn=dot(normalize(vec3(sv*(sl>1e-6? slc/sl : 1.0),1.0)), uLight);
   float lt=smoothstep(float(${FX.shadeKnee}),1.0,dn);
   lt*=1.0-occAt(llw)*float(${FX.shadowK});   // 烘焙投影阴影：背光谷底连同暖冷响应一起压暗（粗格全零）
   float sh=mix(float(${FX.shadeLo}),float(${FX.shadeHi}),lt);
   vec3 shT=mix(vec3(${FX.cool.join(",")}),vec3(${FX.warm.join(",")}),lt);
-  float es=elevSmooth(ll);      // 制图面（帐篷平滑数据面，与光标读数同源）；导数须在一致控制流取（分支内 fwidth 未定义，软渲返 0）
-  float cav=clamp((es-cd.x)*float(${FX.cavAmp}), -0.10, 0.16);   // 帐篷差≈曲率：谷暗脊明（廉价 AO）
-  vec3 col=elevRamp(e);
-  if(e>=-0.02){
+  float cav=clamp((es-cd.x)/uFStep*uGain*float(${2 * NRM0 * (1 + FX.macroW)})*float(${FX.cavAmp}), -0.10, 0.16);   // 帐篷差按真实坡度并随夸张走：谷暗脊明（廉价 AO）
+  col=elevRamp(e,ws);   // 赋外层 col（此处若写 vec3 col 即遮蔽＝观感底图整幅黑）
+  if(e>=ws-0.02){
     if(mt.tintW>0.0) col=mix(col, mt.tint, 0.45*mt.tintW);   // 软过渡；tintW=1 时与旧 55/45 直拼逐位同值
     // 生态辨识度：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重 tw.y/tw.w，详见 material.ts）
     col=mix(col, vec3(${FX.sandC.join(",")}), mt.tw.y*float(${FX.sandMix}));
     if(mt.tw.w>0.003){
       col=mix(col, vec3(${FX.marshC.join(",")}), mt.tw.w*float(${FX.marshMix}));
-      float pg=smoothstep(float(${FX.poolLo}),float(${FX.poolHi}),uPXPD)*mt.tw.w;
+      float pg=smoothstep(float(${FX.poolLo}),float(${FX.poolHi}),uPXPD*uGridBB.z)*mt.tw.w*float(uPaper);   // px/格；只在战术图——战略格上「2.5 格的塘」是十几公里的湖
       if(pg>0.003){
-        float pn=vnoise2(rel*(float(${FX.poolF})/uGridBB.z)+vec2(7.3,3.9));
+        float pf=float(${FX.poolF})/uGridBB.z;
+        float pn=0.65*vnoise2(rel*pf+vec2(7.3,3.9))+0.35*vnoise2(rel*pf*2.7+vec2(51.3,17.9));   // 两八度：单八度值噪声的塘是轴对齐方块
         float pw=smoothstep(0.58,0.68,pn);
         col=mix(col, vec3(${FX.mudC.join(",")}), smoothstep(0.40,0.58,pn)*(1.0-pw)*pg*float(${FX.mudMix}));
         col=mix(col, vec3(${FX.poolC.join(",")}), pw*pg*float(${FX.poolMix}));
@@ -287,28 +310,31 @@ void main(){
     float av=mix(vnoise2(rel*LA.x+vec2(19.9,7.1)), vnoise2(rel*LA.y+vec2(2.3,27.9)), LA.z)-0.5;
     col*=1.0+av*mt.albVar*float(${FX.albAmp})*gate(LA.x);
     float slp=length(nv.xy);    // 缩放无关坡度：陡处露岩（微八度让坡度随放大长细节，岩斑自然斑驳）
-    float rk=smoothstep(0.55,1.6,slp)*mt.rock;
+    float rk=smoothstep(float(${FX.rockSlopeLo}),float(${FX.rockSlopeHi}),slp)*mt.rock;
     vec3 rockC=mix(vec3(0.36,0.33,0.30), vec3(0.62,0.60,0.57), clamp(e*1.1,0.0,1.0));
     col=mix(col, rockC, rk*float(${FX.rockMix}));
-    // 雪按米落（uSnowE=material.snowEOf 折算；陡坡挂不住雪打六折）——色阶顶带只剩灰岩，白色归雪
-    float sn=smoothstep(uSnowE,uSnowE+float(${FX.snowBand}),e)*(1.0-0.6*smoothstep(0.9,1.8,slp));
+    // 雪按米落（material.snowSpec 同式：气候档基准 + 球面图随纬度；陡坡挂不住雪打六折）——色阶顶带只剩灰岩，白色归雪
+    float snE=max(0.0, uSnowE+uSnowLat*(snowLatM(abs(ll.y))-uSnowRef)*uSnowUnit);
+    float sn=smoothstep(snE,snE+float(${FX.snowBand}),e)*(1.0-0.6*smoothstep(float(${FX.snowSlopeLo}),float(${FX.snowSlopeHi}),slp));
     col=mix(col, vec3(0.93,0.94,0.965), sn);
+    col=mix(col, vec3(${FX.airC.join(",")}), smoothstep(float(${FX.airLo}),float(${FX.airHi}),e)*float(${FX.airMix}));   // 空气透视
     col*=sh*shT*(1.0-cav);
   } else {
     // 近岸浅水带：随缩放渐隐（px/° 区间见 FX.shoreLo/Hi）——整幅视角下固定高程区间摊成贴纸大光环
-    float shore=smoothstep(-0.10,-0.02,e)*smoothstep(float(${FX.shoreLo}),float(${FX.shoreHi}),uPXPD);
+    float shore=smoothstep(ws-0.10,ws-0.02,e)*smoothstep(float(${FX.shoreLo}),float(${FX.shoreHi}),uPXPD*uGridBB.z);
     col=mix(col, vec3(0.55,0.72,0.75), shore*float(${FX.shoreMix}));
     vec3 LW=lodF(float(${FX.wavePx}));  // 静态波纹（横向拉伸；无动画，尊重空闲降频）
     float wv=mix(ridged(vnoise2(vec2(rel.x*0.35,rel.y)*LW.x+vec2(3.1,9.7))),
                  ridged(vnoise2(vec2(rel.x*0.35,rel.y)*LW.y+vec2(21.3,1.1))), LW.z);
     col*=1.0+(wv-0.5)*float(${FX.waveAmp})*gate(LW.x);
   }
+  }
+  // 岸线（只给观感底图；推演底图的水陆界就是格边，按高程描线会与格边错位）。fwidth 在分支外取＝一致控制流
   float aa=fwidth(e)+1e-6;
-  float ad=fwidth(es)+1e-7;
-  float coast=1.0-smoothstep(0.0, aa*1.4, abs(e+0.02));
-  col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55);
+  float coast=1.0-smoothstep(0.0, aa*1.4, abs(e-ws+0.02));
+  col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55*(1.0-float(uMode)));
   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
-  if(uContour==1 && es>=-0.02 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
+  if(uContour==1 && es>=ws-0.02 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
     // 等高线画在制图面 es（晕渲是画，等高线是尺）。细曲线=当前档整倍+半档奇数倍×uCFade 淡入；计曲线=每第 4 条。
     // 挤线抑制（真图规范）：线距不足数像素的陡坎处细曲线隐去；计曲线按自身 4× 线距评估而幸存。
     float eh=es+0.02;
@@ -372,6 +398,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   let ftex: WebGLTexture | null = null;   // 高程场+遮蔽纹理（TEXTURE1；侵蚀细分后维度 ≠ 粗格）
   let g: Grid | null = null;
   let lastField: ElevField | undefined;   // 存最近高程场：上下文丢失恢复时重传
+  let lastWS: Float32Array = new Float32Array(0);
   const U = (n: string) => gl.getUniformLocation(pr!, n);
 
   /* 建程序 + 设常量 uniform（创建时 + webglcontextrestored 后重跑）。 */
@@ -383,7 +410,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform1i(U("uField"), 1);
     const light = [-0.6, -0.6, 0.9], ll = Math.hypot(...light);
     gl.uniform3f(U("uLight"), light[0] / ll, light[1] / ll, light[2] / ll);
-    const comps = allComposites();   // 25 个复合，顺序与 compositeIndex 对齐（旧 8 类落在各自复合上、色/tint 逐位复现）
+    const comps = allComposites();   // 30 个复合，顺序与 compositeIndex 对齐（旧 8 类落在各自复合上、色/tint 逐位复现）
     gl.uniform3fv(U("uTColor[0]"), comps.flatMap(cc => hexV(terrainProps(cc).color)));
     gl.uniform3fv(U("uTint[0]"), comps.flatMap(cc => { const t = terrainProps(cc).tint; return t ? [t[0], t[1], t[2]] : [-1, -1, -1]; }));
     const mats = materialTable();    // 渲染材质（同序；render/material.ts 真源，CPU 兜底同表）
@@ -402,15 +429,16 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     if (!texWarned) { texWarned = true; console.warn(`细分场 ${f.cols}×${f.rows} 超出本机纹理上限 ${maxTex}，退回粗格高程（地形仍可用，少的是侵蚀细节）`); }
     return false;
   };
-  function doUpload(grid: Grid, fieldIn?: ElevField) {
+  function doUpload(grid: Grid, wsurf: Float32Array, fieldIn?: ElevField) {
     if (!pr) return;
     const field = fieldFits(fieldIn) ? fieldIn : undefined;
     if (tex) gl.deleteTexture(tex);
     if (ftex) gl.deleteTexture(ftex);
-    /* 类型粗格纹理：G=复合索引 lf*5+eco（R 弃用恒 0——高程自此一律走场纹理） */
+    /* 类型粗格纹理：R=水面高程（core/elev.waterSurface）G=复合索引 lf*5+eco */
     const data = new Float32Array(grid.cols * grid.rows * 2);
     for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++) {
-      const i = (r * grid.cols + c) * 2;
+      const k = r * grid.cols + c, i = k * 2;
+      data[i] = wsurf[k];
       data[i + 1] = compositeIndex(grid.cells[r][c]);
     }
     tex = gl.createTexture();
@@ -440,6 +468,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform2i(U("uGridDim"), grid.cols, grid.rows);
     gl.uniform2i(U("uFDim"), fc, fr);
     gl.uniform1f(U("uFStep"), field ? field.step : grid.step);
+    gl.uniform1f(U("uEroded"), field && field.shadow ? 1 : 0);
     gl.uniform2f(U("uGridSpan"), grid.bb.lonMax - grid.bb.lonMin, grid.bb.latMax - grid.bb.latMin);
   }
 
@@ -449,13 +478,13 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
      preventDefault 才有 restored；恢复后 program/纹理全失效，重建并重传网格——
      下一帧 rAF 自动出图，外壳零改动。缺此则地形永久空白（审计）。 */
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; ftex = null; if (initProgram() && g) doUpload(g, lastField); };
+  const onRestored = () => { tex = null; ftex = null; if (initProgram() && g) doUpload(g, lastWS, lastField); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
   return {
     canvas, kind: "webgl2",
-    uploadGrid(grid: Grid, field?: ElevField) { g = grid; lastField = field; doUpload(grid, field); },
+    uploadGrid(grid: Grid, wsurf: Float32Array, field?: ElevField) { g = grid; lastWS = wsurf; lastField = field; doUpload(grid, wsurf, field); },
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
       if (!g || !pr) return;
       gl.viewport(0, 0, canvas.width, canvas.height);
@@ -463,13 +492,18 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.uniform2f(U("uRes"), canvas.width, canvas.height);
       gl.uniform1f(U("uPXPD"), canvas.width / (viewBB.lonMax - viewBB.lonMin));
       gl.uniform1f(U("uPXPDY"), canvas.height / (viewBB.latMax - viewBB.latMin));
-      gl.uniform1i(U("uMode"), opts.diag ? 1 : 0);
+      gl.uniform1i(U("uMode"), opts.flat ? 1 : 0);
       gl.uniform1i(U("uContour"), opts.contour ? 1 : 0);
       gl.uniform1f(U("uCMinor"), opts.cMinor || 0.12);
       gl.uniform1f(U("uCFade"), opts.cFade || 0);
       gl.uniform1i(U("uWrap"), opts.wrap ? 1 : 0);
       gl.uniform1i(U("uPaper"), opts.paper ? 1 : 0);
-      gl.uniform1f(U("uSnowE"), opts.snowE ?? 1e9);
+      const S = opts.snow;
+      gl.uniform1f(U("uSnowE"), S ? S.base : 1e9);
+      gl.uniform1f(U("uSnowLat"), S && S.lat ? 1 : 0);
+      gl.uniform1f(U("uSnowRef"), S ? S.refM : 0);
+      gl.uniform1f(U("uSnowUnit"), S ? 1 / S.unitM : 0);
+      gl.uniform1f(U("uGain"), opts.gain ?? 1);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },
     maxDim() {

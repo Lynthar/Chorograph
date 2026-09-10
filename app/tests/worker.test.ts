@@ -13,7 +13,8 @@ import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
 import { ERODE_VER, erodeField, erodeGate, erodeInput, erodeKey, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
 import { fbm } from "../src/core/noise.ts";
-import { reliefNoise, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
+import { baseElev, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
+import { makeRelief, mountainness, RELIEF_M } from "../src/core/relief.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
 /* 全平原世界：语义可手推 */
@@ -415,14 +416,26 @@ describe("侵蚀真形（core/erode）", () => {
   /* 4×4 粗格试验场：西一列水域＝侵蚀基准面，往东平原→丘陵→山地（数值取自 LANDFORM 表） */
   const mk = (hovGrid?: Float32Array): ErodeInput => {
     const cols = 4, rows = 4;
-    const elevCol = [-0.35, 0.16, 0.5, 0.9], reliefCol = [0, 0.05, 0.14, 0.30];
-    const elev0 = new Float32Array(rows * cols), relief0 = new Float32Array(rows * cols), water = new Uint8Array(rows * cols);
+    const elevCol = [-0.35, 0.16, 0.5, 0.9];   // 山地度自基面高程来（core/relief），不再另给起伏幅列
+    const elev0 = new Float32Array(rows * cols), water = new Uint8Array(rows * cols);
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      elev0[r * cols + c] = elevCol[c]; relief0[r * cols + c] = reliefCol[c]; water[r * cols + c] = c === 0 ? 1 : 0;
+      elev0[r * cols + c] = elevCol[c]; water[r * cols + c] = c === 0 ? 1 : 0;
     }
     return { bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 1, cols, rows,
-      elev0, relief0, water, amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: hovGrid || new Float32Array(rows * cols),
-      cap: 400_000, axisMax: 8, acrit: 300, bandS: 1 };
+      elev0, water, amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: hovGrid || new Float32Array(rows * cols),
+      cap: 400_000, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000 };
+  };
+  /* 均质试验场：整幅同一基面高程——山地度自它来，故 0.9=山地档、0.16=平原档 */
+  const ELEV_MTN = 0.9, ELEV_PLN = 0.16;
+  const flatAt = (e: number): ErodeInput => {
+    const cols = 6, rows = 6, n2 = cols * rows;
+    return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
+      elev0: new Float32Array(n2).fill(e), water: new Uint8Array(n2), amp: 0.7, seed: 1234,
+      kmx: 96, kmy: 111, hovGrid: new Float32Array(n2), cap: 400_000, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000 };
+  };
+  const span = (f: { data: Float32Array }): number => {
+    const a = Float32Array.from(f.data).sort();
+    return a[Math.floor(a.length * 0.95)] - a[Math.floor(a.length * 0.05)];
   };
   it("确定性：同输入两跑逐位同输出（Worker 与主线程回退必须可互换）", () => {
     const a = erodeField(mk()), b = erodeField(mk());
@@ -493,10 +506,14 @@ describe("侵蚀真形（core/erode）", () => {
   });
   it("侵蚀真的发生：山地起伏面上至少有细格被下切（相对未侵蚀基座）", () => {
     const inp = mk(), f = erodeField(inp), sx = f.cols / 4;
+    /* 神谕＝erodeField 的基座公式（基面 + 起伏），只是不跑侵蚀：山地列右半是双线性纯区，
+       基面恒 0.9、山地度＝amp×mountainness(0.9)＝0.7 */
+    const rel = makeRelief(inp.seed, f.step * inp.kmy), rU = RELIEF_M / inp.unitM;
+    const m = inp.amp * mountainness(0.9);
     let carved = 0;
-    for (let r = 0; r < f.rows; r++) for (let c = Math.ceil(3.5 * sx); c < f.cols; c++) {   // 山地列右半＝双线性纯区
+    for (let r = 0; r < f.rows; r++) for (let c = Math.ceil(3.5 * sx); c < f.cols; c++) {
       const lon = 100 + (c + 0.5) * f.step, lat = 30 + (r + 0.5) * f.step;
-      const base = 0.9 + 0.30 * 0.7 * 2 * reliefNoise(lon, lat, 1234);
+      const base = 0.9 + rel(lon * inp.kmy, lat * inp.kmy, m) * rU;
       if (f.data[r * f.cols + c] < base - 0.01) carved++;
     }
     assert.ok(carved > 0, "山地列须有真实下切");
@@ -521,31 +538,13 @@ describe("侵蚀真形（core/erode）", () => {
       if (((i % f.cols) / sx | 0) === 0) assert.strictEqual(f.shadow![i], 0, "水域无遮蔽");
     }
   });
-  it("山系结构随系数渐入：山地档的起伏跨度远大于平原档、平原不吃结构带（批6）", () => {
-    const flat = (relief: number): ErodeInput => {
-      const cols = 6, rows = 6, n2 = cols * rows;
-      return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
-        elev0: new Float32Array(n2).fill(0.5), relief0: new Float32Array(n2).fill(relief),
-        water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2),
-        cap: 400_000, axisMax: 8, acrit: 300, bandS: 1 };
-    };
-    const span = (f: { data: Float32Array }): number => {
-      const a = Float32Array.from(f.data).sort();
-      return a[Math.floor(a.length * 0.95)] - a[Math.floor(a.length * 0.05)];
-    };
-    const mtn = span(erodeField(flat(0.30))), pln = span(erodeField(flat(0.05)));
-    assert.ok(mtn > pln * 3, `山地跨度须数倍于平原（结构+起伏 vs 纯低幅噪声）：${mtn} vs ${pln}`);
+  it("山系结构随基面高程渐入（2026-09-02 起山地度由高程给）：山地档的起伏跨度远大于平原档", () => {
+    const mtn = span(erodeField(flatAt(ELEV_MTN))), pln = span(erodeField(flatAt(ELEV_PLN)));
+    assert.ok(mtn > pln * 3, `山地跨度须数倍于平原：${mtn} vs ${pln}`);
   });
-  it("平原静场（批7）：36/度 高频档与表面细节的系数渐入带下限——纯平原逐格糙度近零，山地照旧带糙", () => {
-    /* 正比例渐入曾给平原留 15~29% 细带幅＝±1~3m 摊在百米波长上就是 3~8° 坡，坡度型光照满地显影
-       （「几米的高度差也都显示出来」，河洛/井陉实证）；坡度键不受带下限影响＝沟壁雕崖照旧嶙峋 */
-    const flat = (relief: number): ErodeInput => {
-      const cols = 6, rows = 6, n2 = cols * rows;
-      return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
-        elev0: new Float32Array(n2).fill(0.5), relief0: new Float32Array(n2).fill(relief),
-        water: new Uint8Array(n2), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2),
-        cap: 400_000, axisMax: 8, acrit: 300, bandS: 1 };
-    };
+  it("平原静场：纯平原逐格糙度近零，山地照旧带糙（起伏与细节都随山地度）", () => {
+    /* 平原若留下 ±1~3m 的细带，摊在百米波长上就是 3~8° 坡，坡度型光照照章显影＝
+       「几米的高度差也都显示出来」（用户实证）。山地度由基面高程给之后，平原恒 0＝场自己就是静的。 */
     const rough = (f: { data: Float32Array; cols: number; rows: number }): number => {
       const a: number[] = [];
       for (let r = 2; r < f.rows - 2; r++) for (let c = 2; c < f.cols - 2; c++) {
@@ -555,9 +554,9 @@ describe("侵蚀真形（core/erode）", () => {
       a.sort((x, y) => x - y);
       return a[Math.floor(a.length * 0.95)];
     };
-    const pln = rough(erodeField(flat(0.05))), mtn = rough(erodeField(flat(0.30)));
-    assert.ok(pln < 0.002, `平原逐格糙度须近零（带下限后实测 0.00099）：${pln}`);
-    assert.ok(mtn > pln * 3, `山地细节不吃带下限（实测约 7×）：${mtn} vs ${pln}`);
+    const pln = rough(erodeField(flatAt(ELEV_PLN))), mtn = rough(erodeField(flatAt(ELEV_MTN)));
+    assert.ok(pln < 0.002, `平原逐格糙度须近零：${pln}`);
+    assert.ok(mtn > pln * 3, `山地细节不吃平原带限：${mtn} vs ${pln}`);
   });
   it("rowFbm：与 core/noise.fbm 逐位同值（顺行滑动/跳档/换行/回退全形态）", () => {
     /* 提速批的行滑动 fbm 是 erode 基座/细节噪声的实际取值路径——与真源 fbm 的位级等价是
@@ -568,6 +567,33 @@ describe("侵蚀真形（core/erode）", () => {
       assert.strictEqual(rf(x, y), fbm(x, y), `(${x},${y})`);
     }
   });
+  /* 多重网格（2026-09-07）：粗级只在够大的网格上跑（任一轴 ≥24 粗格），4×4 夹具走不到——另立
+     48×48 的山地台地（平原底、西一列水域），工作档 cap 让细分取 6×（288²）、粗级 72² */
+  const mesa = (cap = 100_000, axisMax = 8): ErodeInput => {
+    const cols = 48, rows = 48, n2 = cols * rows;
+    const elev0 = new Float32Array(n2).fill(0.16), water = new Uint8Array(n2);
+    for (let r = 8; r < 40; r++) for (let c = 8; c < 40; c++) elev0[r * cols + c] = 0.9;
+    for (let r = 0; r < rows; r++) { water[r * cols] = 1; elev0[r * cols] = -0.35; }
+    return { bb: { lonMin: 100, lonMax: 100.48, latMin: 30, latMax: 30.48 }, step: 0.01, cols, rows,
+      elev0, water, amp: 0.7, seed: 4321, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2), cap, axisMax, acrit: 300, bandS: 1, unitM: 2000 };
+  };
+  it("多重网格（2026-09-07）：粗级参与的大网格同输入逐位同输出；水域格不被切割", () => {
+    const inp = mesa(), a = erodeField(inp), b = erodeField(inp);
+    assert.strictEqual(a.cols, 48 * 6, "细分 6×＝粗级 72 格一轴，确已过 COARSE_MIN");
+    assert.deepStrictEqual(a.data, b.data);
+    for (let r = 0; r < a.rows; r++) assert.ok(a.data[r * a.cols] <= -0.06 + 1e-6, `水格 (${r},0) 应在水面天花之下`);
+  });
+  it("多重网格：换档不换谷网——工作档与精修档按粗格块平均后高度相关（精修只是解析得更清楚）", () => {
+    const w = mesa(), u = ultraInput(w, 300_000)!;
+    assert.ok(u && u.bandS > 1, "精修档倍率须高于工作档");
+    const fa = erodeField(w), fb = erodeField(u);
+    const avg = (f: ElevField): Float64Array => { const s = f.cols / 48, o = new Float64Array(48 * 48); for (let r = 0; r < f.rows; r++) for (let c = 0; c < f.cols; c++) o[((r / s) | 0) * 48 + ((c / s) | 0)] += f.data[r * f.cols + c] / (s * s); return o; };
+    const P = avg(fa), Q = avg(fb);
+    let mp = 0, mq = 0; for (let i = 0; i < P.length; i++) { mp += P[i]; mq += Q[i]; } mp /= P.length; mq /= Q.length;
+    let cov = 0, vp = 0, vq = 0; for (let i = 0; i < P.length; i++) { cov += (P[i] - mp) * (Q[i] - mq); vp += (P[i] - mp) ** 2; vq += (Q[i] - mq) ** 2; }
+    const rho = cov / Math.sqrt(vp * vq);
+    assert.ok(rho > 0.97, `粗格块平均相关 ${rho.toFixed(4)}`);
+  });
   it("erodeKey：同输入同键、键带算法代前缀；任一分量（单个格值/种子/幅度/bb/量纲）变即换键", () => {
     /* 键是场缓存（data/fieldcache）的全部正确性来源：漏进键的分量变了而键没变＝按键取回
        一整幅错误地形。逐分量各变一处，键必须跟着变。 */
@@ -576,7 +602,7 @@ describe("侵蚀真形（core/erode）", () => {
     assert.ok(k0.startsWith(ERODE_VER + "-"), "键前缀＝算法代号（换代清场的判据）");
     const vary: [string, (i: ErodeInput) => void][] = [
       ["elev0 单格", i => { i.elev0[7] += 0.001; }],
-      ["relief0 单格", i => { i.relief0[3] = 0.99; }],
+      ["unitM", i => { i.unitM = 1000; }],
       ["water 单格", i => { i.water[5] = 1 - i.water[5]; }],
       ["hovGrid 单格", i => { i.hovGrid[2] = 0.25; }],
       ["seed", i => { i.seed = 4321; }],
@@ -611,12 +637,25 @@ describe("侵蚀真形（core/erode）", () => {
     assert.ok(Math.abs(sum - 0.3) < 1e-6, "只落这一格");
     const inp2 = erodeInput({ terrain: "plain", relief: 0.5 }, undefined, grid, 3100);
     assert.ok(inp2 && inp2.hovGrid.every(v => v === 0), "relief>0 无涂改＝零栅格照样侵蚀");
-    assert.strictEqual(inp2!.cap, 600_000, "战略图预算（2026-08-13 尺度定形批 40万→60万,随公里锚定的更细网格）");
+    assert.strictEqual(inp2!.cap, 2_400_000, "战略图预算（2026-09-02：区域图吃到轴上限，大陆级图归静置精修）");
     assert.strictEqual(inp2!.axisMax, 8, "工作档轴上限 8");
     assert.strictEqual(inp2!.acrit, 300, "工作档河道阈值＝旧常量逐位");
     const tacGrid = { ...grid, step: 0.01 };
     const inp3 = erodeInput({ terrain: "plain", relief: 0.5, mapKind: "tactical" }, undefined, tacGrid, 3100);
-    assert.strictEqual(inp3!.cap, 1_400_000, "战术图＝140 万预算（分档随 mapKind）");
+    assert.strictEqual(inp3!.cap, 1_500_000, "战术图＝150 万预算（分档随 mapKind；缺省 60 km 战场 600²×4 恰在其内）");
+    assert.strictEqual(upscaleOf(600, 600, inp3!.cap, 8), 2, "缺省 60 km 战场工作档拿到 2×（2026-09-02：140 万时恰差 2.8% 落到 1×）");
+  });
+  it("erodeInput（2026-09-02）：基准面掩码只认地貌 water——沿海/沼泽是陆地；elev0＝连续基底；unitM 入键", () => {
+    const { grid } = mkGrid(plainWorld({ terrainOverrides: [{ lon: 100.2, lat: 30.7, t: "coast" }, { lon: 101.7, lat: 30.7, t: "plain/marsh" }, { lon: 103.2, lat: 30.7, t: "water" }] }));
+    const meta = { terrain: "plain" as const, relief: 0.5 };
+    const inp = erodeInput(meta, undefined, grid, 3100)!;
+    const at = (lon: number, lat: number) => Math.floor((lat - grid.bb.latMin) / grid.step) * grid.cols + Math.floor((lon - grid.bb.lonMin) / grid.step);
+    assert.strictEqual(inp.water[at(100.2, 30.7)], 0, "沿海不是基准面（要起伏也要被侵蚀）");
+    assert.strictEqual(inp.water[at(101.7, 30.7)], 0, "沼泽不是基准面");
+    assert.strictEqual(inp.water[at(103.2, 30.7)], 1, "水域是基准面");
+    assert.deepStrictEqual(inp.elev0, baseElev(meta, grid), "基础高程＝连续基底（含模糊）");
+    assert.strictEqual(inp.unitM, 2000);
+    assert.notStrictEqual(erodeKey(inp), erodeKey({ ...inp, unitM: 1000 }), "unitM 是内容键的一元");
   });
   it("erodeGate 与 erodeInput 逐位同判（2026-08-13 延迟组装批:门在 rebuild 同拍、数组在结算拍,判据不许漂）", () => {
     const { grid } = mkGrid(plainWorld());
@@ -791,6 +830,19 @@ describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
     assert.strictEqual(out.data[19 * 20 + 19], fine.data[19 * 20 + 19], "对角亦不动");
     const d = out.data[7 * 20 + 13] - fine.data[7 * 20 + 13];
     assert.ok(d > 0 && d < 0.6, "邻格羽化介于 (0, dh)：" + d);
+  });
+  it("带格表钳制：内陆湖按本次粗格场的床面压，不按类型表（湖不在笔刷等待窗里沉回海平面）", () => {
+    /* 类型表只有一个 −0.35：拿它当水域天花，会让 320 m 的内陆湖在每次落笔时被按到海平面下、
+       侵蚀落地又弹回来（同「一按全图变、松开又变回」之病）。天花须取本次粗格场的该格值。 */
+    const geom = { bb: { lonMin: 0, lonMax: 2, latMin: 0, latMax: 1 }, step: 1, cols: 2, rows: 1 };
+    const cells = [["plain", "water"]];
+    const base = Float32Array.of(0.16, 0.13);                    // 湖床＝水面 0.16 下切 SHORE_E
+    const now = Float32Array.of(0.60, 0.13);                     // 笔在 c0 抬了地；湖床不动
+    const fine: ElevField = { bb: geom.bb, step: 0.5, cols: 4, rows: 2, data: new Float32Array(8), shadow: null };
+    for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++) fine.data[r * 4 + c] = c < 2 ? 0.16 : 0.13;
+    const out = fieldPlusDelta(fine, base, now, geom, cells);
+    assert.ok(out.data[2] > -0.02, "湖格不被按到海平面以下（旧式取类型表 −0.35 之病）：" + out.data[2]);
+    assert.ok(Math.abs(out.data[2] - 0.13) < 1e-6, "湖格压回本次粗格场的床面：" + out.data[2]);
   });
   it("带格表钳制：大负增量不穿海平面、涂水压进水面、零增量与合法低地原位不动（笔刷闪水之修）", () => {
     /* 渲染端陆/水配色纯按显示高程判（terrainGL e>=-0.02）：涂平原盖掉雕山＝增量 −2 级，

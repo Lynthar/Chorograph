@@ -3,7 +3,7 @@
    · fatal：旧版导入门槛拒绝的（无 meta/nodes 非数组）+ 会让 normalize/渲染直接崩的（数组成员不是对象）；
    · warning：normalizeWorld 会补齐/改写的、以及悬空引用等数据质量问题——照常打开，仅提示写手。
    注意分级红线：凡旧版能打开的档，这里绝不能报 fatal（"旧档无损打开"是 验收）。 */
-import { CERTAINTY, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_KIND, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
+import { CERTAINTY, CLIMATE, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_KIND, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
 
@@ -63,6 +63,8 @@ export function validateWorld(w: unknown): ValidateResult {
   /* —— meta —— */
   if (meta.worldModel != null && meta.worldModel !== "sphere" && meta.worldModel !== "flat")
     W("meta.worldModel", `未知世界模型 ${JSON.stringify(meta.worldModel)}（按球面处理）`);
+  if (meta.climate != null && !tget(CLIMATE, meta.climate as string))
+    W("meta.climate", `未知气候档 ${JSON.stringify(meta.climate)}（按未设定处理：出厂雪线、不随纬度）`);
   if (meta.bbox != null) {
     const b = meta.bbox as Record<string, unknown>;
     if (!isObj(b) || !isNum(b.lonMin) || !isNum(b.lonMax) || !isNum(b.latMin) || !isNum(b.latMax)

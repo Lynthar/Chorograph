@@ -3,7 +3,8 @@
    node:test 够不着的整链回归：启动到图库 → 「从内置示例新建」建图并打开（create→IDB→
    网格→首帧）→ 顶栏出图名；再走一遍只读分享整链（#ro=1&d= 开图→写入门全关→
    「存入我的图库」接管成可编辑）——那些门全在 .tsx 里，node:test 持不到；全程零未捕获异常、零 console.error、#err 空。
-   不是视觉回归（不比像素）；先 npm run build 再跑。浏览器可用 E2E_BROWSER 指定。 */
+   另锁一条渲染契约：推演底图（#base=flat）下像素颜色＝底栏读数那一格（GL 与 CPU 兜底各走一遍）——
+   不是视觉回归（不比截图），只按格采样。先 npm run build 再跑。浏览器可用 E2E_BROWSER 指定。 */
 import { createServer } from "node:http";
 import { readFileSync, existsSync, mkdtempSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -11,6 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { embedShareHtml, packShare, shareHash } from "../src/core/share.ts";
+import { allComposites, terrainProps } from "../src/core/constants.ts";
 
 const DIST = path.resolve(import.meta.dirname, "../dist");
 const MIME = { ".html": "text/html; charset=utf-8", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml", ".js": "text/javascript", ".json": "application/json" };
@@ -80,7 +82,7 @@ const att = await send("Target.attachToTarget", { targetId: targets[0].targetId,
 sessionId = att.sessionId;
 await send("Runtime.enable"); await send("Page.enable"); await send("Log.enable");
 
-const evalJs = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true })).result.value;
+const evalJs = async (expr) => (await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true })).result.value;
 const until = async (label, expr) => {
   while (Date.now() < DEADLINE) {
     if (await evalJs(expr)) return;
@@ -95,6 +97,35 @@ await until("启动落到图库", `!!document.querySelector('#home .hm-actions')
 await evalJs(`document.querySelector('#home .hm-actions button[title^="以内置示例"]').click()`);
 await until("示例图建成并打开（顶栏出图名）", `(t => t && t !== '—')(document.getElementById('crumbName')?.textContent)`);
 await until("画布有尺寸", `(c => c && c.width > 0 && c.height > 0)(document.getElementById('map'))`);
+/* —— 推演底图逐格一致：像素颜色＝底栏读数那一格。撒点合成 pointermove 读 #ftCoord 的地貌名，
+   同一帧 drawImage(#map) 取像素（帧循环的 rAF 先于本帧注册，故先重画后取样），与 terrainProps.color 比。
+   观感底图有意把地类边界揉开最多约一格半，推演底图是把这条差异收回零的那一档——GL 与 CPU 兜底各验一遍。 —— */
+const mapName = await evalJs(`document.getElementById('crumbName').textContent`);
+const nameColor = new Map(allComposites().map(c => { const p = terrainProps(c); return [p.名, p.color]; }));
+const hexRGB = (h) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const FLAT_SAMPLE = `(async () => {
+  const cv = document.getElementById('map'), r = cv.getBoundingClientRect(), sx = cv.width / r.width, sy = cv.height / r.height, pts = [];
+  for (let y = 40; y < r.height - 60; y += 23) for (let x = 30; x < r.width - 30; x += 29) pts.push([x, y]);
+  const names = pts.map(([x, y]) => {
+    cv.dispatchEvent(new PointerEvent('pointermove', { clientX: r.left + x, clientY: r.top + y, bubbles: true, pointerType: 'mouse' }));
+    const segs = document.getElementById('ftCoord').textContent.split('｜').map(s => s.trim()), last = segs[segs.length - 1];
+    return segs.length >= 2 && !/^高程|^经纬度/.test(last) ? last : null;   // 图幅外没有地貌段
+  });
+  return await new Promise(res => requestAnimationFrame(() => {
+    const off = document.createElement('canvas'); off.width = cv.width; off.height = cv.height;
+    const g = off.getContext('2d'); g.drawImage(cv, 0, 0);
+    res(JSON.stringify(pts.map(([x, y], i) => ({ n: names[i], c: Array.from(g.getImageData(Math.round(x * sx), Math.round(y * sy), 1, 1).data.slice(0, 3)) }))));
+  }));
+})()`;
+for (const [label, extra] of [["GL", ""], ["CPU 兜底", "&force=cpu"]]) {
+  await send("Page.navigate", { url: `${origin}/?b=${Math.random().toString(36).slice(2)}#map=${encodeURIComponent(mapName)}&base=flat${extra}` });
+  await until(`推演底图（${label}）开图`, `document.getElementById('crumbName')?.textContent === ${JSON.stringify(mapName)} && (c => c && c.width > 0)(document.getElementById('map'))`);
+  await new Promise(r => setTimeout(r, 800));   // 首帧落地
+  const rows = JSON.parse(await evalJs(FLAT_SAMPLE)).filter(r => r.n && nameColor.has(r.n));
+  const bad = rows.filter(r => { const e = hexRGB(nameColor.get(r.n)); return Math.max(...e.map((v, i) => Math.abs(v - r.c[i]))) > 2; });
+  if (rows.length < 100) errors.push(`推演底图（${label}）图内采样点不足 ${rows.length}，走查没覆盖到画布`);
+  if (bad.length) errors.push(`推演底图（${label}）${bad.length}/${rows.length} 个采样点的颜色不是读数那一格的（如 ${bad[0].n} 期望 ${nameColor.get(bad[0].n)} 实得 rgb(${bad[0].c})）`);
+}
 /* —— 只读分享整链：链接自带整张图 → 写入门全关 → 接管成可编辑 —— */
 const SHARED = JSON.stringify({
   meta: { 名称: "只读分享测", worldModel: "sphere", planetRadiusKm: 10000, kmPerDeg: 111,
@@ -133,5 +164,5 @@ if (!await evalJs(`/只读/.test(document.getElementById('ftData')?.textContent 
 const err = await evalJs(`document.getElementById('err')?.textContent || ''`);
 if (err) errors.push("#err 非空：" + err);
 if (errors.length) { console.error("✗ e2e 冒烟失败：\n  " + errors.join("\n  ")); process.exit(1); }
-console.log("✓ e2e 冒烟：启动→图库→示例建图→开图渲染、只读链接→写入门→接管、导出的只读网页能开，零错误");
+console.log("✓ e2e 冒烟：启动→图库→示例建图→开图渲染、推演底图逐格一致（GL/CPU）、只读链接→写入门→接管、导出的只读网页能开，零错误");
 process.exit(0);

@@ -16,6 +16,7 @@ import type { CalTemplate } from "../data/calstore.ts";
 import type { GeoMapping, GeoScan } from "../core/geojson.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
+import type { TerrainStyle } from "../render/renderer.ts";
 import type { Arm, Decor, Edge, Faction, Meta, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 
@@ -28,6 +29,10 @@ export const yearSig = signal(3107);
 export const hoverSig = signal<WorldNode | null>(null);
 export const layersSig = signal<Record<string, boolean>>(
   Object.fromEntries(LAYERS.filter(l => IMPL_LAYERS.includes(l.id)).map(l => [l.id, l.on])));
+/** 底图样式（会话态，同图层不入存档；深链 #base= 可直开）：shaded＝观感底图、flat＝推演底图（逐格平色，
+    像素颜色＝光标读数与寻路读到的那一格；配等高线与公里网用）。语义见 render/renderer.TerrainStyle。 */
+export const terrainStyleSig = signal<TerrainStyle>("shaded");
+export function setTerrainStyle(s: TerrainStyle): void { terrainStyleSig.value = s; }
 
 /* —— 选中：地点按 id（稳健）、连线按下标（删除后由清空兜底）、框选=地点/部队/布景 id 列表、部队/布景按 id —— */
 export type Sel = { kind: "node"; id: string } | { kind: "edge"; idx: number }
@@ -475,10 +480,12 @@ export function pickLinkType(tp: Edge["type"]): void {
 }
 
 /* —— 界面偏好：主题（亮·素笺默认/暗·漆）×密度（浏览·松/兵棋·紧）两轴 + 出图图例开关
-   + 出图清晰度（像素密度倍数 1–4，取景不变）。本机 localStorage 持久化、不入存档；
+   + 出图清晰度（像素密度倍数 1–4，取景不变）+ 地形立体感（晕渲夸张倍率 RELIEF_STEPS，乘在
+   material.shadeGain 之上；屏幕与出图同用）。本机 localStorage 持久化、不入存档；
    boot 读写存储并把 data-theme/data-den 落到 #app。 —— */
-export interface UiPrefs { theme: "light" | "dark"; den: "loose" | "tight"; legend: boolean; exportScale: number }
-export const uiPrefsSig = signal<UiPrefs>({ theme: "light", den: "loose", legend: true, exportScale: 1 });
+export const RELIEF_STEPS = [0.5, 1, 1.5, 2] as const;
+export interface UiPrefs { theme: "light" | "dark"; den: "loose" | "tight"; legend: boolean; exportScale: number; relief: number }
+export const uiPrefsSig = signal<UiPrefs>({ theme: "light", den: "loose", legend: true, exportScale: 1, relief: 1 });
 export function setUiPrefs(p: Partial<UiPrefs>): void { uiPrefsSig.value = { ...uiPrefsSig.peek(), ...p }; }
 
 /* —— toast：一次提交＝一步撤销的确认回执。错误一律朱、撤销键金（时间倒回语义）；

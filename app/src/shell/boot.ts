@@ -11,7 +11,7 @@ import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
   modeSig, armSig, routePtsSig, routeResSig, routeBusySig, setMode,
   editSubSig, editVerSig, isTacSig, linkTypeSig, tacReqSig,
   paintFactionSig, flyReqSig, helpOpenSig, openSettings, selectOp,
-  analysisSubSig, uiPrefsSig, subDaySig, readOnlySig, libActionsSig,
+  analysisSubSig, uiPrefsSig, RELIEF_STEPS, subDaySig, readOnlySig, libActionsSig, terrainStyleSig,
   selNode, selEdge, selUnit, selFaction,
   type EditSub }
   from "../ui/state.ts";
@@ -35,7 +35,8 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   try {
     const ui = JSON.parse(localStorage.getItem("yutu2.ui") || "{}") || {};
     uiPrefsSig.value = { theme: ui.theme === "dark" ? "dark" : "light", den: ui.den === "tight" ? "tight" : "loose", legend: ui.legend !== false,
-      exportScale: [2, 3, 4].includes(ui.exportScale) ? ui.exportScale : 1 };
+      exportScale: [2, 3, 4].includes(ui.exportScale) ? ui.exportScale : 1,
+      relief: (RELIEF_STEPS as readonly number[]).includes(ui.relief) ? ui.relief : 1 };
   } catch (e) {}
   initCalTemplates();   // 本机历法模板（建图时的模具，见 data/calstore 头注）；读不到就是没有，不拦启动
   effect(() => {
@@ -47,7 +48,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     if (tc) tc.setAttribute("content", p.theme === "dark" ? "#1b1815" : "#f7f4ec");
     try {
       const cur = JSON.parse(localStorage.getItem("yutu2.ui") || "{}") || {};
-      localStorage.setItem("yutu2.ui", JSON.stringify({ ...cur, theme: p.theme, den: p.den, legend: p.legend, exportScale: p.exportScale }));
+      localStorage.setItem("yutu2.ui", JSON.stringify({ ...cur, theme: p.theme, den: p.den, legend: p.legend, exportScale: p.exportScale, relief: p.relief }));
     } catch (e) {}
   });
   resize();
@@ -63,6 +64,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   else if (dl.wantOvl === "settings") openSettings("app");
   else if (dl.wantOvl === "create") openSettings("create");
   if (dl.wantDrawer === "layers") layersOpenSig.value = true;   // 截图/演示：直开抽屉「层」面
+  if (dl.wantBase) terrainStyleSig.value = dl.wantBase;          // #base=flat：直开推演底图
   if (dl.wantGrain === "hour" && isTacSig.peek()) subDaySig.value = true;    // #grain=hour：战术图直开「时」粒度（时轨展开）
   if (dl.wantGrain === "month" && !isTacSig.peek()) subDaySig.value = true;  // #grain=month：战略图直开「月」粒度
   if (dl.wantSel && worldSig.value) {

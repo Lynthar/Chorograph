@@ -4,12 +4,14 @@
 export type WorldModel = "sphere" | "flat";
 export type TerrainMode = "auto" | "plain" | "island" | "sample";
 export type GenStyle = "continent" | "archipelago";
+/** 气候档（meta.climate）：只定雪线基准（constants.CLIMATE），缺键＝出厂雪线且不随纬度 */
+export type Climate = "polar" | "boreal" | "temperate" | "subtropical" | "tropical" | "arid";
 export type TerrainId =
   | "plain" | "coast" | "hill" | "forest"
   | "desert" | "marsh" | "mountain" | "water";
 /* 两轴地形（重构 A）：地貌 × 生态。grid.cells / terrainOverrides.t 存复合串
    "地貌" 或 "地貌/生态"（生态=none 时省略）。旧 8 元 TerrainId 是兼容子集，迁移/派生见 constants.ts。 */
-export type Landform = "plain" | "coast" | "hill" | "mountain" | "water";
+export type Landform = "plain" | "coast" | "hill" | "mountain" | "alpine" | "water";
 export type Ecotype = "none" | "forest" | "grassland" | "marsh" | "desert";
 /** 复合地形串（如 "plain" / "hill/forest" / "plain/marsh"）；旧 TerrainId 亦为合法复合串 */
 export type Composite = string;
@@ -50,6 +52,8 @@ export interface Meta {
   genStyle?: GenStyle;
   vault?: string;
   mapKind?: "tactical";
+  outside?: "land";           // 图幅外是陆地：碰到图幅边的水体也按内陆湖定水面，图幅外铺纸色（缺键=海）
+  climate?: Climate;          // 气候档：雪线基准，球面图再随纬度在图幅内变化（缺键=出厂 2050 m 不随纬度，旧图观感不变）
   calendar?: CalendarCfg;     // 战术图历法（默认 12 月 × 30 日）
   parent?: TacParent;
   battleYear?: number;        // 战术图对应的战役年份

@@ -12,11 +12,14 @@ import { blankWorld, clampWorldBBox, WORLD_KM_PER_DEG, WORLD_RADIUS_KM, type Bla
 import { blankTacticalWorld, TAC_DIA_KM, type BlankTacSpec } from "../core/tactical.ts";
 import { calOf, parseYearForm } from "../core/calendar.ts";
 import { DEFAULT_BBOX } from "../core/types.ts";
-import type { CalendarCfg, GenStyle, Meta, TerrainMode, WorldModel } from "../core/types.ts";
+import type { CalendarCfg, Climate, GenStyle, Meta, TerrainMode, WorldModel } from "../core/types.ts";
+import { CLIMATE, CLIMATE_ORDER } from "../core/constants.ts";
+import { SNOW_M } from "../render/material.ts";
+import { tget } from "../core/util.ts";
 import { gridStepDeg } from "../core/grid.ts";
 import { kmPerDeg, flatKmPerDeg } from "../core/geo.ts";
 import { brushRadiusCells, brushActualKm, fmtBrushKm, BRUSH_NOTCHES } from "../core/brush.ts";
-import { calOverlaySig, calTemplatesSig, closeSettings, isTacSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, uiPrefsSig, worldSig, readOnlySig, type SettingsMode } from "./state.ts";
+import { calOverlaySig, calTemplatesSig, closeSettings, isTacSig, libActionsSig, mutateWorld, settingsSig, setUiPrefs, showToast, RELIEF_STEPS, uiPrefsSig, worldSig, readOnlySig, type SettingsMode } from "./state.ts";
 import { pickCalendarCfg } from "../data/calstore.ts";
 import { fmtBytes, requestPersist, storageState, type StorageState } from "../data/persist.ts";
 import { useModalFocus } from "./modal.ts";
@@ -130,6 +133,9 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
   const flatKmDefault = +(2 * Math.PI * (+d.radius || 10000) / 360).toFixed(2);
   const kmdegPre = d.kmdeg || String(flatKmDefault);
 
+  const inland = !!(base && base.outside === "land");
+  /* 气候档当前值：create 取预填、app 取本图；档外/缺键一律空串＝「未设定」（旧图观感不变） */
+  const climSrc = create ? base : m, climCur = climSrc && tget(CLIMATE, climSrc.climate as string) ? (climSrc.climate as string) : "";
   const q = <T extends HTMLElement>(sel: string) => box.current!.querySelector<T>(sel)!;
   /* readSettings 只在 create 模式调用（app 模式的尺度行是只读文本,q() 会因行不渲染而崩——
      旧「display:none 僵尸输入」的续命法随冻结一起退役） */
@@ -169,6 +175,8 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
     /* 地势起伏：0=无（不落盘）；两模式都有选择器 */
     const relEl = box.current!.querySelector<HTMLSelectElement>("#sw_relief");
     if (relEl) spec.relief = parseFloat(relEl.value) || 0;
+    const climEl = box.current!.querySelector<HTMLSelectElement>("#sw_climate");
+    if (climEl && tget(CLIMATE, climEl.value)) spec.climate = climEl.value as Climate;   // 「未设定」不落盘
     /* 历法（仅 create 模式有选择器）：全默认（custom·SE·12×30）不落盘，保持旧档形状 */
     const kindEl = box.current!.querySelector<HTMLSelectElement>("#sw_calkind");
     if (kindEl) {
@@ -201,6 +209,10 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       if (vault) mm.vault = vault; else delete mm.vault;
       const relEl = box.current!.querySelector<HTMLSelectElement>("#sw_relief");
       if (relEl) { const r = parseFloat(relEl.value) || 0; if (r > 0) mm.relief = r; else delete mm.relief; }   // 地势起伏（渲染层，可随时改）
+      const outEl = box.current!.querySelector<HTMLInputElement>("[name=sw_out]:checked");
+      if (outEl) { if (outEl.value === "land") mm.outside = "land"; else delete mm.outside; }   // 图幅外（缺键=海）
+      const climEl = box.current!.querySelector<HTMLSelectElement>("#sw_climate");
+      if (climEl) { if (tget(CLIMATE, climEl.value)) mm.climate = climEl.value as Climate; else delete mm.climate; }   // 气候档（缺键=出厂雪线）
       /* 纪元前缀（custom 既有图可改，纯显示层；kind/月长锁定不动）。默认 SE 不落盘 */
       const eraEl = box.current!.querySelector<HTMLInputElement>("#sw_era_app");
       if (eraEl) {
@@ -324,6 +336,15 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
           ))}
         </div>
       </div>
+      <div class="setrow"><label>地形立体感</label>
+        <div class="seg">
+          {RELIEF_STEPS.map(n => (
+            <button type="button" class={"tbtn" + (uiP.relief === n ? " on" : "")} aria-pressed={uiP.relief === n}
+              title={`晕渲明暗按此倍率加强（×1＝战术图放大 16 倍、战略图 96 倍的坡度夸张；屏幕与出图同用，不入存档）`}
+              onClick={() => setUiPrefs({ relief: n })}>{n === 1 ? "×1 默认" : `×${n}`}</button>
+          ))}
+        </div>
+      </div>
     </>
   );
   /* 只读（分享/演示）：世界参数与一切写入动作整块让位，只留界面偏好 + 导出/出图/转发分享 */
@@ -431,6 +452,22 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         </select>
         <span class="sub">山有高低、等高线成形；编辑→地形→⛰高程 可再手工雕琢。随时可改，不动数据。</span>
       </div>
+      <div class="setrow"><label>气候</label>
+        {/* 初值同样落在 option 的 selected 上（见 sw_relief 注）；档外/缺键一律「未设定」＝旧图逐位不变 */}
+        <select id="sw_climate">
+          <option value="" selected={!climCur}>未设定（雪线 {SNOW_M} m，不随纬度）</option>
+          {CLIMATE_ORDER.map(k => <option key={k} value={k} selected={climCur === k}>{CLIMATE[k].名}（雪线约 {CLIMATE[k].snowM} m）</option>)}
+        </select>
+        <span class="sub">定雪线基准：球面图再随纬度在图幅内变化（高纬低、低纬高），平面图不随纬度。只动观感，随时可改。</span>
+      </div>
+      {!create && (
+        /* 图幅外（app 模式改；随时可改，只动观感）：判据同时供水面高程与图幅外底色两处用 */
+        <div class="setrow"><label>图幅外</label>
+          <label><input type="radio" name="sw_out" value="sea" defaultChecked={!inland} /> 海</label>
+          <label><input type="radio" name="sw_out" value="land" defaultChecked={inland} /> 陆地</label>
+          <span class="sub">内陆图选「陆地」：碰到图幅边的水体也按内陆湖定水面（不再沉到海平面），图幅外铺纸色而非深海。</span>
+        </div>
+      )}
       {/* 网格密度不是设置项（2026-08-12 作者裁定强制自动;2026-08-13 起创建时按 core/grid.autoGridN
           解算并**盖章进 meta.gridN**＝图的身份）——「格边随图幅走」是算出来的,不是选出来的。 */}
       {create && (

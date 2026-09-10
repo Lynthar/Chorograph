@@ -5,9 +5,9 @@ import assert from "node:assert/strict";
 import { calOf, fmtDayTime, fmtMD, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearForm, fromT, monthLabel, monthsOf, parseYMD, parseYearForm, tacT, yearMonthOf, yearMonthT, yearSpanT, ymdOverflow } from "../src/core/calendar.ts";
 import { distKm, haversine, kmPerDeg, kmPerDegLat, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
-import { genTerrainAt, seedTerrain } from "../src/core/terrain.ts";
+import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
-import { buildElevField, contourStepFor, elevBilinear, elevSmooth, elevUnitM, heightStepM } from "../src/core/elev.ts";
+import { BASE_SLOPE_DEG, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterSurface } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, type Grid } from "../src/core/grid.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
 import { ELEV } from "../src/core/constants.ts";
@@ -24,8 +24,9 @@ import { eachPaintCenter, paintCellSet, paintDims, paintStep, resamplePaintRuns,
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
-import { FX, MICRO_F0, decoGate, materialFor, materialTable, octaveGate, snowEOf } from "../src/render/material.ts";
-import { allComposites } from "../src/core/constants.ts";
+import { ELEV_RAMP, FX, MICRO_F0, NRM0, SNOW_LAT_M, decoGate, exagFor, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, shadeGain, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
+import { terrainOpts } from "../src/render/renderer.ts";
+import { CLIMATE, CLIMATE_ORDER, allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/ui/stamps.ts";
 import type { Meta, World, WorldNode } from "../src/core/types.ts";
 import { validateWorld } from "../src/core/validate.ts";
@@ -217,19 +218,20 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++)
       assert.strictEqual(f[r * g.cols + c], Math.fround(ELEV[flattenTerrain(g.cells[r][c])]));   // cells 存复合、flatten 回旧类查 ELEV；Float32 存储精度
   });
-  it("relief：确定性、同类型格间起伏、水域恒平、陆地不破类型地板", () => {
+  it("relief：确定性、同类型格间起伏、水域恒平（＝基底）、陆地不破基底地板", () => {
     const M = { worldModel: "sphere" as const, terrain: "sample" as const, genSeed: 7, relief: 1,
       bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } };
     const g = buildGridCells(M, [], 3107);
     const f1 = buildElevField(M, undefined, g, 3107), f2 = buildElevField(M, undefined, g, 3107);
     assert.deepStrictEqual([...f1], [...f2], "同种子确定性");
+    const base = baseElev(M, g);
     const mts: number[] = [];
     for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {
       const i = r * g.cols + c;
-      if (g.cells[r][c] === "water") assert.strictEqual(f1[i], Math.fround(ELEV.water), "水域恒平");
-      else {   // 地板随类型收敛：min(0.10, 自身基础)——沿海/沼泽的低地设计不被起伏钳抬。
+      if (g.cells[r][c] === "water") { assert.strictEqual(f1[i], base[i], "水域恒平＝基底（岸边 SHORE_E 起按海床坡变深）"); assert.ok(f1[i] <= Math.fround(SHORE_E)); }
+      else {   // 地板随基底收敛：min(0.10, 自身基底)——沿海/沼泽的低地设计不被起伏钳抬。
         // 场存 Float32：地板同过 fround 再比（fround 单调 ⇒ 数学严格，无需容差；0.06 恰向下舍）
-        assert.ok(f1[i] >= Math.fround(Math.min(0.1, terrainProps(g.cells[r][c]).elev)), "陆地不破类型地板");
+        assert.ok(f1[i] >= Math.fround(Math.min(0.1, base[i])), "陆地不破基底地板");
         if (g.cells[r][c] === "mountain") mts.push(f1[i]);
       }
     }
@@ -261,6 +263,142 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     // 沿海下切 0.5：护栏仍在，钳在自身基础 0.06（而非通用地板 0.10）
     const f2 = buildElevField(MP, [{ lon: 100.5, lat: 30.5, dh: -0.5 }], g, 3107);
     close(at(f2, 100.5, 30.5), ELEV.coast, 6);
+  });
+  it("连续基底 baseElev（2026-09-02）：纯平原全图＝ELEV.plain；同一 Grid 实例按引用记忆", () => {
+    const g = buildGridCells(MP, [], 0), b = baseElev(MP, g);
+    for (const v of b) assert.strictEqual(v, Math.fround(ELEV.plain));
+    assert.strictEqual(baseElev(MP, g), b);
+  });
+  it("连续基底：类型台阶展成山前带——相邻格高差不超山前坡、块心按距离抬升、远处到达类型值", () => {
+    // 22 km 平面战场、100 m 格；中央涂 3 km 见方的山地块（半宽 15 格 < 到全高所需的 55 格＝矮山）
+    const T: Meta = { worldModel: "flat", kmPerDeg: 100, mapKind: "tactical", terrain: "plain",
+      bbox: { lonMin: 0, lonMax: 0.22, latMin: 0, latMax: 0.22 }, gridN: 220 };
+    const ov: { lon: number; lat: number; t: string }[] = [];
+    for (let i = 0; i < 30; i++) for (let j = 0; j < 30; j++) ov.push({ lon: 0.095 + 0.001 * (i + 0.5), lat: 0.095 + 0.001 * (j + 0.5), t: "mountain" });
+    const g = buildGridCells(T, ov, 0), b = baseElev(T, g);
+    assert.strictEqual(g.step, 0.001);
+    const cap = Math.tan(BASE_SLOPE_DEG * Math.PI / 180) * 1000 / 2000 * 0.1;   // 每格（100 m）允许的最大高差
+    let mx = 0;
+    for (let r = 0; r < g.rows; r++) for (let c = 1; c < g.cols; c++) mx = Math.max(mx, Math.abs(b[r * g.cols + c] - b[r * g.cols + c - 1]));
+    assert.ok(mx <= cap + 1e-6, `相邻格高差 ${mx} 不超山前坡每格 ${cap}`);
+    const at = (r: number, c: number) => b[r * g.cols + c];
+    assert.ok(at(110, 110) > ELEV.plain + cap * 8 && at(110, 110) < ELEV.mountain * 0.6,
+      `块心 ${at(110, 110)}：3 km 见方的山地块到不了全高（山前带 ${(0.74 / (cap / 0.1)).toFixed(1)} km ≫ 半宽 1.5 km）`);
+    assert.strictEqual(at(5, 5), Math.fround(ELEV.plain), "远处平原不受影响");
+    /* 无折角之约：包络单独作用时块缘是一道折角（二阶差恰＝每格坡上限 cap），模糊后摊到整个核宽上。
+       这条正是「同心圆蛋糕」外圈的判据——只测折角，平顶归起伏模型治。 */
+    let mxD2 = 0;
+    for (let c = 100; c < 180; c++) mxD2 = Math.max(mxD2, Math.abs(at(110, c - 1) - 2 * at(110, c) + at(110, c + 1)));
+    assert.ok(mxD2 < cap / 3, `块缘折角须被磨开：二阶差峰值 ${mxD2} 应远小于每格坡上限 ${cap}`);
+  });
+  it("连续基底：海床自岸边 SHORE_E 起按海床坡变深、地板 ELEV.water；岸格从 0 起按山前坡抬升", () => {
+    const T: Meta = { worldModel: "flat", kmPerDeg: 100, mapKind: "tactical", terrain: "plain",
+      bbox: { lonMin: 0, lonMax: 0.22, latMin: 0, latMax: 0.22 }, gridN: 220 };
+    const ov: { lon: number; lat: number; t: string }[] = [];
+    for (let i = 0; i < 220; i++) for (let j = 0; j < 140; j++) ov.push({ lon: 0.001 * (i + 0.5), lat: 0.001 * (j + 0.5), t: "water" });   // 南 14 km 是海
+    const g = buildGridCells(T, ov, 0), b = baseElev(T, g);
+    const at = (r: number) => b[r * g.cols + 110];
+    assert.ok(at(139) <= Math.fround(SHORE_E) && at(139) > SHORE_E - 0.01, "岸边水格 ≈ SHORE_E");
+    assert.ok(at(50) < at(120) && at(120) < at(139), "离岸越远越深");
+    const gSea = Math.tan(SEABED_SLOPE_DEG * Math.PI / 180) * 1000 / 2000;
+    close(at(138) - at(139), -gSea * 0.1, 4);
+    close(at(100), SHORE_E - gSea * 4.0, 3);                              // 离岸 4 km：按海床坡算
+    assert.strictEqual(at(0), Math.fround(ELEV.water), "离岸 14 km 到达地板（3° 海床 12.2 km 见底）");
+    const gLand = Math.tan(BASE_SLOPE_DEG * Math.PI / 180) * 1000 / 2000;
+    assert.ok(at(140) <= gLand * 0.1 + 1e-6 && at(140) >= 0, "岸格从 0 起按山前坡抬升（补包络把模糊抬起的岸线压回）");
+    assert.strictEqual(at(219), Math.fround(ELEV.plain), "离岸远的平原＝类型值");
+  });
+  it("连续基底：auto 模式取生成器连续高程（分类不动）——水 ≤ SHORE_E、陆 ≥ 0、地貌带间均值单调", () => {
+    const A: Meta = { worldModel: "flat", kmPerDeg: 111.19, mapKind: "tactical", terrain: "auto", genSeed: 12345, genStyle: "continent",
+      bbox: { lonMin: 113.4302, lonMax: 113.9698, latMin: 37.6302, latMax: 38.1698 }, gridN: 600 };
+    const g = buildGridCells(A, [], 0), b = baseElev(A, g);
+    const sum: Record<string, [number, number]> = {};
+    for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {
+      const lf = terrainProps(g.cells[r][c]).lf, v = b[r * g.cols + c];
+      if (lf === "water") assert.ok(v <= Math.fround(SHORE_E) && v >= Math.fround(ELEV.water), `水格 ${v}`);
+      else assert.ok(v >= 0 && v <= 1.06 + 1e-6, `陆格 ${v}`);
+      const s = sum[lf] ||= [0, 0]; s[0] += v; s[1]++;
+    }
+    const mean = (k: string) => sum[k][0] / sum[k][1];
+    assert.ok(sum.mountain[1] > 1000 && sum.hill[1] > 1000 && sum.plain[1] > 1000, "夹具须三类齐备");
+    assert.ok(mean("plain") < mean("hill") && mean("hill") < mean("mountain"), `带间均值单调：${mean("plain")} ${mean("hill")} ${mean("mountain")}`);
+    assert.ok(mean("mountain") > 0.65 && mean("mountain") < 1.1, `山地带均值落回类型值量级：${mean("mountain")}`);
+  });
+  /* —— 内陆湖水面（2026-09-07）：湖不再沉到海平面，岸边不再塌出一圈沙色光环 —— */
+  const LAKE_T: Meta = { worldModel: "flat", kmPerDeg: 100, mapKind: "tactical", terrain: "plain",
+    bbox: { lonMin: 0, lonMax: 0.22, latMin: 0, latMax: 0.22 }, gridN: 220 };
+  const cellOv = (r: number, c: number, t: string) => ({ lon: 0.001 * (c + 0.5), lat: 0.001 * (r + 0.5), t });
+  it("内陆湖水面：湖面取岸线最低陆地高程、湖床自水面向下、岸格不塌向海平面", () => {
+    const ov = [];
+    for (let r = 100; r <= 119; r++) for (let c = 100; c <= 119; c++) ov.push(cellOv(r, c, "water"));   // 2 km 见方的湖
+    for (let c = 99; c <= 120; c++) { if (c !== 110) ov.push(cellOv(99, c, "hill")); ov.push(cellOv(120, c, "hill")); }
+    for (let r = 100; r <= 119; r++) { ov.push(cellOv(r, 99, "hill")); ov.push(cellOv(r, 120, "hill")); }
+    const g = buildGridCells(LAKE_T, ov, 0), b = baseElev(LAKE_T, g), ws = waterSurface(LAKE_T, g);
+    const at = (f: Float32Array, r: number, c: number) => f[r * g.cols + c];
+    const S = Math.fround(ELEV.plain);
+    assert.strictEqual(at(ws, 110, 110), S, "湖面＝岸线唯一那格平原（其余岸格是丘陵 0.5，取最低者）");
+    assert.ok(at(b, 110, 110) <= S + SHORE_E + 1e-6, "湖床自水面下切 SHORE_E 起");
+    assert.ok(at(b, 110, 110) < at(b, 101, 110), "离岸越远越深");
+    assert.ok(at(b, 110, 110) >= S - 0.35 - 1e-6, "湖床地板＝水面下 0.35");
+    assert.ok(at(b, 99, 110) >= S - 1e-6, `岸格 ${at(b, 99, 110)} 不许塌到海平面（沙色光环之根）`);
+    assert.ok(at(b, 95, 110) > S - 0.02, "湖外几格仍在湖面高度上下（旧式恒被拉向 0）");
+  });
+  it("内陆湖水面：陆格取相邻水体水面、只晕开一格、两湖之间取低的那个；海（连通图幅边）恒 0", () => {
+    const ov = [cellOv(60, 60, "water"), cellOv(60, 62, "water"),
+      cellOv(60, 61, "mountain"), cellOv(59, 62, "mountain"), cellOv(61, 62, "mountain"), cellOv(60, 63, "mountain")];
+    const g = buildGridCells(LAKE_T, ov, 0), ws = waterSurface(LAKE_T, g);
+    const at = (r: number, c: number) => ws[r * g.cols + c];
+    assert.strictEqual(at(60, 60), Math.fround(ELEV.plain), "平原围着的湖");
+    assert.strictEqual(at(60, 62), Math.fround(ELEV.mountain), "山地围着的湖");
+    assert.strictEqual(at(60, 61), Math.fround(ELEV.plain), "夹在两湖之间的陆格取低的那个（取高的会把它淹掉）");
+    assert.strictEqual(at(60, 58), 0, "离水两格＝海平面（晕开只一格）");
+    // 海：南半整片水连通图幅边
+    const sea = [];
+    for (let r = 0; r < 140; r++) for (let c = 0; c < 220; c++) sea.push(cellOv(r, c, "water"));
+    const gs = buildGridCells(LAKE_T, sea, 0), wss = waterSurface(LAKE_T, gs);
+    for (const v of wss) assert.strictEqual(v, 0, "海图逐格水面 0＝旧式判据逐位不变");
+  });
+  it("内陆湖水面：被图幅切开的水体缺省算海，meta.outside=\"land\" 时按湖算（与图幅外底色同一判据）", () => {
+    const ov = [];
+    for (let r = 0; r <= 9; r++) for (let c = 100; c <= 119; c++) ov.push(cellOv(r, c, "water"));   // 咬着南边框
+    const g = buildGridCells(LAKE_T, ov, 0);
+    assert.strictEqual(waterSurface(LAKE_T, g)[5 * g.cols + 110], 0, "缺省：碰到图幅边＝海");
+    assert.ok(baseElev(LAKE_T, g)[5 * g.cols + 110] <= SHORE_E, "海按海床下切");
+    const IN: Meta = { ...LAKE_T, outside: "land" };
+    const g2 = buildGridCells(IN, ov, 0);   // ⚠ 基底按 Grid 实例记忆，换 meta 必须换 Grid
+    const S = Math.fround(ELEV.plain);
+    assert.strictEqual(waterSurface(IN, g2)[5 * g2.cols + 110], S, "声明图幅外是陆地＝同一片水按内陆湖定面");
+    assert.ok(baseElev(IN, g2)[5 * g2.cols + 110] <= S + SHORE_E + 1e-6);
+    assert.strictEqual(paperOf(IN), true, "图幅外铺纸色与水面判据同源");
+    assert.strictEqual(paperOf({ mapKind: "tactical" }), true, "战术图恒铺纸色（旧行为）");
+    assert.strictEqual(paperOf({}), false, "战略图缺省仍是深海");
+  });
+  it("分层设色 ELEV_RAMP（2026-09-07 CMP-2）：滩带 <180 m、绿到 800 m、褐到 2500 m、3600 m 近白；GL 与 CPU 同一张表", () => {
+    const m = (meters: number) => rampColor(meters / 2000);   // 出厂标定 1 单位＝2000 m
+    assert.deepStrictEqual(m(100), [214, 205, 168], "滩带恒色");
+    for (const h of [200, 400, 600, 750]) { const [r, g] = m(h); assert.ok(g > r, `${h} m 仍是绿主导（绿转褐曾早在 600 m）：${m(h)}`); }
+    { const [r, g] = m(900); assert.ok(r > g, `900 m 起转黄褐：${m(900)}`); }
+    for (const h of [1600, 2000, 2400]) { const [r, , b] = m(h); assert.ok(r - b > 40, `${h} m 仍是褐、不是灰（褐转灰曾早在 1640 m）：${m(h)}`); }
+    assert.ok(Math.min(...m(3600)) >= 235 && Math.min(...m(5000)) >= 235, "3600 m 起近白顶满（原 3200 m 只到 206 灰）");
+    let prev = -1;
+    for (let h = 2500; h <= 4000; h += 50) { const l = m(h).reduce((a, b) => a + b); assert.ok(l >= prev, `2500 m 以上亮度单调不减（${h} m）`); prev = l; }
+    for (let i = 1; i < ELEV_RAMP.length; i++) assert.ok(ELEV_RAMP[i][0] >= ELEV_RAMP[i - 1][0], "档位按高程升序（同高程＝台阶）");
+    const g = rampGLSL();
+    const segs = ELEV_RAMP.filter((s, i) => i > 0 && s[0] !== ELEV_RAMP[i - 1][0]).length;
+    assert.strictEqual((g.match(/mix\(/g) || []).length, segs, "GLSL 段数＝非退化档对数（同高程台阶不成段）");
+    assert.ok(!/NaN|Infinity|undefined/.test(g) && g.includes("e<1.800000"), "GLSL 与表同一份数字");
+  });
+  it("elevFromGenH：分段线性、各地貌带端点与类型值对齐、海面侧 ≤ SHORE_E", () => {
+    const M = { genStyle: "continent" as const }, sea = genSeaLevel(M);
+    close(elevFromGenH(sea, M), 0, 12);
+    close(elevFromGenH(sea + GEN_COAST_BAND, M), 0.06, 12);
+    close(elevFromGenH(GEN_HILL, M), 0.26, 12);
+    close(elevFromGenH(GEN_MOUNTAIN, M), 0.74, 12);
+    close(elevFromGenH(1, M), 1.06, 12);
+    assert.ok(elevFromGenH(sea - 1e-9, M) <= SHORE_E && elevFromGenH(sea - 1e-9, M) > SHORE_E - 1e-6);
+    assert.strictEqual(elevFromGenH(0, M), -0.35);
+    let prev = -1;
+    for (let h = 0; h <= 1; h += 0.01) { const e = elevFromGenH(h, M); assert.ok(e >= prev); prev = e; }
   });
   it("标定：elevUnitM 缺省 2000；contourStepFor＝×2 阶梯、contourM 下限、跨档连续、随缩小单调", () => {
     assert.strictEqual(elevUnitM({}), 2000);
@@ -467,6 +605,17 @@ describe("程序化地形", () => {
     assert.ok(diff > 20, `差异格数 ${diff} 应 > 20`);
   });
   it("plain 模式恒为平原", () => assert.strictEqual(seedTerrain({ terrain: "plain" }, 100, 30), "plain"));
+  it("genHeightAt 与 genTerrainAt 同一份 h（2026-09-02）：按 h 推的地貌轴与分类器逐点一致", () => {
+    for (const style of ["continent", "archipelago"] as const) {
+      const meta: Meta = { terrain: "auto", genSeed: 77, genStyle: style, bbox: { lonMin: 100, lonMax: 110, latMin: 30, latMax: 40 } };
+      for (let i = 0; i < 400; i++) {
+        const lon = 100 + (i * 7919 % 1000) / 100, lat = 30 + (i * 104729 % 1000) / 100;
+        assert.strictEqual(genLandformOf(genHeightAt(meta, lon, lat), meta), terrainProps(seedTerrain(meta, lon, lat)).lf);
+      }
+    }
+    assert.strictEqual(genSeaLevel({ genStyle: "archipelago" }), 0.44);
+    assert.strictEqual(genSeaLevel({}), 0.40);
+  });
 });
 
 describe("几何", () => {
@@ -1327,6 +1476,19 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     assert.strictEqual(layerOn(undefined, undefined, "trails"), false, "无 meta＝非战术图");
     assert.strictEqual(layerOn(undefined, undefined, "units"), true, "部队层不再是战术图专属");
   });
+  /* 渲染选项唯一装配点（帧循环 / 出图 / 缩略图三处共用）：底图样式只翻 flat 一位，其余项不因样式而变——
+     推演底图不替等高线做主（等高线仍是独立图层），也不改纸色/雪线/增益的来源。 */
+  it("terrainOpts：推演底图只翻 flat，等高线仍随图层开关，其余项与观感底图逐位相同", () => {
+    const meta = { mapKind: "tactical", elevUnitM: 2000, bbox: { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 } } as Meta;
+    const a = terrainOpts(meta, 0.001, { contour: true }, 1.5, "shaded"), b = terrainOpts(meta, 0.001, { contour: true }, 1.5, "flat");
+    assert.strictEqual(a.flat, false); assert.strictEqual(b.flat, true);
+    assert.deepStrictEqual({ ...a, flat: null }, { ...b, flat: null }, "样式之外的项逐位相同");
+    assert.strictEqual(terrainOpts(meta, 0.001, { contour: false }, 1, "flat").contour, false, "推演底图不强开等高线");
+    assert.strictEqual(a.gain, shadeGain(meta, 0.001) * 1.5, "增益＝shadeGain × 本机地形立体感");
+    assert.strictEqual(a.paper, paperOf(meta)); assert.deepStrictEqual(a.snow, snowSpec(meta));
+    assert.deepStrictEqual([a.cMinor, a.cFade], [contourStepFor(0.001, meta).minor, contourStepFor(0.001, meta).fade]);
+    assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded").wrap, false, "平面世界不环绕");
+  });
   it("pinnedStackH：屏幕角标注堆的占高（出图图例据此让开 se）", () => {
     const T = 3107;
     // 块高=行数×(字号+3)；se 基线 42、条间 8、衬底外扩 3
@@ -1492,6 +1654,8 @@ describe("战术图生成（快照烘焙）", () => {
     assert.deepStrictEqual(w.meta.tacSpan, [3107 * 360, 3108 * 360 - 1]);
     assert.strictEqual(w.meta.名称, "会战·战术");
     assert.deepStrictEqual(w.meta.parent, { map: "m1", mapName: "母图", event: "evHL", eventName: "会战" });
+    assert.strictEqual(w.meta.climate, undefined, "母图没设气候档＝子图也不写");
+    assert.strictEqual(createTacticalWorld({ ...srcWorld(), meta: { ...srcWorld().meta, climate: "arid" } }, ev, 200, {}).meta.climate, "arid", "气候档随图继承");
     /* 平面化三处：worldModel 恒 flat；kmPerDeg＝母图每纬度里程（球面母图按半径换算,原样携带的
        旧 kmPerDeg 111 只对平面母图有意义）；星球半径不携带（平面无半径） */
     assert.strictEqual(w.meta.worldModel, "flat");
@@ -1758,6 +1922,31 @@ describe("渲染材质表", () => {
   it("materialTable 与 allComposites 同序同长（GL uniform 数组按 compositeIndex 对齐）", () => {
     assert.strictEqual(materialTable().length, allComposites().length);
   });
+  it("晕渲夸张（2026-09-02 拍板：战术 8→4 随缩放；格越粗越大）：exagFor 格边档×缩放档；shadeGain 把旧式每度法线换算成 E 倍真实坡度", () => {
+    // 战术 100 m 格：一格 ≥5 px（放大）16 倍，≤0.5 px（整幅）8 倍，之间单调
+    close(exagFor(0.1, 0.005), 16, 9);
+    close(exagFor(0.1, 0.02), 16, 9);
+    close(exagFor(0.1, 0.2), 8, 9);
+    close(exagFor(0.1, 5), 8, 9);
+    let prev = Infinity;
+    for (const k of [0.01, 0.02, 0.03, 0.05, 0.08, 0.12, 0.2, 0.5]) { const e = exagFor(0.1, k); assert.ok(e <= prev); prev = e; }
+    // 战略 6.67 km 格：放大 96 倍、整幅 48 倍；全球级 22 km 格封顶 128
+    close(exagFor(20 / 3, 0.5), 96, 9);
+    close(exagFor(20 / 3, 20), 48, 9);
+    assert.strictEqual(exagFor(22, 1), FX.exagMax);
+    assert.ok(exagFor(1, 0.1) > 16 && exagFor(1, 0.1) < 96, "1 km 格落在两锚点之间");
+    // 战术图（111.19 km/°、2000 m/单位、100 m 格）：旧式总增益 2·NRM0·(1+macroW) 每(抽象/度) ＝ 64 倍真实坡度
+    const M: Meta = { worldModel: "flat", kmPerDeg: 111.19, mapKind: "tactical", bbox: { lonMin: 0, lonMax: 0.5396, latMin: 0, latMax: 0.5396 }, gridN: 600 };
+    const oldE = 2 * NRM0 * (1 + FX.macroW) * 111.19 * 1000 / 2000;
+    close(oldE, 64.3, 0);
+    close(shadeGain(M, 0.00005) * oldE, 16, 9);                                  // 5.6 m/px＝细节档
+    close(shadeGain(M, 0.0005) * oldE, exagFor(0.1, 0.0005 * 111.19), 3);       // 55.6 m/px＝过渡档（格边 0.09999 km 非恰 0.1）
+    close(shadeGain(M, 0.05) * oldE, 8, 9);                                      // 5.6 km/px＝整幅之外
+    // 战略图（出厂 10000 km 星球，自动格 6.67 km）：放大 50 km 比例尺档 ≈ 48 倍
+    const S: Meta = { worldModel: "sphere", planetRadiusKm: 10000, bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } };
+    const oldS = 2 * NRM0 * (1 + FX.macroW) * kmPerDegLat(S) * 1000 / 2000;
+    close(shadeGain(S, 0.00275) * oldS, 96, 0);
+  });
   it("八度门控：整幅视角（≈33px/度）恒零＝旧缩放档观感保持；放大单调增到 1", () => {
     assert.strictEqual(octaveGate(33, MICRO_F0), 0, "fit 视角下微八度基频必须为零");
     assert.strictEqual(octaveGate(14, MICRO_F0), 0, "更远视角同理");
@@ -1787,6 +1976,34 @@ describe("渲染材质表", () => {
     const e = snowEOf(undefined);
     assert.ok(e > 0.95 && e < 1.2, "缺省标定下雪线落在 0.95..1.2（仅最高峰）：" + e);
     assert.strictEqual(snowEOf({ elevUnitM: 2000 }), snowEOf(undefined), "显式 2000 与缺省同值");
+  });
+  /* 气候档（2026-09-07）：档给雪线基准，球面图再按地球参考曲线在图幅内随纬度变；缺键/档外/平面图各有明确回落。 */
+  it("气候档与纬度：参考曲线赤道高极地零、20°～90° 单调不增；snowSpec 缺键＝出厂 2050 m 不随纬度、平面图不随纬度、档外键当没设", () => {
+    assert.strictEqual(snowLatM(0), 4800); assert.strictEqual(snowLatM(90), 0); assert.strictEqual(snowLatM(45), 2900);
+    assert.strictEqual(snowLatM(52.5), (2900 + 1200) / 2, "段内线性");
+    for (let a = 20; a < 90; a += 0.5) assert.ok(snowLatM(a + 0.5) <= snowLatM(a), `${a}°→${a + 0.5}° 雪线不该上升`);
+    assert.strictEqual(snowLatM(-10), snowLatM(0), "越界钳首档（调用方传 |纬度|）");
+    assert.strictEqual(snowLatM(120), 0, "越界钳末档");
+    const g = snowLatGLSL();
+    assert.ok(g.startsWith("float snowLatM(float a){"));
+    for (const [a, v] of SNOW_LAT_M) assert.ok(g.includes(a.toFixed(1)) && g.includes(v.toFixed(1)), `GLSL 缺节点 ${a}°/${v} m`);
+    const bb = { lonMin: 6, lonMax: 10, latMin: 40, latMax: 50 };
+    assert.deepStrictEqual(snowSpec(undefined), { base: 2050 / 2000, lat: false, refM: 0, unitM: 2000 }, "缺键＝出厂值，不随纬度");
+    assert.deepStrictEqual(snowSpec({ climate: "temperate", bbox: bb }), { base: 2900 / 2000, lat: true, refM: 2900, unitM: 2000 }, "球面图设档＝随纬度，参考值取图幅中心 45°");
+    assert.strictEqual(snowSpec({ climate: "temperate", bbox: bb, worldModel: "flat" }).lat, false, "平面图的纬度不是气候纬度");
+    assert.strictEqual(snowSpec({ climate: "polar", bbox: bb, elevUnitM: 1000 }).base, 0.3, "档值经 elevUnitM 折算");
+    for (const k of ["__proto__", "toString", "热带", ""]) assert.deepStrictEqual(snowSpec({ climate: k as never, bbox: bb }), snowSpec({ bbox: bb }), `档外键 ${k} 当没设`);
+    for (let i = 1; i < CLIMATE_ORDER.length; i++) assert.ok(CLIMATE[CLIMATE_ORDER[i]].snowM > CLIMATE[CLIMATE_ORDER[i - 1]].snowM, "档序＝雪线升序");
+    assert.strictEqual(snowEOf({ climate: "boreal", bbox: bb }), 1200 / 2000, "snowEOf 是 snowSpec.base 的门面");
+  });
+  it("气候档随图：blankWorld 只在定了才写 meta.climate、战术图自母图继承、校验对档外值只警告不拒", () => {
+    const bb = { lonMin: 100, lonMax: 110, latMin: 30, latMax: 40 };
+    assert.strictEqual(blankWorld({ 名称: "甲", worldModel: "sphere", terrain: "plain", bbox: bb }, "2026-09-07").meta.climate, undefined);
+    assert.strictEqual(blankWorld({ 名称: "甲", worldModel: "sphere", terrain: "plain", bbox: bb, climate: "boreal" }, "2026-09-07").meta.climate, "boreal");
+    const r = validateWorld({ meta: { climate: "乱写" }, nodes: [] });
+    assert.strictEqual(r.ok, true, "档外值不是致命错");
+    assert.ok(r.warnings.some(x => x.path === "meta.climate"), "但要提示写手");
+    assert.ok(!validateWorld({ meta: { climate: "tropical" }, nodes: [] }).warnings.some(x => x.path === "meta.climate"));
   });
 });
 

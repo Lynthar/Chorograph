@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   TERRAIN, TERRAIN_ORDER, TERRAIN_ECO, ELEV, TINT,
   LANDFORM, ECO, LEGACY_TO_COMPOSITE,
-  parseComposite, canonComposite, flattenTerrain, terrainProps, isValidTerrain
+  parseComposite, canonComposite, flattenTerrain, terrainProps, isValidTerrain, allComposites, compositeIndex, ECO_ORDER
 } from "../src/core/constants.ts";
 import type { TerrainId } from "../src/core/types.ts";
 
@@ -77,7 +77,7 @@ describe("两轴地形 · 新组合按 LANDFORM×ECO 计算", () => {
 
 describe("两轴地形 · 表完整性", () => {
   it("每个 Ecotype 与 Landform 都有条目", () => {
-    for (const k of ["plain", "coast", "hill", "mountain", "water"] as const) assert.ok(LANDFORM[k], `LANDFORM.${k}`);
+    for (const k of ["plain", "coast", "hill", "mountain", "alpine", "water"] as const) assert.ok(LANDFORM[k], `LANDFORM.${k}`);
     for (const k of ["none", "forest", "grassland", "marsh", "desert"] as const) assert.ok(ECO[k], `ECO.${k}`);
   });
   it("LEGACY_TO_COMPOSITE 覆盖全部旧 8 类", () => {
@@ -98,5 +98,28 @@ describe("两轴地形 · isValidTerrain 白名单（P5 落盘校验）", () => 
     assert.ok(!isValidTerrain("plain/bogus"));
     assert.ok(!isValidTerrain("forest/plain"));        // forest 不是地貌
     assert.ok(!isValidTerrain("plain/forest/extra"));  // 三段非法
+  });
+});
+
+describe("两轴地形 · 高山档（2026-09-07）", () => {
+  it("alpine 是合法地貌：基面 1.5（3000 m）、陆军代价 5.0，可与生态组合", () => {
+    assert.strictEqual(LANDFORM.alpine.elev, 1.5);
+    assert.strictEqual(LANDFORM.alpine.land, 5.0);
+    assert.ok(isValidTerrain("alpine") && isValidTerrain("alpine/forest"));
+    const p = terrainProps("alpine/forest");
+    assert.strictEqual(p.lf, "alpine");
+    assert.strictEqual(p.名, "高山·森林");
+    assert.strictEqual(p.elev, LANDFORM.alpine.elev + ECO.forest.elevBias);
+  });
+  it("旧 8 类与 ELEV 表不受影响（黄金基准零接触）：TERRAIN_ORDER 仍 8 类、ELEV 无 alpine 键", () => {
+    assert.strictEqual(TERRAIN_ORDER.length, 8);
+    assert.ok(!("alpine" in ELEV));
+  });
+  it("复合索引：高山紧随山地、水域仍在末位；allComposites 30 项与 compositeIndex 对齐", () => {
+    const all = allComposites();
+    assert.strictEqual(all.length, 30);
+    assert.strictEqual(compositeIndex("alpine"), compositeIndex("mountain") + ECO_ORDER.length);
+    assert.strictEqual(all[all.length - ECO_ORDER.length], "water");
+    assert.ok(all.every((c, i) => compositeIndex(c) === i));
   });
 });
