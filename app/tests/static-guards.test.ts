@@ -47,4 +47,7 @@ describe("静态守卫：单一真源", () => {
     assert.deepStrictEqual(hitsOutside(re, ["core/geo.ts"]), [], "cos 地板又被内联了一份——走 lonCos(meta, lat)");
     assert.strictEqual(linesIn("core/geo.ts", re), 1);
   });
+  it("单飞行闸只有 shell/singleflight 一份", () => {
+    assert.deepStrictEqual(hitsOutside(/\b\w*(busy|Busy|eroding)\s*=\s*true\b/, ["shell/singleflight.ts"]), [], "又手写了一份 busy/dirty 闸——走 singleFlight(run, refire)");
+  });
 });

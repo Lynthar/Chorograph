@@ -1,6 +1,6 @@
 /* 视域编排：为当刻在场、带视野圈或直射火力圈的部队，在**落定的**规则场（ui/state.ruleFieldSig）上算
-   视线掩膜，结果进 visMaskSig（部队 id → 圈 → 掩膜；无掩膜的圈画整圆）。形制照抄腿账（orchestrate）：
-   防抖归并 + 单飞行 + dirty 补发 + seq 令牌丢过期结果。规则场演算中（sig 为 null）不发单、沿用上一份，
+   视线掩膜，结果进 visMaskSig（部队 id → 圈 → 掩膜；无掩膜的圈画整圆）。并发形制：防抖归并 + 单飞行闸
+   （shell/singleflight，与腿账同一份）+ seq 令牌丢过期结果。规则场演算中（sig 为 null）不发单、沿用上一份，
    落定换引用即重算；规则场只在换引用时推送 Worker 一次（拖部队的连发不再逐单克隆整幅场）。 */
 import { effect } from "@preact/signals-core";
 import { kmPerDeg, kmPerDegXY } from "../core/geo.ts";
@@ -10,6 +10,7 @@ import { REFRACT_OPTICAL, REFRACT_RADAR, TARGET_M, type UnitMasks, type ViewFiel
 import { VANTAGE_GAIN_M } from "../core/constants.ts";
 import { layerOn } from "../render/overlay.ts";
 import { worldSig, yearSig, editVerSig, layersSig, isTacSig, ruleFieldSig, visMaskSig } from "../ui/state.ts";
+import { singleFlight } from "./singleflight.ts";
 import type { VisReq } from "../worker/routeProto.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Meta, World } from "../core/types.ts";
@@ -53,43 +54,35 @@ export function viewFieldOf(meta: Meta, f: ElevField, grid: Grid): ViewField {
 
 export function wireViewshed(ctx: ShellCtx): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let seq = 0, busy = false, dirty = false, pushed: ElevField | null = null;
-  const fire = (): void => {
+  let seq = 0, pushed: ElevField | null = null;
+  const flight = singleFlight((meta: Meta, f: ElevField, grid: Grid, obs: VisReq[]) => {
+    const my = ++seq;
+    if (pushed !== f) { ctx.routeClient.setViewField(viewFieldOf(meta, f, grid)); pushed = f; }
+    return ctx.routeClient.viewshed(obs).then(res => {
+      if (!res || seq !== my) return;
+      const m = new Map<string, UnitMasks>();
+      for (const r of res) {
+        if (!r.mask) continue;
+        const e = m.get(r.id) || {};
+        e[r.ring] = r.mask;
+        m.set(r.id, e);
+      }
+      visMaskSig.value = m;
+    }, e => console.warn("视域计算失败（保持上一份）：", e));   // 拒绝也要落定——闸自会放闸并补发
+  }, () => fire());
+  function fire(): void {
     const w = worldSig.peek(), f = ruleFieldSig.peek(), meta = w ? w.meta || {} : null;
     if (!w || !meta || !f || !ctx.grid || !isTacSig.peek()) return;
     const obs = visObservers(w, yearSig.peek(), layersSig.peek(), meta);
-    if (!obs.length) return;                                // effect 已同步清过 sig
-    if (busy) { dirty = true; return; }
-    busy = true;
-    const my = ++seq;
-    if (pushed !== f) { ctx.routeClient.setViewField(viewFieldOf(meta, f, ctx.grid)); pushed = f; }
-    const again = (): void => { if (dirty) { dirty = false; fire(); } };
-    ctx.routeClient.viewshed(obs).then(res => {
-      busy = false;
-      if (res && seq === my) {
-        const m = new Map<string, UnitMasks>();
-        for (const r of res) {
-          if (!r.mask) continue;
-          const e = m.get(r.id) || {};
-          e[r.ring] = r.mask;
-          m.set(r.id, e);
-        }
-        visMaskSig.value = m;
-      }
-      again();
-    }, e => {                                               // 拒绝也要放闸并补发（同腿账之规）
-      busy = false;
-      console.warn("视域计算失败（保持上一份）：", e);
-      again();
-    });
-  };
+    if (obs.length) flight.fire(meta, f, ctx.grid, obs);   // effect 已同步清过 sig
+  }
   const dispose = effect(() => {
     const w = worldSig.value, T = yearSig.value, L = layersSig.value, tac = isTacSig.value, f = ruleFieldSig.value;
     editVerSig.value;                                       // 依赖：拖部队/改半径/改高度（经防抖归并）
     clearTimeout(timer);
     const want = !!w && tac && visObservers(w, T, L, w.meta || {}).length > 0;
     if (!want) {
-      seq++; dirty = false;                                 // 令牌作废＝换图/清圈后到货的旧结果不落 sig
+      seq++; flight.clearDirty();                           // 令牌作废＝换图/清圈后到货的旧结果不落 sig，也不为它补发
       if (visMaskSig.peek().size) visMaskSig.value = new Map();
       return;
     }

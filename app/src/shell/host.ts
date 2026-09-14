@@ -6,6 +6,7 @@ import { erodeGate, erodeInput, erodeKey, ultraInput, type ErodeInput } from "..
 import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig } from "../ui/state.ts";
 import { $ } from "./dom.ts";
+import { singleFlight } from "./singleflight.ts";
 import type { ShellCtx } from "./ctx.ts";
 import type { Camera } from "../core/projection.ts";
 import type { BBox, HeightOverride } from "../core/types.ts";
@@ -65,7 +66,7 @@ export function createHost(ctx: ShellCtx): Host {
      196 万格图上每笔 move 白扔 26MB＝GC 风暴;门与显示分支同源之约由 erodeGate 与 erodeInput
      的同一判据担保,worker.test 锁）。结果按输入内容寻址缓存（fireErode 头注：命中免重算），
      几何刚换的重建免防抖立即发单。 */
-  let eroding = false, erodeDirty = false, erodeTimer: ReturnType<typeof setTimeout> | undefined, buildN = 0;
+  let erodeTimer: ReturnType<typeof setTimeout> | undefined, buildN = 0;
   let pendGate = false, pendHovs: HeightOverride[] | undefined, pendYear = 0;   // 门判定与延迟组装的原料（rebuild 同拍记账）
   let pendInp: ErodeInput | null = null, pendCoarse: Float32Array | null = null;   // 侵蚀单（fireErode 结算时才组装）与粗格场
   let pendUInp: ErodeInput | null = null;   // 同一单的精修档形态（数组共享引用，仅换预算三键；战术图才有）
@@ -84,7 +85,7 @@ export function createHost(ctx: ShellCtx): Host {
   const dm = typeof navigator !== "undefined" ? (navigator as { deviceMemory?: number }).deviceMemory : undefined;
   const ULTRA_CAP = (dm ?? 8) >= 8 ? 10_500_000 : 5_250_000;
   const ULTRA_IDLE_MS = 6000;   // 静置这么久才发精修单——单要跑半分钟，窗太短＝零星编辑不断点燃注定作废的后台计算
-  let ultraTimer: ReturnType<typeof setTimeout> | undefined, ultraBusy = false, ultraDirty = false;
+  let ultraTimer: ReturnType<typeof setTimeout> | undefined;
   /* 相位胶囊（ui/state.erodePhaseSig，本模块独写）：只在真演算时亮，缓存命中静默；done 2s 自动归位 */
   let doneTimer: ReturnType<typeof setTimeout> | undefined;
   const setPhase = (p: "idle" | "work" | "ultra" | "done"): void => {
@@ -144,45 +145,39 @@ export function createHost(ctx: ShellCtx): Host {
      改图幅）时的命中落在粗帧上屏后数十毫秒内，直接硬换真形（粗帧至多闪一两帧＝「加载完成」的
      读感）；中途命中（拨年/撤销，粗帧已看了一阵）仍走渐变——fieldMix 的「硬切读感像出错了自己
      纠正」病历只适用于**看久了的画面**被结算的场合。 */
-  function fireErode(): void {
-    if (!ctx.grid || !pendGate) { dropPhase(); return; }   // 门关＝「relief=0 且无涂改」旧粗格路径逐位不变
-    if (eroding) { erodeDirty = true; return; }
-    /* 延迟组装（每 buildN 至多一次）：原料是 rebuild 同拍记下的 grid/hovs/year 快照——任何
-       世界/年份变化都会先走 rebuild 刷新它们,故结算时组装与「rebuild 同拍组装」逐位同单 */
+  /* 工作档单走单飞行闸（飞行中再来只记 dirty，落地后再过一遍 fireErode 的门）。延迟组装放在闸**内**、每 buildN 至多一次：
+     原料是 rebuild 同拍记下的 grid/hovs/year 快照（任何世界/年份变化都先走 rebuild 刷新它们，结算时组装与同拍组装逐位同单）；
+     放到闸外＝飞行期每笔 move 白组装一份 ~26MB 的单。 */
+  const erodeFlight = singleFlight(() => {
+    const grid = ctx.grid!;
     if (!pendInp) {
-      pendInp = erodeInput(ctx.meta, pendHovs, ctx.grid, pendYear);
+      pendInp = erodeInput(ctx.meta, pendHovs, grid, pendYear);
       /* 2026-09-02 起战略图同享精修档，但**预算减半**：大陆级图（105 万粗格）在全额预算下取 3×＝
          950 万细格、单次要跑一两分钟；减半后恰取 2×＝420 万，几秒可得，内存也只要一半。 */
       pendUInp = pendInp ? ultraInput(pendInp, ctx.meta.mapKind === "tactical" ? ULTRA_CAP : ULTRA_CAP / 2) : null;
     }
-    if (!pendInp) { dropPhase(); settleRule(); return; }   // 门与组装理论上同判（erodeGate 锁）；防御留一手
-    eroding = true;
-    const token = buildN, baseC = pendCoarse!, key = geomKey(ctx.grid), inp = pendInp, uinp = pendUInp;
-    const done = (): void => { if (erodeDirty) { erodeDirty = false; fireErode(); } };
+    if (!pendInp) { dropPhase(); settleRule(); return Promise.resolve(); }   // 门与组装理论上同判（erodeGate 锁）；防御留一手
+    const token = buildN, baseC = pendCoarse!, key = geomKey(grid), inp = pendInp, uinp = pendUInp;
     const ck = erodeKey(inp);
-    Promise.all([uinp ? fieldCacheGet(erodeKey(uinp)) : null, fieldCacheGet(ck)]).then(([uhit, hit]) => {
-      if (buildN !== token || !ctx.grid) { eroding = false; done(); return; }   // 其间已重建＝这单作废（新单已在防抖/dirty 里）
+    return Promise.all([uinp ? fieldCacheGet(erodeKey(uinp)) : null, fieldCacheGet(ck)]).then(([uhit, hit]) => {
+      if (buildN !== token || !ctx.grid) return;   // 其间已重建＝这单作废（新单已在防抖/dirty 里）
       if (uhit) landUltra(uhit, false);   // 画面先上最锐形态；规则场仍等工作档
-      if (hit) {
-        eroding = false;
-        landWork(hit, baseC, key, false);
-        done();
-        return;
-      }
+      if (hit) { landWork(hit, baseC, key, false); return; }
       if (!ultra) setPhase("work");   // 精修在屏时工作档的补算是幕后事，胶囊不报
-      ctx.routeClient.erode(inp).then(f => {
-        eroding = false;
+      return ctx.routeClient.erode(inp).then(f => {
         if (f) void fieldCachePut(ck, f);   // 过期结果也入缓存——内容寻址＝对它的输入恒真，撤销/重做正好吃到
         if (f && buildN === token && ctx.grid) landWork(f, baseC, key, true);   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
         else { dropPhase(); if (buildN === token) settleRule(); }   // 算不出＝这一轮就此落定在粗格（读数也读它）；过期＝新单自会落定
-        done();
-      }, e => {   // 拒绝也要放闸（同腿账之规）——卡死 eroding＝本会话侵蚀永哑、胶囊悬在「定形中」
-        eroding = false; dropPhase();
+      }, e => {   // 拒绝也要落定（闸自会放闸并补发）——否则胶囊悬在「定形中」、读数无人落定
+        dropPhase();
         if (buildN === token) settleRule();
         console.warn("侵蚀计算失败（保持粗格）：", e);
-        done();
       });
     });
+  }, () => fireErode());
+  function fireErode(): void {
+    if (!ctx.grid || !pendGate) { dropPhase(); return; }   // 门关＝「relief=0 且无涂改」旧粗格路径逐位不变
+    erodeFlight.fire();
   }
   /** 工作档落地：规则场换真。画面：精修在屏＝不动（同一内容的更锐形态，不许被顶回去），只把规则场
       送进渲染器；否则上工作档——几何刚换的缓存命中硬换，其余渐变。「早到」窗 1s：!work 已把它限定在
@@ -200,37 +195,34 @@ export function createHost(ctx: ShellCtx): Host {
     if (computed && !ultra) setPhase("done");
     if (!ultra) scheduleUltra();   // 精修已在屏（缓存命中）＝无需再排
   }
-  /* —— 静置精修：工作档落定后 ULTRA_IDLE_MS 无新改动才发单；单飞行 + dirty 补发 + buildN 令牌
-     作废过期结果（同工作档并发闸之规）。fireUltra 消费**发单当刻**的 pendUInp——
-     期间若有重建，令牌自会把落地拦下。 —— */
+  /* —— 静置精修：工作档落定后 ULTRA_IDLE_MS 无新改动才发单；单飞行闸 + buildN 令牌作废过期结果。
+     dirty 补发走 scheduleUltra **重新等静置窗**而不是立即发——立即发会在用户刚落笔后烧一单半分钟的精修。
+     fireUltra 消费**发单当刻**的 pendUInp——期间若有重建，令牌自会把落地拦下。 —— */
   const scheduleUltra = (): void => {
     if (!pendUInp) return;
     clearTimeout(ultraTimer);
     ultraTimer = setTimeout(fireUltra, ULTRA_IDLE_MS);
   };
-  function fireUltra(): void {
-    if (!ctx.grid || !pendUInp) return;
-    if (ultraBusy) { ultraDirty = true; return; }
-    ultraBusy = true;
-    const token = buildN, uinp = pendUInp;
+  const ultraFlight = singleFlight(() => {
+    const token = buildN, uinp = pendUInp!;
     const ck = erodeKey(uinp);
-    const done = (): void => { if (ultraDirty) { ultraDirty = false; scheduleUltra(); } };
-    fieldCacheGet(ck).then(hit => {
-      if (buildN !== token || !ctx.grid) { ultraBusy = false; done(); return; }
-      if (hit) { ultraBusy = false; landUltra(hit, false); done(); return; }
+    return fieldCacheGet(ck).then(hit => {
+      if (buildN !== token || !ctx.grid) return;
+      if (hit) { landUltra(hit, false); return; }
       setPhase("ultra");
-      ctx.routeClient.erodeUltra(uinp).then(f => {
-        ultraBusy = false;
+      return ctx.routeClient.erodeUltra(uinp).then(f => {
         if (f) void fieldCachePut(ck, f);   // 半分钟的功不许白费：过期的精修对它的输入仍恒真（撤销即命中）
         if (f && buildN === token && ctx.grid) landUltra(f, true);
         else dropPhase();   // 过期/车道不可用＝撤胶囊；下个静置窗自会重排
-        done();
-      }, e => {   // 拒绝也要放闸——卡死 ultraBusy＝精修永哑、胶囊悬在「精修中」
-        ultraBusy = false; dropPhase();
+      }, e => {   // 拒绝也要落定（闸自会放闸并重排）——否则胶囊悬在「精修中」
+        dropPhase();
         console.warn("静置精修失败（保持工作档）：", e);
-        done();
       });
     });
+  }, scheduleUltra);
+  function fireUltra(): void {
+    if (!ctx.grid || !pendUInp) return;
+    ultraFlight.fire();
   }
   /** 精修场入屏：恒硬换（见静置精修头注）；只进画面，work/ruleField 不动。computed=真算过（缓存命中静默、不闪「已定形」） */
   function landUltra(f: ElevField, computed: boolean): void {
