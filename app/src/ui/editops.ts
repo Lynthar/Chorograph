@@ -1,19 +1,16 @@
 /* 编辑操作内核（纯函数，node:test 可测）：对世界对象的具体改动。
-   语义对齐旧实现：删地点连带清理其连线与派系 territory 引用；新对象 id 用时间戳 base36；
+   语义对齐旧实现：删地点连带清理其连线与派系 territory 引用；新对象 id 走 core/util.newId；
    数据经度一律折回本初域（平面世界不折）。撤销/广播由调用方经 state.mutateWorld 走管线。 */
 import { wrapLon } from "../core/geo.ts";
-import { parseKV, tget } from "../core/util.ts";
+import { newId, parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
 import { isModern, setUnitPoint, unitKind, unitPos } from "../core/units.ts";
 import { ALL_KINDS, CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
 
-/* 随机后缀同 newUnitId 之规：纯 Date.now 在同一毫秒内创建两个即撞号，而重复 id 会让
-   「选中的」与「点到的」是两个对象、删一个连带清掉另一个的全部连线。 */
-const idSalt = (): string => Math.floor(Math.random() * 1296).toString(36);
-export const newNodeId = (): string => "n" + Date.now().toString(36) + idSalt();
-export const newEventId = (): string => "ev" + Date.now().toString(36) + idSalt();
+export const newNodeId = (): string => newId("n");
+export const newEventId = (): string => newId("ev");
 
 /** 数据经度：球面折回 ±180、平面原样（对应旧 wrapLonData） */
 export const dataLon = (meta: Meta | undefined, lon: number): number =>
@@ -368,9 +365,9 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
    迁移,而尺寸/密度自此创建后冻结（设置弹层不再改 bbox）,那条路不存在了。 */
 
 /* —— 手绘布景（decor[]；对齐旧 placeDecor/decorEraseAt）—— */
-/** 落一枚布景印章（经度折回、四位小数；id 同旧 d+base36+序号%97） */
+/** 落一枚布景印章（经度折回、四位小数） */
 export function addDecor(w: World, lon: number, lat: number, kind: string, size: number): Decor {
-  const d: Decor = { id: "d" + Date.now().toString(36) + ((w.decor || []).length % 97),
+  const d: Decor = { id: newId("d"),
     lon: +dataLon(w.meta, lon).toFixed(4), lat: +lat.toFixed(4), kind, size };
   (w.decor || (w.decor = [])).push(d);
   return d;
@@ -406,7 +403,7 @@ export function removeAsset(w: World, id: string): boolean {
 export const FAC_PALETTE = ["#c9a227", "#3aa675", "#8a5cd0", "#3d7bd0", "#c0392b", "#e07b3a", "#2a9d8f", "#b5651d", "#6d6875", "#457b9d"];
 
 export function addFaction(w: World): Faction {
-  const f: Faction = { id: "f" + Date.now().toString(36) + idSalt(), 名称: "新派系", color: FAC_PALETTE[w.factions.length % FAC_PALETTE.length] };
+  const f: Faction = { id: newId("f"), 名称: "新派系", color: FAC_PALETTE[w.factions.length % FAC_PALETTE.length] };
   w.factions.push(f);
   return f;
 }
@@ -452,7 +449,7 @@ export function setPaintLayerSpan(L: { since?: number | null; until?: number | n
 
 /* —— 兵棋部队（战术图 units[]；对齐旧 addUnitAt/deleteUnit/uf_save）——
    航点坐标只 toFixed(4)、不折回本初域（对齐旧实现：战术图为小范围战场，无环绕）。 */
-export const newUnitId = (): string => "u" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
+export const newUnitId = (): string => newId("u");
 
 /** 新建未入场部队（track 空＝不在图上）：军面板「＋ 新增部队」用——先入列表改名设属性，再从列表拖入地图落首航点 */
 export function addUnitUnplaced(w: World, 名称: string, id = newUnitId()): Unit {

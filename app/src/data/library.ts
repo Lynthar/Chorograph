@@ -8,6 +8,7 @@ import { normalizeWorld, countsOf, type MapCounts } from "../core/world.ts";
 import type { World } from "../core/types.ts";
 import { openDB, reqP, txDone } from "./idb.ts";
 import { staleError, staleWrite } from "./guard.ts";
+import { newId } from "../core/util.ts";
 
 export const LIB_DB = "yutu2";
 
@@ -50,9 +51,7 @@ export interface Library {
   close(): void;
 }
 
-export function newMapId(): string {
-  return "m" + Date.now().toString(36) + Math.floor(Math.random() * 46656).toString(36);
-}
+export function newMapId(): string { return newId("m"); }
 
 /** 只覆盖有值的键（undefined 跳过） */
 function applyDefined<T extends object>(dst: T, patch: Partial<T>): T {

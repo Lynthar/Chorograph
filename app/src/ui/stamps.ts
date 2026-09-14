@@ -2,6 +2,7 @@
    池是便捷层——便携仍靠每图内嵌 world.assets（见 render/decor.ts drawDecor、editops.addAsset）。
    纯逻辑 poolInsert 走 node:test；localStorage/DOM 包装薄壳走截图/CDP 目检。 */
 import { signal } from "@preact/signals";
+import { newId } from "../core/util.ts";
 import type { Asset } from "../core/types.ts";
 
 const KEY = "yutu2.stamps", CAP = 16;
@@ -22,8 +23,7 @@ export function poolAdd(a: Asset): void { const p = poolInsert(readPool(), a); w
 export function poolRemove(id: string): void { const p = readPool().filter(x => x.id !== id); writePool(p); stampPoolSig.value = p; }
 export function poolGet(id: string): Asset | undefined { return stampPoolSig.peek().find(x => x.id === id); }
 
-let seq = 0;
-/** 上传的 File → 降采样 ≤maxPx 长边、WebP-alpha（回退 PNG）→ Asset（生成稳定唯一 id） */
+/** 上传的 File → 降采样 ≤maxPx 长边、WebP-alpha（回退 PNG）→ Asset。id 带随机位：render/decor 的贴图缓存按 id 键，跨存档同 id 会串图 */
 export async function fileToAsset(file: File, maxPx = 256): Promise<Asset> {
   const dataUrl = await new Promise<string>((res, rej) => {
     const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => rej(new Error("读取失败")); r.readAsDataURL(file);
@@ -37,6 +37,5 @@ export async function fileToAsset(file: File, maxPx = 256): Promise<Asset> {
   cv.getContext("2d")!.drawImage(img, 0, 0, w, h);
   let src = cv.toDataURL("image/webp", 0.9);
   if (!src.startsWith("data:image/webp")) src = cv.toDataURL("image/png");   // 不支持 webp 编码时回退
-  const id = "s" + Date.now().toString(36) + (seq++).toString(36);
-  return { id, name: file.name.replace(/\.[^.]+$/, "").slice(0, 40) || "印章", src, w, h };
+  return { id: newId("s"), name: file.name.replace(/\.[^.]+$/, "").slice(0, 40) || "印章", src, w, h };
 }

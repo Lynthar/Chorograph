@@ -12,7 +12,7 @@ import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, ty
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
-import { esc, errText, fmtKm, hexA, parseKV, safeName } from "../src/core/util.ts";
+import { esc, errText, fmtKm, hexA, newId, parseKV, safeName } from "../src/core/util.ts";
 import { ALL_KINDS, ARM_OPT_KINDS, EDGE_STYLE, EYE_M_KIND, FIRE_DIRECT_KIND, LEGACY_KIND, MODERN_KINDS, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
 import { fmtStrength, parseStrength, setUnitPoint, unitFireDirect, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { astar, computeRoute } from "../src/core/route.ts";
@@ -2066,6 +2066,15 @@ describe("自定义印章池 poolInsert", () => {
     const pool = ["a", "b", "c"].map(A);
     assert.deepStrictEqual(poolInsert(pool, A("d"), 3).map(x => x.id), ["d", "a", "b"]);
     assert.deepStrictEqual(pool.map(x => x.id), ["a", "b", "c"], "入参须原样");
+  });
+});
+
+describe("对象 id 工厂 newId（同毫秒靠序号、跨会话靠随机位）", () => {
+  it("同一毫秒内连造两千个也不撞；前缀原样、其余只含 base36 字符", () => {
+    const ids = Array.from({ length: 2000 }, () => newId("n"));
+    assert.strictEqual(new Set(ids).size, ids.length, "同毫秒撞号——序号位失效");
+    for (const id of ids) assert.match(id, /^n[0-9a-z]{10,}$/);
+    assert.match(newId("ev"), /^ev[0-9a-z]+$/, "多字符前缀原样");
   });
 });
 

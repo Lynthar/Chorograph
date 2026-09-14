@@ -5,6 +5,7 @@
    代价如实：换机器/清站点数据即失去模具，但**已建的地图不受影响**（历法在存档里）。
    ⚠ 读写一律容错：本机自由数据，坏了当没有（同 calOf「不合法即当没给」之规）。 */
 import { MAX_HPD, MAX_MPH } from "../core/calendar.ts";
+import { newId } from "../core/util.ts";
 import type { CalendarCfg } from "../core/types.ts";
 
 export interface CalTemplate { id: string; 名称: string; cfg: CalendarCfg }
@@ -65,9 +66,7 @@ export function removeTemplate(list: readonly CalTemplate[], id: string): CalTem
   return list.filter(x => x.id !== id);
 }
 
-export function newTemplateId(): string {
-  return "c" + Date.now().toString(36) + Math.floor(Math.random() * 46656).toString(36);
-}
+export function newTemplateId(): string { return newId("c"); }
 
 /* —— 本机存取（无 localStorage 的环境静默返回空/失败：模具丢了不该拦住用图） —— */
 export function loadTemplates(): CalTemplate[] {

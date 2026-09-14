@@ -39,4 +39,7 @@ describe("静态守卫：单一真源", () => {
     assert.deepStrictEqual(hitsOutside(/bs \/ 2 - bb/, ["core/grid.ts"]), [], "粗块章矩形又被抄了一份——走 stampRect");
     assert.strictEqual(linesIn("core/grid.ts", /bs \/ 2 - bb/), 2, "grid.ts 里粗块矩形应恰两行（c0/c1 与 r0/r1）");
   });
+  it("对象 id 工厂只有 core/util.newId 一份", () => {
+    assert.deepStrictEqual(hitsOutside(/Date\.now\(\)\.toString\(36\)/, ["core/util.ts"]), [], "又出现一个 id 工厂——走 newId(prefix)");
+  });
 });

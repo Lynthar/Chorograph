@@ -17,7 +17,7 @@ import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import { terrainOpts } from "../render/renderer.ts";
-import { safeName, errText } from "../core/util.ts";
+import { safeName, errText, newId } from "../core/util.ts";
 import { exportScaleFit, pngSetDpi } from "../core/png.ts";
 import { SHARED_TAG_ID, embedShareHtml, packShare, shareHash, unpackShare } from "../core/share.ts";
 import { drawLegend } from "../render/legend.ts";
@@ -76,7 +76,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
      只提醒不拦截——图库写入仍是整份覆盖，两边各自保存依旧会互相吃掉改动。 */
   const bc = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("yutu-tabs");
   const tabs = createTabSync(
-    "t" + Date.now().toString(36) + Math.floor(Math.random() * 46656).toString(36),
+    newId("t"),
     m => { if (bc) bc.postMessage(m); },
     t => showToast(t, { err: true })
   );

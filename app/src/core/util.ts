@@ -64,3 +64,11 @@ export function parseKV(text: string | undefined): Record<string, string> {
   });
   return o;
 }
+
+/** 新对象 id：前缀 + 毫秒 base36 + 会话内序号两位 + 随机三位。同毫秒靠序号必不撞，跨会话 / 跨存档靠随机位——
+    纯时间戳同毫秒即撞号，而重复 id 会让「选中的」与「点到的」是两个对象、删一个连带清掉另一个的连线。
+    全仓无人解析 id 的形状，只按整串查找；存档里的旧 id 原样保留。 */
+let idSeq = 0;
+export function newId(prefix: string): string {
+  return prefix + Date.now().toString(36) + (idSeq++ % 1296).toString(36).padStart(2, "0") + Math.floor(Math.random() * 46656).toString(36).padStart(3, "0");
+}
