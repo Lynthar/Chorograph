@@ -13,7 +13,7 @@ import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
 import { ERODE_VER, erodeField, erodeGate, erodeInput, erodeKey, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
 import { fbm } from "../src/core/noise.ts";
-import { baseElev, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
+import { baseElev, buildElevField, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
 import { makeRelief, mountainness, RELIEF_M } from "../src/core/relief.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
@@ -676,6 +676,31 @@ describe("侵蚀真形（core/erode）", () => {
       const i = erodeInput(meta as never, hov as never, grid, 3100);
       assert.strictEqual(g, i !== null, `gate 与 input 判据漂了：${JSON.stringify([meta, hov])}`);
     }
+  });
+  it("四个盖章消费者覆盖同一格集：类型格改动 = 高程场增量非零 = 侵蚀输入 hovGrid 非零（stampRect 单一真源）", () => {
+    const lcg = (s: number) => () => (s = (s * 48271) % 2147483647) / 2147483647;
+    const rnd = lcg(20260914);
+    const { grid } = mkGrid(plainWorld());
+    const { bb, step, cols, rows } = grid;
+    /* 随机章：一半单格（缺 step）、一半粗块（1～4 格边、块心压在格线上），含落在图幅外与贴边的 */
+    const stamps = Array.from({ length: 60 }, () => {
+      const lon = bb.lonMin - 2 + rnd() * (bb.lonMax - bb.lonMin + 4), lat = bb.latMin - 2 + rnd() * (bb.latMax - bb.latMin + 4);
+      return rnd() < 0.5 ? { lon, lat } : { lon: bb.lonMin + Math.round(rnd() * cols) * step, lat, step: step * (1 + Math.floor(rnd() * 4)) };
+    });
+    const sorted = (s: Set<number>): number[] => [...s].sort((a, b) => a - b);
+    const g2 = buildGridCells(META, stamps.map(s => ({ ...s, t: "water" })), 3100);
+    const typeSet = new Set<number>();
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (g2.cells[r][c] !== grid.cells[r][c]) typeSet.add(r * cols + c);
+    const hov = stamps.map(s => ({ ...s, dh: 0.05 }));
+    const base = baseElev(META, grid), f = buildElevField(META, hov, grid, 3100);
+    const elevSet = new Set<number>();
+    for (let i = 0; i < f.length; i++) if (f[i] !== base[i]) elevSet.add(i);
+    const hovGrid = erodeInput(META, hov, grid, 3100)!.hovGrid;
+    const hovSet = new Set<number>();
+    for (let i = 0; i < hovGrid.length; i++) if (hovGrid[i] !== 0) hovSet.add(i);
+    assert.ok(typeSet.size > 20 && typeSet.size < cols * rows / 2, `夹具要有章落进图幅又不铺满：${typeSet.size} 格`);
+    assert.deepStrictEqual(sorted(elevSet), sorted(typeSet), "高程场增量格集 ≠ 类型格改动格集");
+    assert.deepStrictEqual(sorted(hovSet), sorted(typeSet), "侵蚀输入 hovGrid 格集 ≠ 类型格改动格集");
   });
 });
 

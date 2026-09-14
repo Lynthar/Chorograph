@@ -26,3 +26,17 @@ describe("静态守卫：src/ 不得回归 @ts-nocheck / @ts-ignore", () => {
       "以下文件挂了 @ts-nocheck/@ts-ignore 指令（typecheck 对其失明，漏 import 会静默成运行时错误）：\n" + bad.join("\n"));
   });
 });
+
+/* 单一真源守卫：已收成一份的几何 / 工厂 / 闸，第二份一出现即红——注释里的「与 X 同式」拦不住抄，正则拦得住。 */
+describe("静态守卫：单一真源", () => {
+  const files = walk(SRC).map(f => [path.relative(SRC, f).replace(/\\/g, "/"), readFileSync(f, "utf8").split(/\r?\n/)] as const);
+  /** 命中 re 的 文件:行号，only 里的文件不计 */
+  const hitsOutside = (re: RegExp, only: string[]): string[] =>
+    files.flatMap(([f, ls]) => only.includes(f) ? [] : ls.flatMap((l, i) => re.test(l) ? [`${f}:${i + 1}`] : []));
+  const linesIn = (file: string, re: RegExp): number => files.find(([f]) => f === file)![1].filter(l => re.test(l)).length;
+
+  it("涂改章的格矩形只有 core/grid.stampRect 一份", () => {
+    assert.deepStrictEqual(hitsOutside(/bs \/ 2 - bb/, ["core/grid.ts"]), [], "粗块章矩形又被抄了一份——走 stampRect");
+    assert.strictEqual(linesIn("core/grid.ts", /bs \/ 2 - bb/), 2, "grid.ts 里粗块矩形应恰两行（c0/c1 与 r0/r1）");
+  });
+});

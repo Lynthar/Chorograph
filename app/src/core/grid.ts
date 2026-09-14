@@ -105,17 +105,28 @@ export function buildGridCells(meta: Meta | undefined, overrides: TerrainOverrid
   (overrides || []).forEach(o => {
     if (!activeAt(o, yearNow)) return;          // 地形涂改可带时段（山川随时间变化）
     const ot = canonComposite(o.t);             // 归一为 canonical 复合串（旧 id→复合，与 seed 一致；新组合原样）
-    const bs = +(o.step as number) || step;     // 涂改块尺寸：继承的战略图涂改=1°粗块，本图涂的=本图步长
-    if (bs <= step * 1.001) {                   // 常规：单格
-      const c = Math.floor((o.lon - bb.lonMin) / step), r = Math.floor((o.lat - bb.latMin) / step);
-      if (cells[r] && cells[r][c]) cells[r][c] = ot;
-    } else {                                    // 粗块盖章：铺满所覆盖的细格（o.lon/lat=块中心）
-      const c0 = Math.max(0, Math.floor((o.lon - bs / 2 - bb.lonMin) / step)), c1 = Math.min(cols - 1, Math.floor((o.lon + bs / 2 - bb.lonMin - 1e-9) / step));
-      const r0 = Math.max(0, Math.floor((o.lat - bs / 2 - bb.latMin) / step)), r1 = Math.min(rows - 1, Math.floor((o.lat + bs / 2 - bb.latMin - 1e-9) / step));
-      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) cells[r][c] = ot;
-    }
+    const rc = stampRect(o, { bb, step, cols, rows });
+    if (!rc) return;
+    for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) cells[r][c] = ot;
   });
   return { bb, step, cols, rows, cells };
+}
+
+/** 涂改章覆盖的格矩形（闭区间、已裁进图幅；一格都罩不住＝null）。`step` 缺省＝本图格边＝单格章（点所在格），
+    更粗的是继承自战略图的粗块章（lon/lat＝块心，铺满覆盖格）。类型格 / 高程场 / 侵蚀门 / 侵蚀输入四个消费者
+    必须同一几何，各抄一份就会「门开了却无格可涂」；单格判据 `bs <= step * 1.001` 被黄金里差 1 ULP 的样本锁着，不许动。 */
+export interface StampRect { c0: number; c1: number; r0: number; r1: number }
+export function stampRect(o: { lon: number; lat: number; step?: number }, g: Pick<Grid, "bb" | "step" | "cols" | "rows">): StampRect | null {
+  const { bb, step, cols, rows } = g;
+  const bs = +(o.step as number) || step;
+  if (bs <= step * 1.001) {
+    const c = Math.floor((o.lon - bb.lonMin) / step), r = Math.floor((o.lat - bb.latMin) / step);
+    return r >= 0 && r < rows && c >= 0 && c < cols ? { c0: c, c1: c, r0: r, r1: r } : null;
+  }
+  // 上沿退 1e-9：块边恰压在格线上时不把邻格算进来
+  const c0 = Math.max(0, Math.floor((o.lon - bs / 2 - bb.lonMin) / step)), c1 = Math.min(cols - 1, Math.floor((o.lon + bs / 2 - bb.lonMin - 1e-9) / step));
+  const r0 = Math.max(0, Math.floor((o.lat - bs / 2 - bb.latMin) / step)), r1 = Math.min(rows - 1, Math.floor((o.lat + bs / 2 - bb.latMin - 1e-9) / step));
+  return c1 >= c0 && r1 >= r0 ? { c0, c1, r0, r1 } : null;
 }
 
 /** 官道降低沿途寻路代价：当年生效的道路连线按 40 段插值标记所经格（"r,c"） */

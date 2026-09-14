@@ -10,7 +10,7 @@ import { terrainProps } from "./constants.ts";
 import { GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, genHeightAt, genLandformOf, genSeaLevel } from "./terrain.ts";
 import { makeRelief, mountainness, RELIEF_M } from "./relief.ts";
 import { activeAt } from "./time.ts";
-import type { Grid } from "./grid.ts";
+import { stampRect, type Grid } from "./grid.ts";
 import type { BBox, HeightOverride, Meta } from "./types.ts";
 
 /* 起伏/涂改后的钳制：陆地不跌成海滩之下、水面不浮出海（类型才是真源，观感须与类型自洽）。
@@ -326,15 +326,9 @@ export function buildElevField(meta: Meta | undefined, hov: HeightOverride[] | u
   (hov || []).forEach(o => {
     if (!activeAt(o, yearNow)) return;
     const dh = +o.dh || 0; if (!dh) return;
-    const bs = +(o.step as number) || step;
-    if (bs <= step * 1.001) {                     // 常规：单格
-      const c = Math.floor((o.lon - bb.lonMin) / step), r = Math.floor((o.lat - bb.latMin) / step);
-      if (r >= 0 && r < rows && c >= 0 && c < cols) f[r * cols + c] += dh;
-    } else {                                      // 粗块盖章：铺满所覆盖细格（同 buildGridCells 几何）
-      const c0 = Math.max(0, Math.floor((o.lon - bs / 2 - bb.lonMin) / step)), c1 = Math.min(cols - 1, Math.floor((o.lon + bs / 2 - bb.lonMin - 1e-9) / step));
-      const r0 = Math.max(0, Math.floor((o.lat - bs / 2 - bb.latMin) / step)), r1 = Math.min(rows - 1, Math.floor((o.lat + bs / 2 - bb.latMin - 1e-9) / step));
-      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) f[r * cols + c] += dh;
-    }
+    const rc = stampRect(o, grid);
+    if (!rc) return;
+    for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) f[r * cols + c] += dh;
   });
   if (amp > 0 || (hov && hov.length)) {           // 钳制只在特性生效时跑（全关路径零改动）；参照系＝连续基底
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {

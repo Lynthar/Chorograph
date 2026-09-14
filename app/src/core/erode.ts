@@ -15,7 +15,7 @@ import { gnoise, makeRelief, mountainness, type ReliefSampler, RELIEF_CARVE_K, R
 import { terrainProps } from "./constants.ts";
 import { kmPerDegXY } from "./geo.ts";
 import { activeAt } from "./time.ts";
-import type { Grid } from "./grid.ts";
+import { stampRect, type Grid } from "./grid.ts";
 import type { BBox, HeightOverride, Meta } from "./types.ts";
 
 export interface ErodeInput {
@@ -174,19 +174,10 @@ export function erodeKey(inp: ErodeInput): string {
 export function erodeGate(meta: Meta | undefined, hov: HeightOverride[] | undefined, grid: Grid, yearNow: number): boolean {
   const m = meta || {};
   if (Math.max(0, Math.min(1, +(m.relief as number) || 0)) > 0) return true;
-  const { bb, step, cols, rows } = grid;
   for (const o of hov || []) {
     if (!activeAt(o, yearNow)) continue;
     const dh = +o.dh || 0; if (!dh) continue;
-    const bs = +(o.step as number) || step;
-    if (bs <= step * 1.001) {
-      const c = Math.floor((o.lon - bb.lonMin) / step), r = Math.floor((o.lat - bb.latMin) / step);
-      if (r >= 0 && r < rows && c >= 0 && c < cols) return true;
-    } else {
-      const c0 = Math.max(0, Math.floor((o.lon - bs / 2 - bb.lonMin) / step)), c1 = Math.min(cols - 1, Math.floor((o.lon + bs / 2 - bb.lonMin - 1e-9) / step));
-      const r0 = Math.max(0, Math.floor((o.lat - bs / 2 - bb.latMin) / step)), r1 = Math.min(rows - 1, Math.floor((o.lat + bs / 2 - bb.latMin - 1e-9) / step));
-      if (c1 >= c0 && r1 >= r0) return true;
-    }
+    if (stampRect(o, grid)) return true;
   }
   return false;
 }
@@ -199,21 +190,16 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
   const m = meta || {};
   const amp = Math.max(0, Math.min(1, +(m.relief as number) || 0));
   const { bb, step, cols, rows, cells } = grid;
-  /* 涂改先栅到粗格（几何与 buildElevField 的盖章逐位同规：单格章=点所在格、粗块章=铺满覆盖格） */
+  /* 涂改先栅到粗格（几何走 stampRect，与 buildGridCells / buildElevField 的盖章同一份） */
   const hovGrid = new Float32Array(rows * cols);
   let hasHov = false;
   for (const o of hov || []) {
     if (!activeAt(o, yearNow)) continue;
     const dh = +o.dh || 0; if (!dh) continue;
-    const bs = +(o.step as number) || step;
-    if (bs <= step * 1.001) {
-      const c = Math.floor((o.lon - bb.lonMin) / step), r = Math.floor((o.lat - bb.latMin) / step);
-      if (r >= 0 && r < rows && c >= 0 && c < cols) { hovGrid[r * cols + c] += dh; hasHov = true; }
-    } else {
-      const c0 = Math.max(0, Math.floor((o.lon - bs / 2 - bb.lonMin) / step)), c1 = Math.min(cols - 1, Math.floor((o.lon + bs / 2 - bb.lonMin - 1e-9) / step));
-      const r0 = Math.max(0, Math.floor((o.lat - bs / 2 - bb.latMin) / step)), r1 = Math.min(rows - 1, Math.floor((o.lat + bs / 2 - bb.latMin - 1e-9) / step));
-      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) { hovGrid[r * cols + c] += dh; hasHov = true; }
-    }
+    const rc = stampRect(o, grid);
+    if (!rc) continue;
+    for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) hovGrid[r * cols + c] += dh;
+    hasHov = true;
   }
   if (amp <= 0 && !hasHov) return null;
   const elev0 = baseElev(m, grid), water = new Uint8Array(rows * cols);
