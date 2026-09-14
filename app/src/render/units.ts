@@ -148,6 +148,7 @@ function drawTrail(ctx: CanvasRenderingContext2D, cam: Camera, world: World, u: 
 }
 
 export interface UnitDrawOpts {
+  handleUnit?: string | null;      // 编辑态选中部队 id → 其阵位条画朝向拖动手柄（调用方已并编辑态门）
   trails?: boolean;                 // 行军尾迹层
   labels?: boolean;                 // 地名标签层（部队名·兵力）
   selId?: string | null;           // 选中部队 id（泥金光晕框）
@@ -158,6 +159,15 @@ export interface UnitDrawOpts {
 
 /** 足印够宽才改画阵位条：正面屏宽 ≤ 此值＝维持标准框（旧档与远景逐位不变） */
 export const BAR_MIN_PX = 34;
+/** 朝向手柄离前缘的屏幕距（px）：够远才不压在条上、够近才还看得出属于这个阵位 */
+const FACE_OUT_PX = 14;
+/** 朝向手柄的屏幕位（绘制与拾取同源）：前缘中点沿「条心→前缘」方向外推。foot＝阵位条四角（前左→前右→后右→后左） */
+export function facingHandlePx(foot: [number, number][]): [number, number] {
+  const fx = (foot[0][0] + foot[1][0]) / 2, fy = (foot[0][1] + foot[1][1]) / 2;
+  const cx = (foot[0][0] + foot[2][0]) / 2, cy = (foot[0][1] + foot[2][1]) / 2;
+  const dx = fx - cx, dy = fy - cy, L = Math.hypot(dx, dy) || 1;
+  return [fx + dx / L * FACE_OUT_PX, fy + dy / L * FACE_OUT_PX];
+}
 
 export interface UnitSpot {
   u: Unit; p: UnitPos; x: number; y: number;
@@ -201,7 +211,10 @@ export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
     const selMe = opts.selId === u.id || !!(opts.multiIds && opts.multiIds.includes(u.id));
     if (opts.trails) drawTrail(ctx, cam, world, u, T, p, opts.legs && opts.legs.get(u.id));
     const st = unitStatusAt(u, T);
-    if (foot) drawUnitBar(ctx, foot, world, u, selMe, st, !isModern(meta));
+    if (foot) {
+      drawUnitBar(ctx, foot, world, u, selMe, st, !isModern(meta));
+      if (u.id === opts.handleUnit) drawFacingHandle(ctx, foot, boxColor(world, u));
+    }
     else drawUnitSymbol(ctx, x, y, world, u, selMe, st);
     if (opts.labels) {
       /* 标签仍在图面直立、仍走共用避让场；阵位条态改锚其外接盒的上下缘（条比框大得多，贴框距会压在阵中） */
@@ -255,6 +268,19 @@ function ringPx(cam: Camera, meta: Meta | undefined, lon: number, lat: number, k
   const rx = Math.abs(project(cam, lon + km * dLat / cosn, lat)[0] - cx);
   const ry = Math.abs(cy - project(cam, lon, lat + km * dLat)[1]);
   return [cx, cy, rx, ry];
+}
+
+/** 朝向拖动手柄（编辑态·选中部队）：前缘外一枚小圆 + 一段短柄——**圆区别于半径手柄的方块**，
+    图上一眼看得出哪个是转向、哪个是调半径 */
+function drawFacingHandle(ctx: CanvasRenderingContext2D, foot: [number, number][], col: string): void {
+  const [hx, hy] = facingHandlePx(foot);
+  const fx = (foot[0][0] + foot[1][0]) / 2, fy = (foot[0][1] + foot[1][1]) / 2;
+  ctx.save();
+  ctx.strokeStyle = col; ctx.lineWidth = 1.6; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(hx, hy); ctx.stroke();
+  ctx.beginPath(); ctx.arc(hx, hy, 4, 0, 7);
+  ctx.fillStyle = "#fbf7ea"; ctx.fill(); ctx.stroke();
+  ctx.restore();
 }
 
 /** 圈半径拖动手柄（编辑态·选中对象）：火力圈=右侧小方块、视野圈=左侧 */
@@ -352,7 +378,7 @@ const DASH: Record<RingKind, number[]> = { fire: [5, 4], vision: [2, 3.5], radar
 
 /** 火力/视野/雷达圈：有掩膜的圈按可达区域画——按面积平均的填色（格比像素小时不丢格）+ 覆盖率 0.5 等值线
     描边（裁进名义圆内 2 px：圆周本身不描，它就是虚线圈）；虚线圈＝名义半径。掩膜未到/飞行部队/据点＝整圆淡填。
-    焦点态（选中部队）：可达区域斜纹加粗描边、标签带可达读数；其余部队只留描边。
+    焦点态（选中部队）**只作用于火力圈**：可达区域斜纹加粗描边、标签带可达读数，其余部队的火力圈只留描边；视野与雷达圈恒按无焦点态画（圈大得多，铺纹会盖住地形）。
     部队按当日位置——火力=单值 range（旧多圈回退首条）、视野=vision，两者同机制；据点=nodes[].ranges 多圈照旧。
     标签火力在圈上、视野在圈下、雷达在圈右（相邻不打架）；雷达圈最大故垫最底。
     编辑态选中对象的圈带拖动手柄（火力=圈右、视野=圈左），配合外壳 pickRangeHandle 拖动调半径。 */
@@ -411,12 +437,14 @@ export function drawRanges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Met
     const col = boxColor(world, u), withHandle = u.id === opts.handleUnit, mk = opts.masks && opts.masks.get(u.id);
     const role = focus ? focus.has(u.id) : null, deg = role ? HATCH_DEG[nFocus++ % HATCH_DEG.length] : 0;
     const readout = (m: VisMask | undefined, 名: string): string => role && m ? ` · ${名}${pctOf(m)}` : "";   // 焦点态才带读数
-    if (radar && rk > 0) fillRing(p.lon, p.lat, rk, col, "radar", `雷达 ${rk}km${readout(mk && mk.radar, "视线可达")}`, false, mk && mk.radar, role, deg);
+    /* 焦点只作用于**火力圈**（2026-09-10 用户拍板）：视野与雷达圈恒按无焦点态画。
+       它俩的圈大得多（雷达 30 km），铺上斜纹既盖住地形又与火力圈抢眼——要分辨谁是谁，看火力圈就够。 */
+    if (radar && rk > 0) fillRing(p.lon, p.lat, rk, col, "radar", `雷达 ${rk}km`, false, mk && mk.radar);
     if (fire && fk > 0) {
       const how = unitFireDirect(u) ? "直射 · 视线可达" : `曲射 ${unitArcDeg(u)}° · 弹道可达`;
       fillRing(p.lon, p.lat, fk, col, "fire", `火力 ${fk}km${readout(mk && mk.fire, how)}`, withHandle, mk && mk.fire, role, deg);
     }
-    if (vision && vk > 0) fillRing(p.lon, p.lat, vk, col, "vision", `视野 ${vk}km${readout(mk && mk.vision, "视线可达")}`, withHandle, mk && mk.vision, role, deg);
+    if (vision && vk > 0) fillRing(p.lon, p.lat, vk, col, "vision", `视野 ${vk}km`, withHandle, mk && mk.vision);
   });
   if (fire) world.nodes.forEach(n => {
     if (!(n.ranges || []).length || !activeAt(n, T)) return;
@@ -431,6 +459,22 @@ export function drawRanges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Met
 }
 
 export interface RingHit { owner: "unit" | "node"; id: string; ring: "vision" | "range" | number; lon: number; lat: number }
+
+/** 朝向手柄拾取（编辑态·选中部队）：命中返回旋转中心＝部队当日位置。自带世界拷贝循环（同 pickUnit）；
+    走 unitSpots ＝与绘制同源（点你看得见的那一枚）。命中半径与圈手柄同为 7px。 */
+export function pickFacingHandle(cam: Camera, meta: Meta | undefined, world: World, T: number,
+  x: number, y: number, unitId: string | null): { id: string; lon: number; lat: number } | null {
+  if (!unitId) return null;
+  for (const shift of visibleWorldCopies(cam, meta)) {
+    const c2: Camera = { ...cam, lonShift: shift };
+    for (const s of unitSpots(c2, meta, world, T)) {
+      if (s.u.id !== unitId || !s.foot) continue;
+      const [hx, hy] = facingHandlePx(s.foot);
+      if (Math.hypot(x - hx, y - hy) <= 7) return { id: s.u.id, lon: s.p.lon, lat: s.p.lat };
+    }
+  }
+  return null;
+}
 
 /** 拾取圈半径手柄（编辑态·仅选中对象）：火力圈手柄在圈右、视野圈在圈左；命中返回圈心数据坐标。
     部队火力=单值 "range"（含旧多圈回退）、视野="vision"；据点防御圈=下标。

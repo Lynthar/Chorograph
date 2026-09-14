@@ -17,6 +17,7 @@ import { ALL_KINDS, ARM_OPT_KINDS, EDGE_STYLE, EYE_M_KIND, FIRE_DIRECT_KIND, LEG
 import { fmtStrength, parseStrength, setUnitPoint, unitFireDirect, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { astar, computeRoute } from "../src/core/route.ts";
 import { wallTeeth } from "../src/render/edges.ts";
+import { facingHandlePx, pickFacingHandle, unitSpots } from "../src/render/units.ts";
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, WORLD_KM_PER_DEG, WORLD_RADIUS_KM } from "../src/core/world.ts";
 import { BAKE_CAP, blankTacticalWorld, createTacticalWorld } from "../src/core/tactical.ts";
@@ -990,6 +991,28 @@ describe("战场表达（柱B）：微地物/工事线/主帅", () => {
   it("工事线型与指挥兵种就位（渲染先行，寻路不吃 wall）", () => {
     assert.deepStrictEqual(EDGE_STYLE.wall, { color: "#55504a", w: 2.8, 名: "工事" });
     assert.deepStrictEqual(UNIT_KINDS.cmd, { 名: "指挥", glyph: "帅", v: 60, arm: "land" });
+  });
+  it("朝向手柄：落在前缘外沿朝向方向，绘制与拾取同源，7px 内命中、外围不中，无阵位条不出手柄", () => {
+    const cam: Camera = { lon0: 0, lat0: 0, degPerPx: 0.0001, w: 800, h: 600, flat: true };
+    const meta = { worldModel: "flat", kmPerDeg: 111.19, mapKind: "tactical" } as Meta;
+    const w = { meta, factions: [], nodes: [], edges: [], decor: [],
+      units: [{ id: "a", 名称: "阵", kind: "linf", frontKm: 2, depthKm: 0.4, track: [{ t: 0, lon: 0, lat: 0, facing: 0 }] },
+              { id: "b", 名称: "点", kind: "linf", track: [{ t: 0, lon: 0.02, lat: 0, facing: 0 }] }] } as unknown as World;
+    const spot = unitSpots(cam, meta, w, 0).find(s2 => s2.u.id === "a")!;
+    assert.ok(spot.foot, "2km 正面在此缩放下该出阵位条");
+    const [hx, hy] = facingHandlePx(spot.foot!);
+    const [cx, cy] = [(spot.foot![0][0] + spot.foot![2][0]) / 2, (spot.foot![0][1] + spot.foot![2][1]) / 2];
+    assert.ok(hy < cy, "朝向 0°＝正北，手柄在阵心之上");
+    assert.ok(Math.abs(hx - cx) < 0.5, "正北时手柄与阵心同一竖线");
+    assert.ok(pickFacingHandle(cam, meta, w, 0, hx, hy, "a"), "手柄中心命中");
+    assert.ok(pickFacingHandle(cam, meta, w, 0, hx + 6, hy, "a"), "7px 内命中");
+    assert.strictEqual(pickFacingHandle(cam, meta, w, 0, hx + 12, hy, "a"), null, "7px 外不中");
+    assert.strictEqual(pickFacingHandle(cam, meta, w, 0, hx, hy, "b"), null, "无阵位条的部队没有朝向手柄");
+    assert.strictEqual(pickFacingHandle(cam, meta, w, 0, hx, hy, null), null, "未选中＝不拾取");
+    const east = { ...w, units: [{ ...(w.units![0] as object), track: [{ t: 0, lon: 0, lat: 0, facing: 90 }] }] } as unknown as World;
+    const es = unitSpots(cam, meta, east, 0)[0];
+    const [ex, ey] = facingHandlePx(es.foot!);
+    assert.ok(ex > cx && Math.abs(ey - cy) < 0.5, "朝向 90°＝正东，手柄转到阵心右侧");
   });
   it("现代兵种另立一表：与古代表键不相交、合表按 id 解析、符号互不相同、附表的键都在合表里", () => {
     assert.strictEqual(Object.keys(MODERN_KINDS).length, 30, "陆军九 + 空军五 + 海军十六");

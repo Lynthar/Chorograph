@@ -13,8 +13,8 @@ import { distKm } from "../core/geo.ts";
 import { esc, fmtKm, tget } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
 import { pickEdge, pickNode, pickOp, nodesInBox, layerOn } from "../render/overlay.ts";
-import { pickUnit, pickRangeHandle, unitsInBox, type RingHit } from "../render/units.ts";
-import { fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStrengthAt } from "../core/units.ts";
+import { pickUnit, pickFacingHandle, pickRangeHandle, unitsInBox, type RingHit } from "../render/units.ts";
+import { bearingDeg, fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStrengthAt } from "../core/units.ts";
 import { pickDecor, decorIdsInRadius, decorsInBox, ecoForeignIdsInDisc } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit, selMembers,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
@@ -27,7 +27,7 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUn
   type EditSub, type Sel }
   from "../ui/state.ts";
 import { addNode, addEdge, addFreeEdge, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
-  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setNodeRangeKm, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath }
+  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setUnitFacing, setNodeRangeKm, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath }
   from "../ui/editops.ts";
 import { poolGet } from "../ui/stamps.ts";
 import { paintDims, maskFromLayer, brushMask, runsFromMask, ensurePaintLayer, type PaintMask } from "../ui/paint.ts";
@@ -52,6 +52,7 @@ interface MultiDrag extends ObjDrag { sx: number; sy: number; t: number;
   uorig: { id: string; lon0: number; lat0: number }[];       // 框选中的部队在起手时刻的原位（拖动改写该时刻航点）
   dorig: { id: string; lon0: number; lat0: number }[] }      // 框选中的布景原位（moveDecor 按位移整组平移）
 type RangeDrag = RingHit & ObjDrag;
+type FacingDrag = { id: string; lon: number; lat: number } & ObjDrag;
 type IdDrag = { id: string } & ObjDrag;
 
 /** frame 每帧只读的交互视图（画线预览/框选矩形/笔刷环定位共用） */
@@ -146,7 +147,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     paintStroke: PaintStroke | null = null, opStroke: OpStroke | null = null,
     terrainStroke: { lastX: number; lastY: number } | null = null, decorStroke: DecorStroke | null = null,
     boxSel: BoxSel | null = null, multiDrag: MultiDrag | null = null,
-    unitDrag: IdDrag | null = null, rangeDrag: RangeDrag | null = null,
+    unitDrag: IdDrag | null = null, rangeDrag: RangeDrag | null = null, facingDrag: FacingDrag | null = null,
     mxy: [number, number] | null = null;
   let spaceHeld = false, linkDrag: { fromId: string; x: number; y: number; moved: boolean } | null = null,
     decorDrag: IdDrag | null = null,
@@ -518,6 +519,15 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const sv = selSig.value;
       const hu = sv && sv.kind === "unit" ? sv.id : null, hn = sv && sv.kind === "node" ? sv.id : null;
       if (hu || hn) {
+        /* 朝向手柄先于半径手柄判：它小且贴着阵位条，半径手柄在圈的左右极点上，两者极少同处；
+           真同处时该让更具体的那个赢。 */
+        const fh = hu && unitPickable() ? pickFacingHandle(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, hu) : null;
+        if (fh) {
+          stopPlay();   // 播放中转向：冻结时刻，阵位不随播放漂移（同半径手柄之规）
+          facingDrag = { ...fh, pushed: false, x0: e.offsetX, y0: e.offsetY };
+          canvas.style.cursor = "grabbing"; canvas.setPointerCapture(e.pointerId);
+          return;
+        }
         const rh = pickRangeHandle(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, hu, hn, rangeGate());
         if (rh) {
           stopPlay();   // 播放中拖半径：冻结时刻，圈心不随播放漂移
@@ -630,7 +640,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     }
     /* 拖态悬挂自愈：拖拽中弹 confirm()/alert() 会吞掉 pointerup——按键已全松而拖态仍在时，
        按 pointercancel 语义中止（只清态不成交），免得松手后的悬停继续改写世界（2026-07-16 P3）。 */
-    if (e.buttons === 0 && (drag || nodeDrag || unitDrag || decorDrag || multiDrag || rangeDrag
+    if (e.buttons === 0 && (drag || nodeDrag || unitDrag || decorDrag || multiDrag || rangeDrag || facingDrag
       || boxSel || linkDrag || clickTrack || paintStroke || terrainStroke || decorStroke || opStroke)) abortDrags();
     if (opStroke) {
       if (Math.hypot(e.offsetX - opStroke.lastX, e.offsetY - opStroke.lastY) >= 7) {
@@ -678,6 +688,14 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         for (const o of md.uorig) setUnitWaypoint(w, o.id, md.t, o.lon0 + dLon, o.lat0 + dLat);   // 整组改写起手时刻航点
         for (const o of md.dorig) moveDecor(w, o.id, o.lon0 + dLon, o.lat0 + dLat);   // 整组平移布景
       });
+      return;
+    }
+    if (facingDrag) {
+      if (!armDrag(facingDrag, e)) return;   // 一次拖动=一步撤销（越死区才算拖动；点选阵位的手抖不该转向）
+      const ll = unproject(cam(), e.offsetX, e.offsetY);
+      const fd = facingDrag;
+      const deg = bearingDeg(ctx.meta, fd.lon, fd.lat, dataLon(ctx.meta, ll[0]), ll[1]);   // 朝向＝阵心指向光标
+      if (deg != null) mutateWorldLive(w => setUnitFacing(w, fd.id, yearSig.peek(), deg));
       return;
     }
     if (rangeDrag) {
@@ -728,8 +746,11 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         const sv = selSig.value;
         const hu = sv && sv.kind === "unit" ? sv.id : null, hn = sv && sv.kind === "node" ? sv.id : null;
         const over = (hu || hn) && pickRangeHandle(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, hu, hn, rangeGate());
-        if (over && canvas.style.cursor !== "ew-resize") canvas.style.cursor = "ew-resize";
-        else if (!over && canvas.style.cursor === "ew-resize") canvas.style.cursor = "";
+        const overF = !over && hu && unitPickable() && pickFacingHandle(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, hu);
+        const want = over ? "ew-resize" : overF ? "grab" : "";
+        /* 只在进出手柄时动光标：空格平移把光标设成 grab，别让这里把它抹掉 */
+        if (!spaceHeld && canvas.style.cursor !== want && (want || canvas.style.cursor === "ew-resize" || canvas.style.cursor === "grab"))
+          canvas.style.cursor = want;
       }
       const h = worldSig.value ? pickNode(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, pickGate()) : null;
       hoverSig.value = h;
@@ -767,6 +788,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         showToast(`已记录 ${fmtWhen(calOf(ctx.meta.calendar), ctx.meta.mapKind === "tactical", yearSig.peek())} 位置`, { undo: true });
       return;
     }
+    if (facingDrag) { facingDrag = null; canvas.style.cursor = ""; return; }   // 朝向拖动收笔（朝向已随移动写入）
     if (rangeDrag) { rangeDrag = null; canvas.style.cursor = ""; return; }   // 圈半径拖动收笔（半径已随移动写入）
     if (unitDrag) {   // 拖动部队收笔：航点已随移动写入——toast 报所记时刻（时间坞忘对时的防呆）
       const ud = unitDrag; unitDrag = null; canvas.style.cursor = "";
@@ -821,7 +843,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (paintStroke) { paintStroke = null; endStroke(); }
     if (terrainStroke) { terrainStroke = null; endStroke(); }
     if (decorStroke) { decorStroke = null; endStroke(); }
-    boxSel = null; multiDrag = null; rangeDrag = null; unitDrag = null;
+    boxSel = null; multiDrag = null; rangeDrag = null; facingDrag = null; unitDrag = null;
     nodeDrag = null; decorDrag = null; linkDrag = null; clickTrack = null;
     drag = null;
     canvas.style.cursor = spaceHeld ? "grab" : "";

@@ -4,7 +4,7 @@
 import { wrapLon } from "../core/geo.ts";
 import { parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
-import { isModern, setUnitPoint, unitKind } from "../core/units.ts";
+import { isModern, setUnitPoint, unitKind, unitPos } from "../core/units.ts";
 import { ALL_KINDS, CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
@@ -534,6 +534,18 @@ export function setUnitRing(w: World, id: string, key: "vision" | "range", km: n
   if (!u || !isFinite(km)) return false;
   const v = roundKm(km);
   if (v >= 0.05) u[key] = v; else delete u[key];
+  return true;
+}
+
+/** 设阵形/防区朝向（度，0＝正北顺时针）：写**所处航段起点**那一航点——`unitFacingAt` 读的正是它，
+    于是拖一次只改当前这一段的朝向，后面几段各自保留。⚠ 整点展开（`{...旧点, facing}`）＝别的键不掉。 */
+export function setUnitFacing(w: World, id: string, T: number, deg: number): boolean {
+  const u = (w.units || []).find(x => x.id === id);
+  if (!u || !isFinite(deg)) return false;
+  const p = unitPos(u, T);
+  if (!p) return false;
+  const tr = u.track || [];
+  tr[p.i] = { ...tr[p.i], facing: ((Math.round(deg) % 360) + 360) % 360 };
   return true;
 }
 

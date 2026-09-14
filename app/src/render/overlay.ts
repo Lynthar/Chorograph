@@ -93,7 +93,8 @@ export function drawOverlay(
       if (on("arrows")) drawOps(ctx, c2, world, yearNow, opts.selId, opts.opSel, field);
       if (on("nodes")) drawNodes(ctx, c2, meta, world, yearNow, opts, multiSet, fcolor, field);   // 地点记号 + 楷体标签（避让）
       if (on("units")) drawUnits(ctx, c2, meta, world, yearNow,   // 部队【记号】压在地点之上（战场主角）；标签让地名
-        { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field });
+        { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field,
+          handleUnit: opts.editing ? (opts.unitSelId || null) : null });   // 阵形朝向手柄（同圈手柄之规：编辑态选中对象才出）
     }
     if (on("graticule")) drawGraticule(ctx, cam, meta);   // 经纬网：拷贝循环外，屏幕空间一次绘制
     if ((meta || {}).mapKind === "tactical" && (meta || {}).bbox) drawNeatline(ctx, cam, meta!);   // 图廓线：图幅外已铺纸色（terrain 的 paper 裁决），墨框把「图页」缝起来

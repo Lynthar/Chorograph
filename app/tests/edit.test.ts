@@ -4,8 +4,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
-import { unitArm, unitFireKm, unitStatusAt } from "../src/core/units.ts";
+import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive, setTerrainStyle, terrainStyleSig,
@@ -1025,6 +1025,23 @@ describe("部队编辑内核（战术图）", () => {
     assert.strictEqual(u.vision, 8, "不传 vision=不动");
     applyUnitForm(u, { 名称: "", faction: "", kind: "inf", strength: "", speed: "", note: "", vision: "" });
     assert.ok(!("vision" in u), "留空=删键");
+  });
+  it("setUnitFacing：写所处航段起点那一航点、整点展开保住别的键、归一到 [0,360)、未入场不写", () => {
+    const w = mkWorld();
+    const u = addUnit(w, "阵", 1, 1, 0, "u9");
+    u.track = [{ t: 0, lon: 1, lat: 1, st: "battle" }, { t: 10, lon: 2, lat: 1 }];
+    assert.strictEqual(setUnitFacing(w, "u9", 5, 90), true);
+    assert.strictEqual(u.track[0].facing, 90, "写的是航段起点（unitFacingAt 读的正是它）");
+    assert.strictEqual(u.track[0].st, "battle", "整点展开：别的键不掉");
+    assert.ok(!("facing" in u.track[1]), "后一段不受影响");
+    assert.strictEqual(unitFacingAt(w.meta, u, 5), 90, "读回一致");
+    setUnitFacing(w, "u9", 5, -30.4);
+    assert.strictEqual(u.track[0].facing, 330, "负角与小数归一到 [0,360) 的整数");
+    setUnitFacing(w, "u9", 5, 725);
+    assert.strictEqual(u.track[0].facing, 5, "超一圈取模");
+    assert.strictEqual(setUnitFacing(w, "u9", -99, 10), false, "首航点前未入场＝不写");
+    assert.strictEqual(setUnitFacing(w, "无此部队", 5, 10), false);
+    assert.strictEqual(setUnitFacing(w, "u9", 5, NaN), false, "非数不写");
   });
   it("applyUnitForm：视域各键——直射落键/曲射删键、射角只收 (0,90)、观察高度与雷达三项 0 合法、缺席不动、noFire 连 fire/射角一起清", () => {
     const w = mkWorld();
