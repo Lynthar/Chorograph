@@ -11,7 +11,7 @@
    ×cosφ）、直径上限与纬度无关、距离账走直角。既有球面战术档照旧能开（运行时兼容路径不删），
    只是出生点不再产出球面。尺寸红线「直径或对角线 ≤200km」按两者都不得超读＝方图边长 ≤140km
    （对角线 198km），140 同时是工程甜点：1400×1400=196 万格恰保住全域 4K 精修 ≥2×。 */
-import { kmPerDeg, toRad } from "./geo.ts";
+import { kmPerDeg, lonCos } from "./geo.ts";
 import { segIntersectsRect } from "./geometry.ts";
 import { autoGridN, buildGridCells } from "./grid.ts";
 import { activeAt, ownerAt, paintLayersAt } from "./time.ts";
@@ -102,7 +102,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   const m = src.meta || {};
   const yr = isFinite(ev.year as number) ? (ev.year as number) : (opts.yearNow ?? 0);
   const kmdeg = +kmPerDeg(m).toFixed(4);   // 母图每纬度里程＝子图平面尺度（4 位小数够 4e-5 相对精度）
-  const cosc = m.worldModel === "flat" ? 1 : Math.max(0.087, Math.cos(toRad(ev.lat)));
+  const cosc = lonCos(m, ev.lat);
   const tx = (lon: number): number => +(ev.lon + (lon - ev.lon) * cosc).toFixed(4);   // 母图经度→子图平面经度
   const invLon = (lon: number): number => ev.lon + (lon - ev.lon) / cosc;             // 子图平面经度→母图经度（tx 的逆）
   const span = d / kmdeg;

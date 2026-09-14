@@ -3,7 +3,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { calOf, fmtDayTime, fmtMD, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearForm, fromT, monthLabel, monthsOf, parseYMD, parseYearForm, tacT, yearMonthOf, yearMonthT, yearSpanT, ymdOverflow } from "../src/core/calendar.ts";
-import { distKm, haversine, kmPerDeg, kmPerDegLat, wrapLon } from "../src/core/geo.ts";
+import { COS_LAT_FLOOR, distKm, haversine, kmPerDeg, kmPerDegLat, kmPerDegXY, lonCos, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
 import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
@@ -2066,6 +2066,27 @@ describe("自定义印章池 poolInsert", () => {
     const pool = ["a", "b", "c"].map(A);
     assert.deepStrictEqual(poolInsert(pool, A("d"), 3).map(x => x.id), ["d", "a", "b"]);
     assert.deepStrictEqual(pool.map(x => x.id), ["a", "b", "c"], "入参须原样");
+  });
+});
+
+describe("经向折算 lonCos（平面恒 1、球面 cos 纬度、极区地板 cos 85°）", () => {
+  const S: Meta = { worldModel: "sphere" }, F: Meta = { worldModel: "flat" };
+  it("|纬度| ≤ 85° 是真 cos，过了才封地板；平面世界任何纬度都是 1", () => {
+    assert.strictEqual(lonCos(S, 0), 1);
+    assert.ok(Math.abs(lonCos(S, 60) - 0.5) < 1e-12);
+    assert.strictEqual(lonCos(S, 85), Math.cos(85 * Math.PI / 180), "85° 恰在地板之上一线，仍是真 cos");
+    assert.strictEqual(lonCos(S, 89), COS_LAT_FLOOR);
+    assert.strictEqual(lonCos(S, -89), COS_LAT_FLOOR, "南极带同判");
+    assert.strictEqual(lonCos(F, 89), 1);
+    assert.strictEqual(lonCos(undefined, 89), COS_LAT_FLOOR, "缺 meta 按球面");
+  });
+  it("kmPerDegXY 的经纬比就是图幅中纬的 lonCos——极带图幅的侵蚀 / 视域格距同吃这块地板", () => {
+    const mid = { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, polar = { lonMin: 0, lonMax: 10, latMin: 86, latMax: 90 };
+    for (const [m, bb] of [[S, mid], [S, polar], [F, polar]] as const) {
+      const { kmx, kmy } = kmPerDegXY(m, bb);
+      assert.ok(Math.abs(kmx / kmy - lonCos(m, (bb.latMin + bb.latMax) / 2)) < 1e-12, JSON.stringify([m, bb]));
+    }
+    assert.strictEqual(kmPerDegXY(S, polar).kmx / kmPerDegXY(S, polar).kmy, COS_LAT_FLOOR, "88° 中纬封在地板上，不再是 cos 88° 的 0.035");
   });
 });
 

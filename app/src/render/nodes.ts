@@ -8,7 +8,7 @@
 import { NODE_STYLE, RANK_KM_PX, certaintyStyle } from "../core/constants.ts";
 import { activeAt, evCurrentAt, evFutureAt, ownerAt } from "../core/time.ts";
 import { project, type Camera } from "../core/projection.ts";
-import { kmPerDegLat, toRad } from "../core/geo.ts";
+import { kmPerDegLat, lonCos } from "../core/geo.ts";
 import { hexA, tget } from "../core/util.ts";
 import type { LabelField } from "./labels.ts";
 import type { Meta, World, WorldNode } from "../core/types.ts";
@@ -279,7 +279,6 @@ export function drawNodeRanges(
   world: World, yearNow: number, selId?: string | null
 ) {
   const kpd = kmPerDegLat(meta);
-  const flat = (meta || {}).worldModel === "flat";
   for (const n of world.nodes) {
     if (!(typeof n.radiusKm === "number" && n.radiusKm > 0)) continue;
     const selected = n.id === selId;
@@ -287,7 +286,7 @@ export function drawNodeRanges(
     const visible = activeAt(n, yearNow) && cam.degPerPx * kpd <= (RANK_KM_PX[st.rank] ?? Infinity);
     if (!visible && !selected) continue;
     const dLat = n.radiusKm / kpd;
-    const cosn = flat ? 1 : Math.max(0.05, Math.cos(toRad(n.lat)));
+    const cosn = lonCos(meta, n.lat);
     const [cx, cy] = project(cam, n.lon, n.lat);
     const rx = Math.abs(project(cam, n.lon + dLat / cosn, n.lat)[0] - cx);
     const ry = Math.abs(cy - project(cam, n.lon, n.lat + dLat)[1]);

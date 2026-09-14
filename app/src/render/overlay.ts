@@ -4,7 +4,7 @@
    数百要素直绘足够；万级批量与空间索引在 后段定案。 */
 import { LAYERS } from "../core/constants.ts";
 import { project, SCALE_BAR_PX, unproject, visibleWorldCopies, type Camera } from "../core/projection.ts";
-import { distKm, kmPerDegLat, toRad, wrapLon } from "../core/geo.ts";
+import { distKm, kmPerDegLat, lonCos, wrapLon } from "../core/geo.ts";
 import { calOf, fmtT, fmtYear } from "../core/calendar.ts";
 import { fmtKm } from "../core/util.ts";
 import { isModern } from "../core/units.ts";
@@ -137,9 +137,8 @@ function drawGraticule(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | 
    图幅外(k<0)只画线不标数。样式与经纬网同（淡青细线,同一图层开关）。 */
 function drawKmGrid(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta): void {
   const bb = meta.bbox!;
-  const flat = meta.worldModel === "flat";
   const dLat = 1 / kmPerDegLat(meta);                     // 1km 的纬度跨度
-  const dLon = dLat / (flat ? 1 : Math.max(0.05, Math.cos(toRad((bb.latMin + bb.latMax) / 2))));
+  const dLon = dLat / lonCos(meta, (bb.latMin + bb.latMax) / 2);
   const kmPerPx = cam.degPerPx / dLon;
   if (!isFinite(kmPerPx) || kmPerPx <= 0) return;
   let stepKm = 5000;

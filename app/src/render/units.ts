@@ -3,7 +3,7 @@
    日戳 T 即 yearNow（战术图时间轴存的是 T）。各绘制函数按【单相机】工作——由 overlay 的
    世界拷贝循环逐拷贝调用（同 drawEco/drawDecor）；pickUnit 独立，自带拷贝循环（同 pickNode）。 */
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
-import { kmPerDegLat, toRad } from "../core/geo.ts";
+import { kmPerDegLat, lonCos } from "../core/geo.ts";
 import { fmtStrength, footCornersLL, isModern, unitArcDeg, unitFacingAt, unitFireDirect, unitFireKm, unitFootKm, unitKind, unitPos, unitRadarKm, unitStatusAt, unitStrengthAt, type Leg, type UnitPos } from "../core/units.ts";
 import { maskContour, maskCoverage } from "./maskraster.ts";
 import { pointInPoly } from "../core/geometry.ts";
@@ -261,9 +261,8 @@ export function unitsInBox(cam: Camera, meta: Meta | undefined, world: World, T:
 
 /** 某圈在屏幕上的中心与半轴（km→像素，纬向/经向各自换算——与旧 drawRanges 逐式一致） */
 function ringPx(cam: Camera, meta: Meta | undefined, lon: number, lat: number, km: number): [number, number, number, number] {
-  const flat = (meta || {}).worldModel === "flat";
   const dLat = 1 / kmPerDegLat(meta);            // 1km 对应的纬度跨度
-  const cosn = flat ? 1 : Math.max(0.05, Math.cos(toRad(lat)));
+  const cosn = lonCos(meta, lat);
   const [cx, cy] = project(cam, lon, lat);
   const rx = Math.abs(project(cam, lon + km * dLat / cosn, lat)[0] - cx);
   const ry = Math.abs(cy - project(cam, lon, lat + km * dLat)[1]);

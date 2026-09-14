@@ -9,7 +9,7 @@ import { BRUSH_NOTCHES, brushRadiusCells, brushDabStepDeg, interpolatePath } fro
 import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { elevUnitM, elevSmooth, heightStepM } from "../core/elev.ts";
-import { distKm } from "../core/geo.ts";
+import { distKm, lonCos } from "../core/geo.ts";
 import { esc, fmtKm, tget } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
 import { pickEdge, pickNode, pickOp, nodesInBox, layerOn } from "../render/overlay.ts";
@@ -82,7 +82,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   const fitDpp = (): number => {
     const meta = ctx.meta, bb = meta?.bbox, [w, h] = cssSize();
     if (!bb || !(w > 0 && h > 0)) return 0.5;
-    const cosLat = meta?.worldModel === "flat" ? 1 : Math.max(0.05, Math.cos((bb.latMin + bb.latMax) / 2 * Math.PI / 180));
+    const cosLat = lonCos(meta, (bb.latMin + bb.latMax) / 2);
     return Math.max((bb.lonMax - bb.lonMin) * cosLat / w, (bb.latMax - bb.latMin) / h) * 1.1;
   };
   /* 传给 zoomAtView 的两头。缩小那头另**不低于该图默认开图缩放 degPerPx0**（免开图即被钳进）；

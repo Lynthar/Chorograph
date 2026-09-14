@@ -3,7 +3,7 @@
    缓存与失效由调用层管理，同旧版 state._legs 的角色）。 */
 import { ALL_KINDS, ARC_DEG, EYE_M, EYE_M_KIND, FIRE_DIRECT_KIND, RADAR_M, RADAR_TGT_M, VANTAGE_M } from "./constants.ts";
 import { tget } from "./util.ts";
-import { distKm, kmPerDegLat, toRad } from "./geo.ts";
+import { distKm, kmPerDegLat, lonCos, toRad } from "./geo.ts";
 import { astar, endToEnd } from "./route.ts";
 import type { Grid } from "./grid.ts";
 import type { Arm, Meta, TrackPt, Unit } from "./types.ts";
@@ -168,11 +168,9 @@ export function unitFootKm(u: Unit): { front: number; depth: number } | null {
   return { front: f, depth: d > 0 ? d : f / DEPTH_RATIO };
 }
 
-/** 经纬向的 km 换算基（同 ringPx/笔刷环之规：经向再除 cos 纬度，平面世界不除） */
+/** 经纬向的 km 换算基（同 ringPx/笔刷环之规：经向再除 lonCos） */
 function kmScale(meta: Meta | undefined, lat: number): { kpd: number; cosn: number } {
-  const kpd = kmPerDegLat(meta);
-  const cosn = (meta || {}).worldModel === "flat" ? 1 : Math.max(0.05, Math.cos(toRad(lat)));
-  return { kpd, cosn };
+  return { kpd: kmPerDegLat(meta), cosn: lonCos(meta, lat) };
 }
 
 /** 两点间方位角（度，0=正北顺时针）：经差按 cos 纬度折算＝与图面观感同向；零长返回 null */

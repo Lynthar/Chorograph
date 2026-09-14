@@ -29,12 +29,19 @@ export function kmPerDeg(meta: Meta | undefined): number {
   return m.worldModel === "flat" ? flatKmPerDeg(m) : 2 * Math.PI * (+(m.planetRadiusKm ?? 0) || 10000) / 360;
 }
 
-/** 经/纬向 km/度：纬向同 kmPerDeg；经向球面按图幅中央纬度折算、平面同纬向。侵蚀与视域的格距度量同源。 */
+/** 经向折算系数（经差 × 它 ＝ 与纬差同尺度）：平面世界恒 1，球面取 cos 纬度、极区兜底不除零。
+    地板 = cos 85°，与战术图幅 ±85° 的钳（tactical.ts）同源，|纬度| ≤ 85° 处就是真 cos。
+    圈的半轴 / 公里网 / 缩放地板 / 烘焙投影 / 坡度基底 / 侵蚀与视域格距全走它——各写一份就是各画各的椭圆。 */
+export const COS_LAT_FLOOR = 0.087;
+export function lonCos(meta: Meta | undefined, lat: number): number {
+  return (meta || {}).worldModel === "flat" ? 1 : Math.max(COS_LAT_FLOOR, Math.cos(toRad(lat)));
+}
+
+/** 经/纬向 km/度：纬向同 kmPerDeg；经向按图幅中央纬度折算（lonCos）。侵蚀与视域的格距度量同源。 */
 export function kmPerDegXY(meta: Meta | undefined, bb: BBox): { kmx: number; kmy: number } {
   const m = meta || {};
   const kmy = kmPerDeg(m);
-  const kmx = m.worldModel === "flat" ? kmy : kmy * Math.cos((bb.latMin + bb.latMax) / 2 * Math.PI / 180);
-  return { kmx, kmy };
+  return { kmx: kmy * lonCos(m, (bb.latMin + bb.latMax) / 2), kmy };
 }
 
 /** 统一距离入口：球面=大圆；平面=直线 */

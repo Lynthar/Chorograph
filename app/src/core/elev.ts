@@ -5,7 +5,7 @@
    起伏走 core/relief（波长按公里定、坐标按经纬×每度公里锚定）：战略图与其战术烘焙在同一位置
    取到同一套山系，粗格与细分场只是解析深浅不同。
    等高线等距（contourStepFor）与光标读数采样（elevBilinear）也居此——等高线与读数同源于本场。 */
-import { kmPerDeg } from "./geo.ts";
+import { kmPerDeg, lonCos } from "./geo.ts";
 import { terrainProps } from "./constants.ts";
 import { GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, genHeightAt, genLandformOf, genSeaLevel } from "./terrain.ts";
 import { makeRelief, mountainness, RELIEF_M } from "./relief.ts";
@@ -273,7 +273,7 @@ function baseFields(meta: Meta | undefined, grid: Grid): { base: Float32Array; w
   const m = meta || {};
   const { bb, step, cols, rows, cells } = grid, n = cols * rows;
   const kmd = kmPerDeg(m);
-  const cosc = m.worldModel === "flat" ? 1 : Math.max(0.087, Math.cos((bb.latMin + bb.latMax) / 2 * Math.PI / 180));
+  const cosc = lonCos(m, (bb.latMin + bb.latMax) / 2);
   const dxKm = step * kmd * cosc, dyKm = step * kmd, ddKm = Math.hypot(dxKm, dyKm);
   const U = elevUnitM(m);
   const gLand = Math.tan(BASE_SLOPE_DEG * Math.PI / 180) * 1000 / U;   // 抽象/km

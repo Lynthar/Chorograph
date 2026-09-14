@@ -42,4 +42,9 @@ describe("静态守卫：单一真源", () => {
   it("对象 id 工厂只有 core/util.newId 一份", () => {
     assert.deepStrictEqual(hitsOutside(/Date\.now\(\)\.toString\(36\)/, ["core/util.ts"]), [], "又出现一个 id 工厂——走 newId(prefix)");
   });
+  it("经向 cos 折算的极区地板只有 core/geo.lonCos 一份", () => {
+    const re = /Math\.max\((0\.0\d+|COS_LAT_FLOOR),\s*Math\.cos/;
+    assert.deepStrictEqual(hitsOutside(re, ["core/geo.ts"]), [], "cos 地板又被内联了一份——走 lonCos(meta, lat)");
+    assert.strictEqual(linesIn("core/geo.ts", re), 1);
+  });
 });
