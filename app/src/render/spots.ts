@@ -7,8 +7,11 @@ import type { Grid } from "../core/grid.ts";
 import type { Meta } from "../core/types.ts";
 import type { LabelField } from "./labels.ts";
 
-/** 高点搜索半窗（屏幕 px）与最小突出度（米）：窗按像素＝缩放自动调密度；5 m 把侵蚀噪声的起伏挡在外面、留住能挡视线的埂 */
-export const SPOT_WIN_PX = 72, SPOT_PROM_M = 5;
+/** 高点搜索半窗（屏幕 px）与最小突出度（米）：窗按像素＝缩放自动调密度；5 m 把侵蚀噪声的起伏挡在外面。
+    只标海拔 ≥ SPOT_MIN_M 的山顶（2026-09-14 用户点单）；水面不受这道门管。 */
+export const SPOT_WIN_PX = 72, SPOT_PROM_M = 5, SPOT_MIN_M = 500;
+/** 三角点记号（顶角朝上）的半宽 px */
+const TRI_PX = 3.5;
 
 const peakCache = new WeakMap<ElevField, Map<number, SpotHeight[]>>();
 const waterCache = new WeakMap<Grid, SpotHeight[]>();
@@ -26,12 +29,17 @@ export function drawSpotHeights(ctx: CanvasRenderingContext2D, cam: Camera, meta
   ctx.font = "10px sans-serif"; ctx.textBaseline = "middle"; ctx.textAlign = "left";
   ctx.lineJoin = "round"; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(246,239,220,.85)"; ctx.fillStyle = "rgba(70,52,28,.95)";
   for (const s of [...peaks, ...water]) {
+    const eM = Math.round(s.e * U);
+    if (s.kind === "peak" && eM < SPOT_MIN_M) continue;
     const [x, y] = project(cam, s.lon, s.lat);
     if (x < -60 || y < -12 || x > cam.w + 60 || y > cam.h + 12) continue;
-    const txt = (s.kind === "water" ? "水面 " : "") + Math.round(s.e * U);
-    const w = ctx.measureText(txt).width, tx = s.kind === "peak" ? x + 4 : x - w / 2;
-    if (!lf.tryPlace({ x: tx - 1, y: y - 6, w: w + 2, h: 12 })) continue;
-    if (s.kind === "peak") { ctx.beginPath(); ctx.arc(x, y, 1.6, 0, 7); ctx.fill(); }
+    const txt = (s.kind === "water" ? "水面 " : "") + eM;
+    const w = ctx.measureText(txt).width, tx = s.kind === "peak" ? x + TRI_PX + 3 : x - w / 2;
+    if (!lf.tryPlace({ x: s.kind === "peak" ? x - TRI_PX - 1 : tx - 1, y: y - 6, w: (s.kind === "peak" ? TRI_PX + 4 : 0) + w + 2, h: 12 })) continue;
+    if (s.kind === "peak") {   // 三角点：顶角朝上，纸色描边衬底
+      ctx.beginPath(); ctx.moveTo(x, y - TRI_PX * 1.15); ctx.lineTo(x + TRI_PX, y + TRI_PX * 0.85); ctx.lineTo(x - TRI_PX, y + TRI_PX * 0.85); ctx.closePath();
+      ctx.lineWidth = 2; ctx.stroke(); ctx.fill(); ctx.lineWidth = 3;
+    }
     ctx.strokeText(txt, tx, y); ctx.fillText(txt, tx, y);
   }
   ctx.restore();
