@@ -139,6 +139,11 @@ export function contourStepFor(degPerPx: number, meta: Meta | undefined): { mino
   return { minorM, minor: minorM / elevUnitM(m), fade: f * f };
 }
 
+/** 间曲线 / 助曲线（基本等高距的 1/2 与 1/4，测绘规范里的补充等高线）：只在上一级线距 ≥ 这些像素数处浮现——
+    平缓地补出微地形、山区不添乱。线距按 ±10 px 差分的**粗坡**估（局部梯度被侵蚀微起伏放大几十倍，按它算平地永远开不了门）；
+    虚线节距按屏幕像素、相位锚世界坐标（平移不爬动）。GL 与 CPU 各自内联同一组数，两端同式。 */
+export const SUP_LO_PX = 28, SUP_HI_PX = 56, SUP_DASH_PX = 16;
+
 /* —— 连续高程基底（渲染层，粗格，抽象单位）——
    类型阶梯不再直接当基底：山地 0.9 与平原 0.16 在一格（战术 100 m）内完成＝65° 的悬崖圈，
    湖面 −0.35 与岸格 0.06 同理。基底按三条规则出：

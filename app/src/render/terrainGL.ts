@@ -17,7 +17,7 @@
 import { ELEV, terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
 import { materialTable, rampGLSL, snowLatGLSL, MICRO_F0, MICRO_OCTAVES, NRM0, FX } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
-import type { ElevField } from "../core/elev.ts";
+import { SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
 import type { BBox } from "../core/types.ts";
 
 const VS = `#version 300 es
@@ -228,6 +228,7 @@ void main(){
   vec2 rel=ll-uGridBB.xy;
   float es=elevSmooth(ll);   // 制图面（帐篷平滑数据面，与光标读数同源；未扭曲族，此时 gWarp 恒 0）
   float ad=fwidth(es)+1e-7;  // 等高线线宽：两种底图共用，故在 uMode 分支之前取（分支内 fwidth 未定义，软渲返 0）
+  vec2 gd=vec2(dFdx(es),dFdy(es));   // 制图面屏幕梯度（间曲线沿等值线切虚线）；与 fwidth 同处取＝一致控制流
   vec3 col; float ws, e;
   if(uMode==1){
     /* 推演底图：所在格的类型平色（uTColor＝terrainProps.color），不扭曲、不晕渲、不铺纹理——
@@ -341,7 +342,20 @@ void main(){
     float mn=max(cwMinor(eh,uCMinor,ad), cwMinor(eh,uCMinor*0.5,ad)*oddK(eh,uCMinor*0.5)*uCFade);
     float ix=max(cwIndex(eh,uCMinor*4.0,ad), cwIndex(eh,uCMinor*2.0,ad)*oddK(eh,uCMinor*2.0)*uCFade);
     float sup=smoothstep(2.5,6.0,uCMinor/ad), supIx=smoothstep(2.5,6.0,uCMinor*4.0/ad);
-    col=mix(col, vec3(90.0,70.0,40.0)/255.0, max(mn*0.50*sup, ix*0.70*supIx));
+    // 间曲线（1/2 距，长虚线）与助曲线（1/4 距，短虚线）：上一级线距够宽才浮现（core/elev.SUP_*），奇数倍＝只补首曲线之间的新线；
+    // 虚线相位锚网格原点的像素坐标（平移不爬动），对 ±切向对称（CPU 的 y 轴反向也同相）
+    // 浮现门看 ±10 px 差分的**粗坡**，不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍、平地上永远开不了门
+    gWarp=vec2(0.0);   // 粗坡采样属制图面族（本块之后再无扭曲族采样）
+    float kx=10.0/uPXPD, ky=10.0/uPXPDY;
+    vec2 gc=vec2(elevSmooth(ll+vec2(kx,0.0))-elevSmooth(ll-vec2(kx,0.0)), elevSmooth(ll+vec2(0.0,ky))-elevSmooth(ll-vec2(0.0,ky)))/20.0;
+    float sp1=uCMinor/(abs(gc.x)+abs(gc.y)+1e-7);
+    float g1=smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1), g2=g1*smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1*0.5);
+    vec2 tg=normalize(vec2(-gd.y,gd.x)+vec2(1e-9,0.0));
+    float sd=dot(tg,(ll-uGridBB.xy)*vec2(uPXPD,uPXPDY))/${SUP_DASH_PX.toFixed(1)};
+    float d1=step(0.125,abs(fract(sd)-0.5)), d2=step(0.25,abs(fract(sd*2.0)-0.5));
+    float m2=cwMinor(eh,uCMinor*0.5,ad)*oddK(eh,uCMinor*0.5)*g1*d1;
+    float m4=cwMinor(eh,uCMinor*0.25,ad)*oddK(eh,uCMinor*0.25)*g2*d2;
+    col=mix(col, vec3(90.0,70.0,40.0)/255.0, max(max(mn*0.50*sup, ix*0.70*supIx), max(m2*0.50, m4*0.42)));
   }
   // 图幅外纸色最后覆盖（放在全部计算之后＝fwidth 的一致控制流不受此分支影响）；图廓线由 overlay 层描
   if(uPaper==1 && (rel.x<0.0||rel.y<0.0||rel.x>uGridSpan.x||rel.y>uGridSpan.y)) col=vec3(217.0,210.0,192.0)/255.0;
