@@ -46,6 +46,8 @@ export interface LayerDef { id: string; 名: string; on: boolean; tacOnly?: bool
 export const LAYERS: LayerDef[] = [
   { id: "terrain", 名: "地形底图", on: true },
   { id: "contour", 名: "等高线", on: false },
+  /* 标高点（2026-09-14，平价白名单）：规则场局部高点与内陆水面的高程数字——晕渲只承载坡度不承载高差 */
+  { id: "spots", 名: "标高点", on: true },
   { id: "decor", 名: "布景(手绘点缀)", on: true },
   { id: "graticule", 名: "经纬网", on: false },
   { id: "politics", 名: "政治·派系范围", on: true },
@@ -74,9 +76,9 @@ export const PRESETS: Record<string, Record<string, 1>> = {
   "政治": { terrain: 1, politics: 1, range: 1, road: 1, nodes: 1, labels: 1, notes: 1 },
   "军事": { terrain: 1, politics: 1, range: 1, road: 1, river: 1, wall: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1, radar: 1 },
   "经济": { terrain: 1, road: 1, river: 1, trade: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
-  "地理": { terrain: 1, contour: 1, decor: 1, graticule: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
-  "战术": { terrain: 1, contour: 1, decor: 1, road: 1, river: 1, wall: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1, radar: 1 },   // contour: 战场地文=棱线/凹路,等高线即战术图的骨架（2026-07 特化 P0 白名单）；wall=柱B 同批白名单
-  "全部": { terrain: 1, contour: 1, decor: 1, graticule: 1, politics: 1, range: 1, road: 1, river: 1, trade: 1, wall: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 }
+  "地理": { terrain: 1, contour: 1, spots: 1, decor: 1, graticule: 1, river: 1, range: 1, nodes: 1, labels: 1, notes: 1 },
+  "战术": { terrain: 1, contour: 1, spots: 1, decor: 1, road: 1, river: 1, wall: 1, range: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1, radar: 1 },   // contour: 战场地文=棱线/凹路,等高线即战术图的骨架（2026-07 特化 P0 白名单）；wall=柱B 同批白名单
+  "全部": { terrain: 1, contour: 1, spots: 1, decor: 1, graticule: 1, politics: 1, range: 1, road: 1, river: 1, trade: 1, wall: 1, nodes: 1, labels: 1, notes: 1, events: 1, arrows: 1, units: 1, trails: 1, ranges: 1, vision: 1 }
 };
 
 /* 地点类型（11 类）→ 记号。rank 控制随缩放显隐：0=永远可见…4=贴近才见 */

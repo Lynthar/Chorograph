@@ -6,6 +6,7 @@ import { EDGE_STYLE } from "../core/constants.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { hexA, errText } from "../core/util.ts";
 import { drawOverlay, drawOp } from "../render/overlay.ts";
+import type { ElevField } from "../core/elev.ts";
 import { terrainOpts } from "../render/renderer.ts";
 import { drawAnalysis } from "../render/analysis.ts";
 import { drawPaintCells, drawBrushRing, drawSelectBox } from "../render/editHud.ts";
@@ -15,7 +16,7 @@ import { dataLon } from "../ui/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig,
-  routePtsSig, routeResSig, unitLegsSig, visMaskSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, readOnlySig, uiPrefsSig, terrainStyleSig }
+  routePtsSig, routeResSig, unitLegsSig, visMaskSig, ruleFieldSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, readOnlySig, uiPrefsSig, terrainStyleSig }
   from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -30,11 +31,13 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   const { autosave } = libio;
   const times: number[] = [];
   let fps = "—", lastFtData = "";
+  let spotField: ElevField | null = null;   // 标高点读的场：落定的规则场；演算中（sig 为 null）沿用上一份
   /* 画一帧（地形+叠加层+工具预览）：rAF 循环逐帧调用；host.resize 设完画布尺寸后同步补画共用——
      设 canvas 宽高即清屏，若等下一帧 rAF 补画，空白帧会先被合成上屏（检查器滑开/收起的 0.22s 过渡
      经 ResizeObserver 逐帧触发 resize，空白帧与画面帧交替＝整屏闪烁）。 */
   const paint = (): void => {
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
+    const rf = ruleFieldSig.value; if (rf) spotField = rf;
     if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value));
     if (world) {
       const octx = ov.getContext("2d")!;
@@ -45,7 +48,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       const edgeSelIdx = (selSig.value && selSig.value.kind === "edge") ? selSig.value.idx : null;
       const decorSelId = (selSig.value && selSig.value.kind === "decor") ? selSig.value.id : null;
       const decorMultiIds = (selSig.value && selSig.value.kind === "multi") ? selSig.value.decorIds || null : null;
-      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, visMasks: visMaskSig.value, smooth: brushSmoothSig.value, edgeSelIdx, editing: modeSig.value === "edit", decorSelId, decorMultiIds });
+      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, visMasks: visMaskSig.value, spotField, smooth: brushSmoothSig.value, edgeSelIdx, editing: modeSig.value === "edit", decorSelId, decorMultiIds });
       const m = modeSig.value;
       if (m === "measure" || m === "route") drawAnalysis(octx, cam(), ctx.meta, m, routePtsSig.value, routeResSig.value, ctx.DPR);
       if (m === "edit" && editSubSig.value === "paint") {
@@ -132,7 +135,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       opDrawSig.value, linkTypeSig.value, linkFromSig.value,
       paintFactionSig.value, paintLayerSig.value,
       brushSizeSig.value, brushEraseSig.value, brushSmoothSig.value,
-      routePtsSig.value, routeResSig.value, unitLegsSig.value, visMaskSig.value,
+      routePtsSig.value, routeResSig.value, unitLegsSig.value, visMaskSig.value, ruleFieldSig.value,
       // 外壳可变态（非 signal，只能逐帧比）；elevField/ruleField=侵蚀细化异步换入（引用比较有效；推演底图画规则场）
       ctx.grid, ctx.elevField, ctx.ruleField, ctx.R, ctx.DPR, ctx.canvas.width, ctx.canvas.height,
       v.lon0, v.lat0, v.degPerPx,

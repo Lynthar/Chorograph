@@ -9,6 +9,8 @@ import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, 
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
 import { BASE_SLOPE_DEG, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterSurface } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, type Grid } from "../src/core/grid.ts";
+import { peakSpots, waterSpots } from "../src/core/spots.ts";
+import type { ElevField as SpotField } from "../src/core/elev.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
@@ -2066,6 +2068,39 @@ describe("自定义印章池 poolInsert", () => {
     const pool = ["a", "b", "c"].map(A);
     assert.deepStrictEqual(poolInsert(pool, A("d"), 3).map(x => x.id), ["d", "a", "b"]);
     assert.deepStrictEqual(pool.map(x => x.id), ["a", "b", "c"], "入参须原样");
+  });
+});
+
+describe("标高点 core/spots：局部高点按突出度、水面按连通块", () => {
+  const cols = 60, rows = 40, step = 0.001, bb = { lonMin: 100, lonMax: 100.06, latMin: 30, latMax: 30.04 };
+  const cells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => "plain"));
+  for (let r = 10; r < 16; r++) for (let c = 40; c < 48; c++) cells[r][c] = "water";   // 内陆湖 8×6
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 10; c++) cells[r][c] = "water";       // 贴图幅边的海
+  const grid: Grid = { bb, step, cols, rows, cells };
+  const wsurf = new Float32Array(cols * rows);
+  for (let r = 10; r < 16; r++) for (let c = 40; c < 48; c++) wsurf[r * cols + c] = 0.15;
+  const data = new Float32Array(cols * rows).fill(0.16);
+  const bump = (cx: number, cy: number, h: number, rad: number): void => {
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { const d = Math.hypot(c - cx, r - cy); if (d < rad) data[r * cols + c] += h * (1 - d / rad); }
+  };
+  bump(15, 25, 0.02, 4);      // 40 m 的山包
+  bump(30, 30, 0.0015, 3);    // 3 m 的埂
+  for (let r = 10; r < 16; r++) for (let c = 40; c < 48; c++) data[r * cols + c] = 0;      // 湖床在水面之下
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 10; c++) data[r * cols + c] = -0.3;
+  const f: SpotField = { bb, step, cols, rows, data, shadow: null };
+  it("5 m 突出度只留 40 m 的山包；1 m 时 3 m 的埂也出；湖岸平地不因湖床更低而成「高点」；数字＝制图面高程", () => {
+    const a = peakSpots(f, grid, wsurf, 5, 5 / 2000);
+    assert.deepStrictEqual(a.map(s => [s.kind, +s.lon.toFixed(4), +s.lat.toFixed(4)]), [["peak", 100.0155, 30.0255]]);
+    assert.strictEqual(a[0].e, elevSmooth(data, f, a[0].lon, a[0].lat));
+    assert.ok(a[0].e * 2000 > 340 && a[0].e * 2000 <= 360, `顶点制图面应约 350 m，实得 ${a[0].e * 2000}`);
+    const b = peakSpots(f, grid, wsurf, 5, 1 / 2000);
+    assert.deepStrictEqual(b.map(s => [+s.lon.toFixed(4), +s.lat.toFixed(4)]).sort(), [[100.0155, 30.0255], [100.0305, 30.0305]]);
+    assert.deepStrictEqual(peakSpots({ ...f, data: new Float32Array(cols * rows).fill(0.2) }, grid, wsurf, 5, 1 / 2000), [], "全平＝无高点");
+  });
+  it("内陆水体在离岸最远处标一枚水面；贴图幅边的海（水面 0）不标", () => {
+    const w = waterSpots(grid, wsurf);
+    assert.deepStrictEqual(w.map(s => [s.kind, Math.round(s.e * 2000)]), [["water", 300]]);
+    assert.ok(w[0].lon > 100.042 && w[0].lon < 100.046 && w[0].lat > 30.012 && w[0].lat < 30.014, `应在湖心一带，实得 ${w[0].lon},${w[0].lat}`);
   });
 });
 

@@ -14,7 +14,9 @@ import { drawFactions } from "./factions.ts";
 import { drawEdges, drawOps } from "./edges.ts";
 import { drawNodes, drawNodeRanges, drawPinnedNotes } from "./nodes.ts";
 import { createLabelField } from "./labels.ts";
+import { drawSpotHeights } from "./spots.ts";
 import type { Grid } from "../core/grid.ts";
+import type { ElevField } from "../core/elev.ts";
 import type { Leg } from "../core/units.ts";
 import type { UnitMasks } from "../core/viewshed.ts";
 import type { Meta, World, WorldNode } from "../core/types.ts";
@@ -47,6 +49,7 @@ export interface OverlayOpts {
   decorMultiIds?: string[] | null;    // 框选的布景 id（同款金框）
   unitLegs?: Map<string, Leg[]>;      // 部队可达性预算（外壳缓存；供尾迹标超速）
   visMasks?: Map<string, UnitMasks>;  // 视线掩膜（外壳编排；有掩膜的圈只填视线可达的格）
+  spotField?: ElevField | null;       // 标高点的场＝落定的规则场（数字与光标读数同源；演算中沿用上一份）
   smooth?: number;                    // 涂域边界平滑档（Chaikin 轮数 0–3；缺省 2，笔刷框调）
   edgeSelIdx?: number | null;         // 选中连线下标（红晕高亮，对齐旧 isSelEdge）
   editing?: boolean;                  // 编辑模式：全部地点可见（对齐旧 nodeVisible）
@@ -95,6 +98,7 @@ export function drawOverlay(
       if (on("units")) drawUnits(ctx, c2, meta, world, yearNow,   // 部队【记号】压在地点之上（战场主角）；标签让地名
         { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field,
           handleUnit: opts.editing ? (opts.unitSelId || null) : null });   // 阵形朝向手柄（同圈手柄之规：编辑态选中对象才出）
+      if (on("spots") && opts.spotField && opts.grid) drawSpotHeights(ctx, c2, meta, opts.spotField, opts.grid, field);   // 标高点最后占位：让地名与部队
     }
     if (on("graticule")) drawGraticule(ctx, cam, meta);   // 经纬网：拷贝循环外，屏幕空间一次绘制
     if ((meta || {}).mapKind === "tactical" && (meta || {}).bbox) drawNeatline(ctx, cam, meta!);   // 图廓线：图幅外已铺纸色（terrain 的 paper 裁决），墨框把「图页」缝起来

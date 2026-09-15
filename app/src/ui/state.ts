@@ -24,7 +24,7 @@ import { tget } from "../core/util.ts";
 
 /** 新壳已实现的图层子集（未实现的不出现在面板上）。trails/ranges/vision 为战术图专属（tacOnly）；
     units 两种图都画（2026-07-31 起战略图可摆基础部队） */
-export const IMPL_LAYERS = ["terrain", "contour", "decor", "graticule", "politics", "range", "road", "river", "trade", "wall", "nodes", "labels", "notes", "events", "arrows", "units", "trails", "ranges", "vision", "radar"];
+export const IMPL_LAYERS = ["terrain", "contour", "spots", "decor", "graticule", "politics", "range", "road", "river", "trade", "wall", "nodes", "labels", "notes", "events", "arrows", "units", "trails", "ranges", "vision", "radar"];
 
 export const worldSig = signal<World | null>(null);
 export const yearSig = signal(3107);
