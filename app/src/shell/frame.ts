@@ -7,7 +7,7 @@ import { calOf, fmtWhen } from "../core/calendar.ts";
 import { hexA, errText } from "../core/util.ts";
 import { drawOverlay, drawOp } from "../render/overlay.ts";
 import type { ElevField } from "../core/elev.ts";
-import { terrainOpts } from "../render/renderer.ts";
+import { contourStatsOf, terrainOpts } from "../render/renderer.ts";
 import { drawAnalysis } from "../render/analysis.ts";
 import { drawPaintCells, drawBrushRing, drawSelectBox } from "../render/editHud.ts";
 import { paintStep } from "../core/territory.ts";
@@ -38,7 +38,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   const paint = (): void => {
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
     const rf = ruleFieldSig.value; if (rf) spotField = rf;
-    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR));
+    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, contourStatsOf(ctx.meta, ctx.grid, spotField, ctx.ruleField)));
     if (world) {
       const octx = ov.getContext("2d")!;
       const selIdForOps = (selSig.value && selSig.value.kind === "node") ? selSig.value.id : null;

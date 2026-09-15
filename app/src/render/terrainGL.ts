@@ -2,7 +2,8 @@
    职责边界：分类网格（游戏真源）由 core/grid 在 CPU 计算、作为 RG32F 纹理上传（R=示意高程 G=类型索引）；
    本模块只做像素观感——高程双线性 + 细节噪声 + 晕渲 + 色阶 + 生态色调 + 海岸线 + 等高线。
    等高线例外地画在**规则场（工作档）的无噪声制图面**上（画面场可为精修档，线不跟它＝与读数同一个数）：
-   细曲线+计曲线（每第 4 条），等距由 core/elev.contourStepFor 随缩放 ×2 阶梯自适应、过渡档按 uCFade 淡入，像素量按 uDPR 锚 CSS 像素。
+   首曲线+计曲线（每第 5 条），等距由 core/elev.contourStepFor 随缩放与地势在 1-2-5 阶梯上自适应，相邻两档（uCA 细 / uCB 粗）
+   按 uCFade 交叉淡入淡出；像素量按 uDPR 锚 CSS 像素。
    细节噪声用整数哈希 PCG2D（纯装饰、不入存档；sin-hash 在 fp32 下大参数失谐、不可移植）。
 
    缩放自适应观感（2026-08 美化批，material.ts 是数值真源，CPU 兜底同构）：
@@ -41,8 +42,8 @@ uniform vec4 uViewBB;             // lonMin,latMin,lonMax,latMax
 uniform vec2 uRes;                // 画布像素
 uniform float uPXPD;              // 横向像素/度（经度有 cos(lat0) 校正，与纵向不同）
 uniform float uPXPDY;             // 纵向像素/度（对齐旧 drawTile 经 project 的各向异性贴图）
-uniform float uCMinor;            // 细曲线等距（抽象单位；contourStepFor 缩放自适应 ×2 阶梯）
-uniform float uCFade;             // 下一细分档淡入 0..1（×2 嵌套：新线在旧线正中浮现）
+uniform float uCA, uCB;           // 两套线系的等距（抽象单位；contourStepFor：1-2-5 阶梯上相邻两档，A 细 B 粗）
+uniform float uCFade;             // B 系权重 0..1（两系交叉淡入淡出；A==B 时无效）
 uniform float uDPR;               // 设备像素比：等高线线宽、挤线门、间曲线门与虚线节距按 CSS 像素锚定（1＝逐位旧行为）
 uniform vec3 uLight;
 uniform int uMode;                // 0=观感底图 1=推演底图（逐格平色）
@@ -214,6 +215,20 @@ float ruleSmooth(vec2 ll){ // 规则场制图面：同式换源——等高线�
 float cwMinor(float eh,float itv,float aa){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(0.8,1.5,d); }
 float cwIndex(float eh,float itv,float aa){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(1.3,2.4,d); }
 float oddK(float eh,float itv){ return mod(round(eh/itv),2.0); }
+/* 一套线系在此像素的着墨（CPU contourK 同式）：首曲线（挤线抑制：线距不足数像素的陡坎隐去）、计曲线（每第 5 条，按自身线距评估而幸存）、
+   间曲线（1/2 距，长虚线）与助曲线（1/4 距，短虚线）——上一级线距 ≥ core/elev.SUP_* 才浮现，奇数倍＝只补首曲线之间的新线。
+   gsl=粗坡（高程/CSS 像素）、sdp=沿等值线切向的像素坐标（虚线相位） */
+float contourK(float eh,float itv,float aa,float gsl,float sdp){
+  float mn=cwMinor(eh,itv,aa)*smoothstep(2.5,6.0,itv/aa);
+  float ix=cwIndex(eh,itv*5.0,aa)*smoothstep(2.5,6.0,itv*5.0/aa);
+  float sp1=itv/gsl;
+  float g1=smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1), g2=g1*smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1*0.5);
+  float sd=sdp/${SUP_DASH_PX.toFixed(1)};
+  float d1=step(0.125,abs(fract(sd)-0.5)), d2=step(0.25,abs(fract(sd*2.0)-0.5));
+  float m2=cwMinor(eh,itv*0.5,aa)*oddK(eh,itv*0.5)*g1*d1;
+  float m4=cwMinor(eh,itv*0.25,aa)*oddK(eh,itv*0.25)*g2*d2;
+  return max(max(mn*0.50, ix*0.70), max(m2*0.50, m4*0.42));
+}
 /* 水面高程（粗格最近取，同类型索引）：海=0，内陆湖=岸线高度，陆格取相邻水体水面
    （core/elev.waterSurface 已晕开一格＝湖岸线随细分场摆动，不被粗格边切成方块）。
    图幅外恒 0＝按海处理，与 cellAt 出界返 SEA_E 同调。 */
@@ -347,26 +362,18 @@ void main(){
   col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55*(1.0-float(uMode)));
   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
   if(uContour==1 && er>=ws-0.02 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
-    // 等高线画在规则场制图面 er（晕渲是画，等高线是尺）。细曲线=当前档整倍+半档奇数倍×uCFade 淡入；计曲线=每第 4 条。
-    // 挤线抑制（真图规范）：线距不足数像素的陡坎处细曲线隐去；计曲线按自身 4× 线距评估而幸存。
-    float eh=er+0.02;
-    float mn=max(cwMinor(eh,uCMinor,ad), cwMinor(eh,uCMinor*0.5,ad)*oddK(eh,uCMinor*0.5)*uCFade);
-    float ix=max(cwIndex(eh,uCMinor*4.0,ad), cwIndex(eh,uCMinor*2.0,ad)*oddK(eh,uCMinor*2.0)*uCFade);
-    float sup=smoothstep(2.5,6.0,uCMinor/ad), supIx=smoothstep(2.5,6.0,uCMinor*4.0/ad);
-    // 间曲线（1/2 距，长虚线）与助曲线（1/4 距，短虚线）：上一级线距够宽才浮现（core/elev.SUP_*），奇数倍＝只补首曲线之间的新线；
+    // 等高线画在规则场制图面 er（晕渲是画，等高线是尺）。两套线系各按 contourK 着墨，按 uCFade 交叉淡入（共有的线两系相加＝恒满）。
+    // 间曲线的浮现门看 ±10 px 差分的**粗坡**，不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍、平地上永远开不了门；
     // 虚线相位锚网格原点的像素坐标（平移不爬动），对 ±切向对称（CPU 的 y 轴反向也同相）
-    // 浮现门看 ±10 px 差分的**粗坡**，不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍、平地上永远开不了门
+    float eh=er+0.02;
     gWarp=vec2(0.0);   // 粗坡采样属制图面族（本块之后再无扭曲族采样）
     float kx=10.0/uPXPD*uDPR, ky=10.0/uPXPDY*uDPR;
     vec2 gc=vec2(ruleSmooth(ll+vec2(kx,0.0))-ruleSmooth(ll-vec2(kx,0.0)), ruleSmooth(ll+vec2(0.0,ky))-ruleSmooth(ll-vec2(0.0,ky)))/20.0/uDPR;
-    float sp1=uCMinor/(abs(gc.x)+abs(gc.y)+1e-7);
-    float g1=smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1), g2=g1*smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1*0.5);
+    float gsl=abs(gc.x)+abs(gc.y)+1e-7;
     vec2 tg=normalize(vec2(-gd.y,gd.x)+vec2(1e-9,0.0));
-    float sd=dot(tg,(ll-uGridBB.xy)*vec2(uPXPD,uPXPDY))/${SUP_DASH_PX.toFixed(1)}/uDPR;
-    float d1=step(0.125,abs(fract(sd)-0.5)), d2=step(0.25,abs(fract(sd*2.0)-0.5));
-    float m2=cwMinor(eh,uCMinor*0.5,ad)*oddK(eh,uCMinor*0.5)*g1*d1;
-    float m4=cwMinor(eh,uCMinor*0.25,ad)*oddK(eh,uCMinor*0.25)*g2*d2;
-    col=mix(col, vec3(90.0,70.0,40.0)/255.0, max(max(mn*0.50*sup, ix*0.70*supIx), max(m2*0.50, m4*0.42)));
+    float sdp=dot(tg,(ll-uGridBB.xy)*vec2(uPXPD,uPXPDY))/uDPR;
+    float k=uCA==uCB ? contourK(eh,uCA,ad,gsl,sdp) : min(1.0, contourK(eh,uCA,ad,gsl,sdp)*(1.0-uCFade)+contourK(eh,uCB,ad,gsl,sdp)*uCFade);
+    col=mix(col, vec3(90.0,70.0,40.0)/255.0, k);
   }
   // 图幅外纸色最后覆盖（放在全部计算之后＝fwidth 的一致控制流不受此分支影响）；图廓线由 overlay 层描
   if(uPaper==1 && (rel.x<0.0||rel.y<0.0||rel.x>uGridSpan.x||rel.y>uGridSpan.y)) col=vec3(217.0,210.0,192.0)/255.0;
@@ -546,7 +553,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.uniform1f(U("uPXPDY"), canvas.height / (viewBB.latMax - viewBB.latMin));
       gl.uniform1i(U("uMode"), opts.flat ? 1 : 0);
       gl.uniform1i(U("uContour"), opts.contour ? 1 : 0);
-      gl.uniform1f(U("uCMinor"), opts.cMinor || 0.12);
+      gl.uniform1f(U("uCA"), opts.cA || 0.12);
+      gl.uniform1f(U("uCB"), opts.cB || opts.cA || 0.12);
       gl.uniform1f(U("uCFade"), opts.cFade || 0);
       gl.uniform1f(U("uDPR"), opts.dpr ?? 1);
       gl.uniform1i(U("uWrap"), opts.wrap ? 1 : 0);

@@ -3,7 +3,7 @@
    生态色调 + 海岸线，2026-08 起加 域扭曲/微八度/材质纹理/谷影/岩化/水面观感——
    结构与系数同 GL（数值系数单一真源 render/material.FX），噪声哈希不同（此处 sin-hash fp64、
    GL 是 PCG2D fp32）＝观感同构而非逐位一致，与宏观 fbm 的既有纪律相同。
-   等高线与 GL 版同构地画在**规则场（工作档）的无噪声制图面**（细/计曲线 + contourStepFor 缩放自适应等距；像素量按 opts.dpr 锚 CSS 像素）。
+   等高线与 GL 版同构地画在**规则场（工作档）的无噪声制图面**（首/计曲线，contourStepFor 的 1-2-5 阶梯相邻两档交叉淡入；像素量按 opts.dpr 锚 CSS 像素）。
    性能策略沿袭旧版：**世界锚定瓦片 + 30% 余量**——平移只重贴图，视口越出余量或缩放变档才重渲。
    推演底图（opts.flat）例外：逐屏幕像素直接栅格化、不走瓦片（贴图重采样会让格边像素取到邻格）。 */
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
@@ -199,30 +199,33 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     if (!(opts.contour && ed[i] >= ws - 0.02
       && lon > grid!.bb.lonMin + grid!.step && lon < grid!.bb.lonMax - grid!.step
       && lat > grid!.bb.latMin + grid!.step && lat < grid!.bb.latMax - grid!.step)) return col;
-    const ci = opts.cMinor || 0.12, fd = opts.cFade || 0, dpr = opts.dpr ?? 1, eh = ed[i] + 0.02;
+    const cA = opts.cA || 0.12, cB = opts.cB || cA, fd = opts.cFade || 0, dpr = opts.dpr ?? 1, eh = ed[i] + 0.02;
     const gx = ed[y * W + Math.min(W - 1, x + 1)] - ed[i], gy = ed[Math.min(H - 1, y + 1) * W + x] - ed[i];   // 屏幕梯度（y 朝下）
     const ad = (Math.abs(gx) + Math.abs(gy)) * dpr + 1e-7;   // 线宽与挤线门按 CSS 像素锚定（同 GL uDPR）
-    const mn = Math.max(cw(eh, ci, ad, 0.8, 1.5), cw(eh, ci * 0.5, ad, 0.8, 1.5) * oddK(eh, ci * 0.5) * fd);
-    const ix = Math.max(cw(eh, ci * 4, ad, 1.3, 2.4), cw(eh, ci * 2, ad, 1.3, 2.4) * oddK(eh, ci * 2) * fd);
-    const sup = sstep(2.5, 6, ci / ad), supIx = sstep(2.5, 6, ci * 4 / ad);   // 挤线抑制：陡坎细曲线隐去、计曲线幸存
-    /* 间曲线 / 助曲线（同 GL）：上一级线距 ≥ SUP_LO~HI px 才浮现；虚线相位锚网格原点的像素坐标，
-       切向取世界 y 朝上的帧（gy 取反），与 GL 的 dFdy 同向 */
-    /* 浮现门看 ±10 px 差分的粗坡（同 GL），不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍 */
+    /* 间曲线的浮现门看 ±10 px 差分的粗坡（同 GL），不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍；
+       虚线相位锚网格原点的像素坐标，切向取世界 y 朝上的帧（gy 取反），与 GL 的 dFdy 同向 */
     const kx = 10 / pxpd * dpr, ky = 10 / pxpdY * dpr;
     const gcx = (elevSmooth(src.data, src, lon + kx, lat) - elevSmooth(src.data, src, lon - kx, lat)) / 20 / dpr;
     const gcy = (elevSmooth(src.data, src, lon, lat + ky) - elevSmooth(src.data, src, lon, lat - ky)) / 20 / dpr;
-    const sp1 = ci / (Math.abs(gcx) + Math.abs(gcy) + 1e-7), g1 = sstep(SUP_LO_PX, SUP_HI_PX, sp1), g2 = g1 * sstep(SUP_LO_PX, SUP_HI_PX, sp1 * 0.5);
+    const gsl = Math.abs(gcx) + Math.abs(gcy) + 1e-7, tl = Math.hypot(gy, gx) || 1;
+    const sdp = ((gy / tl) * (lon - grid!.bb.lonMin) * pxpd + (gx / tl) * (lat - grid!.bb.latMin) * pxpdY) / dpr;
+    const k = cA === cB ? contourK(eh, cA, ad, gsl, sdp) : Math.min(1, contourK(eh, cA, ad, gsl, sdp) * (1 - fd) + contourK(eh, cB, ad, gsl, sdp) * fd);
+    return [col[0] + (90 - col[0]) * k, col[1] + (70 - col[1]) * k, col[2] + (40 - col[2]) * k];
+  }
+  /* 一套线系在此像素的着墨（同 GL contourK）：首曲线（挤线抑制）、计曲线（每第 5 条）、间曲线 / 助曲线（粗坡门 + 虚线）。
+     gsl=粗坡（高程/CSS 像素）、sdp=沿等值线切向的像素坐标 */
+  function contourK(eh: number, itv: number, ad: number, gsl: number, sdp: number): number {
+    const mn = cw(eh, itv, ad, 0.8, 1.5) * sstep(2.5, 6, itv / ad);
+    const ix = cw(eh, itv * 5, ad, 1.3, 2.4) * sstep(2.5, 6, itv * 5 / ad);
+    const sp1 = itv / gsl, g1 = sstep(SUP_LO_PX, SUP_HI_PX, sp1), g2 = g1 * sstep(SUP_LO_PX, SUP_HI_PX, sp1 * 0.5);
     let m2 = 0, m4 = 0;
     if (g1 > 0) {
-      const tl = Math.hypot(gy, gx) || 1;
-      const sd = ((gy / tl) * (lon - grid!.bb.lonMin) * pxpd + (gx / tl) * (lat - grid!.bb.latMin) * pxpdY) / SUP_DASH_PX / dpr;
-      const fr = sd - Math.floor(sd), fr2 = 2 * sd - Math.floor(2 * sd);
+      const sd = sdp / SUP_DASH_PX, fr = sd - Math.floor(sd), fr2 = 2 * sd - Math.floor(2 * sd);
       const d1 = Math.abs(fr - 0.5) >= 0.125 ? 1 : 0, d2 = Math.abs(fr2 - 0.5) >= 0.25 ? 1 : 0;
-      m2 = cw(eh, ci * 0.5, ad, 0.8, 1.5) * oddK(eh, ci * 0.5) * g1 * d1;
-      m4 = cw(eh, ci * 0.25, ad, 0.8, 1.5) * oddK(eh, ci * 0.25) * g2 * d2;
+      m2 = cw(eh, itv * 0.5, ad, 0.8, 1.5) * oddK(eh, itv * 0.5) * g1 * d1;
+      m4 = cw(eh, itv * 0.25, ad, 0.8, 1.5) * oddK(eh, itv * 0.25) * g2 * d2;
     }
-    const k = Math.max(mn * 0.50 * sup, ix * 0.70 * supIx, m2 * 0.50, m4 * 0.42);
-    return [col[0] + (90 - col[0]) * k, col[1] + (70 - col[1]) * k, col[2] + (40 - col[2]) * k];
+    return Math.max(mn * 0.50, ix * 0.70, m2 * 0.50, m4 * 0.42);
   }
   const rgbCache = new Map<string, RGB>();   // 复合串 → 平色（distinct cell 极少）
   const rgbOf = (cell: string): RGB => {
@@ -435,7 +438,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         ? 360 * Math.round(((grid.bb.lonMin + grid.bb.lonMax) / 2 - (viewBB.lonMin + viewBB.lonMax) / 2) / 360)
         : 0;
       const vb: BBox = k ? { lonMin: viewBB.lonMin + k, lonMax: viewBB.lonMax + k, latMin: viewBB.latMin, latMax: viewBB.latMax } : viewBB;
-      const key = `g${(opts.gain ?? 1).toFixed(2)}` + (opts.contour ? `c${opts.cMinor || 0.12}f${Math.round((opts.cFade || 0) * 4)}d${opts.dpr ?? 1}` : "");   // fade 量化 1/4 桶：连续缩放不致每帧重渲瓦片；增益随缩放变，入键
+      const key = `g${(opts.gain ?? 1).toFixed(2)}` + (opts.contour ? `c${opts.cA || 0.12}/${opts.cB || 0}f${Math.round((opts.cFade || 0) * 4)}d${opts.dpr ?? 1}` : "");   // fade 量化 1/4 桶：连续缩放不致每帧重渲瓦片；增益随缩放变，入键
       const plan = planTile(tile, key, vb, pxpd, grid.bb);
       if (plan === "none") tile = null;
       else if (plan !== "keep") tile = { cv: renderTile(plan.bb, plan.renderPxpd, opts), bb: plan.bb, pxpd: plan.pxpd, key };

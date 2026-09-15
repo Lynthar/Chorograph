@@ -16,7 +16,7 @@ import { FAC_PALETTE } from "../ui/editops.ts";
 import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
-import { terrainOpts } from "../render/renderer.ts";
+import { contourStatsOf, terrainOpts } from "../render/renderer.ts";
 import { safeName, errText, newId } from "../core/util.ts";
 import { exportScaleFit, pngSetDpi } from "../core/png.ts";
 import { SHARED_TAG_ID, embedShareHtml, packShare, shareHash, unpackShare } from "../core/share.ts";
@@ -28,7 +28,7 @@ import { calOf, fmtT, fmtWhen } from "../core/calendar.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewSig, libActionsSig,
   playingSig, togglePlay, stopPlay, closeSettings, mutateWorld, pushHistoryOnce, clearOpSel, cancelOpDraw,
   routePtsSig, routeResSig, linkFromSig, unitLegsSig, uiPrefsSig, terrainStyleSig,
-  gridVerSig, editVerSig, showToast, loadStageSig, saveConflictSig, readOnlySig, geoImportSig, type LibActions }
+  gridVerSig, editVerSig, showToast, loadStageSig, saveConflictSig, readOnlySig, geoImportSig, ruleFieldSig, type LibActions }
   from "../ui/state.ts";
 import type { ShellCtx, FolderHandle } from "./ctx.ts";
 import type { DeepLink } from "./deeplink.ts";
@@ -553,7 +553,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
         if (ctx.repaint) ctx.repaint();   // 叠加层按新 DPR 重画（地形随即再渲一次，同帧幂等）
       }
       const R = layersSig.peek().terrain ? ctx.R : null;
-      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR));
+      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, contourStatsOf(ctx.meta, ctx.grid, ruleFieldSig.peek(), ctx.ruleField)));
       const off = document.createElement("canvas");
       off.width = canvas.width; off.height = canvas.height;
       const g2 = off.getContext("2d")!;
@@ -777,7 +777,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   function captureThumb(): string | null {
     try {
       if (!canvas.width || !canvas.height) return null;
-      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR));
+      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, contourStatsOf(ctx.meta, ctx.grid, ruleFieldSig.peek(), ctx.ruleField)));
       const tw = 280, th = 175, off = document.createElement("canvas");
       off.width = tw; off.height = th;
       const g2 = off.getContext("2d")!;

@@ -166,8 +166,10 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
     const mdl: WorldModel = tacNew ? "flat" : model;          // 战场恒平面
     const kmdegEl = box.current!.querySelector<HTMLInputElement>("#sw_kmdeg");
     const kmdegRaw = kmdegEl ? kmdegEl.value.trim() : "";
+    const cm = num("sw_contourm", 0);   // 行只在战略新建 / 既有图渲染，不在＝退回 0＝不落盘
     const spec: BlankWorldSpec = {
       名称: q<HTMLInputElement>("#sw_name").value.trim() || "未命名世界",
+      contourM: cm > 0 ? cm : undefined,
       worldModel: mdl,
       /* 形态互斥＝只落该形态真读的那一项：球面只落半径（kmPerDeg 全仓一处不读）、平面只落每度里程。
          ⚠ 战术分支不渲染每度里程行，取预填 d.kmdeg——「以此参数新建」自战场进来时要把 111.19 带过去；
@@ -225,6 +227,8 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       if (outEl) { if (outEl.value === "land") mm.outside = "land"; else delete mm.outside; }   // 图幅外（缺键=海）
       const climEl = box.current!.querySelector<HTMLSelectElement>("#sw_climate");
       if (climEl) { if (tget(CLIMATE, climEl.value)) mm.climate = climEl.value as Climate; else delete mm.climate; }   // 气候档（缺键=出厂雪线）
+      const cmEl = box.current!.querySelector<HTMLInputElement>("#sw_contourm");
+      if (cmEl) { const v = parseFloat(cmEl.value); if (v > 0) mm.contourM = v; else delete mm.contourM; }   // 最细等高距（缺键=10；只动观感）
       const perEl = periodEl();
       if (perEl) { if (perEl.value === "modern") mm.period = "modern"; else delete mm.period; }   // 时代（缺键=古代；改回古代只收起表单行，数据不动）
       /* 纪元前缀（custom 既有图可改，纯显示层；kind/月长锁定不动）。默认 SE 不落盘 */
@@ -479,6 +483,13 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         </select>
         <span class="sub">定雪线基准：球面图再随纬度在图幅内变化（高纬低、低纬高），平面图不随纬度。只动观感，随时可改。</span>
       </div>
+      {!(create && tacNew) && (
+        /* 最细等高距（战略图与既有图的入口；战术新建在上方自己那一行）：等高距的地板，随时可改，只动观感 */
+        <div class="setrow"><label>最细等高距 米</label>
+          <input type="number" id="sw_contourm" min={0} step={5} defaultValue={base && base.contourM != null ? String(base.contourM) : ""} placeholder="留空＝10" />
+          <span class="sub">等高距按地势与缩放自适应（1-2-5 阶梯，每第 5 条加粗为计曲线），永不细于此值；平原 10、山地 50～100。</span>
+        </div>
+      )}
       {!create && (
         /* 图幅外（app 模式改；随时可改，只动观感）：判据同时供水面高程与图幅外底色两处用 */
         <div class="setrow"><label>图幅外</label>
