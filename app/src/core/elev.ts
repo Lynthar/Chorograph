@@ -185,7 +185,7 @@ function ladderDown(x: number, floorM: number): number {
     法则：地板 contourM（缺省 10）> 上限 高程范围÷CONTOUR_LEVELS > 下限 CONTOUR_PX×坡度₇₅×米/像素。
     下限落在两档之间时交叉淡入（fade=1−(1−t)²，t 为对数位置；粗系先占、细线晚出）；粗档若已装不下四级就不向它淡；
     下限越过上限（陡坡 / 整幅视角）＝上限向下吸附、单系无淡入。stats 为 null（还没有场）按坡度 0.2、范围无穷＝旧 1.6 m/px 手感。 */
-export interface ContourStep { aM: number; bM: number; a: number; b: number; fade: number }
+export interface ContourStep { aM: number; bM: number; a: number; b: number; fade: number; dom: number }
 export function contourStepFor(degPerPx: number, meta: Meta | undefined, stats: ContourStats | null): ContourStep {
   const m = meta || {};
   const floorM = +(m.contourM as number) > 0 ? (m.contourM as number) : 10;
@@ -193,7 +193,9 @@ export function contourStepFor(degPerPx: number, meta: Meta | undefined, stats: 
   const lowM = Math.max(floorM, CONTOUR_PX * (stats ? stats.slope75 : 0.2) * mPerPx);
   const capM = Math.max(floorM, (stats ? stats.rangeM : Infinity) / CONTOUR_LEVELS);
   const unit = elevUnitM(m);
-  const out = (aM: number, bM: number, fade: number): ContourStep => ({ aM, bM, a: aM / unit, b: bM / unit, fade });
+  // dom＝占优线系的等距（抽象单位）：两系交叉淡入时以权重过半者为准——等高线注记标的是它的计曲线（§9.17）
+  const out = (aM: number, bM: number, fade: number): ContourStep =>
+    ({ aM, bM, a: aM / unit, b: bM / unit, fade, dom: (fade < 0.5 ? aM : bM) / unit });
   if (lowM >= capM) { const v = ladderDown(capM, floorM); return out(v, v, 0); }
   const lo = ladderDown(lowM, floorM), hi = ladderUp(lowM, floorM);
   if (hi > capM || hi === lo) return out(lo, lo, 0);

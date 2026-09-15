@@ -199,7 +199,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     if (!(opts.contour && ed[i] >= ws - 0.02
       && lon > grid!.bb.lonMin + grid!.step && lon < grid!.bb.lonMax - grid!.step
       && lat > grid!.bb.latMin + grid!.step && lat < grid!.bb.latMax - grid!.step)) return col;
-    const cA = opts.cA || 0.12, cB = opts.cB || cA, fd = opts.cFade || 0, dpr = opts.dpr ?? 1, eh = ed[i] + 0.02;
+    const cA = opts.cA || 0.12, cB = opts.cB || cA, fd = opts.cFade || 0, dpr = opts.dpr ?? 1, eh = ed[i];   // 线落在等距的整数倍上（同 GL：不再偏移 0.02）
     const gx = ed[y * W + Math.min(W - 1, x + 1)] - ed[i], gy = ed[Math.min(H - 1, y + 1) * W + x] - ed[i];   // 屏幕梯度（y 朝下）
     const ad = (Math.abs(gx) + Math.abs(gy)) * dpr + 1e-7;   // 线宽与挤线门按 CSS 像素锚定（同 GL uDPR）
     /* 间曲线的浮现门看 ±10 px 差分的粗坡（同 GL），不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍；

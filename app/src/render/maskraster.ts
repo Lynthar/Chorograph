@@ -45,8 +45,8 @@ function boxWeights(n: number, out: number): [number, number, number][] {
 }
 
 /* marching squares 的 16 种角态 → 穿过的边（0 上 1 右 2 下 3 左）；角位 a 左上 8 · b 右上 4 · c 右下 2 · d 左下 1。
-   鞍点 5/10 各取一种连法，画线不区分。 */
-const CASES: [number, number][][] = [
+   鞍点 5/10 各取一种连法，画线不区分。**全仓唯一一份**：render/contourlab 的等高线注记同表（它把散段再链成折线）。 */
+export const MS_CASES: [number, number][][] = [
   [], [[3, 2]], [[2, 1]], [[3, 1]], [[0, 1]], [[0, 1], [3, 2]], [[0, 2]], [[0, 3]],
   [[0, 3]], [[0, 2]], [[0, 3], [1, 2]], [[0, 1]], [[3, 1]], [[2, 1]], [[3, 2]], []
 ];
@@ -60,7 +60,7 @@ export function maskContour(cv: Coverage, thr = 0.5): Float32Array {
   for (let y = -1; y < h; y++) for (let x = -1; x < w; x++) {
     const a = v(x, y), b = v(x + 1, y), c = v(x + 1, y + 1), d = v(x, y + 1);
     const idx = (a >= thr ? 8 : 0) | (b >= thr ? 4 : 0) | (c >= thr ? 2 : 0) | (d >= thr ? 1 : 0);
-    const segs = CASES[idx];
+    const segs = MS_CASES[idx];
     if (!segs.length) continue;
     const X = x + 0.5, Y = y + 0.5, t = (p: number, q: number): number => (thr - p) / (q - p);
     pt[0] = X + t(a, b); pt[1] = Y;

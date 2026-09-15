@@ -410,18 +410,19 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     const F = { worldModel: "flat", kmPerDeg: 100, elevUnitM: 1000 } as Meta;   // 0.001°/px＝100 m/px
     const near = (x: number, y: number, m: string) => assert.ok(Math.abs(x - y) < 1e-9, `${m}: ${x} vs ${y}`);
     // 平原细：下限 8×0.01×100=8 m 不及地板 → 单系 10 m
-    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.01, rangeM: 200 }), { aM: 10, bM: 10, a: 0.01, b: 0.01, fade: 0 });
+    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.01, rangeM: 200 }), { aM: 10, bM: 10, a: 0.01, b: 0.01, fade: 0, dom: 0.01 });
     // 山地粗：下限 400 m 落在 200～500 之间、上限 500 容得下 → 两系交叉淡入（对数位置 t 的 1−(1−t)²）
     const mt = contourStepFor(0.001, F, { slope75: 0.5, rangeM: 2000 });
     assert.deepStrictEqual([mt.aM, mt.bM, mt.a, mt.b], [200, 500, 0.2, 0.5]);
     near(mt.fade, 1 - (1 - Math.log(400 / 200) / Math.log(500 / 200)) ** 2, "fade");
+    assert.strictEqual(mt.dom, mt.b, "权重过半＝注记跟粗系");
     // 粗档装不下四级（1800/4=450 < 500）就不向它淡：停在细档
-    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.5, rangeM: 1800 }), { aM: 200, bM: 200, a: 0.2, b: 0.2, fade: 0 });
+    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.5, rangeM: 1800 }), { aM: 200, bM: 200, a: 0.2, b: 0.2, fade: 0, dom: 0.2 });
     // 战略整幅：5 km/px 的下限 4000 m 越过上限 → 上限向下吸附＝200 m，整幅 ≥4 级
     const st = contourStepFor(0.05, F, { slope75: 0.1, rangeM: 1800 });
     assert.deepStrictEqual([st.aM, st.bM, st.fade], [200, 200, 0]); assert.ok(1800 / st.aM >= CONTOUR_LEVELS);
     // 地板不穿：contourM=100 时坡度再小也是 100；地板不在 1-2-5 上也算一档（30 → 相邻 30/50）
-    assert.deepStrictEqual(contourStepFor(0.001, { ...F, contourM: 100 }, { slope75: 0.05, rangeM: 5000 }), { aM: 100, bM: 100, a: 0.1, b: 0.1, fade: 0 });
+    assert.deepStrictEqual(contourStepFor(0.001, { ...F, contourM: 100 }, { slope75: 0.05, rangeM: 5000 }), { aM: 100, bM: 100, a: 0.1, b: 0.1, fade: 0, dom: 0.1 });
     const f30 = contourStepFor(0.001, { ...F, contourM: 30 }, { slope75: 0.05, rangeM: 5000 });
     assert.deepStrictEqual([f30.aM, f30.bM], [30, 50]);
     // 没有场（stats=null）：按坡度 0.2、范围无穷＝旧 1.6 m/px 手感 → 160 m 落在 100～200
@@ -430,8 +431,8 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     // 跨档连续：下限 200 m 两侧——之下 100/200 且 fade→1，之上 200/500 且 fade→0（画面都是 200 m 线）
     const dppAt = (lowM: number) => lowM / (CONTOUR_PX * 0.2) / 100000;
     const lo = contourStepFor(dppAt(200 * 0.9999), F, null), hi = contourStepFor(dppAt(200 * 1.0001), F, null);
-    assert.deepStrictEqual([lo.aM, lo.bM], [100, 200]); assert.ok(lo.fade > 0.999);
-    assert.deepStrictEqual([hi.aM, hi.bM], [200, 500]); assert.ok(hi.fade < 0.001);
+    assert.deepStrictEqual([lo.aM, lo.bM], [100, 200]); assert.ok(lo.fade > 0.999); assert.strictEqual(lo.dom, lo.b);
+    assert.deepStrictEqual([hi.aM, hi.bM], [200, 500]); assert.ok(hi.fade < 0.001); assert.strictEqual(hi.dom, hi.a);
     // 阶梯档界恰在 10 的整幂（log10 的 ULP 误差）：1000 m 两侧仍是 500/1000 与 1000/2000
     assert.deepStrictEqual([contourStepFor(dppAt(1000 * 0.9999), F, null).bM, contourStepFor(dppAt(1000 * 1.0001), F, null).aM], [1000, 1000]);
     let prev = 0;
