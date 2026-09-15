@@ -1530,14 +1530,15 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
      推演底图不替等高线做主（等高线仍是独立图层），也不改纸色/雪线/增益的来源。 */
   it("terrainOpts：推演底图只翻 flat，等高线仍随图层开关，其余项与观感底图逐位相同", () => {
     const meta = { mapKind: "tactical", elevUnitM: 2000, bbox: { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 } } as Meta;
-    const a = terrainOpts(meta, 0.001, { contour: true }, 1.5, "shaded"), b = terrainOpts(meta, 0.001, { contour: true }, 1.5, "flat");
+    const a = terrainOpts(meta, 0.001, { contour: true }, 1.5, "shaded", 1), b = terrainOpts(meta, 0.001, { contour: true }, 1.5, "flat", 1);
     assert.strictEqual(a.flat, false); assert.strictEqual(b.flat, true);
     assert.deepStrictEqual({ ...a, flat: null }, { ...b, flat: null }, "样式之外的项逐位相同");
-    assert.strictEqual(terrainOpts(meta, 0.001, { contour: false }, 1, "flat").contour, false, "推演底图不强开等高线");
+    assert.strictEqual(terrainOpts(meta, 0.001, { contour: false }, 1, "flat", 1).contour, false, "推演底图不强开等高线");
+    assert.strictEqual(a.dpr, 1); assert.strictEqual(terrainOpts(meta, 0.001, {}, 1, "shaded", 2.5).dpr, 2.5, "设备像素比原样进渲染选项（等高线像素量据此锚 CSS 像素）");
     assert.strictEqual(a.gain, shadeGain(meta, 0.001) * 1.5, "增益＝shadeGain × 本机地形立体感");
     assert.strictEqual(a.paper, paperOf(meta)); assert.deepStrictEqual(a.snow, snowSpec(meta));
     assert.deepStrictEqual([a.cMinor, a.cFade], [contourStepFor(0.001, meta).minor, contourStepFor(0.001, meta).fade]);
-    assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded").wrap, false, "平面世界不环绕");
+    assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded", 1).wrap, false, "平面世界不环绕");
   });
   it("pinnedStackH：屏幕角标注堆的占高（出图图例据此让开 se）", () => {
     const T = 3107;

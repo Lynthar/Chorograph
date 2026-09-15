@@ -38,7 +38,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   const paint = (): void => {
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
     const rf = ruleFieldSig.value; if (rf) spotField = rf;
-    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value));
+    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR));
     if (world) {
       const octx = ov.getContext("2d")!;
       const selIdForOps = (selSig.value && selSig.value.kind === "node") ? selSig.value.id : null;

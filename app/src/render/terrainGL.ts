@@ -1,8 +1,8 @@
 /* WebGL2 地形渲染器。
    职责边界：分类网格（游戏真源）由 core/grid 在 CPU 计算、作为 RG32F 纹理上传（R=示意高程 G=类型索引）；
    本模块只做像素观感——高程双线性 + 细节噪声 + 晕渲 + 色阶 + 生态色调 + 海岸线 + 等高线。
-   等高线例外地画在**无噪声数据面**上（细节噪声纯装饰，读数不含）：细曲线+计曲线（每第 4 条），
-   等距由 core/elev.contourStepFor 随缩放 ×2 阶梯自适应、过渡档按 uCFade 淡入。
+   等高线例外地画在**规则场（工作档）的无噪声制图面**上（画面场可为精修档，线不跟它＝与读数同一个数）：
+   细曲线+计曲线（每第 4 条），等距由 core/elev.contourStepFor 随缩放 ×2 阶梯自适应、过渡档按 uCFade 淡入，像素量按 uDPR 锚 CSS 像素。
    细节噪声用整数哈希 PCG2D（纯装饰、不入存档；sin-hash 在 fp32 下大参数失谐、不可移植）。
 
    缩放自适应观感（2026-08 美化批，material.ts 是数值真源，CPU 兜底同构）：
@@ -33,6 +33,9 @@ uniform vec4 uGridBB;             // lonMin,latMin,step,wrap中心经度
 uniform ivec2 uGridDim;           // cols,rows（类型粗格）
 uniform ivec2 uFDim;              // 高程场维度（侵蚀细分后 ≠ uGridDim）
 uniform float uFStep;             // 度/场格
+uniform sampler2D uRule;          // RG32F 规则场（工作档）：等高线只从它取样＝与光标读数同源；画面场为精修档时线不跟画面
+uniform ivec2 uRDim;              // 规则场维度
+uniform float uRStep;             // 度/规则场格
 uniform vec2 uGridSpan;           // 网格真实跨度(lonMax-lonMin,latMax-latMin)：出界判定用，对齐 CPU/旧版 bbox
 uniform vec4 uViewBB;             // lonMin,latMin,lonMax,latMax
 uniform vec2 uRes;                // 画布像素
@@ -40,6 +43,7 @@ uniform float uPXPD;              // 横向像素/度（经度有 cos(lat0) 校�
 uniform float uPXPDY;             // 纵向像素/度（对齐旧 drawTile 经 project 的各向异性贴图）
 uniform float uCMinor;            // 细曲线等距（抽象单位；contourStepFor 缩放自适应 ×2 阶梯）
 uniform float uCFade;             // 下一细分档淡入 0..1（×2 嵌套：新线在旧线正中浮现）
+uniform float uDPR;               // 设备像素比：等高线线宽、挤线门、间曲线门与虚线节距按 CSS 像素锚定（1＝逐位旧行为）
 uniform vec3 uLight;
 uniform int uMode;                // 0=观感底图 1=推演底图（逐格平色）
 uniform int uContour;
@@ -161,32 +165,34 @@ Mat matAt(vec2 rw){   // rw=已扭曲的局部坐标（调用方算一次 warp�
   return m;
 }
 
-vec2 cellAt(vec2 ll){ // (双线性高程, 最近格类型索引)——高程走细分场纹理、类型仍粗格最近取
+/* 场纹理双线性（格心对齐、边缘 clamp；出界判定由调用方做）：.x=高程 R，.y=遮蔽 G */
+vec2 fieldBil(sampler2D fld, ivec2 dim, float st, vec2 rel){
+  vec2 f=rel/st-0.5;
+  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), dim-1);
+  ivec2 c1=min(c0+1, dim-1);
+  vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
+  vec2 s00=texelFetch(fld,ivec2(c0.x,c0.y),0).rg, s10=texelFetch(fld,ivec2(c1.x,c0.y),0).rg;
+  vec2 s01=texelFetch(fld,ivec2(c0.x,c1.y),0).rg, s11=texelFetch(fld,ivec2(c1.x,c1.y),0).rg;
+  vec2 top=s00+(s10-s00)*t.x, bot=s01+(s11-s01)*t.x;
+  return top+(bot-top)*t.y;
+}
+vec2 cellAt(vec2 ll){ // (双线性画面场高程, 最近格类型索引)——高程走细分场纹理、类型仍粗格最近取
   // 网格 bbox 之外=深海（对齐 CPU 兜底先铺深水的行为；用真实跨度而非 cols×step——后者 ceil 多出 <1 格边缘条带）。
   // 纸模式（战术图）出界改走 clamp 延伸＝CPU elevBilinear 同语义：图幅外没有海。
   vec2 rel=ll-uGridBB.xy;
   if(uPaper==0 && outside(rel)) return vec2(SEA_E, SEA_T);
-  vec2 f=rel/uFStep-0.5;
-  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uFDim-1);
-  ivec2 c1=min(c0+1, uFDim-1);
-  vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
-  float e00=texelFetch(uField,ivec2(c0.x,c0.y),0).r, e10=texelFetch(uField,ivec2(c1.x,c0.y),0).r;
-  float e01=texelFetch(uField,ivec2(c0.x,c1.y),0).r, e11=texelFetch(uField,ivec2(c1.x,c1.y),0).r;
-  float top=e00+(e10-e00)*t.x, bot=e01+(e11-e01)*t.x;
   ivec2 n=clamp(ivec2(floor(rel/uGridBB.z)), ivec2(0), uGridDim-1);
-  return vec2(top+(bot-top)*t.y, texelFetch(uGrid,n,0).g);
+  return vec2(fieldBil(uField,uFDim,uFStep,rel).x, texelFetch(uGrid,n,0).g);
 }
-float occAt(vec2 ll){ // 烘焙遮蔽双线性（uField G；粗格全零＝无影响；出幅=0）
+float occAt(vec2 ll){ // 烘焙遮蔽双线性（画面场 G；粗格全零＝无影响；出幅=0）
   vec2 rel=ll-uGridBB.xy;
   if(outside(rel)) return 0.0;
-  vec2 f=rel/uFStep-0.5;
-  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uFDim-1);
-  ivec2 c1=min(c0+1, uFDim-1);
-  vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
-  float o00=texelFetch(uField,ivec2(c0.x,c0.y),0).g, o10=texelFetch(uField,ivec2(c1.x,c0.y),0).g;
-  float o01=texelFetch(uField,ivec2(c0.x,c1.y),0).g, o11=texelFetch(uField,ivec2(c1.x,c1.y),0).g;
-  float top=o00+(o10-o00)*t.x, bot=o01+(o11-o01)*t.x;
-  return top+(bot-top)*t.y;
+  return fieldBil(uField,uFDim,uFStep,rel).y;
+}
+float ruleAt(vec2 ll){ // 规则场（工作档）双线性高程：等高线的唯一采样源；出界语义同 cellAt
+  vec2 rel=ll-uGridBB.xy;
+  if(uPaper==0 && outside(rel)) return SEA_E;
+  return fieldBil(uRule,uRDim,uRStep,rel).x;
 }
 /* 高程细节场：双线性数据面 + 宏观 fbm4（旧式逐位）+ 微八度；dk=装饰噪声门（判据见 material.decoGate） */
 float eAt(vec2 ll, float mrough, float dk){
@@ -195,9 +201,13 @@ float eAt(vec2 ll, float mrough, float dk){
   e+=(fbm4(ll*1.1)-0.5)*rough*2.0*dk;
   return e+micro(ll-uGridBB.xy)*mrough*float(${FX.microAmp})*dk;
 }
-float elevSmooth(vec2 ll){ // 制图面：±半场格 4 抽头帐篷平滑（与 core/elev.elevSmooth 同式——读数=线；细分场即半细格）
+float elevSmooth(vec2 ll){ // 画面场制图面：±半场格 4 抽头帐篷平滑（与 core/elev.elevSmooth 同式）；只喂谷影
   float h=0.5*uFStep;
   return 0.25*(cellAt(ll+vec2(-h,-h)).x+cellAt(ll+vec2(h,-h)).x+cellAt(ll+vec2(-h,h)).x+cellAt(ll+vec2(h,h)).x);
+}
+float ruleSmooth(vec2 ll){ // 规则场制图面：同式换源——等高线画在它上＝与光标读数同一个数（画面场为精修档时线不跟画面）
+  float h=0.5*uRStep;
+  return 0.25*(ruleAt(ll+vec2(-h,-h))+ruleAt(ll+vec2(h,-h))+ruleAt(ll+vec2(-h,h))+ruleAt(ll+vec2(h,h)));
 }
 /* 等高线助手：d=到最近整倍等值面的像素距（数值 +1e-6 防零梯度平台整面刷线）。
    cwMinor/cwIndex 带宽不同（计曲线加宽）；oddK=倍数奇偶（×2 阶梯过渡期只淡入奇数倍新线） */
@@ -224,11 +234,12 @@ void main(){
   vec2 ll=vec2(uViewBB.x+x/uPXPD, uViewBB.w-yTop/uPXPDY);
   // 球面环绕：经度折回以网格中心为轴的 ±180° 域——单次绘制即无缝跨越 ±180° 经线
   if(uWrap==1) ll.x-=360.0*floor((ll.x-uGridBB.w+180.0)/360.0);
-  vec2 cd=cellAt(ll);   // (双线性数据面高程, 所在格类型索引)：等高线与推演平色用，晕渲另走带噪声的 eAt
+  vec2 cd=cellAt(ll);   // (双线性画面场高程, 所在格类型索引)：推演平色与谷影用，晕渲另走带噪声的 eAt
   vec2 rel=ll-uGridBB.xy;
-  float es=elevSmooth(ll);   // 制图面（帐篷平滑数据面，与光标读数同源；未扭曲族，此时 gWarp 恒 0）
-  float ad=fwidth(es)+1e-7;  // 等高线线宽：两种底图共用，故在 uMode 分支之前取（分支内 fwidth 未定义，软渲返 0）
-  vec2 gd=vec2(dFdx(es),dFdy(es));   // 制图面屏幕梯度（间曲线沿等值线切虚线）；与 fwidth 同处取＝一致控制流
+  float es=elevSmooth(ll);   // 画面场制图面（谷影的帐篷差；未扭曲族，此时 gWarp 恒 0）
+  float er=ruleSmooth(ll);   // 规则场制图面＝等高线的尺（与光标读数同源；观感底图的画面场可为精修档，线不跟它）
+  float ad=fwidth(er)*uDPR+1e-7;  // 等高线线宽（CSS 像素锚定）：两种底图共用，故在 uMode 分支之前取（分支内 fwidth 未定义，软渲返 0）
+  vec2 gd=vec2(dFdx(er),dFdy(er));   // 规则场制图面屏幕梯度（间曲线沿等值线切虚线）；与 fwidth 同处取＝一致控制流
   vec3 col; float ws, e;
   if(uMode==1){
     /* 推演底图：所在格的类型平色（uTColor＝terrainProps.color），不扭曲、不晕渲、不铺纹理——
@@ -335,10 +346,10 @@ void main(){
   float coast=1.0-smoothstep(0.0, aa*1.4, abs(e-ws+0.02));
   col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55*(1.0-float(uMode)));
   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
-  if(uContour==1 && es>=ws-0.02 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
-    // 等高线画在制图面 es（晕渲是画，等高线是尺）。细曲线=当前档整倍+半档奇数倍×uCFade 淡入；计曲线=每第 4 条。
+  if(uContour==1 && er>=ws-0.02 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
+    // 等高线画在规则场制图面 er（晕渲是画，等高线是尺）。细曲线=当前档整倍+半档奇数倍×uCFade 淡入；计曲线=每第 4 条。
     // 挤线抑制（真图规范）：线距不足数像素的陡坎处细曲线隐去；计曲线按自身 4× 线距评估而幸存。
-    float eh=es+0.02;
+    float eh=er+0.02;
     float mn=max(cwMinor(eh,uCMinor,ad), cwMinor(eh,uCMinor*0.5,ad)*oddK(eh,uCMinor*0.5)*uCFade);
     float ix=max(cwIndex(eh,uCMinor*4.0,ad), cwIndex(eh,uCMinor*2.0,ad)*oddK(eh,uCMinor*2.0)*uCFade);
     float sup=smoothstep(2.5,6.0,uCMinor/ad), supIx=smoothstep(2.5,6.0,uCMinor*4.0/ad);
@@ -346,12 +357,12 @@ void main(){
     // 虚线相位锚网格原点的像素坐标（平移不爬动），对 ±切向对称（CPU 的 y 轴反向也同相）
     // 浮现门看 ±10 px 差分的**粗坡**，不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍、平地上永远开不了门
     gWarp=vec2(0.0);   // 粗坡采样属制图面族（本块之后再无扭曲族采样）
-    float kx=10.0/uPXPD, ky=10.0/uPXPDY;
-    vec2 gc=vec2(elevSmooth(ll+vec2(kx,0.0))-elevSmooth(ll-vec2(kx,0.0)), elevSmooth(ll+vec2(0.0,ky))-elevSmooth(ll-vec2(0.0,ky)))/20.0;
+    float kx=10.0/uPXPD*uDPR, ky=10.0/uPXPDY*uDPR;
+    vec2 gc=vec2(ruleSmooth(ll+vec2(kx,0.0))-ruleSmooth(ll-vec2(kx,0.0)), ruleSmooth(ll+vec2(0.0,ky))-ruleSmooth(ll-vec2(0.0,ky)))/20.0/uDPR;
     float sp1=uCMinor/(abs(gc.x)+abs(gc.y)+1e-7);
     float g1=smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1), g2=g1*smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1*0.5);
     vec2 tg=normalize(vec2(-gd.y,gd.x)+vec2(1e-9,0.0));
-    float sd=dot(tg,(ll-uGridBB.xy)*vec2(uPXPD,uPXPDY))/${SUP_DASH_PX.toFixed(1)};
+    float sd=dot(tg,(ll-uGridBB.xy)*vec2(uPXPD,uPXPDY))/${SUP_DASH_PX.toFixed(1)}/uDPR;
     float d1=step(0.125,abs(fract(sd)-0.5)), d2=step(0.25,abs(fract(sd*2.0)-0.5));
     float m2=cwMinor(eh,uCMinor*0.5,ad)*oddK(eh,uCMinor*0.5)*g1*d1;
     float m4=cwMinor(eh,uCMinor*0.25,ad)*oddK(eh,uCMinor*0.25)*g2*d2;
@@ -409,8 +420,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
 
   let pr: WebGLProgram | null = null;
   let tex: WebGLTexture | null = null;    // 类型粗格纹理（TEXTURE0）
-  /* 高程场+遮蔽纹理（TEXTURE1；侵蚀细分后维度 ≠ 粗格）：画面场与规则场各一份，render 按底图样式绑其一——
-     观感底图画画面场（精修档在此），推演底图画规则场（与光标读数同源）。两场同一对象时只建一份。 */
+  /* 高程场+遮蔽纹理（侵蚀细分后维度 ≠ 粗格）：画面场与规则场各一份——TEXTURE1 绑本帧的画面（观感底图＝画面场，
+     精修档在此；推演底图＝规则场），TEXTURE2 恒绑规则场供等高线取样（与光标读数同源）。两场同一对象时只建一份。 */
   interface FieldTex { tex: WebGLTexture | null; cols: number; rows: number; step: number; eroded: number }
   let fDisp: FieldTex | null = null, fRule: FieldTex | null = null;
   let g: Grid | null = null;
@@ -425,6 +436,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.useProgram(pr);
     gl.uniform1i(U("uGrid"), 0);
     gl.uniform1i(U("uField"), 1);
+    gl.uniform1i(U("uRule"), 2);
     const light = [-0.6, -0.6, 0.9], ll = Math.hypot(...light);
     gl.uniform3f(U("uLight"), light[0] / ll, light[1] / ll, light[2] / ll);
     const comps = allComposites();   // 30 个复合，顺序与 compositeIndex 对齐（旧 8 类落在各自复合上、色/tint 逐位复现）
@@ -470,14 +482,13 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     if (fRule && fRule !== fDisp) gl.deleteTexture(fRule.tex);
     fDisp = fRule = null;
   };
-  /** 绑定本帧采样的场（观感＝画面场、推演＝规则场）并同步它的几何 uniform */
-  function bindField(f: FieldTex): void {
-    gl.activeTexture(gl.TEXTURE1);
+  /** 把场纹理绑到纹理单元并同步它的几何 uniform（1＝画面场 uFDim/uFStep，2＝规则场 uRDim/uRStep） */
+  function bindField(unit: number, f: FieldTex, dim: string, step: string): void {
+    gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, f.tex);
     gl.activeTexture(gl.TEXTURE0);
-    gl.uniform2i(U("uFDim"), f.cols, f.rows);
-    gl.uniform1f(U("uFStep"), f.step);
-    gl.uniform1f(U("uEroded"), f.eroded);
+    gl.uniform2i(U(dim), f.cols, f.rows);
+    gl.uniform1f(U(step), f.step);
   }
   function doUpload(grid: Grid, wsurf: Float32Array, fieldIn: ElevField | undefined, ruleIn: ElevField | undefined) {
     if (!pr) return;
@@ -524,9 +535,11 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     },
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
       const f = opts.flat ? fRule : fDisp;
-      if (!g || !pr || !f) return;
+      if (!g || !pr || !f || !fRule) return;
       gl.viewport(0, 0, canvas.width, canvas.height);
-      bindField(f);
+      bindField(1, f, "uFDim", "uFStep");
+      gl.uniform1f(U("uEroded"), f.eroded);
+      bindField(2, fRule, "uRDim", "uRStep");
       gl.uniform4f(U("uViewBB"), viewBB.lonMin, viewBB.latMin, viewBB.lonMax, viewBB.latMax);
       gl.uniform2f(U("uRes"), canvas.width, canvas.height);
       gl.uniform1f(U("uPXPD"), canvas.width / (viewBB.lonMax - viewBB.lonMin));
@@ -535,6 +548,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.uniform1i(U("uContour"), opts.contour ? 1 : 0);
       gl.uniform1f(U("uCMinor"), opts.cMinor || 0.12);
       gl.uniform1f(U("uCFade"), opts.cFade || 0);
+      gl.uniform1f(U("uDPR"), opts.dpr ?? 1);
       gl.uniform1i(U("uWrap"), opts.wrap ? 1 : 0);
       gl.uniform1i(U("uPaper"), opts.paper ? 1 : 0);
       const S = opts.snow;

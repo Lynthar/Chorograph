@@ -553,7 +553,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
         if (ctx.repaint) ctx.repaint();   // 叠加层按新 DPR 重画（地形随即再渲一次，同帧幂等）
       }
       const R = layersSig.peek().terrain ? ctx.R : null;
-      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek()));
+      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR));
       const off = document.createElement("canvas");
       off.width = canvas.width; off.height = canvas.height;
       const g2 = off.getContext("2d")!;
@@ -777,7 +777,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   function captureThumb(): string | null {
     try {
       if (!canvas.width || !canvas.height) return null;
-      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek()));
+      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR));
       const tw = 280, th = 175, off = document.createElement("canvas");
       off.width = tw; off.height = th;
       const g2 = off.getContext("2d")!;
