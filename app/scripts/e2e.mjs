@@ -130,10 +130,15 @@ for (const [label, extra] of [["GL", ""], ["CPU 兜底", "&force=cpu"]]) {
 const SHARED = JSON.stringify({
   meta: { 名称: "只读分享测", worldModel: "sphere", planetRadiusKm: 10000, kmPerDeg: 111,
     terrain: "sample", bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } },
-  factions: [], nodes: [{ id: "n1", type: "city", lon: 108, lat: 36, 名称: "甲城" }],
+  factions: [], nodes: [{ id: "n1", type: "city", lon: 108, lat: 36, 名称: "甲城" },
+    { id: "e1", type: "event", evtype: "battle", lon: 108, lat: 36, 名称: "会战", year: 3107 }],
   edges: [], decor: [], terrainOverrides: []
 });
 const hash = shareHash(await packShare(SHARED), { lon: 108, lat: 36, z: 0.06, year: 3107 });
+/* 带持久副作用的深链参数撞只读：#gentac 曾先 create 子图再被父图编辑门拦下＝读者一点开链接图库就多一张、当前图换成子图 */
+await send("Page.navigate", { url: `${origin}/?b=${Math.random().toString(36).slice(2)}${hash}&gentac=${encodeURIComponent("会战")}&dia=20` });
+await until("只读 + gentac：仍停在分享的那张图", `document.getElementById('crumbName')?.textContent === '只读分享测' && /只读/.test(document.getElementById('ftData')?.textContent || '')`);
+await until("只读 + gentac：给了回执", `/不能从它生成战术图/.test(document.querySelector('.toast')?.textContent || '')`);
 await send("Page.navigate", { url: `${origin}/?b=${Math.random().toString(36).slice(2)}${hash}` });
 await until("只读链接直达那张图", `document.getElementById('crumbName')?.textContent === '只读分享测'`);
 await until("顶栏报只读", `/只读/.test(document.getElementById('ftData')?.textContent || '')`);

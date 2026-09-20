@@ -11,7 +11,7 @@ import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm, tget } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
 import { clearOpSel, readOnlySig, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, visMaskSig, worldSig, yearSig } from "./state.ts";
-import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypoint, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
+import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
 import { FactionForm } from "./FactionForm.tsx";
@@ -231,8 +231,8 @@ function EdgeCard({ e, idx, world }: { e: Edge; idx: number; world: World }) {
 }
 
 
-/** 航段时长读数：≥1 日按日、不足 1 日按小时(亚日航点的 days 是 1/24 浮点,裸显是一串小数) */
-const fmtDur = (d: number): string => d >= 1 - 1e-9 ? `${+d.toFixed(1)}日` : `${+(d * 24).toFixed(1)}时`;
+/** 航段时长读数：≥1 日按日、不足 1 日按本历法的时（hpd＝每日时数，10 时制的 1 时是 0.1 日，写死 24 会把它显示成 2.4 时） */
+const fmtDur = (d: number, hpd: number): string => d >= 1 - 1e-9 ? `${+d.toFixed(1)}日` : `${+(d * hpd).toFixed(1)}时`;
 
 /** 航点动向（沿旧行内编辑语义：坐标数字栏/状态选择/删航点；editable=编辑态） */
 function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
@@ -252,7 +252,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
       {track.length === 0 && <div class="sub">（尚无航点——拖动部队即记录{tac ? "当日" : "当年"}位置）</div>}
       {track.map((q, i) => {
         const L = legs.find(g => g.i === i);
-        const setPt = (lon: number, lat: number) => { mutateWorld(w => { setUnitWaypoint(w, u.id, q.t, lon, lat); }); };
+        const setPt = (lon: number, lat: number) => { mutateWorld(w => { setUnitWaypointAt(w, u.id, i, lon, lat); }); };   // 行内编辑按行下标（同刻两行时按时刻会改到首行）
         return (
           <div key={i} class="kv">
             {/* .time＝这一条 .link 确实把时间轴拨到该时刻,是金的正当用处（其余 .link 已退回墨色） */}
@@ -270,7 +270,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
             {full ? <>{" "}
               <select class="fld" title="自该航点起的状态（到下一航点为止）" key={i + ":st" + (q.st || "")}
                 style={{ width: "4.4em", display: "inline-block", padding: "1px 2px", margin: 0 }}
-                onChange={e => { const v = (e.currentTarget as HTMLSelectElement).value; mutateWorld(w => { setUnitWaypointStatus(w, u.id, q.t, v); }); }}>
+                onChange={e => { const v = (e.currentTarget as HTMLSelectElement).value; mutateWorld(w => { setUnitWaypointStatus(w, u.id, i, v); }); }}>
                 <option value="" selected={!q.st}>常态</option>
                 {Object.entries(UNIT_STATUS).map(([k, d]) => <option key={k} value={k} selected={q.st === k}>{d.名}</option>)}
               </select>
@@ -282,10 +282,10 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
                 <input class="fld" type="number" min={0} max={359} step={1} title="朝向°（0=正北顺时针；留空＝行进方向）" key={i + ":fc" + (q.facing ?? "")}
                   style={{ width: "3.8em", display: "inline-block", padding: "1px 3px", margin: 0 }}
                   placeholder="向°" defaultValue={q.facing != null ? String(q.facing) : ""}
-                  onChange={e => { const v = (e.currentTarget as HTMLInputElement).value; mutateWorld(w => { setUnitWaypointFacing(w, u.id, q.t, v); }); }} />
+                  onChange={e => { const v = (e.currentTarget as HTMLInputElement).value; mutateWorld(w => { setUnitWaypointFacing(w, u.id, i, v); }); }} />
               </>
               : (q.facing != null ? <> · 朝向 {+(+q.facing).toFixed(0)}°</> : null))}
-            {L && <span class="sub" style={L.ok ? undefined : { color: "var(--q-zhu)" }}> {Math.round(L.km)}km{L.route ? "" : "(直线)"}/{fmtDur(L.days)}·需{fmtDur(L.need)}{L.ok ? "" : " ⚠"}</span>}
+            {L && <span class="sub" style={L.ok ? undefined : { color: "var(--q-zhu)" }}> {Math.round(L.km)}km{L.route ? "" : "(直线)"}/{fmtDur(L.days, cal.hpd)}·需{fmtDur(L.need, cal.hpd)}{L.ok ? "" : " ⚠"}</span>}
             {editable && <button type="button" class="link" style={{ color: "var(--q-zhu)" }} title="删此航点" onClick={() => { mutateWorld(w => { deleteUnitWaypoint(w, u.id, i); }); }}> ✕</button>}
             {/* 逐航点存量：兵力/速度/士气自该航点起生效。⚠ 留空＝「没变」而非回默认，故占位符显示的是
                 「此刻实际生效的值」——沿用上一次声明或部队级基线，所见即留空后的结果。另起一行是因为
@@ -303,7 +303,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
                       /* 静默变形要报回执（同 UnitForm 之规）：type=number 打不进合法值时 .value 恒为空串，
                          而空＝删键＝这一航点悄悄回到「沿用上一次声明」，全程无声。 */
                       if (el.validity?.badInput) noteFormWarn(`${名}不是数值　该航点已回到沿用`);
-                      mutateWorld(w => { setUnitWaypointNum(w, u.id, q.t, key, v); });
+                      mutateWorld(w => { setUnitWaypointNum(w, u.id, i, key, v); });
                     }} />
                 </span>
               ))}

@@ -202,6 +202,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   if (m.contourM != null) meta.contourM = m.contourM;
   if (m.climate) meta.climate = m.climate;                // 气候档随图继承（子图恒平面＝只取档值，不随纬度）
   if (m.period === "modern") meta.period = "modern";      // 时代随图继承（母图一般没有；设置里可改）
+  if (m.outside === "land") meta.outside = "land";        // 图幅外随图继承：母图声明内陆，切边的湖在子图仍是湖（不继承＝水面沉回 0）
   if (m.vault) meta.vault = m.vault;
   meta.gridN = autoGridN(meta);   // 尺度身份盖章（同 blankTacticalWorld）
 

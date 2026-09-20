@@ -47,11 +47,15 @@ async function drain(rs: ReadableStream<Uint8Array>, cap: number): Promise<Uint8
   return out;
 }
 
-/** 文本 → 分享载荷（UTF-8 → deflate-raw → base64url） */
+/**
+ * 文本 → 分享载荷（UTF-8 → deflate-raw → base64url）。
+ * @throws {Error} 原文超过 SHARE_CAP：解包端按解压后的 UTF-8 字节限长，压缩前不拦就会发出一条对方必定打不开的链接
+ */
 export async function packShare(text: string): Promise<string> {
   const u8 = new TextEncoder().encode(text);
+  if (u8.length > SHARE_CAP) throw new Error(`地图数据 ${(u8.length / 1048576).toFixed(1)} MB 超出只读链接的 ${Math.round(SHARE_CAP / 1048576)} MB 上限——请改用「📄 导出只读网页」或「💾 导出 JSON」`);
   const rs = new Blob([u8]).stream().pipeThrough(new CompressionStream("deflate-raw"));
-  return bytesToB64url(await drain(rs, SHARE_CAP));
+  return bytesToB64url(await drain(rs, Infinity));   // 原文已限长，压缩产物不可能是炸弹
 }
 
 /**

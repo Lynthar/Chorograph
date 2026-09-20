@@ -168,7 +168,8 @@ export function fmtYMD(cal: CalendarSpec, T: number): string {
 
 /** 解析日期输入："3107-3-7 / 3107.3.7 / 3107年3月7日 / 3107"(仅年=正月初一)；
     「前216-8-2」/「-215-8-2」=公元前（天文纪年 1-N / -N）；可带时刻「 13:30」（按本历法的时/分进制）；空/非法→null */
-const YMD_RE = /^(前|-)?(\d{1,6})(?:[-./年]\s*(\d{1,2}))?(?:[-./月]\s*(\d{1,2}))?\s*日?(?:\s*(\d{1,3})[:：](\d{1,3}))?\s*$/;
+// 月 ≤3 位、日 ≤4 位＝历法创建器的承诺值域（999 月 / 9999 日）；收窄到两位会让自家 fmtYMD 写出的「1-1-100」解析不回来
+const YMD_RE = /^(前|-)?(\d{1,6})(?:[-./年]\s*(\d{1,3}))?(?:[-./月]\s*(\d{1,4}))?\s*日?(?:\s*(\d{1,3})[:：](\d{1,3}))?\s*$/;
 export function parseYMD(cal: CalendarSpec, s: unknown): number | null {
   const str = String(s == null ? "" : s).trim();
   if (!str) return null;
@@ -258,7 +259,7 @@ export function fmtYearForm(cal: CalendarSpec, y: number): string {
 }
 /* 「年-月」输入（两轨共用）。⚠ 分隔符**不含小数点**——custom 的 "3107.5" 必须继续走 parseFloat
    （小数年是历史现状且黄金语义），当成 3107 年 5 月即是静默改值。 */
-const YM_RE = /^(前|-)?(\d{1,6})[-/年]\s*(\d{1,2})\s*月?$/;
+const YM_RE = /^(前|-)?(\d{1,6})[-/年]\s*(\d{1,3})\s*月?$/;   // 月 ≤3 位（同 YMD_RE）：两位时「1-100」落到 parseFloat＝月份静默丢失
 /** 表单年份解析：先认「年-月」；否则 custom=parseFloat（旧语义）、earth=整数年收「前N」/「-N」/「N」；空/非法→null */
 export function parseYearForm(cal: CalendarSpec, s: unknown): number | null {
   const str = String(s == null ? "" : s).trim();

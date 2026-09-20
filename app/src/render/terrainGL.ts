@@ -374,7 +374,7 @@ void main(){
     float eh=er;
     gWarp=vec2(0.0);   // 粗坡采样属制图面族（本块之后再无扭曲族采样）
     float kx=10.0/uPXPD*uDPR, ky=10.0/uPXPDY*uDPR;
-    vec2 gc=vec2(ruleSmooth(ll+vec2(kx,0.0))-ruleSmooth(ll-vec2(kx,0.0)), ruleSmooth(ll+vec2(0.0,ky))-ruleSmooth(ll-vec2(0.0,ky)))/20.0/uDPR;
+    vec2 gc=vec2(ruleSmooth(ll+vec2(kx,0.0))-ruleSmooth(ll-vec2(kx,0.0)), ruleSmooth(ll+vec2(0.0,ky))-ruleSmooth(ll-vec2(0.0,ky)))/20.0;   // ±10 CSS px 的差分÷20＝每 CSS px 的坡；再除 DPR 就成了每物理像素，高分屏上间曲线提前浮现
     float gsl=abs(gc.x)+abs(gc.y)+1e-7;
     vec2 tg=normalize(vec2(-gd.y,gd.x)+vec2(1e-9,0.0));
     float sdp=dot(tg,(ll-uGridBB.xy)*vec2(uPXPD,uPXPDY))/uDPR;
@@ -538,8 +538,15 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   /* 上下文丢失/恢复（GPU 进程崩溃、驱动重置、后台标签回收）：
      preventDefault 才有 restored；恢复后 program/纹理全失效，重建并重传网格——
      下一帧 rAF 自动出图，外壳零改动。缺此则地形永久空白（审计）。 */
+  /* GPU 名只在建上下文与上下文恢复时各查一次：UNMASKED_RENDERER 的 getParameter 是同步等 GPU 进程的往返，
+     曾被 hud 每个绘帧调用＝平移时主线程每帧空等（DPR 2 实测 35 ms/帧） */
+  const queryName = (): string => {
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    return (ext && (gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string)) || (gl.getParameter(gl.RENDERER) as string) || "WebGL2";
+  };
+  let name = queryName();
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; fDisp = fRule = null; if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
+  const onRestored = () => { tex = null; fDisp = fRule = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
@@ -580,10 +587,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       const vp = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array;
       return Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) as number, vp[0], vp[1]);
     },
-    rendererName() {
-      const ext = gl.getExtension("WEBGL_debug_renderer_info");
-      return (ext && (gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string)) || (gl.getParameter(gl.RENDERER) as string) || "WebGL2";
-    },
+    rendererName() { return name; },
     dispose() {
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);

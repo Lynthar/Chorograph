@@ -34,20 +34,32 @@ export function paintDims(bb: BBox | undefined, pd = PD): { bb: BBox; cols: numb
   };
 }
 
+/** 行程编码自报网格的边长上限（格）：地形网格封顶 1800 列，留一倍余量。超过＝该层按空处理。 */
+export const MAX_RUN_DIM = 4096;
+/** 一份 runs 的可信解码网格：pd 有限且不把 bbox 切成超过 MAX_RUN_DIM 格才可信，否则 null。
+    iMax/jMax＝列/行号的开区间上界（与旧 `ceil(跨度/pd)+1` 同式）。 */
+export function runsDims(R: PaintRuns | null | undefined, bb: BBox): { pd: number; iMax: number; jMax: number } | null {
+  if (!R || typeof R !== "object" || !Array.isArray(R.d)) return null;
+  const pd = +R.pd;
+  if (!(isFinite(pd) && pd > 0)) return null;
+  const cols = Math.ceil((bb.lonMax - bb.lonMin) / pd), rows = Math.ceil((bb.latMax - bb.latMin) / pd);
+  if (!(cols <= MAX_RUN_DIM && rows <= MAX_RUN_DIM)) return null;
+  return { pd, iMax: cols + 1, jMax: rows + 1 };
+}
+
 /** 遍历一份涂域数据的每个格心（经纬）：cells 与 runs 双认（读旧写新之约）。
-    runs 防御（值也是用户数据）：三元组非数跳过、长度钳到自身网格宽——1e9 的 len 不能变成
-    1e9 次回调；起列同理钳住下界。 */
+    runs 的工作量只由 runsDims 定、与三元组自报的起列/长度无关：行列都钳进 [-2, 上界)，
+    每个三元组至多 MAX_RUN_DIM 次回调——pd 自报 1e-20 或起列 1e16（i+1===i）都不能让循环不终止。 */
 export function eachPaintCenter(src: PaintSrc, bb: BBox, cb: (lon: number, lat: number) => void): void {
   if (!src) return;
   const L = Array.isArray(src) ? { cells: src, runs: undefined as PaintRuns | undefined } : src;
   for (const c of L.cells || []) { if (Array.isArray(c)) cb(+c[0], +c[1]); }
-  const R = L.runs;
-  if (R && typeof R === "object" && +R.pd > 0 && Array.isArray(R.d)) {
-    const pd = +R.pd, d = R.d;
-    const iMax = Math.ceil((bb.lonMax - bb.lonMin) / pd) + 1;
+  const dims = runsDims(L.runs, bb);
+  if (dims) {
+    const { pd, iMax, jMax } = dims, d = L.runs!.d;
     for (let k = 0; k + 2 < d.length; k += 3) {
       const j = Math.floor(+d[k]), i0 = Math.max(-2, Math.floor(+d[k + 1])), len = Math.floor(+d[k + 2]);
-      if (!isFinite(j) || !isFinite(i0) || !(len > 0)) continue;
+      if (!(j >= -2 && j < jMax) || !isFinite(i0) || !(len > 0)) continue;
       const iEnd = Math.min(i0 + len, iMax);
       const lat = bb.latMin + (j + 0.5) * pd;
       for (let i = i0; i < iEnd; i++) cb(bb.lonMin + (i + 0.5) * pd, lat);

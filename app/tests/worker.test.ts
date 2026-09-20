@@ -889,3 +889,17 @@ describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
     assert.strictEqual(out.data[4], fine.data[4], "合法低于类型地板的细格（海岸坡）不被人为抬高");
   });
 });
+
+describe("腿账读到 (0,1) 区间的航点速度（写端允许的正小数不能被读端静默换成基线）", () => {
+  it("出发航点声明 0.5 km/日：一日走 0.64 km 判不可达；同值放在部队基线上结论相同", () => {
+    const world = plainWorld();
+    const { grid, roads } = mkGrid(world);
+    const a = { lon: 100.5, lat: 30.5 }, b = { lon: 100.5 + 0.0064, lat: 30.5 };
+    const viaTrack: Unit = { id: "u", kind: "inf", speed: 30, track: [{ t: 0, ...a, speed: 0.5 } as never, { t: 1, ...b }] };
+    const viaBase: Unit = { id: "v", kind: "inf", speed: 0.5, track: [{ t: 0, ...a }, { t: 1, ...b }] };
+    const [lt] = unitLegs(META, grid, roads, viaTrack), [lb] = unitLegs(META, grid, roads, viaBase);
+    assert.strictEqual(lt.ok, lb.ok, "航点声明与部队基线同值＝同结论");
+    assert.ok(Math.abs(lt.need - lb.need) < 1e-9, "耗时同式");
+    assert.strictEqual(lt.ok, false, "0.64 km 按 0.5 km/日要一天多");
+  });
+});

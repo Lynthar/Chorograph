@@ -104,7 +104,7 @@ export function TimeDock() {
     if (!(rect.width > 0)) return;
     const f = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
     const r = rangeSig.peek();
-    yearSig.value = quantTime(w.w0 + f * (w.w1 - w.w0), 1 / 24, Math.max(w.w0, r.min), Math.min(w.w1, r.max));
+    yearSig.value = quantTime(w.w0 + f * (w.w1 - w.w0), 1 / cal.hpd, Math.max(w.w0, r.min), Math.min(w.w1, r.max));   // 时粒度随历法（同 state.timeStep）
   };
   const endSub: JSX.PointerEventHandler<HTMLDivElement> = e => {
     dragSub.current = null;

@@ -16,12 +16,15 @@ export function unitSpeed(u: Unit): number { return +(u.speed || 0) || (unitKind
    ⚠ 与 st 的「每航点各自声明、缺省＝常态」不同——这三样是**存量**，某航点没重新声明就意味着「没变」，
    绝不能悄悄弹回基线（打光的兵不会自己长回来）。故一律自当刻所在航点**向前回溯最近一次声明**。 ── */
 
-/** 回溯 idx 及其之前最近一次声明的数值；min 用来放行「士气 0＝崩溃」这种有意义的零 */
-function trackNum(u: Unit, idx: number, key: "strength" | "speed" | "morale", min: number): number | null {
-  const tr = u.track || [];
+/** 三种存量的合法值域（与 editops.setUnitWaypointNum 落键的判据同源）：兵力整人 ≥1、速度任意正数（0.5 km/日的
+    慢速推进是合法声明，按 ≥1 读会静默跳过它）、士气 ≥0（0＝崩溃是有意义的值） */
+const TRACK_OK: Record<"strength" | "speed" | "morale", (v: number) => boolean> = { strength: v => v >= 1, speed: v => v > 0, morale: v => v >= 0 };
+/** 回溯 idx 及其之前最近一次合法声明的数值 */
+function trackNum(u: Unit, idx: number, key: "strength" | "speed" | "morale"): number | null {
+  const tr = u.track || [], ok = TRACK_OK[key];
   for (let i = Math.min(idx, tr.length - 1); i >= 0; i--) {
     const v = +(tr[i] as unknown as Record<string, unknown>)[key]!;
-    if (isFinite(v) && v >= min) return v;
+    if (isFinite(v) && ok(v)) return v;
   }
   return null;
 }
@@ -30,15 +33,15 @@ function idxAt(u: Unit, T: number): number { const p = unitPos(u, T); return p ?
 
 /** 当刻兵力（人）：航点声明优先，回落部队级基线；无从可取＝null（不显示） */
 export function unitStrengthAt(u: Unit, T: number): number | null {
-  return trackNum(u, idxAt(u, T), "strength", 1) ?? parseStrength(u.strength);
+  return trackNum(u, idxAt(u, T), "strength") ?? parseStrength(u.strength);
 }
 /** 当刻速度（km/日）：航点声明 → 部队级 → 兵种表默认，三级回落 */
 export function unitSpeedAt(u: Unit, T: number): number {
-  return trackNum(u, idxAt(u, T), "speed", 1) ?? unitSpeed(u);
+  return trackNum(u, idxAt(u, T), "speed") ?? unitSpeed(u);
 }
 /** 当刻士气（0–100）：航点声明优先，回落部队级基线；无从可取＝null（未记录，不显示） */
 export function unitMoraleAt(u: Unit, T: number): number | null {
-  const w = trackNum(u, idxAt(u, T), "morale", 0);
+  const w = trackNum(u, idxAt(u, T), "morale");
   if (w != null) return w;
   const b = +(u.morale as number);
   return isFinite(b) && b >= 0 ? b : null;
@@ -46,7 +49,7 @@ export function unitMoraleAt(u: Unit, T: number): number | null {
 /** 第 idx 个航点「若不声明则沿用的值」——只看它**之前**的航点，都没有才回落部队级基线。
     航点表单的占位符用它：所见即留空后的结果，「留空＝没变」这条语义才看得见。 */
 export function unitInheritedAt(u: Unit, idx: number, key: "strength" | "speed" | "morale"): number | null {
-  const w = trackNum(u, idx - 1, key, key === "morale" ? 0 : 1);
+  const w = trackNum(u, idx - 1, key);
   if (w != null) return w;
   if (key === "strength") return parseStrength(u.strength);
   if (key === "speed") return unitSpeed(u);
@@ -232,7 +235,7 @@ export function unitLegs(meta: Meta | undefined, grid: Grid, roads: Set<string> 
     const a = tr[i - 1], b = tr[i], days = b.t - a.t;
     /* 逐腿速度：这一腿走的是**出发航点**当时生效的速度（存量回溯，同 unitSpeedAt 之规）。
        旧档航点上没有 speed，回溯必空、恒落到部队级基线＝旧腿账逐位不变。 */
-    const v = trackNum(u, i - 1, "speed", 1) ?? base;
+    const v = trackNum(u, i - 1, "speed") ?? base;
     let km = distKm(meta, a.lon, a.lat, b.lon, b.lat), route = false;
     if (arm !== "air") {
       const r = astar(meta, grid, roads, [a.lon, a.lat], [b.lon, b.lat], arm);

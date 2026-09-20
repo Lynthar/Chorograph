@@ -1,6 +1,7 @@
 /* 编辑态视觉层：涂域编辑格底纹（所见即所涂）+ 笔刷光圈。
    在 drawOverlay/drawAnalysis 之后同一 ctx 上绘制（CSS 像素坐标系）。 */
 import { PD } from "../core/constants.ts";
+import { runsDims } from "../core/territory.ts";
 import { project, type Camera } from "../core/projection.ts";
 import { hexA } from "../core/util.ts";
 import { DEFAULT_BBOX } from "../core/types.ts";
@@ -20,12 +21,12 @@ export function drawPaintCells(ctx: CanvasRenderingContext2D, cam: Camera, layer
     const a = project(cam, lon - pd / 2, lat + pd / 2), b = project(cam, lon + pd / 2, lat - pd / 2);
     ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
   }
-  if (R && +R.pd > 0 && Array.isArray(R.d)) {
-    const p = +R.pd, d = R.d;
-    const iMax = Math.ceil((bb.lonMax - bb.lonMin) / p) + 1;   // len 防御钳,同 eachPaintCenter（值也是用户数据）
+  const dims = runsDims(R, bb);   // 解码网格与 eachPaintCenter 同一份（值也是用户数据：pd/起列/长度都要钳）
+  if (dims) {
+    const { pd: p, iMax, jMax } = dims, d = R!.d;
     for (let k = 0; k + 2 < d.length; k += 3) {
       const j = Math.floor(+d[k]), i0 = Math.max(-2, Math.floor(+d[k + 1])), len = Math.floor(+d[k + 2]);
-      if (!isFinite(j) || !isFinite(i0) || !(len > 0)) continue;
+      if (!(j >= -2 && j < jMax) || !isFinite(i0) || !(len > 0)) continue;
       const iEnd = Math.min(i0 + len, iMax);
       if (iEnd <= i0) continue;
       const a = project(cam, bb.lonMin + i0 * p, bb.latMin + (j + 1) * p), b = project(cam, bb.lonMin + iEnd * p, bb.latMin + j * p);

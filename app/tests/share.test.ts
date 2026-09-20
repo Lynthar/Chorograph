@@ -119,3 +119,12 @@ function extract(html: string): string {
   const from = at + 'id="sharedWorld">'.length;
   return html.slice(from, html.indexOf("</" + "script>", from));
 }
+
+describe("打包成功的链接必须能被自己解开（pack 的上限按解包端的原文字节判）", () => {
+  it("原文超过 SHARE_CAP 的 UTF-8 字节＝打包即拒，报的是原文体量与出路；恰在上限的能往返", async () => {
+    await assert.rejects(() => packShare("a".repeat(SHARE_CAP + 1)), /上限/);
+    await assert.rejects(() => packShare("玄".repeat(SHARE_CAP / 3 + 1)), /上限/, "按 UTF-8 字节而不是字符数");
+    const edge = "a".repeat(SHARE_CAP);
+    assert.strictEqual((await unpackShare(await packShare(edge))).length, SHARE_CAP);
+  });
+});

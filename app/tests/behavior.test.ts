@@ -23,7 +23,7 @@ import { facingHandlePx, pickFacingHandle, unitSpots } from "../src/render/units
 import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
 import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, WORLD_KM_PER_DEG, WORLD_RADIUS_KM } from "../src/core/world.ts";
 import { BAKE_CAP, blankTacticalWorld, createTacticalWorld } from "../src/core/tactical.ts";
-import { eachPaintCenter, paintCellSet, paintDims, paintStep, resamplePaintRuns, territoryLoops } from "../src/core/territory.ts";
+import { MAX_RUN_DIM, eachPaintCenter, paintCellSet, paintDims, paintStep, resamplePaintRuns, runsDims, territoryLoops } from "../src/core/territory.ts";
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
@@ -2650,5 +2650,90 @@ describe("同刻航点：改写与显示指同一点", () => {
     assert.deepStrictEqual((u.track || []).map(q => q.t), [1, 2, 3]);
     setUnitPoint(u, 1, 7, 7);
     assert.deepStrictEqual((u.track || [])[0], { t: 1, lon: 7, lat: 7 });
+  });
+});
+
+describe("涂域行程编码的解码工作量与自报 pd 脱钩（校验通过的对象在消费端必须有界完成）", () => {
+  const bb = { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 };
+  const count = (runs: unknown): number => { let n = 0; eachPaintCenter({ runs: runs as never }, bb, () => { n++; }); return n; };
+  it("起列超过安全整数（i+1===i）与 pd 极小都不能让循环不终止；行号在网格外的三元组跳过", () => {
+    assert.strictEqual(count({ pd: 1e-20, d: [0, 1e16, 4] }), 0, "pd 把图幅切成 1e20 格＝该层按空处理");
+    assert.strictEqual(count({ pd: 0.5, d: [0, 1e16, 4] }), 0, "起列在自报网格之外＝钳到上界后长度为零");
+    assert.strictEqual(count({ pd: 0.5, d: [0, 0, 1e9] }), 3, "长度钳到自报网格宽（cols+1）");
+    assert.strictEqual(count({ pd: 0.5, d: [1e9, 0, 1, -3, 0, 1, 2, 0, 1] }), 1, "行号越界的三元组跳过，只有 j=2（jMax 之内）算数");
+    assert.strictEqual(runsDims({ pd: 1 / MAX_RUN_DIM, d: [] }, bb)?.iMax, MAX_RUN_DIM + 1, "恰在上限的 pd 可信");
+    assert.strictEqual(runsDims({ pd: 0.9 / MAX_RUN_DIM, d: [] }, bb), null);
+    assert.strictEqual(runsDims({ pd: Infinity, d: [] }, bb), null);
+  });
+  it("真消费者 territoryLoops 对同一炸弹立即返回；validateWorld 把荒谬的 pd 判为致命（拒开而不是静默空层）", () => {
+    const L = { runs: { pd: 1e-20, d: [0, 1e16, 4] } };
+    assert.deepStrictEqual(territoryLoops(L as never, bb, 0, 0.5), []);
+    const world = { meta: { bbox: bb }, nodes: [], factions: [{ id: "f", paint: [L] }] };
+    const v = validateWorld(world);
+    assert.strictEqual(v.ok, false);
+    assert.match(v.fatal.map(x => x.msg).join("\n"), /pd/);
+    assert.strictEqual(validateWorld({ ...world, factions: [{ id: "f", paint: [{ runs: { pd: 0.5, d: [0, 0, 1] } }] }] }).ok, true, "正常 pd 照旧通过");
+  });
+});
+
+describe("逐航点速度的合法值域＝任意正数（写端落 0.5，读端与腿账不得按 ≥1 跳过它）", () => {
+  it("unitSpeedAt / unitInheritedAt 读到 0.5；0 与负数仍不算声明", () => {
+    const u = { id: "u", kind: "linf", track: [{ t: 0, lon: 0, lat: 0, speed: 0.5 }, { t: 1, lon: 0, lat: 0 }, { t: 2, lon: 0, lat: 0, speed: 0 }] } as never;
+    assert.strictEqual(unitSpeedAt(u, 0), 0.5);
+    assert.strictEqual(unitSpeedAt(u, 1.5), 0.5, "下一航点未声明＝沿用");
+    assert.strictEqual(unitSpeedAt(u, 2), 0.5, "0 不是合法声明，继续回溯到 0.5");
+    assert.strictEqual(unitInheritedAt(u, 1, "speed"), 0.5);
+    assert.strictEqual(unitInheritedAt(u, 0, "speed"), 30, "首航点之前无声明＝兵种表默认");
+  });
+});
+
+describe("战术烘焙继承母图的图幅外声明（内陆母图切边的湖在子图仍是湖）", () => {
+  it("outside=land 随图复制；缺键的海图子图也缺键", () => {
+    const mkSrc = (extra: Partial<Meta> = {}): World => ({
+      meta: { 名称: "母图", worldModel: "sphere", planetRadiusKm: 6371, terrain: "plain", bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 }, ...extra },
+      nodes: [], edges: [], factions: [], decor: [], terrainOverrides: [], units: []
+    } as unknown as World);
+    const ev = { id: "e", 名称: "会战", type: "event", evtype: "battle", lon: 112.0, lat: 34.5, year: 3107 } as WorldNode;
+    assert.strictEqual(createTacticalWorld(mkSrc({ outside: "land" }), ev, 60, {}).meta.outside, "land");
+    assert.strictEqual(createTacticalWorld(mkSrc(), ev, 60, {}).meta.outside, undefined);
+  });
+});
+
+describe("历法解析覆盖创建器承诺的值域（月 ≤999、日 ≤9999）", () => {
+  it("自家 fmtYMD / fmtYearForm 写出的三位月、三四位日能解析回同一个值", () => {
+    const C = calOf({ months: 120, dpm: 400 });
+    for (const [y, m, d] of [[1, 100, 100], [1, 120, 400], [3107, 3, 7], [2, 99, 1000]] as const) {
+      const T = tacT(C, y, m, d);
+      assert.strictEqual(parseYMD(C, fmtYMD(C, T)), T, `${y}-${m}-${d}`);
+      assert.strictEqual(parseYMD(C, `${y}-${m}-${d} 12:00`), T + 0.5);
+    }
+    assert.strictEqual(parseYMD(C, "1-1-100"), tacT(C, 1, 1, 100));
+    const march100 = yearMonthT(C, 1, 100);
+    assert.strictEqual(parseYearForm(C, fmtYearForm(C, march100)), march100, "战略月粒度「1-100」不再落到 parseFloat 丢掉月份");
+    assert.strictEqual(parseYearForm(C, "1-121"), null, "越出本历法月数仍是非法");
+    assert.strictEqual(parseYearForm(calOf({ months: 12, dpm: 30 }), "3107-13"), null, "两位越界语义不变");
+  });
+});
+
+describe("标高点：只评估可见矩形 + 粗块滑窗，结果与整场逐格评估一致", () => {
+  const cols = 96, rows = 64, step = 0.001, bb = { lonMin: 100, lonMax: 100.096, latMin: 30, latMax: 30.064 };
+  const cells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => "plain"));
+  const grid: Grid = { bb, step, cols, rows, cells };
+  const wsurf = new Float32Array(cols * rows);
+  const data = new Float32Array(cols * rows).fill(0.16);
+  const bump = (cx: number, cy: number, h: number, rad: number): void => {
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { const d = Math.hypot(c - cx, r - cy); if (d < rad) data[r * cols + c] += h * (1 - d / rad); }
+  };
+  bump(20, 20, 0.05, 6); bump(70, 40, 0.03, 5); bump(50, 10, 0.02, 4);
+  const f: SpotField = { bb, step, cols, rows, data, shadow: null };
+  const key = (s: { lon: number; lat: number }[]): string[] => s.map(p => `${p.lon.toFixed(4)},${p.lat.toFixed(4)}`).sort();
+  it("整场 k=1 与 k=2/4 找到同一组山顶；矩形只出矩形内的、且与整场评估同一批", () => {
+    const all = peakSpots(f, grid, wsurf, 16, 5 / 2000);
+    assert.strictEqual(all.length, 3);
+    for (const k of [2, 4]) assert.deepStrictEqual(key(peakSpots(f, grid, wsurf, 16, 5 / 2000, undefined, k)), key(all), `k=${k}`);
+    const left = peakSpots(f, grid, wsurf, 16, 5 / 2000, { c0: 0, r0: 0, c1: 40, r1: 64 }, 2);
+    assert.deepStrictEqual(key(left), key(all.filter(p => p.lon < 100.04)), "左半幅只出 (20,20) 那座");
+    assert.deepStrictEqual(peakSpots(f, grid, wsurf, 16, 5 / 2000, { c0: 30, r0: 30, c1: 45, r1: 45 }, 2), [], "矩形里没有山顶＝空");
+    assert.deepStrictEqual(peakSpots(f, grid, wsurf, 16, 5 / 2000, { c0: 50, r0: 10, c1: 40, r1: 5 }), [], "空矩形＝空");
   });
 });

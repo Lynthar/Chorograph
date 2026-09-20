@@ -7,7 +7,7 @@ import { activeAt } from "../core/time.ts";
 import { isModern, setUnitPoint, unitKind, unitPos } from "../core/units.ts";
 import { ALL_KINDS, CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
-import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
+import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, TrackPt, Unit, World, WorldNode } from "../core/types.ts";
 
 export const newNodeId = (): string => newId("n");
 export const newEventId = (): string => newId("ev");
@@ -488,31 +488,43 @@ export function deleteUnitWaypoint(w: World, id: string, i: number): boolean {
   return true;
 }
 
-/** 设/清某日航点的状态（st：UNIT_STATUS 键；空=常态删键）——自该航点起生效到下一航点 */
-export function setUnitWaypointStatus(w: World, id: string, t: number, st: string): boolean {
+/* 动向列表的行内编辑一律按**行下标**定位（同 deleteUnitWaypoint）：按时刻 find 会在同刻两行时改到首行——
+   第二行填 10、第一行变 10。图上拖动仍按时刻走 setUnitWaypoint（那是「当刻」的意图，取末一个同刻点）。 */
+const trackRow = (w: World, id: string, i: number): TrackPt | null => {
   const u = (w.units || []).find(x => x.id === id);
-  const p = u && (u.track || []).find(q => q.t === +t);
+  return u && u.track && i >= 0 && i < u.track.length ? u.track[i] : null;
+};
+
+/** 改第 i 行航点的坐标（整点展开，时刻不动故不必重排） */
+export function setUnitWaypointAt(w: World, id: string, i: number, lon: number, lat: number): boolean {
+  const u = (w.units || []).find(x => x.id === id);
+  if (!u || !u.track || !trackRow(w, id, i)) return false;
+  u.track[i] = { ...u.track[i], lon: +(+lon).toFixed(4), lat: +(+lat).toFixed(4) };
+  return true;
+}
+
+/** 设/清第 i 行航点的状态（st：UNIT_STATUS 键；空=常态删键）——自该航点起生效到下一航点 */
+export function setUnitWaypointStatus(w: World, id: string, i: number, st: string): boolean {
+  const p = trackRow(w, id, i);
   if (!p) return false;
   if (st) p.st = st; else delete p.st;
   return true;
 }
 
-/** 设/清某日航点的朝向（度；空/非法=删键回落行进方向）——自该航点起生效到下一航点，同 st 之规 */
-export function setUnitWaypointFacing(w: World, id: string, t: number, deg: string): boolean {
-  const u = (w.units || []).find(x => x.id === id);
-  const p = u && (u.track || []).find(q => q.t === +t);
+/** 设/清第 i 行航点的朝向（度；空/非法=删键回落行进方向）——自该航点起生效到下一航点，同 st 之规 */
+export function setUnitWaypointFacing(w: World, id: string, i: number, deg: string): boolean {
+  const p = trackRow(w, id, i);
   if (!p) return false;
   const v = parseFloat(deg);
   if (isFinite(v)) p.facing = ((v % 360) + 360) % 360; else delete p.facing;
   return true;
 }
 
-/** 设/清某日航点的存量（兵力/速度/士气；空或非法=删键回落到上一次声明或部队级基线）。
+/** 设/清第 i 行航点的存量（兵力/速度/士气；空或非法=删键回落到上一次声明或部队级基线）。
     ⚠ 与 st/facing 不同，这三样缺省＝「没变」而非「回默认」——回溯语义在 core 的 unitStrengthAt 一族里，
     这里只管落键：兵力/速度须 >0，士气收 0–100（0＝崩溃是有意义的值，不能当空处理）。 */
-export function setUnitWaypointNum(w: World, id: string, t: number, key: "strength" | "speed" | "morale", raw: string): boolean {
-  const u = (w.units || []).find(x => x.id === id);
-  const p = u && (u.track || []).find(q => q.t === +t);
+export function setUnitWaypointNum(w: World, id: string, i: number, key: "strength" | "speed" | "morale", raw: string): boolean {
+  const p = trackRow(w, id, i);
   if (!p) return false;
   const v = parseFloat(raw);
   if (!isFinite(v)) { delete p[key]; return true; }

@@ -205,8 +205,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     /* 间曲线的浮现门看 ±10 px 差分的粗坡（同 GL），不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍；
        虚线相位锚网格原点的像素坐标，切向取世界 y 朝上的帧（gy 取反），与 GL 的 dFdy 同向 */
     const kx = 10 / pxpd * dpr, ky = 10 / pxpdY * dpr;
-    const gcx = (elevSmooth(src.data, src, lon + kx, lat) - elevSmooth(src.data, src, lon - kx, lat)) / 20 / dpr;
-    const gcy = (elevSmooth(src.data, src, lon, lat + ky) - elevSmooth(src.data, src, lon, lat - ky)) / 20 / dpr;
+    const gcx = (elevSmooth(src.data, src, lon + kx, lat) - elevSmooth(src.data, src, lon - kx, lat)) / 20;   // 每 CSS px 的坡（同 GL：不再除 dpr）
+    const gcy = (elevSmooth(src.data, src, lon, lat + ky) - elevSmooth(src.data, src, lon, lat - ky)) / 20;
     const gsl = Math.abs(gcx) + Math.abs(gcy) + 1e-7, tl = Math.hypot(gy, gx) || 1;
     const sdp = ((gy / tl) * (lon - grid!.bb.lonMin) * pxpd + (gx / tl) * (lat - grid!.bb.latMin) * pxpdY) / dpr;
     const k = inkK(eh, cA, cB, fd, ad, gsl, sdp, 0), kh = inkK(eh, cA, cB, fd, ad, gsl, sdp, FX.haloPx);
@@ -448,7 +448,12 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const key = `g${(opts.gain ?? 1).toFixed(2)}` + (opts.contour ? `c${opts.cA || 0.12}/${opts.cB || 0}f${Math.round((opts.cFade || 0) * 4)}d${opts.dpr ?? 1}` : "");   // fade 量化 1/4 桶：连续缩放不致每帧重渲瓦片；增益随缩放变，入键
       const plan = planTile(tile, key, vb, pxpd, grid.bb);
       if (plan === "none") tile = null;
-      else if (plan !== "keep") tile = { cv: renderTile(plan.bb, plan.renderPxpd, opts), bb: plan.bb, pxpd: plan.pxpd, key };
+      else if (plan !== "keep") {
+        /* 瓦片被像素预算封顶（renderPxpd < pxpd）时贴回屏幕要放大 pxpd/renderPxpd 倍：等高线的像素量按 CSS 像素锚定，
+           喂给瓦片的 dpr 须同比缩小，否则线在屏幕上按放大倍数变粗（960 px 方图 DPR4 实测 6.8 px） */
+        const s = plan.renderPxpd / plan.pxpd;
+        tile = { cv: renderTile(plan.bb, plan.renderPxpd, s < 1 ? { ...opts, dpr: (opts.dpr ?? 1) * s } : opts), bb: plan.bb, pxpd: plan.pxpd, key };
+      }
       // 底色=深水（视口越出网格范围的部分；战术图按 paper 裁决铺宣纸色），再按世界拷贝贴瓦片。
       // 纵向用独立 pxpdY：viewBB 经度含 cos(lat0) 校正、纬度不含，贴图须各向异性拉伸
       //（对齐旧 drawTile 经 project 求角点的行为；瓦片内部仍为方度像素，交给 drawImage 缩放）。

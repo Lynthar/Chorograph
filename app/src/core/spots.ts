@@ -31,28 +31,55 @@ function extrema2D(data: Float32Array, cols: number, rows: number, r: number, ma
   return out;
 }
 
+/** 细格矩形（半开 [c0,c1)×[r0,r1)）：只在这一片里找高点，窗口的上下文仍从矩形外取 */
+export interface CellRect { c0: number; r0: number; c1: number; r1: number }
+
 /** 局部高点：以 win 格为半窗，窗内最高、且比窗内**陆格**最低高出 ≥ minProm（抽象单位）的陆格——突出度只对陆地量，
     否则湖岸边整片平地都会因为湖床更低而算成「高点」。候选按高度降序做非极大抑制（相距 < win 格只留最高）。
-    窗按屏幕像素定＝放大自然出更多、缩小自动稀疏。 */
-export function peakSpots(f: ElevField, grid: Grid, wsurf: Float32Array, win: number, minProm: number): SpotHeight[] {
+    窗按屏幕像素定＝放大自然出更多、缩小自动稀疏。
+    rect＝只评估这片细格（缺省整场）；k＝粗块边长（格，缺省 1）：块锚在全场原点、块值取块内最高（陆格另记最低与最高格），
+    窗口在粗块上滑＝工作量降 k²、窗界量化到 k 格；rect 向外扩一窗再评估，矩形内每个候选的窗都完整＝结果不随矩形变。
+    rect 缺省且 k=1 时与逐格评估逐位相同。 */
+export function peakSpots(f: ElevField, grid: Grid, wsurf: Float32Array, win: number, minProm: number, rect?: CellRect, k = 1): SpotHeight[] {
   const { cols, rows, data } = f, gk = f.step / grid.step;
   const wsAt = (c: number, r: number): number =>
     wsurf[Math.min(grid.rows - 1, Math.floor((r + 0.5) * gk)) * grid.cols + Math.min(grid.cols - 1, Math.floor((c + 0.5) * gk))];
-  const land = new Float32Array(cols * rows);
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { const i = r * cols + c; land[i] = data[i] < wsAt(c, r) - 0.02 ? Infinity : data[i]; }
-  const mx = extrema2D(data, cols, rows, win, true), mn = extrema2D(land, cols, rows, win, false);
+  const c0 = Math.max(0, Math.floor(rect ? rect.c0 : 0)), c1 = Math.min(cols, Math.ceil(rect ? rect.c1 : cols));
+  const r0 = Math.max(0, Math.floor(rect ? rect.r0 : 0)), r1 = Math.min(rows, Math.ceil(rect ? rect.r1 : rows));
+  if (!(c1 > c0 && r1 > r0)) return [];
+  const wk = Math.max(1, Math.round(win / k));   // 粗块上的半窗
+  // 评估域（粗块坐标）＝矩形所占块向外扩一窗；块锚在全场原点
+  const C0 = Math.max(0, Math.floor(c0 / k) - wk), C1 = Math.min(Math.ceil(cols / k), Math.ceil(c1 / k) + wk);
+  const R0 = Math.max(0, Math.floor(r0 / k) - wk), R1 = Math.min(Math.ceil(rows / k), Math.ceil(r1 / k) + wk);
+  const W = C1 - C0, H = R1 - R0;
+  const mxAll = new Float32Array(W * H).fill(-Infinity);   // 块内最高（含水格：水格不成候选，但能压住比它低的邻块）
+  const mxLand = new Float32Array(W * H).fill(-Infinity), mnLand = new Float32Array(W * H).fill(Infinity);
+  const arg = new Int32Array(W * H).fill(-1);               // 块内最高陆格的细格序号（行主序首个＝同高取 r 小 c 小）
+  for (let r = R0 * k, rEnd = Math.min(rows, R1 * k); r < rEnd; r++) {
+    const B0 = (Math.floor(r / k) - R0) * W - C0;
+    for (let c = C0 * k, cEnd = Math.min(cols, C1 * k); c < cEnd; c++) {
+      const i = r * cols + c, e = data[i], B = B0 + Math.floor(c / k);
+      if (e > mxAll[B]) mxAll[B] = e;
+      if (e < wsAt(c, r) - 0.02) continue;
+      if (e > mxLand[B]) { mxLand[B] = e; arg[B] = i; }
+      if (e < mnLand[B]) mnLand[B] = e;
+    }
+  }
+  const mx = extrema2D(mxAll, W, H, wk, true), mn = extrema2D(mnLand, W, H, wk, false);
   const cand: { c: number; r: number; e: number }[] = [];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    const i = r * cols + c, e = data[i];
-    if (land[i] !== e || e !== mx[i] || e - mn[i] < minProm) continue;
+  for (let R = Math.floor(r0 / k) - R0; R < Math.ceil(r1 / k) - R0; R++) for (let C = Math.floor(c0 / k) - C0; C < Math.ceil(c1 / k) - C0; C++) {
+    const B = R * W + C, e = mxLand[B];
+    if (arg[B] < 0 || e !== mx[B] || e - mn[B] < minProm) continue;
+    const c = arg[B] % cols, r = (arg[B] - c) / cols;
+    if (c < c0 || c >= c1 || r < r0 || r >= r1) continue;   // 块跨矩形边：候选格本身也要在矩形内
     cand.push({ c, r, e });
   }
   cand.sort((a, b) => b.e - a.e || a.r - b.r || a.c - b.c);
   const kept: { c: number; r: number }[] = [], out: SpotHeight[] = [];
-  for (const k of cand) {
-    if (kept.some(q => Math.max(Math.abs(q.c - k.c), Math.abs(q.r - k.r)) < win)) continue;
-    kept.push(k);
-    const lon = f.bb.lonMin + (k.c + 0.5) * f.step, lat = f.bb.latMin + (k.r + 0.5) * f.step;
+  for (const q of cand) {
+    if (kept.some(p => Math.max(Math.abs(p.c - q.c), Math.abs(p.r - q.r)) < win)) continue;
+    kept.push(q);
+    const lon = f.bb.lonMin + (q.c + 0.5) * f.step, lat = f.bb.latMin + (q.r + 0.5) * f.step;
     out.push({ lon, lat, e: elevSmooth(data, f, lon, lat), kind: "peak" });
   }
   return out;

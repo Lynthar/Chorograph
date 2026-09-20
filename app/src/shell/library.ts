@@ -14,7 +14,7 @@ import { convertGeoJSON, GEO_CAPS, padBBox, scanGeoJSON, type GeoMapping, type G
 import { paintStep } from "../core/territory.ts";
 import { FAC_PALETTE } from "../ui/editops.ts";
 import { phasesOf, yearRangeOf } from "../core/time.ts";
-import { validateWorld, formatIssues } from "../core/validate.ts";
+import { validateWorld, formatIssues, worldCap } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import { contourStatsOf, terrainOpts } from "../render/renderer.ts";
 import { safeName, errText, newId } from "../core/util.ts";
@@ -366,9 +366,10 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     libViewSig.value = { available: !!ctx.lib, open: ctx.libOpen, source: ctx.source, folderName: ctx.folderDir ? ctx.folderDir.name : null,
       fsSupported: fsSupported(), mapId: ctx.mapId, entries };
   }
-  async function importWorld(w: unknown, srcName: string): Promise<void> {
+  /** 校验 → 入库 → 打开。返回新图的 id（入库失败＝null，已 alert）；打开是否成功由调用方看 ctx.mapId */
+  async function importWorld(w: unknown, srcName: string): Promise<string | null> {
     const v = validateWorld(w);
-    if (!v.ok) { alert(`「${srcName}」无法导入：\n` + formatIssues(v.fatal)); return; }
+    if (!v.ok) { alert(`「${srcName}」无法导入：\n` + formatIssues(v.fatal)); return null; }
     /* 校验的 warning 此前只进 console——「兵力将移入说明」这类话是**专门写给写手看的**，
        落在用户看不见的通道里等于没写。详情仍留控制台（多行不适合 toast），此处报个数与去处。 */
     if (v.warnings.length) {
@@ -378,15 +379,18 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     if (ctx.source === "folder") {
       const fn = await folderCreate(ctx.folderDir!, w, (f, p) => { fcachePatch(ctx.fcache, ctx.folderDir!.name, f, p); });
       ctx.lib!.kvSet("foldercache", ctx.fcache).catch(() => {});
-      if (fn) await openFolderMap(fn); else alert("写入文件夹失败（权限或磁盘问题）。");
+      if (!fn) { alert("写入文件夹失败（权限或磁盘问题）。"); return null; }
+      await openFolderMap(fn);
+      return fn;
     } else {
       /* ⚠ 入库失败必须说话：此前直接 await create()，配额满时这条 promise 无人接——点「创建此地图」
          「从内置示例新建」界面纹丝不动、零反馈，终结为一条 unhandledrejection；而文件夹分支同一
          动作是有 alert 的。同一个动作在两个来源下响与不响不该不对称。 */
       let id: string;
       try { id = (await ctx.lib!.create(w)).id; }
-      catch (e) { alert(`「${srcName}」入库失败：${errText(e)}\n（浏览器存储可能已满——可先删掉几张地图，或改用「📁 链接文件夹」）`); return; }
+      catch (e) { alert(`「${srcName}」入库失败：${errText(e)}\n（浏览器存储可能已满——可先删掉几张地图，或改用「📁 链接文件夹」）`); return null; }
       await openBrowserMap(id);
+      return id;
     }
   }
 
@@ -445,6 +449,11 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       bbox: cur.meta.bbox || DEFAULT_BBOX, pd: paintStep(cur.meta), palette: FAC_PALETTE,
       existingIds: ids, factionByName: byName, caps: GEO_CAPS
     });
+    /* 并入前按**最终产物**过导入闸的量级上限：GEO_CAPS 只管单次转换的输入，与库里已有的加起来超过 validateWorld
+       的上限，就会存出一张自己再也导不回来的图（20 万零 1 个地点实测） */
+    const over = ([["nodes", cur.nodes.length + r.nodes.length], ["edges", cur.edges.length + r.edges.length],
+      ["factions", cur.factions.length + r.newFactions.length]] as const).find(([k, n]) => n > worldCap(k));
+    if (over) { alert(`并入后 ${over[0]} 将有 ${over[1]} 项，超出单张图 ${worldCap(over[0])} 项的上限——这批数据请「新建一张图」或分批并入。`); return; }
     mutateWorld(w => applyGeo(w, r));
     geoReceipt(r, srcName);
   }
@@ -475,6 +484,8 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   /* 从战役事件点烘焙一张战术图，入库、在父图事件写双向链接、打开它。dia=战场直径 km */
   async function genTactical(ev: WorldNode, dia?: number | null): Promise<boolean> {
     if (!ctx.lib) { alert("图库不可用，无法生成战术图。"); return false; }
+    /* 只读闸放在库级创建之前：子图先 create 再回写父图，只挡后一步＝#ro=1&gentac= 的链接一点开就往读者图库塞图 */
+    if (readOnlySig.peek()) { showToast("这是只读分享的地图，不能从它生成战术图　可先「↓ 存入我的图库」"); return false; }
     const world = createTacticalWorld(worldSig.peek()!, ev, dia || 60,
       { parentMapId: ctx.mapId, yearNow: yearSig.peek(), today: new Date().toISOString().slice(0, 10) });
     let newId: string | null = null, link: NonNullable<WorldNode["tacmap"]> | null = null;
@@ -738,13 +749,22 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       if (!w) return;
       if (!ctx.lib) { showToast("图库不可用，存不进去——可先「💾 导出 JSON」留一份", { err: true }); return; }
       const nm = ctx.meta.名称 || "分享地图";
+      const was = { hash: location.hash, data: dl.wantData, ro: dl.wantRo };
       readOnlySig.value = false;
       /* 清掉 #d=/#ro=：否则刷新一下又回到只读的那一份，用户会以为自己的副本没存上。
          history 不可用（罕见的嵌入环境）不该拦下入库，故单独 try。 */
       try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
       dl.wantData = null; dl.wantRo = false;
-      await importWorld(JSON.parse(JSON.stringify(w)), nm);
-      if (!ctx.mapId) { readOnlySig.value = true; return; }   // 入库失败（已 alert 过）：退回只读，别留个假的可编辑态
+      const id = await importWorld(JSON.parse(JSON.stringify(w)), nm);
+      /* 接管成立的判据是**本次**建成并打开了副本，不是「环境里有个 mapId」：#map=<本地图>&ro=1 的演示只读下
+         旧 id 一直在，create 被拒后照旧解锁＝之后的自动保存写回原图。失败就把只读与 URL 原样放回。 */
+      if (!id || ctx.mapId !== id) {
+        readOnlySig.value = true;
+        dl.wantData = was.data; dl.wantRo = was.ro;
+        try { history.replaceState(null, "", location.pathname + location.search + was.hash); } catch (e) {}
+        if (id) showToast("副本已建好，但打开失败——请从图库里打开它", { err: true });
+        return;
+      }
       showToast(`已存入图库「${nm}」　现在可以编辑了`);
     },
     async linkFolder() {

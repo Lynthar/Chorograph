@@ -10,9 +10,11 @@ export const UNDO_MAX = 60;
 
 export function terrKey(w: World): string {
   const m = w.meta || {};
-  // genSeed/genStyle：auto 初稿随种子变（旧 key 漏掉——撤销「换一换」曾跳过重建显示陈旧地形）；
-  // relief/heightOverrides：高程场输入（在 rebuild 里随网格一并重算）
-  return JSON.stringify([m.bbox, m.terrain, m.genSeed, m.genStyle, m.relief, w.terrainOverrides, w.heightOverrides]);
+  /* 键须罩住 host.rebuild 读到的每一个 meta 输入：网格（bbox/terrain/genSeed/genStyle/gridN/worldModel/mapKind）、
+     高程与水面（relief/outside/elevUnitM）、侵蚀的物理尺度（kmPerDeg/planetRadiusKm）。漏一个＝撤销那项设置后
+     派生场沿用旧值（outside 曾漏：撤销「图幅外」后水面仍是 320 m）。 */
+  return JSON.stringify([m.bbox, m.terrain, m.genSeed, m.genStyle, m.relief, m.outside, m.gridN, m.worldModel, m.mapKind,
+    m.elevUnitM, m.kmPerDeg, m.planetRadiusKm, w.terrainOverrides, w.heightOverrides]);
 }
 
 /** 地形域键（体积大头且多数编辑步不动）；其余键全归对象域 */

@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
@@ -40,12 +40,15 @@ describe("撤销栈", () => {
     assert.strictEqual(count, UNDO_MAX);
     assert.strictEqual(last.nodes[0].id, "n5", "最老的 5 个应被挤掉");
   });
-  it("terrKey：只对 bbox/terrain/涂改敏感", () => {
+  it("terrKey：对象域不敏感；重建读到的每个 meta 输入都敏感（outside 曾漏＝撤销「图幅外」后水面沿用旧值）", () => {
     const a = mkWorld({ terrainOverrides: [{ lon: 1, lat: 2, t: "water" }] });
     const b = mkWorld({ terrainOverrides: [{ lon: 1, lat: 2, t: "water" }], nodes: [{ id: "x", type: "city", lon: 0, lat: 0 }] });
     assert.strictEqual(terrKey(a), terrKey(b), "地点变化不影响地形键");
+    assert.strictEqual(terrKey(a), terrKey(mkWorld({ ...a, meta: { ...a.meta, 名称: "改名", contourM: 20, climate: "arid" } })), "显示层设置不影响地形键");
     const c = mkWorld({ terrainOverrides: [{ lon: 1, lat: 2, t: "forest" }] });
     assert.notStrictEqual(terrKey(a), terrKey(c));
+    for (const m of [{ outside: "land" }, { gridN: 300 }, { relief: 0.5 }, { worldModel: "flat" }, { kmPerDeg: 50 }, { elevUnitM: 1000 }, { genSeed: 7 }] as const)
+      assert.notStrictEqual(terrKey(a), terrKey(mkWorld({ ...a, meta: { ...a.meta, ...m } })), JSON.stringify(m));
   });
   it("分域快照：同地形连续步共享地形串——驻留≈1×地形+N×对象，而非 N×整档", () => {
     const h = createHistory();
@@ -981,19 +984,19 @@ describe("部队编辑内核（战术图）", () => {
     const w = mkWorld();
     addUnit(w, "前军", 100, 30, 5, "u1");
     setUnitWaypoint(w, "u1", 8, 102, 32);
-    assert.strictEqual(setUnitWaypointStatus(w, "u1", 5, "standoff"), true);
+    assert.strictEqual(setUnitWaypointStatus(w, "u1", 0, "standoff"), true);   // 行内 setter 按行下标（t=5 是第 0 行）
     assert.strictEqual(w.units[0].track[0].st, "standoff");
-    assert.strictEqual(setUnitWaypointStatus(w, "u1", 99, "battle"), false, "无此日航点");
+    assert.strictEqual(setUnitWaypointStatus(w, "u1", 5, "battle"), false, "无此行航点");
     const u = w.units[0];
     assert.strictEqual(unitStatusAt(u, 4.9), null, "未入场");
     assert.strictEqual(unitStatusAt(u, 5), "standoff", "自航点当日起生效");
     assert.strictEqual(unitStatusAt(u, 6.5), "standoff", "行进中沿用航段起点状态");
     assert.strictEqual(unitStatusAt(u, 8), null, "下一航点无 st=回常态");
-    setUnitWaypointStatus(w, "u1", 8, "battle");
+    setUnitWaypointStatus(w, "u1", 1, "battle");
     assert.strictEqual(unitStatusAt(u, 20), "battle", "末航点驻停期沿用其状态");
     setUnitWaypoint(w, "u1", 5, 100.5, 30.5);
     assert.strictEqual(u.track[0].st, "standoff", "同日改写位置保留状态");
-    setUnitWaypointStatus(w, "u1", 5, "");
+    setUnitWaypointStatus(w, "u1", 0, "");
     assert.ok(!("st" in u.track[0]), "空=删键回常态");
   });
   it("setUnitRing（视野/火力同机制）与 setNodeRangeKm：量级取整、近零清除/钳底、无效目标 false", () => {
@@ -1297,5 +1300,25 @@ describe("只读态（分享链接 / 导出的只读网页 / 演示投屏）", (
     assert.strictEqual(railToolOf(modeSig.value, editSubSig.value), "measure", "分析工具在只读页照常可用");
     readOnlySig.value = false;
     setRailTool("browse");
+  });
+});
+
+describe("动向列表的行内编辑按行下标定位（同刻两行：第二行填的值不能落到第一行）", () => {
+  const mk = (): World => mkWorld({ units: [{ id: "u1", kind: "linf", track: [
+    { t: 5, lon: 100, lat: 30, speed: 30 }, { t: 5, lon: 101, lat: 31, speed: 30 }, { t: 8, lon: 102, lat: 32 }] }] as never });
+  it("存量 / 状态 / 朝向 / 坐标四个 setter 都改指定行，另一行原样", () => {
+    const w = mk(), tr = w.units[0].track!;
+    assert.strictEqual(setUnitWaypointNum(w, "u1", 1, "speed", "10"), true);
+    assert.deepStrictEqual([tr[0].speed, tr[1].speed], [30, 10]);
+    setUnitWaypointStatus(w, "u1", 1, "battle"); setUnitWaypointFacing(w, "u1", 1, "90");
+    assert.deepStrictEqual([tr[0].st, tr[1].st, tr[0].facing, tr[1].facing], [undefined, "battle", undefined, 90]);
+    assert.strictEqual(setUnitWaypointAt(w, "u1", 1, 101.5, 31.5), true);
+    assert.deepStrictEqual([tr[0].lon, tr[1].lon, tr[1].lat, tr[1].t, tr[1].speed], [100, 101.5, 31.5, 5, 10], "整点展开：时刻与存量都保留");
+    for (const bad of [-1, 3]) assert.strictEqual(setUnitWaypointNum(w, "u1", bad, "speed", "1"), false, "行外＝false");
+  });
+  it("图上拖动仍按时刻走 setUnitWaypoint＝末一个同刻点（与绘制拾取同源）", () => {
+    const w = mk(), tr = w.units[0].track!;
+    setUnitWaypoint(w, "u1", 5, 105, 35);
+    assert.deepStrictEqual([tr[0].lon, tr[1].lon], [100, 105]);
   });
 });

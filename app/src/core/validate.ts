@@ -6,6 +6,8 @@
 import { ALL_KINDS, CERTAINTY, CLIMATE, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_KIND, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
+import { MAX_RUN_DIM, runsDims } from "./territory.ts";
+import { DEFAULT_BBOX, type BBox, type PaintRuns } from "./types.ts";
 
 export interface Issue { path: string; msg: string }
 export interface ValidateResult { ok: boolean; fatal: Issue[]; warnings: Issue[] }
@@ -16,6 +18,10 @@ const isObj = (x: unknown): x is Record<string, unknown> =>
 const isNum = (x: unknown): x is number => typeof x === "number" && isFinite(x);
 
 /** 校验一份外部 JSON 是否能作为世界打开；不修改入参。 */
+/** 顶层数组的量级上限（校验闸）。往当前图并入 GeoJSON 也按它预算——能保存出的档必须能再导入。 */
+const WORLD_CAPS: Record<string, number> = { factions: 20000, terrainOverrides: 4000000, heightOverrides: 4000000 };
+export const worldCap = (k: string): number => WORLD_CAPS[k] ?? 200000;
+
 export function validateWorld(w: unknown): ValidateResult {
   const fatal: Issue[] = [], warnings: Issue[] = [];
   let fOver = 0, wOver = 0;
@@ -40,7 +46,6 @@ export function validateWorld(w: unknown): ValidateResult {
      自身已够得到——140km 战术图 196 万格、20km 笔刷一 dab ≈3.1 万条，重涂几分钟即破 30 万，
      导出的图再导入反被自己的闸拒掉（能保存出的档必须能再导入）。400 万＝格数上限 260 万 ×
      时段层余量，仍远低于恶意档量级。 */
-  const CAP: Record<string, number> = { factions: 20000, terrainOverrides: 4000000, heightOverrides: 4000000 };  // 余项默认 200000
   for (const k of listFields) {
     const v = o[k];
     if (v == null) continue;
@@ -49,7 +54,7 @@ export function validateWorld(w: unknown): ValidateResult {
       continue;
     }
     // 量级闸：超大数组=损坏/恶意分享档（正常世界远够不到），拒开以免 validate/normalize/建网格冻结或 OOM
-    if (v.length > (CAP[k] ?? 200000)) { F(k, `${k} 含 ${v.length} 项，超出可处理上限（疑损坏或恶意档）`); continue; }
+    if (v.length > worldCap(k)) { F(k, `${k} 含 ${v.length} 项，超出可处理上限（疑损坏或恶意档）`); continue; }
     v.forEach((m, i) => { if (!isObj(m)) F(`${k}[${i}]`, "成员不是对象"); });
   }
   if (fatal.length || fOver) {             // 结构已坏：细则检查建立在成员是对象的前提上
@@ -77,6 +82,10 @@ export function validateWorld(w: unknown): ValidateResult {
       || Math.abs(+b.lonMin) > 1e6 || Math.abs(+b.lonMax) > 1e6 || Math.abs(+b.latMin) > 1e6 || Math.abs(+b.latMax) > 1e6)
       F("meta.bbox", "范围跨度或坐标量级过大，无法生成地形网格（疑损坏或恶意档）");
   }
+  const bb = meta.bbox as Record<string, unknown> | null;   // 涂域行程编码的解码网格按它算；无效＝按默认范围（同消费端）
+  const bbox: BBox = bb && isObj(bb) && isNum(bb.lonMin) && isNum(bb.lonMax) && isNum(bb.latMin) && isNum(bb.latMax)
+    && (bb.lonMin as number) < (bb.lonMax as number) && (bb.latMin as number) < (bb.latMax as number)
+    ? { lonMin: bb.lonMin as number, lonMax: bb.lonMax as number, latMin: bb.latMin as number, latMax: bb.latMax as number } : DEFAULT_BBOX;
   // 物理标定须为正数（normalizeWorld 对无效值剔键回默认，此处仅提示写手——负半径=负距离）
   for (const k of ["planetRadiusKm", "kmPerDeg"] as const) {
     const v = meta[k];
@@ -120,6 +129,8 @@ export function validateWorld(w: unknown): ValidateResult {
         W(`${p}.paint[${k}].runs`, "涂域行程编码形状无效（pd>0 且 d 为三元组数组），该层将按空处理");
       else if (R && Array.isArray(R.d) && (R.d as unknown[]).length > 12000000)
         F(`${p}.paint[${k}].runs`, "涂域行程编码过大（疑损坏或恶意档）");
+      else if (R && Array.isArray(R.d) && !runsDims(R as PaintRuns, bbox))
+        F(`${p}.paint[${k}].runs`, `涂域行程编码的格边 pd 把图幅切成超过 ${MAX_RUN_DIM} 格（疑损坏或恶意档）`);
       if (Array.isArray((L as { cells?: unknown }).cells) && ((L as { cells: unknown[] }).cells).length > 4000000)
         F(`${p}.paint[${k}].cells`, "涂域格坐标过多（疑损坏或恶意档）");
     });
