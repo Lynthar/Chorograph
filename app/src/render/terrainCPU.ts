@@ -209,21 +209,28 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const gcy = (elevSmooth(src.data, src, lon, lat + ky) - elevSmooth(src.data, src, lon, lat - ky)) / 20 / dpr;
     const gsl = Math.abs(gcx) + Math.abs(gcy) + 1e-7, tl = Math.hypot(gy, gx) || 1;
     const sdp = ((gy / tl) * (lon - grid!.bb.lonMin) * pxpd + (gx / tl) * (lat - grid!.bb.latMin) * pxpdY) / dpr;
-    const k = cA === cB ? contourK(eh, cA, ad, gsl, sdp) : Math.min(1, contourK(eh, cA, ad, gsl, sdp) * (1 - fd) + contourK(eh, cB, ad, gsl, sdp) * fd);
+    const k = inkK(eh, cA, cB, fd, ad, gsl, sdp, 0), kh = inkK(eh, cA, cB, fd, ad, gsl, sdp, FX.haloPx);
+    // 亮晕只画核外环（kh−k），按底色亮度渐隐（同 GL；判据见 material.FX.halo*）
+    const hg = (1 - sstep(FX.haloLo, FX.haloHi, (0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2]) / 255)) * Math.max(0, kh - k);
+    if (hg > 0) col = [col[0] + (FX.haloC[0] * 255 - col[0]) * hg, col[1] + (FX.haloC[1] * 255 - col[1]) * hg, col[2] + (FX.haloC[2] * 255 - col[2]) * hg];
     return [col[0] + (90 - col[0]) * k, col[1] + (70 - col[1]) * k, col[2] + (40 - col[2]) * k];
   }
+  /* 两套线系按 fd 交叉淡入后的着墨（同 GL inkK；共有的线两系相加＝恒满）；bo=带宽外扩像素（亮晕） */
+  function inkK(eh: number, cA: number, cB: number, fd: number, ad: number, gsl: number, sdp: number, bo: number): number {
+    return cA === cB ? contourK(eh, cA, ad, gsl, sdp, bo) : Math.min(1, contourK(eh, cA, ad, gsl, sdp, bo) * (1 - fd) + contourK(eh, cB, ad, gsl, sdp, bo) * fd);
+  }
   /* 一套线系在此像素的着墨（同 GL contourK）：首曲线（挤线抑制）、计曲线（每第 5 条）、间曲线 / 助曲线（粗坡门 + 虚线）。
-     gsl=粗坡（高程/CSS 像素）、sdp=沿等值线切向的像素坐标 */
-  function contourK(eh: number, itv: number, ad: number, gsl: number, sdp: number): number {
-    const mn = cw(eh, itv, ad, 0.8, 1.5) * sstep(2.5, 6, itv / ad);
-    const ix = cw(eh, itv * 5, ad, 1.3, 2.4) * sstep(2.5, 6, itv * 5 / ad);
+     gsl=粗坡（高程/CSS 像素）、sdp=沿等值线切向的像素坐标、bo=带宽外扩像素 */
+  function contourK(eh: number, itv: number, ad: number, gsl: number, sdp: number, bo: number): number {
+    const mn = cw(eh, itv, ad, 0.8 + bo, 1.5 + bo) * sstep(2.5, 6, itv / ad);
+    const ix = cw(eh, itv * 5, ad, 1.3 + bo, 2.4 + bo) * sstep(2.5, 6, itv * 5 / ad);
     const sp1 = itv / gsl, g1 = sstep(SUP_LO_PX, SUP_HI_PX, sp1), g2 = g1 * sstep(SUP_LO_PX, SUP_HI_PX, sp1 * 0.5);
     let m2 = 0, m4 = 0;
     if (g1 > 0) {
       const sd = sdp / SUP_DASH_PX, fr = sd - Math.floor(sd), fr2 = 2 * sd - Math.floor(2 * sd);
       const d1 = Math.abs(fr - 0.5) >= 0.125 ? 1 : 0, d2 = Math.abs(fr2 - 0.5) >= 0.25 ? 1 : 0;
-      m2 = cw(eh, itv * 0.5, ad, 0.8, 1.5) * oddK(eh, itv * 0.5) * g1 * d1;
-      m4 = cw(eh, itv * 0.25, ad, 0.8, 1.5) * oddK(eh, itv * 0.25) * g2 * d2;
+      m2 = cw(eh, itv * 0.5, ad, 0.8 + bo, 1.5 + bo) * oddK(eh, itv * 0.5) * g1 * d1;
+      m4 = cw(eh, itv * 0.25, ad, 0.8 + bo, 1.5 + bo) * oddK(eh, itv * 0.25) * g2 * d2;
     }
     return Math.max(mn * 0.50, ix * 0.70, m2 * 0.50, m4 * 0.42);
   }

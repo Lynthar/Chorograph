@@ -211,23 +211,27 @@ float ruleSmooth(vec2 ll){ // 规则场制图面：同式换源——等高线�
   return 0.25*(ruleAt(ll+vec2(-h,-h))+ruleAt(ll+vec2(h,-h))+ruleAt(ll+vec2(-h,h))+ruleAt(ll+vec2(h,h)));
 }
 /* 等高线助手：d=到最近整倍等值面的像素距（数值 +1e-6 防零梯度平台整面刷线）。
-   cwMinor/cwIndex 带宽不同（计曲线加宽）；oddK=倍数奇偶（×2 阶梯过渡期只淡入奇数倍新线） */
-float cwMinor(float eh,float itv,float aa){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(0.8,1.5,d); }
-float cwIndex(float eh,float itv,float aa){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(1.3,2.4,d); }
+   cwMinor/cwIndex 带宽不同（计曲线加宽），bo=带宽外扩像素（亮晕用同一带外扩）；oddK=倍数奇偶（只淡入奇数倍新线） */
+float cwMinor(float eh,float itv,float aa,float bo){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(0.8+bo,1.5+bo,d); }
+float cwIndex(float eh,float itv,float aa,float bo){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(1.3+bo,2.4+bo,d); }
 float oddK(float eh,float itv){ return mod(round(eh/itv),2.0); }
 /* 一套线系在此像素的着墨（CPU contourK 同式）：首曲线（挤线抑制：线距不足数像素的陡坎隐去）、计曲线（每第 5 条，按自身线距评估而幸存）、
    间曲线（1/2 距，长虚线）与助曲线（1/4 距，短虚线）——上一级线距 ≥ core/elev.SUP_* 才浮现，奇数倍＝只补首曲线之间的新线。
    gsl=粗坡（高程/CSS 像素）、sdp=沿等值线切向的像素坐标（虚线相位） */
-float contourK(float eh,float itv,float aa,float gsl,float sdp){
-  float mn=cwMinor(eh,itv,aa)*smoothstep(2.5,6.0,itv/aa);
-  float ix=cwIndex(eh,itv*5.0,aa)*smoothstep(2.5,6.0,itv*5.0/aa);
+float contourK(float eh,float itv,float aa,float gsl,float sdp,float bo){
+  float mn=cwMinor(eh,itv,aa,bo)*smoothstep(2.5,6.0,itv/aa);
+  float ix=cwIndex(eh,itv*5.0,aa,bo)*smoothstep(2.5,6.0,itv*5.0/aa);
   float sp1=itv/gsl;
   float g1=smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1), g2=g1*smoothstep(${SUP_LO_PX.toFixed(1)},${SUP_HI_PX.toFixed(1)},sp1*0.5);
   float sd=sdp/${SUP_DASH_PX.toFixed(1)};
   float d1=step(0.125,abs(fract(sd)-0.5)), d2=step(0.25,abs(fract(sd*2.0)-0.5));
-  float m2=cwMinor(eh,itv*0.5,aa)*oddK(eh,itv*0.5)*g1*d1;
-  float m4=cwMinor(eh,itv*0.25,aa)*oddK(eh,itv*0.25)*g2*d2;
+  float m2=cwMinor(eh,itv*0.5,aa,bo)*oddK(eh,itv*0.5)*g1*d1;
+  float m4=cwMinor(eh,itv*0.25,aa,bo)*oddK(eh,itv*0.25)*g2*d2;
   return max(max(mn*0.50, ix*0.70), max(m2*0.50, m4*0.42));
+}
+/* 两套线系按 uCFade 交叉淡入后的着墨（共有的线两系相加＝恒满） */
+float inkK(float eh,float aa,float gsl,float sdp,float bo){
+  return uCA==uCB ? contourK(eh,uCA,aa,gsl,sdp,bo) : min(1.0, contourK(eh,uCA,aa,gsl,sdp,bo)*(1.0-uCFade)+contourK(eh,uCB,aa,gsl,sdp,bo)*uCFade);
 }
 /* 水面高程（粗格最近取，同类型索引）：海=0，内陆湖=岸线高度，陆格取相邻水体水面
    （core/elev.waterSurface 已晕开一格＝湖岸线随细分场摆动，不被粗格边切成方块）。
@@ -362,7 +366,7 @@ void main(){
   col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55*(1.0-float(uMode)));
   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
   if(uContour==1 && er>=ws-0.02 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
-    // 等高线画在规则场制图面 er（晕渲是画，等高线是尺）。两套线系各按 contourK 着墨，按 uCFade 交叉淡入（共有的线两系相加＝恒满）。
+    // 等高线画在规则场制图面 er（晕渲是画，等高线是尺）。两套线系各按 contourK 着墨，按 uCFade 交叉淡入。
     // 间曲线的浮现门看 ±10 px 差分的**粗坡**，不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍、平地上永远开不了门；
     // 虚线相位锚网格原点的像素坐标（平移不爬动），对 ±切向对称（CPU 的 y 轴反向也同相）
     // 线落在等距的**整数倍**上（高程自海面 0 起算，与光标读数同一把尺）：早先 +0.02 是为让最低那条压住水陆界，
@@ -374,7 +378,10 @@ void main(){
     float gsl=abs(gc.x)+abs(gc.y)+1e-7;
     vec2 tg=normalize(vec2(-gd.y,gd.x)+vec2(1e-9,0.0));
     float sdp=dot(tg,(ll-uGridBB.xy)*vec2(uPXPD,uPXPDY))/uDPR;
-    float k=uCA==uCB ? contourK(eh,uCA,ad,gsl,sdp) : min(1.0, contourK(eh,uCA,ad,gsl,sdp)*(1.0-uCFade)+contourK(eh,uCB,ad,gsl,sdp)*uCFade);
+    float k=inkK(eh,ad,gsl,sdp,0.0), kh=inkK(eh,ad,gsl,sdp,float(${FX.haloPx}));
+    // 亮晕只画核外环（kh−k），按底色亮度渐隐：暗坡上棕线与底同亮，靠环保证可见（判据见 material.FX.halo*）
+    float hg=1.0-smoothstep(float(${FX.haloLo}),float(${FX.haloHi}),dot(col,vec3(0.299,0.587,0.114)));
+    col=mix(col, vec3(${FX.haloC.join(",")}), max(0.0,kh-k)*hg);
     col=mix(col, vec3(90.0,70.0,40.0)/255.0, k);
   }
   // 图幅外纸色最后覆盖（放在全部计算之后＝fwidth 的一致控制流不受此分支影响）；图廓线由 overlay 层描
