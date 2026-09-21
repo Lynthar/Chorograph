@@ -17,7 +17,7 @@ import { createLabelField } from "./labels.ts";
 import { drawSpotHeights } from "./spots.ts";
 import { drawContourLabels } from "./contourlab.ts";
 import type { Grid } from "../core/grid.ts";
-import type { ContourStats, ElevField } from "../core/elev.ts";
+import type { ElevField } from "../core/elev.ts";
 import type { Leg } from "../core/units.ts";
 import type { UnitMasks } from "../core/viewshed.ts";
 import type { Meta, World, WorldNode } from "../core/types.ts";
@@ -51,7 +51,7 @@ export interface OverlayOpts {
   unitLegs?: Map<string, Leg[]>;      // 部队可达性预算（外壳缓存；供尾迹标超速）
   visMasks?: Map<string, UnitMasks>;  // 视线掩膜（外壳编排；有掩膜的圈只填视线可达的格）
   ruleField?: ElevField | null;       // 落定的规则场（标高点与等高线注记共读；数字与光标读数同源，演算中沿用上一份）
-  contourStats?: ContourStats | null; // 等高距的场统计（与地形渲染器同一份；注记按它算等距）
+  contourStep?: number;               // 等距（抽象单位，renderer.contourStepOf 取的那一档，与地形渲染器同一档；注记按它标）
   smooth?: number;                    // 涂域边界平滑档（Chaikin 轮数 0–3；缺省 2，笔刷框调）
   edgeSelIdx?: number | null;         // 选中连线下标（红晕高亮，对齐旧 isSelEdge）
   editing?: boolean;                  // 编辑模式：全部地点可见（对齐旧 nodeVisible）
@@ -102,7 +102,7 @@ export function drawOverlay(
           handleUnit: opts.editing ? (opts.unitSelId || null) : null });   // 阵形朝向手柄（同圈手柄之规：编辑态选中对象才出）
       if (on("spots") && opts.ruleField && opts.grid) drawSpotHeights(ctx, c2, meta, opts.ruleField, opts.grid, field);   // 标高点占位：让地名与部队
       if (on("terrain") && on("contour") && opts.ruleField && opts.grid)   // 等高线注记**最后**占位：让地名、部队与标高点（线由地形渲染器画，故并 terrain 门）
-        drawContourLabels(ctx, c2, meta, opts.ruleField, opts.grid, field, opts.contourStats || null);
+        drawContourLabels(ctx, c2, meta, opts.ruleField, opts.grid, field, opts.contourStep || 0);
     }
     if (on("graticule")) drawGraticule(ctx, cam, meta);   // 经纬网：拷贝循环外，屏幕空间一次绘制
     if ((meta || {}).mapKind === "tactical" && (meta || {}).bbox) drawNeatline(ctx, cam, meta!);   // 图廓线：图幅外已铺纸色（terrain 的 paper 裁决），墨框把「图页」缝起来

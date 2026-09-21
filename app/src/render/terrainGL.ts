@@ -2,8 +2,8 @@
    职责边界：分类网格（游戏真源）由 core/grid 在 CPU 计算、作为 RG32F 纹理上传（R=示意高程 G=类型索引）；
    本模块只做像素观感——高程双线性 + 细节噪声 + 晕渲 + 色阶 + 生态色调 + 海岸线 + 等高线。
    等高线例外地画在**规则场（工作档）的无噪声制图面**上（画面场可为精修档，线不跟它＝与读数同一个数）：
-   首曲线+计曲线（每第 5 条），等距由 core/elev.contourStepFor 随缩放与地势在 1-2-5 阶梯上自适应，相邻两档（uCA 细 / uCB 粗）
-   按 uCFade 交叉淡入淡出；像素量按 uDPR 锚 CSS 像素。
+   首曲线+计曲线（每第 5 条），等距由 core/elev.contourStepFor 随缩放与地势在 1-2-5 阶梯上取档（uCStep，任一时刻一套线系）；
+   像素量按 uDPR 锚 CSS 像素。
    细节噪声用整数哈希 PCG2D（纯装饰、不入存档；sin-hash 在 fp32 下大参数失谐、不可移植）。
 
    缩放自适应观感（2026-08 美化批，material.ts 是数值真源，CPU 兜底同构）：
@@ -42,8 +42,7 @@ uniform vec4 uViewBB;             // lonMin,latMin,lonMax,latMax
 uniform vec2 uRes;                // 画布像素
 uniform float uPXPD;              // 横向像素/度（经度有 cos(lat0) 校正，与纵向不同）
 uniform float uPXPDY;             // 纵向像素/度（对齐旧 drawTile 经 project 的各向异性贴图）
-uniform float uCA, uCB;           // 两套线系的等距（抽象单位；contourStepFor：1-2-5 阶梯上相邻两档，A 细 B 粗）
-uniform float uCFade;             // B 系权重 0..1（两系交叉淡入淡出；A==B 时无效）
+uniform float uCStep;             // 等高距（抽象单位；contourStepFor：1-2-5 阶梯上的一档，任一时刻只有一套线系）
 uniform float uDPR;               // 设备像素比：等高线线宽、挤线门、间曲线门与虚线节距按 CSS 像素锚定（1＝逐位旧行为）
 uniform vec3 uLight;
 uniform int uMode;                // 0=观感底图 1=推演底图（逐格平色）
@@ -211,9 +210,9 @@ float ruleSmooth(vec2 ll){ // 规则场制图面：同式换源——等高线�
   return 0.25*(ruleAt(ll+vec2(-h,-h))+ruleAt(ll+vec2(h,-h))+ruleAt(ll+vec2(-h,h))+ruleAt(ll+vec2(h,h)));
 }
 /* 等高线助手：d=到最近整倍等值面的像素距（数值 +1e-6 防零梯度平台整面刷线）。
-   cwMinor/cwIndex 带宽不同（计曲线加宽），bo=带宽外扩像素（亮晕用同一带外扩）；oddK=倍数奇偶（只淡入奇数倍新线） */
+   计曲线带宽 0.9–1.65 只比首曲线 0.8–1.5 略宽，主要靠墨 0.70 与首曲线区分（2026-09-21 用户拍板）；bo=带宽外扩像素（亮晕用同一带外扩）；oddK=倍数奇偶（只淡入奇数倍新线） */
 float cwMinor(float eh,float itv,float aa,float bo){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(0.8+bo,1.5+bo,d); }
-float cwIndex(float eh,float itv,float aa,float bo){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(1.3+bo,2.4+bo,d); }
+float cwIndex(float eh,float itv,float aa,float bo){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(0.9+bo,1.65+bo,d); }
 float oddK(float eh,float itv){ return mod(round(eh/itv),2.0); }
 /* 一套线系在此像素的着墨（CPU contourK 同式）：首曲线（挤线抑制：线距不足数像素的陡坎隐去）、计曲线（每第 5 条，按自身线距评估而幸存）、
    间曲线（1/2 距，长虚线）与助曲线（1/4 距，短虚线）——上一级线距 ≥ core/elev.SUP_* 才浮现，奇数倍＝只补首曲线之间的新线。
@@ -228,10 +227,6 @@ float contourK(float eh,float itv,float aa,float gsl,float sdp,float bo){
   float m2=cwMinor(eh,itv*0.5,aa,bo)*oddK(eh,itv*0.5)*g1*d1;
   float m4=cwMinor(eh,itv*0.25,aa,bo)*oddK(eh,itv*0.25)*g2*d2;
   return max(max(mn*0.50, ix*0.70), max(m2*0.50, m4*0.42));
-}
-/* 两套线系按 uCFade 交叉淡入后的着墨（共有的线两系相加＝恒满） */
-float inkK(float eh,float aa,float gsl,float sdp,float bo){
-  return uCA==uCB ? contourK(eh,uCA,aa,gsl,sdp,bo) : min(1.0, contourK(eh,uCA,aa,gsl,sdp,bo)*(1.0-uCFade)+contourK(eh,uCB,aa,gsl,sdp,bo)*uCFade);
 }
 /* 水面高程（粗格最近取，同类型索引）：海=0，内陆湖=岸线高度，陆格取相邻水体水面
    （core/elev.waterSurface 已晕开一格＝湖岸线随细分场摆动，不被粗格边切成方块）。
@@ -366,7 +361,7 @@ void main(){
   col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55*(1.0-float(uMode)));
   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
   if(uContour==1 && er>=ws-0.02 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
-    // 等高线画在规则场制图面 er（晕渲是画，等高线是尺）。两套线系各按 contourK 着墨，按 uCFade 交叉淡入。
+    // 等高线画在规则场制图面 er（晕渲是画，等高线是尺），按 contourK 着墨。
     // 间曲线的浮现门看 ±10 px 差分的**粗坡**，不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍、平地上永远开不了门；
     // 虚线相位锚网格原点的像素坐标（平移不爬动），对 ±切向对称（CPU 的 y 轴反向也同相）
     // 线落在等距的**整数倍**上（高程自海面 0 起算，与光标读数同一把尺）：早先 +0.02 是为让最低那条压住水陆界，
@@ -378,7 +373,7 @@ void main(){
     float gsl=abs(gc.x)+abs(gc.y)+1e-7;
     vec2 tg=normalize(vec2(-gd.y,gd.x)+vec2(1e-9,0.0));
     float sdp=dot(tg,(ll-uGridBB.xy)*vec2(uPXPD,uPXPDY))/uDPR;
-    float k=inkK(eh,ad,gsl,sdp,0.0), kh=inkK(eh,ad,gsl,sdp,float(${FX.haloPx}));
+    float k=contourK(eh,uCStep,ad,gsl,sdp,0.0), kh=contourK(eh,uCStep,ad,gsl,sdp,float(${FX.haloPx}));
     // 亮晕只画核外环（kh−k），按底色亮度渐隐：暗坡上棕线与底同亮，靠环保证可见（判据见 material.FX.halo*）
     float hg=1.0-smoothstep(float(${FX.haloLo}),float(${FX.haloHi}),dot(col,vec3(0.299,0.587,0.114)));
     col=mix(col, vec3(${FX.haloC.join(",")}), max(0.0,kh-k)*hg);
@@ -574,9 +569,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.uniform1f(U("uPXPDY"), canvas.height / (viewBB.latMax - viewBB.latMin));
       gl.uniform1i(U("uMode"), opts.flat ? 1 : 0);
       gl.uniform1i(U("uContour"), opts.contour ? 1 : 0);
-      gl.uniform1f(U("uCA"), opts.cA || 0.12);
-      gl.uniform1f(U("uCB"), opts.cB || opts.cA || 0.12);
-      gl.uniform1f(U("uCFade"), opts.cFade || 0);
+      gl.uniform1f(U("uCStep"), opts.cStep || 0.12);
       gl.uniform1f(U("uDPR"), opts.dpr ?? 1);
       gl.uniform1i(U("uWrap"), opts.wrap ? 1 : 0);
       gl.uniform1i(U("uPaper"), opts.paper ? 1 : 0);

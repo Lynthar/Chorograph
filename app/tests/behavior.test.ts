@@ -7,7 +7,7 @@ import { COS_LAT_FLOOR, distKm, haversine, kmPerDeg, kmPerDegLat, kmPerDegXY, lo
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
 import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
-import { BASE_SLOPE_DEG, CONTOUR_LEVELS, CONTOUR_PX, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
+import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, type Grid } from "../src/core/grid.ts";
 import { peakSpots, waterSpots } from "../src/core/spots.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
@@ -28,7 +28,7 @@ import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/re
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
 import { ELEV_RAMP, FX, MICRO_F0, NRM0, SNOW_LAT_M, decoGate, exagFor, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, shadeGain, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
-import { terrainOpts } from "../src/render/renderer.ts";
+import { terrainOpts, contourStepOf } from "../src/render/renderer.ts";
 import { CLIMATE, CLIMATE_ORDER, allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/ui/stamps.ts";
 import type { Meta, World, WorldNode } from "../src/core/types.ts";
@@ -419,40 +419,39 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     let prev = -1;
     for (let h = 0; h <= 1; h += 0.01) { const e = elevFromGenH(h, M); assert.ok(e >= prev); prev = e; }
   });
-  it("标定：elevUnitM 缺省 2000；contourStepFor＝地板 > 至少四级上限 > 8 px 坡度下限，1-2-5 阶梯相邻两档交叉淡入", () => {
+  it("标定：elevUnitM 缺省 2000；contourStepFor＝地板 > 至少四级上限 > 12 px 坡度下限，取 1-2-5 阶梯上 ≥ 下限的最小档、升档带迟滞", () => {
     assert.strictEqual(elevUnitM({}), 2000);
     assert.strictEqual(elevUnitM({ elevUnitM: 1500 }), 1500);
-    assert.strictEqual(CONTOUR_PX, 8); assert.strictEqual(CONTOUR_LEVELS, 4);
+    assert.strictEqual(CONTOUR_PX, 12); assert.strictEqual(CONTOUR_LEVELS, 4); assert.strictEqual(CONTOUR_HYST, 1.15);
     const F = { worldModel: "flat", kmPerDeg: 100, elevUnitM: 1000 } as Meta;   // 0.001°/px＝100 m/px
-    const near = (x: number, y: number, m: string) => assert.ok(Math.abs(x - y) < 1e-9, `${m}: ${x} vs ${y}`);
-    // 平原细：下限 8×0.01×100=8 m 不及地板 → 单系 10 m
-    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.01, rangeM: 200 }), { aM: 10, bM: 10, a: 0.01, b: 0.01, fade: 0, dom: 0.01 });
-    // 山地粗：下限 400 m 落在 200～500 之间、上限 500 容得下 → 两系交叉淡入（对数位置 t 的 1−(1−t)²）
-    const mt = contourStepFor(0.001, F, { slope75: 0.5, rangeM: 2000 });
-    assert.deepStrictEqual([mt.aM, mt.bM, mt.a, mt.b], [200, 500, 0.2, 0.5]);
-    near(mt.fade, 1 - (1 - Math.log(400 / 200) / Math.log(500 / 200)) ** 2, "fade");
-    assert.strictEqual(mt.dom, mt.b, "权重过半＝注记跟粗系");
-    // 粗档装不下四级（1800/4=450 < 500）就不向它淡：停在细档
-    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.5, rangeM: 1800 }), { aM: 200, bM: 200, a: 0.2, b: 0.2, fade: 0, dom: 0.2 });
-    // 战略整幅：5 km/px 的下限 4000 m 越过上限 → 上限向下吸附＝200 m，整幅 ≥4 级
+    // 平原：下限 12×0.008×100=9.6 m 不及地板 → 10 m；稍陡（12 m）就是 ≥ 它的最小档 20
+    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.008, rangeM: 200 }), { m: 10, v: 0.01 });
+    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.01, rangeM: 200 }), { m: 20, v: 0.02 });
+    // 取 ≥ 下限的最小档：下限恰 100 m → 100，120 m → 200——两侧各只有一套线系
+    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 1 / 12, rangeM: 1e5 }), { m: 100, v: 0.1 });
+    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.1, rangeM: 1e5 }), { m: 200, v: 0.2 });
+    // 迟滞：正在细档 100 上时，下限 110 m（无迟滞该升 200）仍留 100，超过 115 m 才升；上一档不是它＝无迟滞
+    assert.strictEqual(contourStepFor(0.001, F, { slope75: 0.0916, rangeM: 1e5 }, 100).m, 100);
+    assert.strictEqual(contourStepFor(0.001, F, { slope75: 0.1, rangeM: 1e5 }, 100).m, 200);
+    assert.strictEqual(contourStepFor(0.001, F, { slope75: 0.0916, rangeM: 1e5 }, 50).m, 200, "上一档不在候选里＝无迟滞");
+    assert.strictEqual(contourStepFor(0.001, F, { slope75: 0.0916, rangeM: 1e5 }, 200).m, 200, "正在粗档上：下限没跌回细档就不降");
+    // 粗档装不下四级（700/4=175 < 200）就留细档
+    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.11, rangeM: 700 }), { m: 100, v: 0.1 });
+    // 下限越过上限（山地 600 m > 2000/4）：上限向下吸附 500
+    assert.deepStrictEqual(contourStepFor(0.001, F, { slope75: 0.5, rangeM: 2000 }), { m: 500, v: 0.5 });
+    // 战略整幅：5 km/px 的下限 6000 m 越过上限 → 吸附到 200 m，整幅 ≥4 级
     const st = contourStepFor(0.05, F, { slope75: 0.1, rangeM: 1800 });
-    assert.deepStrictEqual([st.aM, st.bM, st.fade], [200, 200, 0]); assert.ok(1800 / st.aM >= CONTOUR_LEVELS);
-    // 地板不穿：contourM=100 时坡度再小也是 100；地板不在 1-2-5 上也算一档（30 → 相邻 30/50）
-    assert.deepStrictEqual(contourStepFor(0.001, { ...F, contourM: 100 }, { slope75: 0.05, rangeM: 5000 }), { aM: 100, bM: 100, a: 0.1, b: 0.1, fade: 0, dom: 0.1 });
-    const f30 = contourStepFor(0.001, { ...F, contourM: 30 }, { slope75: 0.05, rangeM: 5000 });
-    assert.deepStrictEqual([f30.aM, f30.bM], [30, 50]);
-    // 没有场（stats=null）：按坡度 0.2、范围无穷＝旧 1.6 m/px 手感 → 160 m 落在 100～200
-    const n0 = contourStepFor(0.001, F, null);
-    assert.deepStrictEqual([n0.aM, n0.bM], [100, 200]); near(n0.fade, 1 - (1 - Math.log(1.6) / Math.log(2)) ** 2, "null-fade");
-    // 跨档连续：下限 200 m 两侧——之下 100/200 且 fade→1，之上 200/500 且 fade→0（画面都是 200 m 线）
+    assert.strictEqual(st.m, 200); assert.ok(1800 / st.m >= CONTOUR_LEVELS);
+    // 地板不穿：contourM=100 时坡度再小也是 100；地板不在 1-2-5 上也算一档（30：下限恰 30 m 时取 30）
+    assert.deepStrictEqual(contourStepFor(0.001, { ...F, contourM: 100 }, { slope75: 0.05, rangeM: 5000 }), { m: 100, v: 0.1 });
+    assert.deepStrictEqual(contourStepFor(0.001, { ...F, contourM: 30 }, { slope75: 0.025, rangeM: 5000 }), { m: 30, v: 0.03 });
+    // 没有场（stats=null）：按坡度 0.2、范围无穷 → 下限 240 m → 500
+    assert.deepStrictEqual(contourStepFor(0.001, F, null), { m: 500, v: 0.5 });
+    // 阶梯档界恰在 10 的整幂（log10 的 ULP 误差）：1000 m 之下取 1000、刚过就是 2000
     const dppAt = (lowM: number) => lowM / (CONTOUR_PX * 0.2) / 100000;
-    const lo = contourStepFor(dppAt(200 * 0.9999), F, null), hi = contourStepFor(dppAt(200 * 1.0001), F, null);
-    assert.deepStrictEqual([lo.aM, lo.bM], [100, 200]); assert.ok(lo.fade > 0.999); assert.strictEqual(lo.dom, lo.b);
-    assert.deepStrictEqual([hi.aM, hi.bM], [200, 500]); assert.ok(hi.fade < 0.001); assert.strictEqual(hi.dom, hi.a);
-    // 阶梯档界恰在 10 的整幂（log10 的 ULP 误差）：1000 m 两侧仍是 500/1000 与 1000/2000
-    assert.deepStrictEqual([contourStepFor(dppAt(1000 * 0.9999), F, null).bM, contourStepFor(dppAt(1000 * 1.0001), F, null).aM], [1000, 1000]);
+    assert.deepStrictEqual([contourStepFor(dppAt(1000 * 0.9999), F, null).m, contourStepFor(dppAt(1000 * 1.0001), F, null).m], [1000, 2000]);
     let prev = 0;
-    for (const dpp of [1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.1]) { const v = contourStepFor(dpp, F, { slope75: 0.3, rangeM: 1e9 }).aM; assert.ok(v >= prev, "随缩小单调不减"); prev = v; }
+    for (const dpp of [1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.1]) { const v = contourStepFor(dpp, F, { slope75: 0.3, rangeM: 1e9 }).m; assert.ok(v >= prev, "随缩小单调不减"); prev = v; }
   });
   it("contourStats：陆格坡度 75 分位（米/米）与陆地高程范围（米，p1～p99）；水格不计、全水＝零；按场缓存", () => {
     const F = { worldModel: "flat", kmPerDeg: 100, elevUnitM: 1000 } as Meta;   // step 0.01°＝1 km 格
@@ -465,6 +464,10 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     assert.ok(Math.abs(s.slope75 - 0.01) < 1e-6, "坡度 " + s.slope75);
     assert.ok(Math.abs(s.rangeM - 190) < 1e-3, "范围 " + s.rangeM);   // 100～290 m
     assert.strictEqual(contourStats(f, grid, new Float32Array(cols * rows), F), s, "同一份场命中缓存");
+    // 只统计一片场格（渲染器按视口窗取坡度）：东半幅范围 200～290、缓存按 rect 键
+    const east = contourStats(f, grid, new Float32Array(cols * rows), F, { c0: 10, r0: 0, c1: 20, r1: 20 });
+    assert.ok(Math.abs(east.rangeM - 90) < 1e-3 && Math.abs(east.slope75 - 0.01) < 1e-6, "东半幅 " + JSON.stringify(east));
+    assert.strictEqual(contourStats(f, grid, new Float32Array(cols * rows), F, { c0: 10, r0: 0, c1: 20, r1: 20 }), east, "同 rect 命中缓存");
     // 西半幅淹成水（水面高于场值）：只剩东半幅的样本，范围随之减半
     const ws = new Float32Array(cols * rows); for (let r = 0; r < rows; r++) for (let c = 0; c < cols / 2; c++) ws[r * cols + c] = 1;
     const f2: ElevField = { ...f, data: data.slice() };
@@ -1578,17 +1581,32 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
      推演底图不替等高线做主（等高线仍是独立图层），也不改纸色/雪线/增益的来源。 */
   it("terrainOpts：推演底图只翻 flat，等高线仍随图层开关，其余项与观感底图逐位相同", () => {
     const meta = { mapKind: "tactical", elevUnitM: 2000, bbox: { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 } } as Meta;
-    const stats = { slope75: 0.3, rangeM: 1500 };
-    const a = terrainOpts(meta, 0.001, { contour: true }, 1.5, "shaded", 1, stats), b = terrainOpts(meta, 0.001, { contour: true }, 1.5, "flat", 1, stats);
+    const a = terrainOpts(meta, 0.001, { contour: true }, 1.5, "shaded", 1, 0.05), b = terrainOpts(meta, 0.001, { contour: true }, 1.5, "flat", 1, 0.05);
     assert.strictEqual(a.flat, false); assert.strictEqual(b.flat, true);
     assert.deepStrictEqual({ ...a, flat: null }, { ...b, flat: null }, "样式之外的项逐位相同");
-    assert.strictEqual(terrainOpts(meta, 0.001, { contour: false }, 1, "flat", 1, stats).contour, false, "推演底图不强开等高线");
-    assert.strictEqual(a.dpr, 1); assert.strictEqual(terrainOpts(meta, 0.001, {}, 1, "shaded", 2.5, stats).dpr, 2.5, "设备像素比原样进渲染选项（等高线像素量据此锚 CSS 像素）");
+    assert.strictEqual(terrainOpts(meta, 0.001, { contour: false }, 1, "flat", 1, 0.05).contour, false, "推演底图不强开等高线");
+    assert.strictEqual(a.dpr, 1); assert.strictEqual(terrainOpts(meta, 0.001, {}, 1, "shaded", 2.5, 0.05).dpr, 2.5, "设备像素比原样进渲染选项（等高线像素量据此锚 CSS 像素）");
     assert.strictEqual(a.gain, shadeGain(meta, 0.001) * 1.5, "增益＝shadeGain × 本机地形立体感");
     assert.strictEqual(a.paper, paperOf(meta)); assert.deepStrictEqual(a.snow, snowSpec(meta));
-    const cs = contourStepFor(0.001, meta, stats);
-    assert.deepStrictEqual([a.cA, a.cB, a.cFade], [cs.a, cs.b, cs.fade]);
-    assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded", 1, null).wrap, false, "平面世界不环绕");
+    assert.strictEqual(a.cStep, 0.05, "等距原样进渲染选项（调用方经 contourStepOf 取档）");
+    assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded", 1, 0.05).wrap, false, "平面世界不环绕");
+  });
+  it("contourStepOf：坡度按视口窗统计（放大进山不按整图 75 分位）、范围按全场；整幅视角＝全场统计；上一档按 meta 记忆", () => {
+    // 64×16 的 1 km 格：西半幅缓坡 0.002、东半幅陡坡 0.5；100 m/px 下东半幅下限 600 m → 1000，西半幅 2.4 m → 地板 10
+    const F: Meta = { worldModel: "flat", kmPerDeg: 100, elevUnitM: 1000, terrain: "plain", gridN: 64, bbox: { lonMin: 0, latMin: 0, lonMax: 0.64, latMax: 0.16 } };
+    const grid = buildGridCells(F, [], 0);
+    assert.deepStrictEqual([grid.cols, grid.rows], [64, 16], "前置：网格 64×16");
+    const data = new Float32Array(64 * 16);
+    for (let r = 0; r < 16; r++) for (let c = 0; c < 64; c++) data[r * 64 + c] = c < 32 ? 0.1 + c * 0.002 : 0.164 + (c - 32) * 0.5;
+    const f = coarseField(grid, data);
+    const west = { lonMin: 0.02, lonMax: 0.22, latMin: 0.02, latMax: 0.14 }, east = { lonMin: 0.40, lonMax: 0.60, latMin: 0.02, latMax: 0.14 };
+    const whole = { lonMin: -0.1, lonMax: 0.8, latMin: -0.1, latMax: 0.3 };
+    assert.strictEqual(contourStepOf({ ...F }, 0.001, grid, f, null, west).m, 10, "西半幅视口：缓坡＝地板");
+    assert.strictEqual(contourStepOf({ ...F }, 0.001, grid, f, null, east).m, 1000, "东半幅视口：陡坡＝1000 m");
+    const M = { ...F };
+    assert.strictEqual(contourStepOf(M, 0.001, grid, f, null, whole).m, contourStepFor(0.001, F, contourStats(f, grid, waterSurface(F, grid), F)).m, "整幅视角＝全场统计");
+    assert.strictEqual(contourStepOf(M, 0.001, grid, f, null, east).m, 1000, "同一 meta 换视口照常换档（东半幅）");
+    assert.strictEqual(contourStepOf({ ...F }, 0.001, null, null, null, east).m, contourStepFor(0.001, F, null).m, "没有网格＝无场手感");
   });
   it("pinnedStackH：屏幕角标注堆的占高（出图图例据此让开 se）", () => {
     const T = 3107;

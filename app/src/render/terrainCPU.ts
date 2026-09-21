@@ -199,7 +199,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     if (!(opts.contour && ed[i] >= ws - 0.02
       && lon > grid!.bb.lonMin + grid!.step && lon < grid!.bb.lonMax - grid!.step
       && lat > grid!.bb.latMin + grid!.step && lat < grid!.bb.latMax - grid!.step)) return col;
-    const cA = opts.cA || 0.12, cB = opts.cB || cA, fd = opts.cFade || 0, dpr = opts.dpr ?? 1, eh = ed[i];   // 线落在等距的整数倍上（同 GL：不再偏移 0.02）
+    const cs = opts.cStep || 0.12, dpr = opts.dpr ?? 1, eh = ed[i];   // 线落在等距的整数倍上（同 GL：不再偏移 0.02）
     const gx = ed[y * W + Math.min(W - 1, x + 1)] - ed[i], gy = ed[Math.min(H - 1, y + 1) * W + x] - ed[i];   // 屏幕梯度（y 朝下）
     const ad = (Math.abs(gx) + Math.abs(gy)) * dpr + 1e-7;   // 线宽与挤线门按 CSS 像素锚定（同 GL uDPR）
     /* 间曲线的浮现门看 ±10 px 差分的粗坡（同 GL），不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍；
@@ -209,21 +209,17 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const gcy = (elevSmooth(src.data, src, lon, lat + ky) - elevSmooth(src.data, src, lon, lat - ky)) / 20;
     const gsl = Math.abs(gcx) + Math.abs(gcy) + 1e-7, tl = Math.hypot(gy, gx) || 1;
     const sdp = ((gy / tl) * (lon - grid!.bb.lonMin) * pxpd + (gx / tl) * (lat - grid!.bb.latMin) * pxpdY) / dpr;
-    const k = inkK(eh, cA, cB, fd, ad, gsl, sdp, 0), kh = inkK(eh, cA, cB, fd, ad, gsl, sdp, FX.haloPx);
+    const k = contourK(eh, cs, ad, gsl, sdp, 0), kh = contourK(eh, cs, ad, gsl, sdp, FX.haloPx);
     // 亮晕只画核外环（kh−k），按底色亮度渐隐（同 GL；判据见 material.FX.halo*）
     const hg = (1 - sstep(FX.haloLo, FX.haloHi, (0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2]) / 255)) * Math.max(0, kh - k);
     if (hg > 0) col = [col[0] + (FX.haloC[0] * 255 - col[0]) * hg, col[1] + (FX.haloC[1] * 255 - col[1]) * hg, col[2] + (FX.haloC[2] * 255 - col[2]) * hg];
     return [col[0] + (90 - col[0]) * k, col[1] + (70 - col[1]) * k, col[2] + (40 - col[2]) * k];
   }
-  /* 两套线系按 fd 交叉淡入后的着墨（同 GL inkK；共有的线两系相加＝恒满）；bo=带宽外扩像素（亮晕） */
-  function inkK(eh: number, cA: number, cB: number, fd: number, ad: number, gsl: number, sdp: number, bo: number): number {
-    return cA === cB ? contourK(eh, cA, ad, gsl, sdp, bo) : Math.min(1, contourK(eh, cA, ad, gsl, sdp, bo) * (1 - fd) + contourK(eh, cB, ad, gsl, sdp, bo) * fd);
-  }
-  /* 一套线系在此像素的着墨（同 GL contourK）：首曲线（挤线抑制）、计曲线（每第 5 条）、间曲线 / 助曲线（粗坡门 + 虚线）。
-     gsl=粗坡（高程/CSS 像素）、sdp=沿等值线切向的像素坐标、bo=带宽外扩像素 */
+  /* 此像素的着墨（同 GL contourK）：首曲线（挤线抑制）、计曲线（每第 5 条，带宽 0.9–1.65 只比首曲线略宽、靠墨 0.70 区分）、
+     间曲线 / 助曲线（粗坡门 + 虚线）。gsl=粗坡（高程/CSS 像素）、sdp=沿等值线切向的像素坐标、bo=带宽外扩像素（亮晕） */
   function contourK(eh: number, itv: number, ad: number, gsl: number, sdp: number, bo: number): number {
     const mn = cw(eh, itv, ad, 0.8 + bo, 1.5 + bo) * sstep(2.5, 6, itv / ad);
-    const ix = cw(eh, itv * 5, ad, 1.3 + bo, 2.4 + bo) * sstep(2.5, 6, itv * 5 / ad);
+    const ix = cw(eh, itv * 5, ad, 0.9 + bo, 1.65 + bo) * sstep(2.5, 6, itv * 5 / ad);
     const sp1 = itv / gsl, g1 = sstep(SUP_LO_PX, SUP_HI_PX, sp1), g2 = g1 * sstep(SUP_LO_PX, SUP_HI_PX, sp1 * 0.5);
     let m2 = 0, m4 = 0;
     if (g1 > 0) {
@@ -447,7 +443,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         ? 360 * Math.round(((grid.bb.lonMin + grid.bb.lonMax) / 2 - (viewBB.lonMin + viewBB.lonMax) / 2) / 360)
         : 0;
       const vb: BBox = k ? { lonMin: viewBB.lonMin + k, lonMax: viewBB.lonMax + k, latMin: viewBB.latMin, latMax: viewBB.latMax } : viewBB;
-      const key = `g${(opts.gain ?? 1).toFixed(2)}` + (opts.contour ? `c${opts.cA || 0.12}/${opts.cB || 0}f${Math.round((opts.cFade || 0) * 4)}d${opts.dpr ?? 1}` : "");   // fade 量化 1/4 桶：连续缩放不致每帧重渲瓦片；增益随缩放变，入键
+      const key = `g${(opts.gain ?? 1).toFixed(2)}` + (opts.contour ? `c${opts.cStep || 0.12}d${opts.dpr ?? 1}` : "");   // 增益随缩放变，入键
       const plan = planTile(tile, key, vb, pxpd, grid.bb);
       if (plan === "none") tile = null;
       else if (plan !== "keep") {

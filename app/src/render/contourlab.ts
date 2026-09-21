@@ -4,7 +4,7 @@
    数字＝制图面高程取整＝与光标读数同一个数；线本身也画在同一面上（§9.15），故图内自洽。
    ⚠ 角态表与 render/maskraster 共用一份（MS_CASES）：maskContour 出的是散段（描 Path2D 够用），
    注记要按弧长走线、按曲率挑位，故此处把散段链成折线。 */
-import { contourStepFor, elevSmooth, elevUnitM, waterSurface, type ContourStats, type ElevField } from "../core/elev.ts";
+import { elevSmooth, elevUnitM, waterSurface, type ElevField } from "../core/elev.ts";
 import { project, unproject, type Camera } from "../core/projection.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox, Meta } from "../core/types.ts";
@@ -180,13 +180,11 @@ function build(cam: Camera, meta: Meta | undefined, f: ElevField, grid: Grid, ba
   return { region, dpp: cam.degPerPx, base, items };
 }
 
-/** 画本拷贝的等高线注记：等距法则只认 core/elev.contourStepFor（注记跟占优的那套线系，`dom`），
-    与渲染器同一份统计量；避让场撞位即弃标。 */
+/** 画本拷贝的等高线注记：base＝渲染器这一帧用的等距（抽象单位，renderer.contourStepOf），不在此另算；避让场撞位即弃标。 */
 export function drawContourLabels(
   ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
-  f: ElevField, grid: Grid, lf: LabelField, stats: ContourStats | null
+  f: ElevField, grid: Grid, lf: LabelField, base: number
 ): void {
-  const base = contourStepFor(cam.degPerPx, meta, stats).dom;
   if (!(base > 0)) return;
   let byShift = labCache.get(f);
   if (!byShift) labCache.set(f, byShift = new Map());

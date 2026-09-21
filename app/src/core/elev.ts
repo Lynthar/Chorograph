@@ -125,21 +125,29 @@ export function heightStepM(meta: Meta | undefined, chosen: number): number {
 }
 
 
-/** 等高距的场统计：陆格坡度 75 分位（米/米）与陆地高程范围（米，p1～p99）。每份规则场算一次（WeakMap 缓存）。 */
+/** 等高距的场统计：陆格坡度 75 分位（米/米）与陆地高程范围（米，p1～p99）。rect＝只统计这片场格（半开 [c0,c1)×[r0,r1)，缺省整场；
+    渲染器按视口窗取坡度）；按（场, rect）缓存，窗变才重算。 */
 export interface ContourStats { slope75: number; rangeM: number }
-const statsMemo = new WeakMap<ElevField, ContourStats>();
-export function contourStats(field: ElevField, grid: Grid, wsurf: Float32Array, meta: Meta | undefined): ContourStats {
-  const hit = statsMemo.get(field);
-  if (hit) return hit;
+export interface FieldRect { c0: number; r0: number; c1: number; r1: number }
+const statsMemo = new WeakMap<ElevField, Map<string, ContourStats>>();
+const STATS_MEMO_MAX = 64;
+export function contourStats(field: ElevField, grid: Grid, wsurf: Float32Array, meta: Meta | undefined, rect?: FieldRect): ContourStats {
   const { cols, rows, step, data, bb } = field;
+  const cA = rect ? Math.max(0, rect.c0) : 0, cB = rect ? Math.min(cols, rect.c1) : cols;
+  const rA = rect ? Math.max(0, rect.r0) : 0, rB = rect ? Math.min(rows, rect.r1) : rows;
+  const key = rect ? `${cA},${rA},${cB},${rB}` : "";
+  let memo = statsMemo.get(field);
+  if (!memo) statsMemo.set(field, memo = new Map());
+  const hit = memo.get(key);
+  if (hit) return hit;
   const { kmx, kmy } = kmPerDegXY(meta, bb);
   const unit = elevUnitM(meta), mx = step * kmx * 1000, my = step * kmy * 1000;   // 米/场格
-  const stride = Math.max(1, Math.ceil(Math.sqrt(cols * rows / 65536)));         // 抽样 ≤ 65536 点
+  const stride = Math.max(1, Math.ceil(Math.sqrt(Math.max(0, cB - cA) * Math.max(0, rB - rA) / 65536)));   // 抽样 ≤ 65536 点
   const slopes: number[] = [], elevs: number[] = [];
-  for (let r = stride >> 1; r < rows; r += stride) {
+  for (let r = rA + (stride >> 1); r < rB; r += stride) {
     const gr = Math.max(0, Math.min(grid.rows - 1, Math.floor((bb.latMin + (r + 0.5) * step - grid.bb.latMin) / grid.step)));
     const r0 = Math.max(0, r - 1), r1 = Math.min(rows - 1, r + 1);
-    for (let c = stride >> 1; c < cols; c += stride) {
+    for (let c = cA + (stride >> 1); c < cB; c += stride) {
       const gc = Math.max(0, Math.min(grid.cols - 1, Math.floor((bb.lonMin + (c + 0.5) * step - grid.bb.lonMin) / grid.step)));
       const e = data[r * cols + c];
       if (e < wsurf[gr * grid.cols + gc] - 0.02) continue;   // 水格不计（判据同渲染器的等高线门）
@@ -155,12 +163,14 @@ export function contourStats(field: ElevField, grid: Grid, wsurf: Float32Array, 
     slopes.sort((a, b) => a - b); elevs.sort((a, b) => a - b);
     st = { slope75: slopes[Math.floor(0.75 * (n - 1))], rangeM: elevs[Math.floor(0.99 * (n - 1))] - elevs[Math.floor(0.01 * (n - 1))] };
   }
-  statsMemo.set(field, st);
+  if (memo.size >= STATS_MEMO_MAX) memo.delete(memo.keys().next().value!);
+  memo.set(key, st);
   return st;
 }
 
-/** 等高距法则的两个阈值：75 分位坡度处首曲线线距不小于 CONTOUR_PX 个 CSS 像素；整幅陆地高程范围至少容下 CONTOUR_LEVELS 级。 */
-export const CONTOUR_PX = 8, CONTOUR_LEVELS = 4;
+/** 等高距法则的阈值：75 分位坡度处首曲线线距不小于 CONTOUR_PX 个 CSS 像素；整幅陆地高程范围至少容下 CONTOUR_LEVELS 级；
+    在细档上时下限要超过它 CONTOUR_HYST 倍才升档（迟滞）。8 → 12 px 与单系取档均为 2026-09-21 用户按候选截图拍板。 */
+export const CONTOUR_PX = 12, CONTOUR_LEVELS = 4, CONTOUR_HYST = 1.15;
 /* 1-2-5 阶梯（米）：≥x 的最小档 / ≤x 的最大档，都不低于地板 floorM——地板本身也算一档（哪怕不在 1-2-5 上）。
    decade 防 Math.log10 的 1 ULP 误差（log10(1000) 在 V8 是 2.9999…）。 */
 function decade(x: number): number {
@@ -181,26 +191,21 @@ function ladderDown(x: number, floorM: number): number {
   for (const m of [1, 2, 5, 10]) if (m * b <= x * (1 + 1e-9)) v = m * b;
   return Math.max(floorM, v);
 }
-/** 缩放与地势自适应的等高距：aM/bM＝1-2-5 阶梯上相邻两档（A 细 B 粗，米），a/b 为抽象单位，fade＝B 系权重 0..1。
-    法则：地板 contourM（缺省 10）> 上限 高程范围÷CONTOUR_LEVELS > 下限 CONTOUR_PX×坡度₇₅×米/像素。
-    下限落在两档之间时交叉淡入（fade=1−(1−t)²，t 为对数位置；粗系先占、细线晚出）；粗档若已装不下四级就不向它淡；
-    下限越过上限（陡坡 / 整幅视角）＝上限向下吸附、单系无淡入。stats 为 null（还没有场）按坡度 0.2、范围无穷＝旧 1.6 m/px 手感。 */
-export interface ContourStep { aM: number; bM: number; a: number; b: number; fade: number; dom: number }
-export function contourStepFor(degPerPx: number, meta: Meta | undefined, stats: ContourStats | null): ContourStep {
+/** 缩放与地势自适应的等高距：m 米、v 抽象单位；任一时刻只有一套线系（换档在跨过判据的那一刻跳一次）。
+    法则：地板 contourM（缺省 10）> 上限 高程范围÷CONTOUR_LEVELS > 下限 CONTOUR_PX×坡度₇₅×米/像素，取 1-2-5 阶梯上 ≥ 下限的最小档；
+    粗档装不下四级就留细档；下限越过上限（陡坡 / 整幅视角）＝上限向下吸附。stats 为 null（还没有场）按坡度 0.2、范围无穷。
+    prevM＝上一帧的档（米）：正在细档上时，下限要超过它 CONTOUR_HYST 倍才升档（降档在下限跌回细档时）——统计量随视口小幅漂移不来回跳。 */
+export interface ContourStep { m: number; v: number }
+export function contourStepFor(degPerPx: number, meta: Meta | undefined, stats: ContourStats | null, prevM?: number): ContourStep {
   const m = meta || {};
   const floorM = +(m.contourM as number) > 0 ? (m.contourM as number) : 10;
   const mPerPx = Math.max(1e-9, degPerPx) * kmPerDeg(m) * 1000;
   const lowM = Math.max(floorM, CONTOUR_PX * (stats ? stats.slope75 : 0.2) * mPerPx);
   const capM = Math.max(floorM, (stats ? stats.rangeM : Infinity) / CONTOUR_LEVELS);
-  const unit = elevUnitM(m);
-  // dom＝占优线系的等距（抽象单位）：两系交叉淡入时以权重过半者为准——等高线注记标的是它的计曲线（§9.17）
-  const out = (aM: number, bM: number, fade: number): ContourStep =>
-    ({ aM, bM, a: aM / unit, b: bM / unit, fade, dom: (fade < 0.5 ? aM : bM) / unit });
-  if (lowM >= capM) { const v = ladderDown(capM, floorM); return out(v, v, 0); }
+  const out = (mm: number): ContourStep => ({ m: mm, v: mm / elevUnitM(m) });
+  if (lowM >= capM) return out(ladderDown(capM, floorM));
   const lo = ladderDown(lowM, floorM), hi = ladderUp(lowM, floorM);
-  if (hi > capM || hi === lo) return out(lo, lo, 0);
-  const t = Math.log(lowM / lo) / Math.log(hi / lo);
-  return out(lo, hi, 1 - (1 - t) ** 2);
+  return out(hi > capM || lowM <= lo * (prevM === lo ? CONTOUR_HYST : 1) * (1 + 1e-9) ? lo : hi);   // 1e-9 同阶梯函数：下限恰在档上时浮点不许把它挤上去
 }
 
 /** 间曲线 / 助曲线（基本等高距的 1/2 与 1/4，测绘规范里的补充等高线）：只在上一级线距 ≥ 这些像素数处浮现——
