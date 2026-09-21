@@ -427,7 +427,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   return {
     canvas, kind: "cpu",
     uploadGrid(g: Grid, wsurf: Float32Array, f?: ElevField, r?: ElevField) {
+      const sameGrid = g === grid;
       grid = g; field = f || coarseField(g, fieldOfTypes(g)); rule = r || field; tile = null; cellWS = wsurf;
+      if (sameGrid) return;   // 同一 Grid 实例＝只动了高程，逐格材质/色调不变
       const n = g.rows * g.cols;   // 逐格材质/色调预算（renderTile 每像素四角查表）
       cellMat = new Float32Array(n * 7); cellTint = new Float32Array(n * 3); cellTintHas = new Uint8Array(n);
       for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {

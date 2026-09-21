@@ -7,7 +7,7 @@ import { COS_LAT_FLOOR, distKm, haversine, kmPerDeg, kmPerDegLat, kmPerDegXY, lo
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
 import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
-import { BASE_SLOPE_DEG, CONTOUR_LEVELS, CONTOUR_PX, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterSurface, type ElevField } from "../src/core/elev.ts";
+import { BASE_SLOPE_DEG, CONTOUR_LEVELS, CONTOUR_PX, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, type Grid } from "../src/core/grid.ts";
 import { peakSpots, waterSpots } from "../src/core/spots.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
@@ -271,6 +271,22 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     const g = buildGridCells(MP, [], 0), b = baseElev(MP, g);
     for (const v of b) assert.strictEqual(v, Math.fround(ELEV.plain));
     assert.strictEqual(baseElev(MP, g), b);
+  });
+  it("基底+起伏按 Grid 记忆（2026-09-21）：复用实例逐笔涂改与新建实例逐位同；返回的场是新数组、水域掩码同一份", () => {
+    const M = { worldModel: "sphere" as const, terrain: "sample" as const, genSeed: 7, relief: 0.8,
+      bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } };
+    const hov1 = [{ lon: 100.5, lat: 30.5, dh: 0.3 }], hov2 = [...hov1, { lon: 90.5, lat: 40.5, dh: -0.2 }];
+    const g = buildGridCells(M, [], 3107);
+    const f0 = buildElevField(M, undefined, g, 3107), f1 = buildElevField(M, hov1, g, 3107), f2 = buildElevField(M, hov2, g, 3107);
+    assert.notStrictEqual(f1, f0, "每次调用都是新数组（调用方可持有可改）");
+    f1.fill(0);   // 改了调用方手里那份，记忆不受影响
+    assert.deepStrictEqual(buildElevField(M, hov2, g, 3107), f2);
+    assert.deepStrictEqual(f2, buildElevField(M, hov2, buildGridCells(M, [], 3107), 3107), "复用实例（记忆命中）与新建实例逐位同");
+    assert.deepStrictEqual(buildElevField(M, undefined, g, 3107), f0);
+    const wm = waterMask(g);
+    assert.strictEqual(waterMask(g), wm, "水域掩码按 Grid 记忆");
+    for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++)
+      assert.strictEqual(wm[r * g.cols + c], terrainProps(g.cells[r][c]).lf === "water" ? 1 : 0);
   });
   it("连续基底：类型台阶展成山前带——相邻格高差不超山前坡、块心按距离抬升、远处到达类型值", () => {
     // 22 km 平面战场、100 m 格；中央涂 3 km 见方的山地块（半宽 15 格 < 到全高所需的 55 格＝矮山）

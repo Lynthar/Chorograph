@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createHost } from "../src/shell/host.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
-import { mutateWorld, ruleFieldSig } from "../src/ui/state.ts";
+import { erodePhaseSig, mutateWorld, ruleFieldSig, yearSig } from "../src/ui/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import type { ElevField } from "../src/core/elev.ts";
 import type { ErodeInput } from "../src/core/erode.ts";
@@ -24,15 +24,20 @@ const fakeField = (inp: ErodeInput, sx: number): ElevField => ({
   data: new Float32Array(inp.cols * inp.rows * sx * sx).fill(inp.cap), shadow: null
 });
 
-interface Seen { field?: ElevField; rule?: ElevField; workCap?: number; ultraCap?: number }
+/* holdUltra＝精修单挂起不回（模拟几十秒的在飞单）；cancels 只数撤到了在飞单的那几次（host 每次重建都调，无单时是空操作） */
+interface Seen { field?: ElevField; rule?: ElevField; workCap?: number; ultraCap?: number; holdUltra?: boolean; cancels: number; release?: (f: ElevField | null) => void }
 function mkCtx(): { ctx: ShellCtx; seen: Seen } {
-  const seen: Seen = {};
+  const seen: Seen = { cancels: 0 };
   const ctx = {
     canvas: {}, ov: {},
     routeClient: {
       setContext: () => {},
       erode: (inp: ErodeInput) => { seen.workCap = inp.cap; return Promise.resolve(fakeField(inp, 2)); },
-      erodeUltra: (inp: ErodeInput) => { seen.ultraCap = inp.cap; return Promise.resolve(fakeField(inp, 4)); }
+      erodeUltra: (inp: ErodeInput) => {
+        seen.ultraCap = inp.cap;
+        return seen.holdUltra ? new Promise<ElevField | null>(res => { seen.release = res; }) : Promise.resolve(fakeField(inp, 4));
+      },
+      cancelUltra: () => { if (seen.release) { seen.cancels++; seen.release(null); seen.release = undefined; } }
     },
     DPR: 1, meta: {}, view: { lon0: 100.05, lat0: 30.05, degPerPx: 0.001 },
     grid: null, elevField: null, ruleField: null,
@@ -137,6 +142,48 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     host.rebuildIfNeeded();
     assert.equal(ruleFieldSig.peek(), ctx.ruleField, "门关：粗格就是终态，同拍落定");
     assert.equal(ruleFieldSig.peek()!.cols, ctx.grid!.cols);
+  });
+
+  it("在飞的精修单随重建撤掉：单以 null 收场、胶囊归位、画面留在规则场", async () => {
+    const { ctx, seen } = mkCtx();
+    seen.holdUltra = true;
+    const host = createHost(ctx);
+    landWorld(ctx, W(), "t1", 3050);
+    host.rebuildIfNeeded();
+    await flush();
+    await tick(240, 6);
+    await tick(6000);
+    assert.equal(erodePhaseSig.peek(), "ultra", "前置：精修单在飞");
+    assert.equal(seen.cancels, 0, "前置：此前的重建没有在飞单可撤");
+    mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
+    host.rebuild();
+    assert.equal(seen.cancels, 1, "落笔那次重建撤了在飞的单");
+    await flush();
+    assert.equal(erodePhaseSig.peek(), "idle", "撤单＝胶囊归位（不悬在「精修中」）");
+    assert.equal(ctx.elevField, ctx.ruleField, "画面＝规则场，没有精修上屏");
+  });
+
+  it("类型网格按实例复用：只动高程不换 Grid；涂改 / 年份 / meta 任一变即换新实例", () => {
+    const { ctx } = mkCtx();
+    const host = createHost(ctx);
+    landWorld(ctx, W(), "t1", 3050);
+    host.rebuildIfNeeded();
+    const g0 = ctx.grid!;
+    mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
+    host.rebuild();
+    assert.equal(ctx.grid, g0, "只动高程＝同一 Grid 实例（基底/水面/起伏/纹理的记忆全部命中）");
+    mutateWorld(w => { w.terrainOverrides = [...w.terrainOverrides, { lon: 100.05, lat: 30.05, t: "hill" }]; }, { grid: true });
+    host.rebuild();
+    assert.notEqual(ctx.grid, g0, "涂改变了＝新实例");
+    const g1 = ctx.grid!;
+    assert.equal(g1.cells[Math.floor(0.05 / g1.step)][Math.floor(0.05 / g1.step)], "hill", "新实例带着新涂改");
+    yearSig.value = 3051;
+    host.rebuildIfNeeded();
+    assert.notEqual(ctx.grid, g1, "年份变了＝新实例（涂改可带时段）");
+    const g2 = ctx.grid!;
+    mutateWorld(w => { (w.meta ||= {}).outside = "land"; }, { grid: true });   // ctx.meta 与 w.meta 同一对象（生产由编排 effect 同步）
+    host.rebuild();
+    assert.notEqual(ctx.grid, g2, "meta 里进派生场的键变了＝新实例（水面记忆随之作废）");
   });
 
   it("同一存档、两种精修预算：规则场逐位相同，画面随预算变", async () => {

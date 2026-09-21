@@ -4,17 +4,19 @@
    于是连续 N 步对象编辑只多存 N 份小对象域 + 1 份地形串，不再是 N 份整档。
    接口与快照式完全一致；stats() 仅诊断/测试用。
    terrKey：判定两份世界的"地形是否相同"——撤销/重做时地形没变就不必重建网格（秒回）。 */
-import type { World } from "../core/types.ts";
+import type { Meta, World } from "../core/types.ts";
 
 export const UNDO_MAX = 60;
 
-export function terrKey(w: World): string {
-  const m = w.meta || {};
-  /* 键须罩住 host.rebuild 读到的每一个 meta 输入：网格（bbox/terrain/genSeed/genStyle/gridN/worldModel/mapKind）、
-     高程与水面（relief/outside/elevUnitM）、侵蚀的物理尺度（kmPerDeg/planetRadiusKm）。漏一个＝撤销那项设置后
-     派生场沿用旧值（outside 曾漏：撤销「图幅外」后水面仍是 320 m）。 */
+/** meta 里进网格与派生场的每一个输入：网格（bbox/terrain/genSeed/genStyle/gridN/worldModel/mapKind）、
+    高程与水面（relief/outside/elevUnitM）、侵蚀的物理尺度（kmPerDeg/planetRadiusKm）。撤销判「地形没变」与
+    host 判「类型网格可复用」同一张单子——漏一个＝改那项设置后派生场沿用旧值（outside 曾漏：撤销「图幅外」后水面仍是 320 m）。 */
+export function terrMetaKey(m: Meta): string {
   return JSON.stringify([m.bbox, m.terrain, m.genSeed, m.genStyle, m.relief, m.outside, m.gridN, m.worldModel, m.mapKind,
-    m.elevUnitM, m.kmPerDeg, m.planetRadiusKm, w.terrainOverrides, w.heightOverrides]);
+    m.elevUnitM, m.kmPerDeg, m.planetRadiusKm]);
+}
+export function terrKey(w: World): string {
+  return terrMetaKey(w.meta || {}) + JSON.stringify([w.terrainOverrides, w.heightOverrides]);
 }
 
 /** 地形域键（体积大头且多数编辑步不动）；其余键全归对象域 */

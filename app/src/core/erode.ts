@@ -9,10 +9,9 @@
      谷线走，旧档（relief>0）读数会移动；战略图与其战术烘焙在同一位置的起伏也从逐位一致降为
      近似一致（侵蚀依赖网格分辨率，噪声输入仍同锚）。 */
 import { hash2 as sinHash2 } from "./noise.ts";
-import { baseElev, elevBilinear, elevUnitM, LAND_FLOOR, WATER_CEIL, type ElevField } from "./elev.ts";
+import { baseElev, elevBilinear, elevUnitM, waterMask, LAND_FLOOR, WATER_CEIL, type ElevField } from "./elev.ts";
 import { gnoise, makeRelief, mountainness, type ReliefSampler, RELIEF_CARVE_K, RELIEF_GATE_HI, RELIEF_GATE_LO, RELIEF_LAMBDA_KM, RELIEF_M,
   RELIEF_ROUGH_HI, RELIEF_ROUGH_LO, RELIEF_STRIKE, RELIEF_W, RELIEF_E0, RELIEF_E1, RIDGED_MEAN } from "./relief.ts";
-import { terrainProps } from "./constants.ts";
 import { kmPerDegXY } from "./geo.ts";
 import { activeAt } from "./time.ts";
 import { stampRect, type Grid } from "./grid.ts";
@@ -142,20 +141,21 @@ export const ERODE_VER: string = (() => {
   return "e" + (h >>> 0).toString(36);
 })();
 
-/** 侵蚀输入的内容键：FNV-1a 双流 64 位＋算法代前缀。同键＝同输出（纯函数）；
-    单流 32 位在「按键取错一整幅地形」的后果面前碰撞余量不够，双流异参并拼。
-    ⚠ 输入的典型体量 ~200KB（粗格四场），按 32 位字折叠约 1~2ms——只该在发侵蚀单时算一次。 */
+/** 侵蚀输入的内容键：FNV-1a 双流 64 位＋算法代前缀，同键＝同输出；键的数学（字序、双流常数、长度前缀）一个字不许动，换了就是整库缓存作废。
+    ⚠ 折叠循环的状态放局部变量：经闭包写外层变量的写法在 Chromium 上慢十倍（196 万格 171ms → 15ms，2026-09-21 实测）；
+    只该在发侵蚀单时算一次。 */
 export function erodeKey(inp: ErodeInput): string {
   let a = 0x811c9dc5 | 0, b = 0x6c62272e | 0;
-  const mix = (x: number): void => {
-    a = Math.imul(a ^ (x & 0xffff), 16777619);
-    a = Math.imul(a ^ (x >>> 16), 16777619);
-    b = Math.imul(b ^ (x >>> 16), 0x85ebca6b);
-    b = Math.imul(b ^ (x & 0xffff), 0x85ebca6b);
-  };
   const mixA = (u: Uint32Array | Uint8Array): void => {
-    mix(u.length);
-    for (let i = 0; i < u.length; i++) mix(u[i]);
+    let la = a, lb = b, x = u.length;
+    la = Math.imul(la ^ (x & 0xffff), 16777619); la = Math.imul(la ^ (x >>> 16), 16777619);
+    lb = Math.imul(lb ^ (x >>> 16), 0x85ebca6b); lb = Math.imul(lb ^ (x & 0xffff), 0x85ebca6b);
+    for (let i = 0; i < u.length; i++) {
+      x = u[i];
+      la = Math.imul(la ^ (x & 0xffff), 16777619); la = Math.imul(la ^ (x >>> 16), 16777619);
+      lb = Math.imul(lb ^ (x >>> 16), 0x85ebca6b); lb = Math.imul(lb ^ (x & 0xffff), 0x85ebca6b);
+    }
+    a = la; b = lb;
   };
   const head = new Float64Array([inp.bb.lonMin, inp.bb.latMin, inp.bb.lonMax, inp.bb.latMax,
     inp.step, inp.cols, inp.rows, inp.amp, inp.seed, inp.kmx, inp.kmy, inp.cap, inp.axisMax, inp.acrit, inp.bandS, inp.unitM]);
@@ -189,7 +189,7 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
   grid: Grid, yearNow: number): ErodeInput | null {
   const m = meta || {};
   const amp = Math.max(0, Math.min(1, +(m.relief as number) || 0));
-  const { bb, step, cols, rows, cells } = grid;
+  const { bb, step, cols, rows } = grid;
   /* 涂改先栅到粗格（几何走 stampRect，与 buildGridCells / buildElevField 的盖章同一份） */
   const hovGrid = new Float32Array(rows * cols);
   let hasHov = false;
@@ -202,8 +202,7 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
     hasHov = true;
   }
   if (amp <= 0 && !hasHov) return null;
-  const elev0 = baseElev(m, grid), water = new Uint8Array(rows * cols);
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) water[r * cols + c] = terrainProps(cells[r][c]).lf === "water" ? 1 : 0;
+  const elev0 = baseElev(m, grid), water = waterMask(grid);   // 两份都是按 Grid 记忆的共享只读数组（postMessage 克隆）
   const { kmx, kmy } = kmPerDegXY(m, bb);
   const cap = m.mapKind === "tactical" ? MAX_FINE_TAC : MAX_FINE;
   return { bb, step, cols, rows, elev0, water, amp, seed: ((m.genSeed as number) | 0) || 1, kmx, kmy, hovGrid,

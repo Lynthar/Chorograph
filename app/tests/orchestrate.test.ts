@@ -26,7 +26,7 @@ function mkCtx(): { ctx: ShellCtx; counts: { rebuilds: number } } {
   const counts = { rebuilds: 0 };
   const ctx = {
     canvas: {} as HTMLCanvasElement, ov: {} as HTMLCanvasElement,
-    routeClient: { setContext: () => {} },
+    routeClient: { setContext: () => {}, cancelUltra: () => {} },
     DPR: 1, meta: {},
     view: { lon0: 102, lat0: 32, degPerPx: 0.06 },
     grid: null, elevField: null,

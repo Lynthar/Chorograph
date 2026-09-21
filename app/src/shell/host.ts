@@ -5,11 +5,12 @@ import { buildElevField, coarseField, fieldMix, fieldPlusDelta, waterSurface, ty
 import { erodeGate, erodeInput, erodeKey, ultraInput, type ErodeInput } from "../core/erode.ts";
 import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig } from "../ui/state.ts";
+import { terrMetaKey } from "../ui/history.ts";
 import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { ShellCtx } from "./ctx.ts";
 import type { Camera } from "../core/projection.ts";
-import type { BBox, HeightOverride } from "../core/types.ts";
+import type { BBox, HeightOverride, TerrainOverride } from "../core/types.ts";
 
 export interface Host {
   /** 画布物理像素跟随 CSS 尺寸与 DPR（缩放/换屏后重读 devicePixelRatio） */
@@ -74,6 +75,7 @@ export function createHost(ctx: ShellCtx): Host {
      当前构建有效——任何重建即弃（落笔不在千万格的精修场上逐 move 复制重传，静置后自会重算）。 */
   let work: ElevField | null = null, workBase: Float32Array | null = null, workKey = "";   // 已落地工作档 + 增量基准 + 几何键
   let ultra: ElevField | null = null;   // 在屏精修场（本次构建）
+  let gridKey = "", gridOv: TerrainOverride[] | null = null;   // 当前 ctx.grid 建自哪份（meta 键+年份+图 id, 涂改数组引用），见 rebuild 注
   let lastBuiltKey = "", coarseAt = 0;   // 上次重建的几何键（换几何＝免防抖立即发单）+ 本几何粗格首帧时刻（缓存「早到」判据）
   /* —— 4K 静置精修（2026-08-11）：交互档手感零变化——工作档落定且 ULTRA_IDLE_MS 无新改动后，
      后台第三车道按精修预算重算一遍，好了**硬换**入屏（只增细节的换场读作「对上焦/加载完成」，
@@ -241,8 +243,16 @@ export function createHost(ctx: ShellCtx): Host {
     buildN++;   // 侵蚀令牌：任何一次重建都使在飞的侵蚀单过期（见 requestErode 注）
     clearTimeout(ultraTimer);   // 改动来了＝撤掉排着的静置精修（工作档落定后自会重排）
     ultra = null;               // 精修只对本次构建有效：落笔即弃，画面回到工作档合成（见状态头注）
+    ctx.routeClient.cancelUltra();   // 在飞的精修单也撤：几十秒的单跑完只会被令牌作废，白占一核
     const t0 = performance.now();
-    ctx.grid = buildGridCells(ctx.meta, w ? w.terrainOverrides : [], yearSig.value);
+    /* 类型网格按实例复用：只动 heightOverrides 的重建（高程笔每个 move）传同一个 Grid，基底与水面、起伏场、
+       类型纹理、水面标高全按 Grid 实例记忆＝一并免算；键外任一项变了就换新实例，记忆整批作废。
+       地貌笔改涂改必换数组（paintTerrainPath 只 filter/concat），撤销换世界＝换引用，故引用比较够用。 */
+    const gk = `${ctx.mapId}|${yearSig.value}|${terrMetaKey(ctx.meta)}`, ov = w ? w.terrainOverrides : null;
+    if (!ctx.grid || gk !== gridKey || ov !== gridOv) {
+      ctx.grid = buildGridCells(ctx.meta, ov || [], yearSig.value);
+      gridKey = gk; gridOv = ov;
+    }
     const coarse = buildElevField(ctx.meta, w ? w.heightOverrides : undefined, ctx.grid, yearSig.value);
     pendHovs = w ? w.heightOverrides : undefined;
     pendYear = yearSig.value;

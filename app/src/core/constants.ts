@@ -455,9 +455,14 @@ export const CLIMATE_ORDER: Climate[] = ["polar", "boreal", "temperate", "subtro
     手放的山峰/丘/自定义图章不在并集里＝永不被生态笔扫掉）。派生量、不动平价表。 */
 export const ECO_SCATTER_KINDS: ReadonlySet<string> = new Set(Object.values(ECO).flatMap(e => e.scatter.map(s => s.k)));
 export const COMPOSITE_COUNT = LANDFORM_ORDER.length * ECO_ORDER.length;   // 30
+const CIDX_CACHE = new Map<string, number>();   // 逐格上传时按串查（同 terrainProps 的 PROPS_CACHE）：不缓存＝196 万格每次重传解析 80ms
 export function compositeIndex(cell: string): number {
-  const [lf, eco] = parseComposite(cell);
-  return LANDFORM_ORDER.indexOf(lf) * ECO_ORDER.length + ECO_ORDER.indexOf(eco);
+  let i = CIDX_CACHE.get(cell);
+  if (i === undefined) {
+    const [lf, eco] = parseComposite(cell);
+    CIDX_CACHE.set(cell, i = LANDFORM_ORDER.indexOf(lf) * ECO_ORDER.length + ECO_ORDER.indexOf(eco));
+  }
+  return i;
 }
 /** 按 G 索引顺序枚举全部复合串（renderer 填 uniform 数组用；顺序与 compositeIndex 对齐） */
 export function allComposites(): string[] {

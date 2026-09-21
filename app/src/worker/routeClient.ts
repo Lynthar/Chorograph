@@ -24,6 +24,9 @@ export interface RouteClient {
   /** 4K 静置精修（第三车道，懒建）：几十秒的精修单不许挤占工作档侵蚀车道。
       ⚠ 建不出 Worker 一律返 null **绝不同步回退**——30s 的同步演算＝冻死主线程，宁可不精修 */
   erodeUltra(input: ErodeInput): Promise<ElevField | null>;
+  /** 撤掉在飞的精修单：terminate 车道、单以 null 收场（新编辑来了，几十秒的单跑完也只会被令牌作废）；
+      无单在飞不动车道。下一单懒建新车道。 */
+  cancelUltra(): void;
   /** 视线判定用的规则场：同 setContext 惰性推送（下一个 viewshed 单之前才克隆），规则场换引用时调一次 */
   setViewField(field: ViewField): void;
   /** 一批观察者的视线掩膜（寻路车道）；Worker 挂掉时返 null——调用方保持上一份 */
@@ -156,6 +159,11 @@ export function createRouteClient(): RouteClient {
       const id = ++seq;
       const r = await new Promise<RouteReply>(res => { pendingU.set(id, res); worker.postMessage({ t: "erode", id, ...input }); });
       return r.t === "erode" ? r.f : null;
+    },
+    cancelUltra() {
+      if (!pendingU.size) return;
+      killUltraWorker();
+      uwTried = false;   // 与崩溃判死不同：这是主动撤单，车道要能再建
     },
     dispose() { killWorker(); killErodeWorker(); killUltraWorker(); }
   };

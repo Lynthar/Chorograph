@@ -330,6 +330,20 @@ function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: 
   return ws;
 }
 
+/* —— 按 Grid 实例记忆的派生场（水域掩码 / 基底与水面 / 基底+起伏）——
+   ⚠ 键是 Grid 的引用，值却还读 meta：调用方须保证一个 Grid 实例只与一份 meta 配对
+   （host 按 terrMetaKey 换键即换 Grid），否则改「图幅外」「起伏」后旧场还魂。数组都是共享只读的。 */
+const waterMemo = new WeakMap<Grid, Uint8Array>();
+/** 每格水域掩码（1＝地貌 water）：基底、起伏钳制、侵蚀输入与水面标高共用一份，别各自再扫一遍 terrainProps */
+export function waterMask(grid: Grid): Uint8Array {
+  let w = waterMemo.get(grid);
+  if (w) return w;
+  const { cols, rows, cells } = grid;
+  w = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) w[r * cols + c] = terrainProps(cells[r][c]).lf === "water" ? 1 : 0;
+  waterMemo.set(grid, w);
+  return w;
+}
 const baseMemo = new WeakMap<Grid, { base: Float32Array; wsurf: Float32Array }>();
 /** 连续高程基底（同一 Grid 实例按引用记忆：一次重建里 buildElevField 与 erodeInput 各取一次） */
 export function baseElev(meta: Meta | undefined, grid: Grid): Float32Array { return baseFields(meta, grid).base; }
@@ -348,10 +362,9 @@ function baseFields(meta: Meta | undefined, grid: Grid): { base: Float32Array; w
   const gLand = Math.tan(BASE_SLOPE_DEG * Math.PI / 180) * 1000 / U;   // 抽象/km
   const gSea = Math.tan(SEABED_SLOPE_DEG * Math.PI / 180) * 1000 / U;
   const gen = m.terrain === "auto" ? genHField(m, grid) : null;
-  const t = new Float32Array(n), water = new Uint8Array(n);
+  const t = new Float32Array(n), water = waterMask(grid);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     const i = r * cols + c, p = terrainProps(cells[r][c]);
-    water[i] = p.lf === "water" ? 1 : 0;
     t[i] = p.elev;
     if (gen && genLandformOf(gen[i], m) === p.lf) t[i] = elevFromGenH(gen[i], m);
   }
@@ -377,21 +390,9 @@ export function buildElevField(meta: Meta | undefined, hov: HeightOverride[] | u
   grid: Grid, yearNow: number): Float32Array {
   const m = meta || {};
   const amp = Math.max(0, Math.min(1, +(m.relief as number) || 0));
-  const seed = ((m.genSeed as number) | 0) || 1;
-  const { bb, step, cols, rows, cells } = grid;
-  const base = baseElev(m, grid);
-  const kmd = kmPerDeg(m);
-  const relief = makeRelief(seed, step * kmd), reliefU = RELIEF_M / elevUnitM(m);
-  const f = new Float32Array(rows * cols);
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    const i = r * cols + c;
-    let e: number = base[i];
-    if (amp > 0 && terrainProps(cells[r][c]).lf !== "water") {
-      const mm = amp * mountainness(e);
-      if (mm > 0) e += relief((bb.lonMin + (c + 0.5) * step) * kmd, (bb.latMin + (r + 0.5) * step) * kmd, mm) * reliefU;
-    }
-    f[i] = e;
-  }
+  const { cols } = grid;
+  const base = baseElev(m, grid), water = waterMask(grid);
+  const f = reliefField(m, grid).slice();   // 涂改逐笔叠在记忆的「基底+起伏」上：高程笔每个 move 只剩这三步
   (hov || []).forEach(o => {
     if (!activeAt(o, yearNow)) return;
     const dh = +o.dh || 0; if (!dh) return;
@@ -400,12 +401,33 @@ export function buildElevField(meta: Meta | undefined, hov: HeightOverride[] | u
     for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) f[r * cols + c] += dh;
   });
   if (amp > 0 || (hov && hov.length)) {           // 钳制只在特性生效时跑（全关路径零改动）；参照系＝连续基底
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      const i = r * cols + c;
-      const p = terrainProps(cells[r][c]);
-      f[i] = p.lf === "water" ? Math.min(Math.max(WATER_CEIL, base[i]), f[i]) : Math.max(Math.min(LAND_FLOOR, base[i]), f[i]);
-    }
+    for (let i = 0; i < f.length; i++)
+      f[i] = water[i] ? Math.min(Math.max(WATER_CEIL, base[i]), f[i]) : Math.max(Math.min(LAND_FLOOR, base[i]), f[i]);
   }
+  return f;
+}
+const reliefMemo = new WeakMap<Grid, Float32Array>();
+/** 基底 + 起伏（涂改之前的场，按 Grid 记忆）；relief=0 ＝ 基底逐位拷贝 */
+function reliefField(m: Meta, grid: Grid): Float32Array {
+  const hit = reliefMemo.get(grid);
+  if (hit) return hit;
+  const amp = Math.max(0, Math.min(1, +(m.relief as number) || 0));
+  const seed = ((m.genSeed as number) | 0) || 1;
+  const { bb, step, cols, rows } = grid;
+  const base = baseElev(m, grid), water = waterMask(grid);
+  const kmd = kmPerDeg(m);
+  const relief = makeRelief(seed, step * kmd), reliefU = RELIEF_M / elevUnitM(m);
+  const f = new Float32Array(rows * cols);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c;
+    let e: number = base[i];
+    if (amp > 0 && !water[i]) {
+      const mm = amp * mountainness(e);
+      if (mm > 0) e += relief((bb.lonMin + (c + 0.5) * step) * kmd, (bb.latMin + (r + 0.5) * step) * kmd, mm) * reliefU;
+    }
+    f[i] = e;
+  }
+  reliefMemo.set(grid, f);
   return f;
 }
 

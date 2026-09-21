@@ -1,7 +1,6 @@
 /* 标高点（core）：规则场上的局部高点 + 内陆水体的水面，给等高线补上晕渲画不出的绝对高差。
    纯函数；高程一律取制图面（elevSmooth）＝与光标读数同一个数。缓存与屏幕换算在 render/spots。 */
-import { elevSmooth, type ElevField } from "./elev.ts";
-import { terrainProps } from "./constants.ts";
+import { elevSmooth, waterMask, type ElevField } from "./elev.ts";
 import type { Grid } from "./grid.ts";
 
 export interface SpotHeight { lon: number; lat: number; e: number; kind: "peak" | "water" }
@@ -88,9 +87,8 @@ export function peakSpots(f: ElevField, grid: Grid, wsurf: Float32Array, win: nu
 /** 内陆水体的水面：地貌 water 的粗格四邻连通块，一块一枚；水面 0＝海（碰图幅边）不标、不足 minCells 格的水洼不标。
     位置取离岸最远的格（岸格＝有陆邻或贴图幅边，多源 BFS），同远取行主序先到者；高程＝该块水面。 */
 export function waterSpots(grid: Grid, wsurf: Float32Array, minCells = 4): SpotHeight[] {
-  const { cols, rows, cells } = grid, n = cols * rows;
-  const water = new Uint8Array(n);
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) water[r * cols + c] = terrainProps(cells[r][c]).lf === "water" ? 1 : 0;
+  const { cols, rows } = grid, n = cols * rows;
+  const water = waterMask(grid);
   const comp = new Int32Array(n).fill(-1), dist = new Int32Array(n).fill(-1), q = new Int32Array(n);
   const near = (i: number, fn: (j: number) => void): boolean => {   // 四邻回调；返回是否贴图幅边
     const c = i % cols, r = (i - c) / cols;

@@ -443,6 +443,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   let g: Grid | null = null;
   let lastField: ElevField | undefined, lastRule: ElevField | undefined;   // 存最近两场：上下文丢失恢复时重传
   let lastWS: Float32Array = new Float32Array(0);
+  let texFor: Grid | null = null, texWS: Float32Array | null = null;   // 类型纹理建自哪份（网格, 水面）
   const U = (n: string) => gl.getUniformLocation(pr!, n);
 
   /* 建程序 + 设常量 uniform（创建时 + webglcontextrestored 后重跑）。 */
@@ -510,22 +511,26 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     if (!pr) return;
     const field = fieldFits(fieldIn) ? fieldIn : undefined;
     const rule = ruleIn === fieldIn ? field : fieldFits(ruleIn) ? ruleIn : undefined;
-    if (tex) gl.deleteTexture(tex);
     dropFieldTex();
-    /* 类型粗格纹理：R=水面高程（core/elev.waterSurface）G=复合索引 lf*5+eco */
-    const data = new Float32Array(grid.cols * grid.rows * 2);
-    for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++) {
-      const k = r * grid.cols + c, i = k * 2;
-      data[i] = wsurf[k];
-      data[i + 1] = compositeIndex(grid.cells[r][c]);
+    /* 类型粗格纹理：R=水面高程（core/elev.waterSurface）G=复合索引 lf*5+eco。
+       同一 Grid 实例配同一份水面（两者都按 Grid 记忆）＝只动了高程的重建，纹理原样留用不重传 */
+    if (!(tex && grid === texFor && wsurf === texWS)) {
+      if (tex) gl.deleteTexture(tex);
+      const data = new Float32Array(grid.cols * grid.rows * 2);
+      for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++) {
+        const k = r * grid.cols + c, i = k * 2;
+        data[i] = wsurf[k];
+        data[i + 1] = compositeIndex(grid.cells[r][c]);
+      }
+      tex = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, grid.cols, grid.rows, 0, gl.RG, gl.FLOAT, data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      texFor = grid; texWS = wsurf;
     }
-    tex = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, grid.cols, grid.rows, 0, gl.RG, gl.FLOAT, data);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     fDisp = fieldTex(grid, field);
     fRule = rule === field ? fDisp : fieldTex(grid, rule);
     gl.uniform4f(U("uGridBB"), grid.bb.lonMin, grid.bb.latMin, grid.step, (grid.bb.lonMin + grid.bb.lonMax) / 2);

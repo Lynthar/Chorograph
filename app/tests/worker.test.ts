@@ -600,6 +600,9 @@ describe("侵蚀真形（core/erode）", () => {
     const k0 = erodeKey(mk());
     assert.strictEqual(erodeKey(mk()), k0, "同输入两算必同键");
     assert.ok(k0.startsWith(ERODE_VER + "-"), "键前缀＝算法代号（换代清场的判据）");
+    /* 键的数学钉死（2026-09-21 折叠循环改写时采自旧实现）：字序、双流常数、长度前缀任一变＝用户整库场缓存作废。
+       旋钮或 EALGO 变了前缀自然变，此处只钉前缀之后的两段。 */
+    assert.strictEqual(k0.slice(ERODE_VER.length), "-1pwip0q-sigkkn", "内容键与旧实现逐位同");
     const vary: [string, (i: ErodeInput) => void][] = [
       ["elev0 单格", i => { i.elev0[7] += 0.001; }],
       ["unitM", i => { i.unitM = 1000; }],
