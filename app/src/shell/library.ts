@@ -538,7 +538,8 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   /** 出图实得倍数：偏好档按渲染器上限与像素预算钳；钳了给 ⚠ 回执（静默降档＝「选了 ×4 却糊」没法排查） */
   function exportScaleNow(): number {
     const want = uiPrefsSig.peek().exportScale;
-    const k = exportScaleFit(canvas.width, canvas.height, want, Math.min(ctx.R!.maxDim(), EXPORT_DIM_CAP), EXPORT_AREA_CAP);
+    const [vw, vh] = host.pxSize();
+    const k = exportScaleFit(vw, vh, want, Math.min(ctx.R!.maxDim(), EXPORT_DIM_CAP), EXPORT_AREA_CAP);
     if (k < want) showToast(`⚠ 超出本机画布上限，清晰度按 ×${Math.round(k * 10) / 10} 出图（偏好 ×${want}）`);
     return k;
   }
@@ -559,18 +560,20 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     try {
       if (scale !== 1) {
         ctx.DPR = DPR0 * scale;
-        canvas.width = Math.round(w0 * scale); canvas.height = Math.round(h0 * scale);
-        ov.width = canvas.width; ov.height = canvas.height;
+        const [w, h] = host.pxSize();   // 可见区 × 新 DPR：存储临时改成恰好出图尺寸（可见区仍由 canvasWrap 定，取景不变）
+        canvas.width = w; canvas.height = h;
+        ov.width = w; ov.height = h;
         if (ctx.repaint) ctx.repaint();   // 叠加层按新 DPR 重画（地形随即再渲一次，同帧幂等）
       }
+      const [vw, vh] = host.pxSize();
       const R = layersSig.peek().terrain ? ctx.R : null;
-      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v));
+      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v));
       const off = document.createElement("canvas");
-      off.width = canvas.width; off.height = canvas.height;
+      off.width = vw; off.height = vh;
       const g2 = off.getContext("2d")!;
-      if (R) g2.drawImage(canvas, 0, 0);
+      if (R) g2.drawImage(canvas, 0, 0, vw, vh, 0, 0, vw, vh);   // 只取可见区（画布可更大）
       else { g2.fillStyle = "#d9d2c0"; g2.fillRect(0, 0, off.width, off.height); }
-      g2.drawImage(ov, 0, 0);
+      g2.drawImage(ov, 0, 0, vw, vh, 0, 0, vw, vh);
       /* 图例块（战术·本机偏好可关）：内容自动取图内当刻实际出现的;按 DPR 折回 CSS 像素画右下角。
          让开 se 屏幕角标注（图例不上画布，不让位就会压住画布上摆好的图注）——标注层关掉则无须让。 */
       if (ctx.meta.mapKind === "tactical" && uiPrefsSig.peek().legend !== false) {
@@ -796,15 +799,16 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   /* 画布快照缩略图（v0.14 captureThumb：280×175 jpeg；地形先补渲一帧保证 WebGL 缓冲有效，再叠加 overlay） */
   function captureThumb(): string | null {
     try {
-      if (!canvas.width || !canvas.height) return null;
-      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v));
+      const [vw, vh] = host.pxSize();   // 可见区（画布可更大）
+      if (!vw || !vh) return null;
+      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v));
       const tw = 280, th = 175, off = document.createElement("canvas");
       off.width = tw; off.height = th;
       const g2 = off.getContext("2d")!;
-      const s = Math.max(tw / canvas.width, th / canvas.height);
-      const dx = (tw - canvas.width * s) / 2, dy = (th - canvas.height * s) / 2;
-      g2.drawImage(canvas, dx, dy, canvas.width * s, canvas.height * s);
-      g2.drawImage(ov, dx, dy, ov.width * s, ov.height * s);
+      const s = Math.max(tw / vw, th / vh);
+      const dx = (tw - vw * s) / 2, dy = (th - vh * s) / 2;
+      g2.drawImage(canvas, 0, 0, vw, vh, dx, dy, vw * s, vh * s);
+      g2.drawImage(ov, 0, 0, vw, vh, dx, dy, vw * s, vh * s);
       return off.toDataURL("image/jpeg", 0.62);
     } catch (e) { return null; }
   }

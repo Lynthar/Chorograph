@@ -6,6 +6,7 @@
 import { ALL_KINDS, CERTAINTY, CLIMATE, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_KIND, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
+import { ERODE_MODES } from "./erode.ts";
 import { MAX_RUN_DIM, runsDims } from "./territory.ts";
 import { DEFAULT_BBOX, type BBox, type PaintRuns } from "./types.ts";
 
@@ -70,6 +71,8 @@ export function validateWorld(w: unknown): ValidateResult {
     W("meta.worldModel", `未知世界模型 ${JSON.stringify(meta.worldModel)}（按球面处理）`);
   if (meta.climate != null && !tget(CLIMATE, meta.climate as string))
     W("meta.climate", `未知气候档 ${JSON.stringify(meta.climate)}（按未设定处理：出厂雪线、不随纬度）`);
+  if (meta.erode != null && !tget(ERODE_MODES, meta.erode as string))
+    W("meta.erode", `未知侵蚀计算档 ${JSON.stringify(meta.erode)}（按「底图与涂改」处理）`);
   if (meta.bbox != null) {
     const b = meta.bbox as Record<string, unknown>;
     if (!isObj(b) || !isNum(b.lonMin) || !isNum(b.lonMax) || !isNum(b.latMin) || !isNum(b.latMax)

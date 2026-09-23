@@ -39,7 +39,7 @@ uniform ivec2 uRDim;              // 规则场维度
 uniform float uRStep;             // 度/规则场格
 uniform vec2 uGridSpan;           // 网格真实跨度(lonMax-lonMin,latMax-latMin)：出界判定用，对齐 CPU/旧版 bbox
 uniform vec4 uViewBB;             // lonMin,latMin,lonMax,latMax
-uniform vec2 uRes;                // 画布像素
+uniform vec2 uRes;                // x=视口宽 y=缓冲高（像素行自缓冲顶起算；可见区贴缓冲顶，画布可大于可见区）
 uniform float uPXPD;              // 横向像素/度（经度有 cos(lat0) 校正，与纵向不同）
 uniform float uPXPDY;             // 纵向像素/度（对齐旧 drawTile 经 project 的各向异性贴图）
 uniform float uCStep;             // 等高距（抽象单位；contourStepFor：1-2-5 阶梯上的一档，任一时刻只有一套线系）
@@ -407,13 +407,18 @@ function compileProgram(gl: WebGL2RenderingContext): WebGLProgram | null {
   return pr;
 }
 
+/* 上下文属性：全幅不透明（fragColor 恒 α=1）、无深度模板，合成走不透明路径；
+   preserveDrawingBuffer＝渲染按需（render 的输入指纹没变就跳过，见 lastKey）的前提——不保留时缓冲在合成后即作废，
+   跳过的那些帧里出图 / 缩略图 / 走查脚本 drawImage(#map) 拿到的是黑帧。代价是合成时多一次整幅拷贝。 */
+const GL_ATTRS: WebGLContextAttributes = { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true };
+
 /** 探针：一次性 canvas 上把同一份着色器编译+链接一遍，成功才让真 canvas 走 GL。
     因 canvas 一旦 getContext("webgl2") 即永久锁进 GL 模式——若之后编译失败退 CPU，
     terrainCPU 的 getContext("2d") 会返 null 令首帧崩（审计：救命兜底自毁）。探针在真
     canvas 之前预判，用后即以 WEBGL_lose_context 释放。 */
 function probeGL(): boolean {
   try {
-    const gl = document.createElement("canvas").getContext("webgl2", { antialias: false });
+    const gl = document.createElement("canvas").getContext("webgl2", GL_ATTRS);
     if (!gl) return false;
     const pr = compileProgram(gl);
     if (pr) gl.deleteProgram(pr);
@@ -425,7 +430,7 @@ function probeGL(): boolean {
 /** 创建渲染器；环境无 WebGL2 或着色器建不出时返回 null（由 renderer.ts 工厂决定走 CPU 兜底） */
 export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | null {
   if (!probeGL()) return null;   // 探针先行：不过则不碰真 canvas，工厂安全退 CPU
-  const glMaybe = canvas.getContext("webgl2", { antialias: false });
+  const glMaybe = canvas.getContext("webgl2", GL_ATTRS);
   if (!glMaybe) return null;
   const gl = glMaybe;   // 固化非空绑定，供下方闭包捕获（避免联合类型收窄不传入闭包）
 
@@ -433,12 +438,16 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   let tex: WebGLTexture | null = null;    // 类型粗格纹理（TEXTURE0）
   /* 高程场+遮蔽纹理（侵蚀细分后维度 ≠ 粗格）：画面场与规则场各一份——TEXTURE1 绑本帧的画面（观感底图＝画面场，
      精修档在此；推演底图＝规则场），TEXTURE2 恒绑规则场供等高线取样（与光标读数同源）。两场同一对象时只建一份。 */
-  interface FieldTex { tex: WebGLTexture | null; cols: number; rows: number; step: number; eroded: number }
+  interface FieldTex { tex: WebGLTexture | null; cols: number; rows: number; step: number; eroded: number; of: ElevField | undefined }
   let fDisp: FieldTex | null = null, fRule: FieldTex | null = null;
   let g: Grid | null = null;
   let lastField: ElevField | undefined, lastRule: ElevField | undefined;   // 存最近两场：上下文丢失恢复时重传
   let lastWS: Float32Array = new Float32Array(0);
   let texFor: Grid | null = null, texWS: Float32Array | null = null;   // 类型纹理建自哪份（网格, 水面）
+  /* 上一帧的输入指纹：视口、画布像素、全部选项与上传代次都没变＝画布上已经是这一帧，直接跳过——
+     悬停、点选、拖部队这些只动叠加层的交互曾让地形着色器每帧全幅重跑（核显 DPR 1.5 每帧 22～35 ms）。
+     上传或上下文恢复即清空（画布内容已换）。 */
+  let lastKey: string | null = null;
   const U = (n: string) => gl.getUniformLocation(pr!, n);
 
   /* 建程序 + 设常量 uniform（创建时 + webglcontextrestored 后重跑）。 */
@@ -487,8 +496,12 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.activeTexture(gl.TEXTURE0);   // 常规活动纹理还原到 0 号（类型纹理绑定预期）
-    return { tex: t, cols: fc, rows: fr, step: field ? field.step : grid.step, eroded: field && field.shadow ? 1 : 0 };
+    return { tex: t, cols: fc, rows: fr, step: field ? field.step : grid.step, eroded: field && field.shadow ? 1 : 0, of: field };
   }
+  /* 场纹理按 ElevField 引用留用：落地渐变六帧只换画面场、规则场不动，精修入屏亦然——不留用就是每帧多传一份 8 MB 的规则场。
+     缺省场（未传 field＝按类型合成）没有引用可认，照旧重建。 */
+  const heldTex = (f: ElevField | undefined): FieldTex | null =>
+    f ? (fDisp && fDisp.of === f ? fDisp : fRule && fRule.of === f ? fRule : null) : null;
   const dropFieldTex = (): void => {
     if (fDisp) gl.deleteTexture(fDisp.tex);
     if (fRule && fRule !== fDisp) gl.deleteTexture(fRule.tex);
@@ -506,7 +519,6 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     if (!pr) return;
     const field = fieldFits(fieldIn) ? fieldIn : undefined;
     const rule = ruleIn === fieldIn ? field : fieldFits(ruleIn) ? ruleIn : undefined;
-    dropFieldTex();
     /* 类型粗格纹理：R=水面高程（core/elev.waterSurface）G=复合索引 lf*5+eco。
        同一 Grid 实例配同一份水面（两者都按 Grid 记忆）＝只动了高程的重建，纹理原样留用不重传 */
     if (!(tex && grid === texFor && wsurf === texWS)) {
@@ -526,8 +538,11 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       texFor = grid; texWS = wsurf;
     }
-    fDisp = fieldTex(grid, field);
-    fRule = rule === field ? fDisp : fieldTex(grid, rule);
+    const nd = heldTex(field) || fieldTex(grid, field);
+    const nr = rule === field ? nd : heldTex(rule) || fieldTex(grid, rule);
+    for (const t of new Set([fDisp, fRule])) if (t && t !== nd && t !== nr) gl.deleteTexture(t.tex);   // 旧的两份里没被留用的删掉
+    fDisp = nd; fRule = nr;
+    lastKey = null;
     gl.uniform4f(U("uGridBB"), grid.bb.lonMin, grid.bb.latMin, grid.step, (grid.bb.lonMin + grid.bb.lonMax) / 2);
     gl.uniform2i(U("uGridDim"), grid.cols, grid.rows);
     gl.uniform2f(U("uGridSpan"), grid.bb.lonMax - grid.bb.lonMin, grid.bb.latMax - grid.bb.latMin);
@@ -546,7 +561,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   };
   let name = queryName();
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; fDisp = fRule = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
+  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
@@ -559,21 +574,25 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
       const f = opts.flat ? fRule : fDisp;
       if (!g || !pr || !f || !fRule) return;
-      gl.viewport(0, 0, canvas.width, canvas.height);
+      const S = opts.snow, H = canvas.height, [vw, vh] = opts.px ?? [canvas.width, H];
+      const key = `${viewBB.lonMin},${viewBB.latMin},${viewBB.lonMax},${viewBB.latMax}|${vw}x${vh}/${H}|${+!!opts.flat}${+!!opts.contour}${+!!opts.wrap}${+!!opts.paper}`
+        + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}`;
+      if (key === lastKey) return;   // 画布上已是这一帧
+      lastKey = key;
+      gl.viewport(0, H - vh, vw, vh);   // 可见区贴画布顶；GL 原点在左下
       bindField(1, f, "uFDim", "uFStep");
       gl.uniform1f(U("uEroded"), f.eroded);
       bindField(2, fRule, "uRDim", "uRStep");
       gl.uniform4f(U("uViewBB"), viewBB.lonMin, viewBB.latMin, viewBB.lonMax, viewBB.latMax);
-      gl.uniform2f(U("uRes"), canvas.width, canvas.height);
-      gl.uniform1f(U("uPXPD"), canvas.width / (viewBB.lonMax - viewBB.lonMin));
-      gl.uniform1f(U("uPXPDY"), canvas.height / (viewBB.latMax - viewBB.latMin));
+      gl.uniform2f(U("uRes"), vw, H);
+      gl.uniform1f(U("uPXPD"), vw / (viewBB.lonMax - viewBB.lonMin));
+      gl.uniform1f(U("uPXPDY"), vh / (viewBB.latMax - viewBB.latMin));
       gl.uniform1i(U("uMode"), opts.flat ? 1 : 0);
       gl.uniform1i(U("uContour"), opts.contour ? 1 : 0);
       gl.uniform1f(U("uCStep"), opts.cStep || 0.12);
       gl.uniform1f(U("uDPR"), opts.dpr ?? 1);
       gl.uniform1i(U("uWrap"), opts.wrap ? 1 : 0);
       gl.uniform1i(U("uPaper"), opts.paper ? 1 : 0);
-      const S = opts.snow;
       gl.uniform1f(U("uSnowE"), S ? S.base : 1e9);
       gl.uniform1f(U("uSnowLat"), S && S.lat ? 1 : 0);
       gl.uniform1f(U("uSnowRef"), S ? S.refM : 0);

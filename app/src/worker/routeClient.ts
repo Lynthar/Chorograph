@@ -27,6 +27,9 @@ export interface RouteClient {
   /** 撤掉在飞的精修单：terminate 车道、单以 null 收场（新编辑来了，几十秒的单跑完也只会被令牌作废）；
       无单在飞不动车道。下一单懒建新车道。 */
   cancelUltra(): void;
+  /** 撤掉在飞的工作档侵蚀单：同 cancelUltra——新编辑来了，上一笔的单算完只会被令牌作废，还挡着新单排队（收笔后多等 1～4 s）；
+      被撤的结果不进场缓存（撤销回那一步要重算，用户拍板接受）。崩溃判死与主动撤单分开：撤单后下一单懒建新车道，判死后退回主 worker。 */
+  cancelErode(): void;
   /** 视线判定用的规则场：同 setContext 惰性推送（下一个 viewshed 单之前才克隆），规则场换引用时调一次 */
   setViewField(field: ViewField): void;
   /** 一批观察者的视线掩膜（寻路车道）；Worker 挂掉时返 null——调用方保持上一份 */
@@ -40,6 +43,7 @@ export function createRouteClient(): RouteClient {
                                   // 不再挤同一队列——收笔后 hover 路由不用等侵蚀，侵蚀也不用等腿账。
                                   // 同一份内联 bundle 二次实例化＝零体积成本；erode 自带全部输入，
                                   // 不吃 setContext，故 ew 无 ctx 镜像之需。
+  let ewDead = false;             // 侵蚀车道崩过＝不再建（退回主 worker / 同步）；主动撤单只置 ew=null，下一单懒建
   let uw: Worker | null = null;   // 4K 静置精修车道（2026-08-11，懒建）：精修单跑几十秒，
   let uwTried = false;            // 与 ew 分开＝精修期间新笔的工作档侵蚀不排队
   let seq = 0;
@@ -58,6 +62,20 @@ export function createRouteClient(): RouteClient {
     ew = null;
     for (const [, res] of pendingE) res({ t: "route", id: -1, res: null } as RouteReply);
     pendingE.clear();
+  };
+  const ensureEw = (): Worker | null => {
+    if (ew || ewDead) return ew;
+    try {
+      ew = new RouteWorker();
+      ew.onmessage = e => {
+        const r = e.data as RouteReply;
+        const f = pendingE.get(r.id);
+        if (f) { pendingE.delete(r.id); f(r); }
+      };
+      ew.onerror = () => { ewDead = true; killErodeWorker(); };        // 侵蚀 worker 死＝该单以 null 收场（调用方保持粗格），后续退回主 worker/同步
+      ew.onmessageerror = () => { ewDead = true; killErodeWorker(); };
+    } catch { ew = null; ewDead = true; }
+    return ew;
   };
   const killUltraWorker = () => {
     try { uw?.terminate(); } catch { /* 已死 */ }
@@ -91,16 +109,7 @@ export function createRouteClient(): RouteClient {
     w.onerror = killWorker;         // Worker 崩=判死；已发请求以 null 收场，后续走同步回退
     w.onmessageerror = killWorker;  // 回程结构化克隆失败=同样判死（否则该请求 promise 永不 resolve）
   } catch { w = null; }
-  try {
-    ew = new RouteWorker();
-    ew.onmessage = e => {
-      const r = e.data as RouteReply;
-      const f = pendingE.get(r.id);
-      if (f) { pendingE.delete(r.id); f(r); }
-    };
-    ew.onerror = killErodeWorker;        // 侵蚀 worker 死＝该单以 null 收场（调用方保持粗格），后续退回主 worker/同步
-    ew.onmessageerror = killErodeWorker;
-  } catch { ew = null; }
+  ensureEw();   // 工作档车道构造时即建（常驻）；撤单后由 erode() 懒建
 
   /* 上下文惰性推送（2026-08-13 规模引擎批）：rebuild 每笔都 setContext,而 postMessage 要
      结构化克隆整个 grid.cells——196 万格字符串数组一次克隆上百 ms,连笔＝每 move 白扔一次。
@@ -145,9 +154,10 @@ export function createRouteClient(): RouteClient {
     async erode(input) {
       /* 优先走侵蚀专用 worker；它死了退回主 worker/同步回退。任一 worker 死时对应 kill 以
          route 型收场→此处判型返 null（调用方保持粗格） */
-      if (ew) {
+      const worker = ensureEw();
+      if (worker) {
         const id = ++seq;
-        const r = await new Promise<RouteReply>(res => { pendingE.set(id, res); ew!.postMessage({ t: "erode", id, ...input }); });
+        const r = await new Promise<RouteReply>(res => { pendingE.set(id, res); worker.postMessage({ t: "erode", id, ...input }); });
         return r.t === "erode" ? r.f : null;
       }
       const r = await ask({ t: "erode", id: ++seq, ...input });
@@ -164,6 +174,10 @@ export function createRouteClient(): RouteClient {
       if (!pendingU.size) return;
       killUltraWorker();
       uwTried = false;   // 与崩溃判死不同：这是主动撤单，车道要能再建
+    },
+    cancelErode() {
+      if (!pendingE.size) return;
+      killErodeWorker();   // ewDead 不置：主动撤单，下一单懒建新车道
     },
     dispose() { killWorker(); killErodeWorker(); killUltraWorker(); }
   };

@@ -24,6 +24,7 @@ import { calOverlaySig, calTemplatesSig, closeSettings, isTacSig, libActionsSig,
 import { pickCalendarCfg } from "../data/calstore.ts";
 import { fmtBytes, requestPersist, storageState, type StorageState } from "../data/persist.ts";
 import { useModalFocus } from "./modal.ts";
+import { ERODE_MODES, erodeMode, type ErodeMode } from "../core/erode.ts";
 
 const randSeed = () => Math.floor(Math.random() * 99999) + 1;
 
@@ -34,6 +35,16 @@ function PeriodRow({ modern }: { modern: boolean }) {
       <label><input type="radio" name="sw_period" value="ancient" defaultChecked={!modern} /> {PERIOD_NAME.ancient}</label>
       <label><input type="radio" name="sw_period" value="modern" defaultChecked={modern} /> {PERIOD_NAME.modern}</label>
       <span class="sub">现代：部队表单多出雷达（探测半径 / 天线高度 / 目标高度），层面板多「雷达覆盖」；飞行高度与机械化速度将来也挂在这里。随时可改；改回古代只收起这些行，已填的数据不丢。</span>
+    </div>
+  );
+}
+
+/** 侵蚀计算档（既有图可改；缺键＝底图与涂改，新图亦此）。普通函数直接返回节点，不是组件（同 PeriodRow） */
+function ErodeRow({ cur }: { cur: ErodeMode }) {
+  return (
+    <div class="setrow"><label>侵蚀计算</label>
+      {(Object.keys(ERODE_MODES) as ErodeMode[]).map(k => <label key={k}><input type="radio" name="sw_erode" value={k} defaultChecked={cur === k} /> {ERODE_MODES[k].名}</label>)}
+      <span class="sub">底图与涂改＝高程涂改也被侵蚀，松笔后算完落地换成刻出沟谷的真形；仅底图＝高程笔所见即所得、笔落即最终，只有地类底图（含地貌笔的改动）被侵蚀；关闭＝不侵蚀，没有细分、沟谷与烘焙阴影（DEM 导入或纯手工雕刻用）。随时可改。</span>
     </div>
   );
 }
@@ -231,6 +242,8 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       if (cmEl) { const v = parseFloat(cmEl.value); if (v > 0) mm.contourM = v; else delete mm.contourM; }   // 最细等高距（缺键=10；只动观感）
       const perEl = periodEl();
       if (perEl) { if (perEl.value === "modern") mm.period = "modern"; else delete mm.period; }   // 时代（缺键=古代；改回古代只收起表单行，数据不动）
+      const erEl = box.current!.querySelector<HTMLInputElement>("[name=sw_erode]:checked");
+      if (erEl) { if (erEl.value === "base" || erEl.value === "none") mm.erode = erEl.value; else delete mm.erode; }   // 侵蚀计算档（缺键=底图与涂改）
       /* 纪元前缀（custom 既有图可改，纯显示层；kind/月长锁定不动）。默认 SE 不落盘 */
       const eraEl = box.current!.querySelector<HTMLInputElement>("#sw_era_app");
       if (eraEl) {
@@ -498,6 +511,7 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
           <span class="sub">内陆图选「陆地」：碰到图幅边的水体也按内陆湖定水面（不再沉到海平面），图幅外铺纸色而非深海。</span>
         </div>
       )}
+      {!create && <ErodeRow cur={erodeMode(m)} />}
       {/* 网格密度不是设置项（2026-08-12 作者裁定强制自动;2026-08-13 起创建时按 core/grid.autoGridN
           解算并**盖章进 meta.gridN**＝图的身份）——「格边随图幅走」是算出来的,不是选出来的。 */}
       {create && (

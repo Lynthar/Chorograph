@@ -11,7 +11,7 @@ import { project, type Camera } from "../src/core/projection.ts";
 import { yearRangeOf } from "../src/core/time.ts";
 import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
-import { ERODE_VER, erodeField, erodeGate, erodeInput, erodeKey, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
+import { ERODE_VER, erodeField, erodeGate, erodeInput, erodeKey, erodeMode, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
 import { fbm } from "../src/core/noise.ts";
 import { baseElev, buildElevField, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
 import { makeRelief, mountainness, RELIEF_M } from "../src/core/relief.ts";
@@ -659,6 +659,17 @@ describe("侵蚀真形（core/erode）", () => {
     assert.deepStrictEqual(inp.elev0, baseElev(meta, grid), "基础高程＝连续基底（含模糊）");
     assert.strictEqual(inp.unitM, 2000);
     assert.notStrictEqual(erodeKey(inp), erodeKey({ ...inp, unitM: 1000 }), "unitM 是内容键的一元");
+  });
+  it("侵蚀计算档（meta.erode）：缺键与非法值＝底图与涂改；关闭＝门关、输入 null（与 gate 同判）；仅底图由 host 传空涂改组装", () => {
+    const { grid } = mkGrid(plainWorld());
+    assert.strictEqual(erodeMode(undefined), "all"); assert.strictEqual(erodeMode({}), "all");
+    assert.strictEqual(erodeMode({ erode: "base" }), "base"); assert.strictEqual(erodeMode({ erode: "none" }), "none");
+    assert.strictEqual(erodeMode({ erode: "toString" } as never), "all", "非法值（含原型键）按缺省");
+    const hov = [{ lon: 100.2, lat: 30.7, dh: 0.2 }];
+    assert.strictEqual(erodeGate({ terrain: "plain", relief: 0.5, erode: "none" }, hov, grid, 3100), false, "关闭：relief 与涂改都不开门");
+    assert.strictEqual(erodeInput({ terrain: "plain", relief: 0.5, erode: "none" }, hov, grid, 3100), null);
+    assert.ok(erodeInput({ terrain: "plain", relief: 0.5, erode: "base" }, undefined, grid, 3100)!.hovGrid.every(v => v === 0), "仅底图：host 传空涂改＝零栅格");
+    assert.strictEqual(erodeGate({ terrain: "plain", erode: "base" }, undefined, grid, 3100), false, "仅底图且 relief=0＝无侵蚀（涂改不参与）");
   });
   it("erodeGate 与 erodeInput 逐位同判（2026-08-13 延迟组装批:门在 rebuild 同拍、数组在结算拍,判据不许漂）", () => {
     const { grid } = mkGrid(plainWorld());

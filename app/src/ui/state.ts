@@ -139,7 +139,7 @@ export interface SaveConflict {
 }
 export const saveConflictSig = signal<SaveConflict | null>(null);
 
-/* —— 地势定形相位（顶栏胶囊；host 独写）：work=工作档演算中 / ultra=4K 静置精修中 /
+/* —— 侵蚀计算相位（顶栏胶囊；host 独写）：work=工作档演算中 / ultra=4K 静置精修中 /
    done=刚落定（host 2s 后自动归 idle）。缓存命中不置相位——瞬时完成的事不值得一枚胶囊。 —— */
 export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
 /** 落定的规则场（host 独写）：门关＝粗格、门开＝工作档落地后的那份；演算中为 null。

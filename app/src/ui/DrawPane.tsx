@@ -157,7 +157,7 @@ function TerrainCtx() {
               <button key={v} class="ch tr" aria-pressed={stepM === v} onClick={() => { heightStepMSig.value = v; }}>±{v}m</button>
             ))}
           </div>
-          <div class="hint">高程画笔：按住拖动{brushEraseSig.value ? <b>▼ 下切</b> : <b>▲ 抬升</b>}地势（每笔 ±{stepM}m，可反复叠加；<kbd>E</kbd> 换向、<kbd>[ ]</kbd> 调大小）。山峰/棱线/凹路皆可雕；开「等高线」图层看效果。水域恒平、陆地不跌成滩涂。笔画即时可见；松笔后水系约需一至三秒把草稿冲刷定形（进度见顶栏）、等高线与读数都取自定形后的地势。</div>
+          <div class="hint">高程画笔：按住拖动{brushEraseSig.value ? <b>▼ 下切</b> : <b>▲ 抬升</b>}地势（每笔 ±{stepM}m，可反复叠加；<kbd>E</kbd> 换向、<kbd>[ ]</kbd> 调大小）。山峰/棱线/凹路皆可雕；开「等高线」图层看效果。水域恒平、陆地不跌成滩涂。笔画即时可见；松笔后侵蚀计算约需一至三秒把草稿冲出沟谷（进度见顶栏）、等高线与读数都取自计算后的地势；设置里「侵蚀计算」选「仅底图」则笔落即最终、不再变形。</div>
         </>
       )}
     </>

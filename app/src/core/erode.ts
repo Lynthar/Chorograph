@@ -17,6 +17,16 @@ import { activeAt } from "./time.ts";
 import { stampRect, type Grid } from "./grid.ts";
 import type { BBox, HeightOverride, Meta } from "./types.ts";
 
+/** 侵蚀计算档（meta.erode，设置弹层一行三选）：缺键与非法值＝all。
+    all＝底图与涂改都侵蚀（落笔先见草稿，算完落地换真形）；base＝只侵蚀地类底图，高程涂改直接叠在定形后的场上
+    （host 传空涂改组装输入、Grid 没换就不发单＝笔落即最终、重开图也一样；地貌笔改了地类仍会重算）；none＝不侵蚀（门恒关＝粗格路径）。 */
+export type ErodeMode = "all" | "base" | "none";
+export const ERODE_MODES: Record<ErodeMode, { 名: string }> = { all: { 名: "底图与涂改" }, base: { 名: "仅底图" }, none: { 名: "关闭" } };
+export function erodeMode(meta: Meta | undefined): ErodeMode {
+  const v = (meta || {}).erode;
+  return v === "base" || v === "none" ? v : "all";
+}
+
 export interface ErodeInput {
   bb: BBox; step: number; cols: number; rows: number;
   /** 粗格基础高程（连续基底 core/elev.baseElev：类型阶梯已展成山前带、海床自岸变深） */
@@ -173,6 +183,7 @@ export function erodeKey(inp: ErodeInput): string {
     （「门的判定与等待窗显示分支同源」之约由此担保;worker.test 拿随机夹具锁 gate===(input!==null)）。 */
 export function erodeGate(meta: Meta | undefined, hov: HeightOverride[] | undefined, grid: Grid, yearNow: number): boolean {
   const m = meta || {};
+  if (erodeMode(m) === "none") return false;   // 关闭档：门恒关（与 erodeInput 同判）
   if (Math.max(0, Math.min(1, +(m.relief as number) || 0)) > 0) return true;
   for (const o of hov || []) {
     if (!activeAt(o, yearNow)) continue;
@@ -188,6 +199,7 @@ export function erodeGate(meta: Meta | undefined, hov: HeightOverride[] | undefi
 export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undefined,
   grid: Grid, yearNow: number): ErodeInput | null {
   const m = meta || {};
+  if (erodeMode(m) === "none") return null;   // 关闭档（与 erodeGate 同判）
   const amp = Math.max(0, Math.min(1, +(m.relief as number) || 0));
   const { bb, step, cols, rows } = grid;
   /* 涂改先栅到粗格（几何走 stampRect，与 buildGridCells / buildElevField 的盖章同一份） */

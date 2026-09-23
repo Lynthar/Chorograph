@@ -130,6 +130,21 @@ export function heightStepM(meta: Meta | undefined, chosen: number): number {
 export interface ContourStats { slope75: number; rangeM: number }
 export interface FieldRect { c0: number; r0: number; c1: number; r1: number }
 const statsMemo = new WeakMap<ElevField, Map<string, ContourStats>>();
+/** a[0..n) 里第 k 小（0 起）＝排序后的 a[k]，quickselect 原地分划：整场排两次 65536 个数要 30 ms，落地那一帧扛不起 */
+function kth(a: Float64Array, n: number, k: number): number {
+  let lo = 0, hi = n - 1;
+  while (hi > lo) {
+    const p = a[(lo + hi) >> 1];
+    let i = lo, j = hi;
+    while (i <= j) {
+      while (a[i] < p) i++;
+      while (a[j] > p) j--;
+      if (i <= j) { const t = a[i]; a[i] = a[j]; a[j] = t; i++; j--; }
+    }
+    if (k <= j) hi = j; else if (k >= i) lo = i; else return a[k];
+  }
+  return a[k];
+}
 const STATS_MEMO_MAX = 64;
 export function contourStats(field: ElevField, grid: Grid, wsurf: Float32Array, meta: Meta | undefined, rect?: FieldRect): ContourStats {
   const { cols, rows, step, data, bb } = field;
@@ -143,7 +158,9 @@ export function contourStats(field: ElevField, grid: Grid, wsurf: Float32Array, 
   const { kmx, kmy } = kmPerDegXY(meta, bb);
   const unit = elevUnitM(meta), mx = step * kmx * 1000, my = step * kmy * 1000;   // 米/场格
   const stride = Math.max(1, Math.ceil(Math.sqrt(Math.max(0, cB - cA) * Math.max(0, rB - rA) / 65536)));   // 抽样 ≤ 65536 点
-  const slopes: number[] = [], elevs: number[] = [];
+  const cap = (Math.ceil(Math.max(0, cB - cA) / stride) + 1) * (Math.ceil(Math.max(0, rB - rA) / stride) + 1);
+  const slopes = new Float64Array(cap), elevs = new Float64Array(cap);
+  let n = 0;
   for (let r = rA + (stride >> 1); r < rB; r += stride) {
     const gr = Math.max(0, Math.min(grid.rows - 1, Math.floor((bb.latMin + (r + 0.5) * step - grid.bb.latMin) / grid.step)));
     const r0 = Math.max(0, r - 1), r1 = Math.min(rows - 1, r + 1);
@@ -154,15 +171,11 @@ export function contourStats(field: ElevField, grid: Grid, wsurf: Float32Array, 
       const c0 = Math.max(0, c - 1), c1 = Math.min(cols - 1, c + 1);
       const gx = (data[r * cols + c1] - data[r * cols + c0]) * unit / ((c1 - c0) * mx);
       const gy = (data[r1 * cols + c] - data[r0 * cols + c]) * unit / ((r1 - r0) * my);
-      slopes.push(Math.hypot(gx, gy)); elevs.push(e * unit);
+      slopes[n] = Math.hypot(gx, gy); elevs[n] = e * unit; n++;
     }
   }
-  const n = slopes.length;
   let st: ContourStats = { slope75: 0, rangeM: 0 };
-  if (n) {
-    slopes.sort((a, b) => a - b); elevs.sort((a, b) => a - b);
-    st = { slope75: slopes[Math.floor(0.75 * (n - 1))], rangeM: elevs[Math.floor(0.99 * (n - 1))] - elevs[Math.floor(0.01 * (n - 1))] };
-  }
+  if (n) st = { slope75: kth(slopes, n, Math.floor(0.75 * (n - 1))), rangeM: kth(elevs, n, Math.floor(0.99 * (n - 1))) - kth(elevs, n, Math.floor(0.01 * (n - 1))) };
   if (memo.size >= STATS_MEMO_MAX) memo.delete(memo.keys().next().value!);
   memo.set(key, st);
   return st;

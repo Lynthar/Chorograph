@@ -2,7 +2,7 @@
    全部经 ctx 共享态工作；rebuild 同步把寻路上下文送进 Worker（官道格按当年连线重算）。 */
 import { buildGridCells, roadCellSet, type Grid } from "../core/grid.ts";
 import { buildElevField, coarseField, fieldMix, fieldPlusDelta, waterSurface, type ElevField } from "../core/elev.ts";
-import { erodeGate, erodeInput, erodeKey, ultraInput, type ErodeInput } from "../core/erode.ts";
+import { erodeGate, erodeInput, erodeKey, ultraInput, type ErodeInput, erodeMode } from "../core/erode.ts";
 import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig } from "../ui/state.ts";
 import { terrMetaKey } from "../ui/history.ts";
@@ -10,13 +10,15 @@ import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { ShellCtx } from "./ctx.ts";
 import type { Camera } from "../core/projection.ts";
-import type { BBox, HeightOverride, TerrainOverride } from "../core/types.ts";
+import type { BBox, HeightOverride, TerrainOverride, World } from "../core/types.ts";
 
 export interface Host {
-  /** 画布物理像素跟随 CSS 尺寸与 DPR（缩放/换屏后重读 devicePixelRatio） */
+  /** 可见区或 DPR 变了就重画；后备存储只增不减（换屏/缩放后重读 devicePixelRatio 才整个重分配） */
   resize(): void;
-  /** 画布 CSS 尺寸 [宽, 高] */
+  /** 可见区（canvasWrap）CSS 尺寸 [宽, 高]——取景与投影都按它，画布本身可以更大 */
   cssSize(): [number, number];
+  /** 可见区物理像素 [宽, 高]＝cssSize × DPR：渲染器只画画布左上这一块 */
+  pxSize(): [number, number];
   /** 当前视口的经纬度包围盒 */
   viewBB(): BBox;
   /** 纬度余弦（球面世界经度视觉压缩系数；平面恒 1＝与 projection.viewCosK 同判） */
@@ -31,18 +33,31 @@ export interface Host {
 
 export function createHost(ctx: ShellCtx): Host {
   const { canvas, ov } = ctx;
+  const wrap = $("canvasWrap");
+  let seenW = 0, seenH = 0;   // 上次 resize 见到的可见区 CSS 尺寸
+  /* 画布后备存储只增不减，CSS 盒随存储（style 宽高＝存储÷DPR），可见区（canvasWrap，overflow:hidden）裁掉多出的部分：
+     改画布宽高＝同步重分配 GPU 缓冲，核显上每次 15～45 ms，检查器滑开/滑拢的 0.22 s 过渡逐帧触发十来次就是一串卡顿；
+     可见区缩小只换视口与取景（渲染器按 pxSize 只画左上一块），不碰缓冲。DPR 变了才整个重分配。 */
   function resize(): void {
     const dpr = Math.max(1, devicePixelRatio || 1);   // 重读：缩放/换屏后 devicePixelRatio 变，帧内各处每帧读 ctx 自动跟新
-    const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
-    if (dpr === ctx.DPR && canvas.width === w && canvas.height === h) return;   // 尺寸没变不碰画布（设宽高即清屏）
-    ctx.DPR = dpr;
-    canvas.width = w; canvas.height = h;
-    ov.width = w; ov.height = h;
-    /* 设完尺寸立即同步补画：ResizeObserver 回调跑在当帧 rAF 之后，清空的画布会先被合成上屏、
-       下一帧才补画——检查器滑开/收起（0.22s 过渡逐帧触发 resize）期间空白帧与画面帧交替＝整屏闪烁。 */
+    const [cw, ch] = cssSize();
+    if (dpr === ctx.DPR && cw === seenW && ch === seenH) return;
+    seenW = cw; seenH = ch;
+    const w = Math.round(cw * dpr), h = Math.round(ch * dpr);
+    if (dpr !== ctx.DPR || w > canvas.width || h > canvas.height) {
+      const W = dpr !== ctx.DPR ? w : Math.max(w, canvas.width), H = dpr !== ctx.DPR ? h : Math.max(h, canvas.height);
+      ctx.DPR = dpr;
+      canvas.width = W; canvas.height = H;
+      ov.width = W; ov.height = H;
+      canvas.style.width = ov.style.width = `${W / dpr}px`;
+      canvas.style.height = ov.style.height = `${H / dpr}px`;
+    }
+    /* 立即同步补画：ResizeObserver 回调跑在当帧 rAF 之后——重分配后的空画布若等下一帧才画，空白帧会先被合成上屏；
+       没重分配时取景也已随可见区变，同帧画上免得地图慢一拍才归中。 */
     if (ctx.repaint) ctx.repaint();
   }
-  function cssSize(): [number, number] { return [canvas.clientWidth, canvas.clientHeight]; }
+  function cssSize(): [number, number] { return [wrap.clientWidth, wrap.clientHeight]; }
+  function pxSize(): [number, number] { const [w, h] = cssSize(); return [Math.round(w * ctx.DPR), Math.round(h * ctx.DPR)]; }
   function viewBB(): BBox {
     const [w, h] = cssSize();
     return { lonMin: ctx.view.lon0 - w / 2 * ctx.view.degPerPx / cosk(), lonMax: ctx.view.lon0 + w / 2 * ctx.view.degPerPx / cosk(),
@@ -69,7 +84,11 @@ export function createHost(ctx: ShellCtx): Host {
      几何刚换的重建免防抖立即发单。 */
   let erodeTimer: ReturnType<typeof setTimeout> | undefined, buildN = 0;
   let pendGate = false, pendHovs: HeightOverride[] | undefined, pendYear = 0;   // 门判定与延迟组装的原料（rebuild 同拍记账）
-  let pendInp: ErodeInput | null = null, pendCoarse: Float32Array | null = null;   // 侵蚀单（fireErode 结算时才组装）与粗格场
+  let pendInp: ErodeInput | null = null, pendCoarse: Float32Array | null = null;   // 侵蚀单（fireErode 结算时才组装）与它的粗格基准（仅底图档＝不含高程涂改）
+  let pendCoarseNow: Float32Array | null = null;   // 最新的含涂改粗格场：落地 / 渐变 / 精修入屏时把涂改增量叠回定形后的场（底图与涂改档下与 pendCoarse 同一对象）
+  /** 定形后的场叠上「当前粗格 − 定形基准」（仅底图档＝高程笔的涂改）：底图与涂改档两份粗格同一对象，原样返回＝旧行为逐位 */
+  const withDelta = (f: ElevField, baseC: Float32Array): ElevField =>
+    pendCoarseNow && pendCoarseNow !== baseC && ctx.grid ? fieldPlusDelta(f, baseC, pendCoarseNow, ctx.grid, ctx.grid.cells) : f;
   let pendUInp: ErodeInput | null = null;   // 同一单的精修档形态（数组共享引用，仅换预算三键；战术图才有）
   /* 工作档＝规则场（ctx.ruleField）兼等待窗合成的基座，跨同几何的重建存活；精修档只进画面，且只对
      当前构建有效——任何重建即弃（落笔不在千万格的精修场上逐 move 复制重传，静置后自会重算）。 */
@@ -81,11 +100,12 @@ export function createHost(ctx: ShellCtx): Host {
      后台第三车道按精修预算重算一遍，好了**硬换**入屏（只增细节的换场读作「对上焦/加载完成」，
      与缓存早到硬换同一先例；且 fieldMix 在 990 万格上一帧 ~40ms×6＝渐变本身就是卡顿）。
      内容寻址缓存吃到精修档：fireErode 并问精修键——画完的图重开即满解析上屏。
-     低内存机（deviceMemory<8）降到 2.8K 档；测不出（Firefox 等）按够用算。
+     低内存机（deviceMemory<8）降到 2.8K 档；测不出（Firefox / Safari 没有这个 API）也按低档——精修少一档没人看得出，
+     满预算的场在低内存机上会把标签页顶爆（2026-09-22 用户拍板）。
      ⚠ 精修**只进画面**：预算随本机内存分档，规则场与读数恒为工作档（ctx.ruleField），精修命中时
      工作档照旧要算——否则重开曾精修过的图，规则与读数退回粗格。 */
   const dm = typeof navigator !== "undefined" ? (navigator as { deviceMemory?: number }).deviceMemory : undefined;
-  const ULTRA_CAP = (dm ?? 8) >= 8 ? 10_500_000 : 5_250_000;
+  const ULTRA_CAP = (dm ?? 0) >= 8 ? 10_500_000 : 5_250_000;
   const ULTRA_IDLE_MS = 6000;   // 静置这么久才发精修单——单要跑半分钟，窗太短＝零星编辑不断点燃注定作废的后台计算
   let ultraTimer: ReturnType<typeof setTimeout> | undefined;
   /* 相位胶囊（ui/state.erodePhaseSig，本模块独写）：只在真演算时亮，缓存命中静默；done 2s 自动归位 */
@@ -118,11 +138,11 @@ export function createHost(ctx: ShellCtx): Host {
      **立即**记账（渐变纯属显示），中途重建合成的就是终场。 */
   let fadeTimer: ReturnType<typeof setTimeout> | undefined;
   const FADE_MS = 240, FADE_STEPS = 6;   // 380→240（2026-08-10 精度批）：侵蚀单本身变长了，收尾渐变缩短把「等」的总观感拉回来（用户拍板）
-  function startFade(to: ElevField): void {
+  function startFade(to: ElevField, baseC: Float32Array): void {
     clearTimeout(fadeTimer);
     const from = ctx.elevField;
     if (!from) {   // 无在屏场（不该发生）＝直接换
-      ctx.elevField = to;
+      ctx.elevField = withDelta(to, baseC);
       upload();
       if (ctx.repaint) ctx.repaint();
       return;
@@ -133,7 +153,7 @@ export function createHost(ctx: ShellCtx): Host {
       if (buildN !== token || !ctx.grid) return;
       k++;
       const t = k / FADE_STEPS;
-      ctx.elevField = fieldMix(from, to, t * t * (3 - 2 * t));   // 末帧 t=1 ＝ to 本身（真场引用）
+      ctx.elevField = fieldMix(from, withDelta(to, baseC), t * t * (3 - 2 * t));   // 末帧 t=1 ＝目标场引用；仅底图档下目标场每帧按最新涂改重叠（渐变中落的笔不丢）
       upload();
       if (ctx.repaint) ctx.repaint();
       if (k < FADE_STEPS) fadeTimer = setTimeout(tick, FADE_MS / FADE_STEPS);
@@ -169,7 +189,7 @@ export function createHost(ctx: ShellCtx): Host {
       return ctx.routeClient.erode(inp).then(f => {
         if (f) void fieldCachePut(ck, f);   // 过期结果也入缓存——内容寻址＝对它的输入恒真，撤销/重做正好吃到
         if (f && buildN === token && ctx.grid) landWork(f, baseC, key, true);   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
-        else { dropPhase(); if (buildN === token) settleRule(); }   // 算不出＝这一轮就此落定在粗格（读数也读它）；过期＝新单自会落定
+        else if (buildN === token) { dropPhase(); settleRule(); }   // 算不出＝这一轮就此落定在粗格（读数也读它）；过期（含被撤）＝新单接管相位与落定，胶囊不闪
       }, e => {   // 拒绝也要落定（闸自会放闸并补发）——否则胶囊悬在「定形中」、读数无人落定
         dropPhase();
         if (buildN === token) settleRule();
@@ -189,11 +209,11 @@ export function createHost(ctx: ShellCtx): Host {
   function landWork(f: ElevField, baseC: Float32Array, key: string, computed: boolean): void {
     const early = !computed && !work && performance.now() - coarseAt < 1000;
     work = f; workBase = baseC; workKey = key;
-    ctx.ruleField = f;
+    ctx.ruleField = withDelta(f, baseC);
     settleRule();
     if (ultra) upload();
-    else if (early) { clearTimeout(fadeTimer); ctx.elevField = f; upload(); if (ctx.repaint) ctx.repaint(); }
-    else startFade(f);
+    else if (early) { clearTimeout(fadeTimer); ctx.elevField = ctx.ruleField; upload(); if (ctx.repaint) ctx.repaint(); }
+    else startFade(f, baseC);
     if (computed && !ultra) setPhase("done");
     if (!ultra) scheduleUltra();   // 精修已在屏（缓存命中）＝无需再排
   }
@@ -230,48 +250,68 @@ export function createHost(ctx: ShellCtx): Host {
   function landUltra(f: ElevField, computed: boolean): void {
     ultra = f;
     clearTimeout(fadeTimer);
-    ctx.elevField = f;
+    ctx.elevField = withDelta(f, pendCoarse!);   // 这一单的基准＝组装它的那次重建的 pendCoarse
     upload();
     if (ctx.repaint) ctx.repaint();
     if (computed) setPhase("done"); else dropPhase();
   }
 
+  /** 重建的收尾（两条路径共用）：去重键、hud 探针、寻路上下文 */
+  function settleBuild(t0: number, w: World | null): void {
+    const ms = performance.now() - t0;
+    ctx.builtFor = ctx.mapId + "@" + yearSig.value + "@" + gridVerSig.value;
+    $("hud").dataset.grid = `${ctx.grid!.cols}×${ctx.grid!.rows} 网格 ${ms.toFixed(0)} ms`;
+    // 寻路上下文随网格重建同步进 Worker（官道格按当年连线重算）
+    if (w) ctx.routeClient.setContext({ meta: ctx.meta, grid: ctx.grid!, roads: roadCellSet(w.nodes, w.edges, yearSig.value, ctx.grid!), world: w, yearNow: yearSig.value });
+  }
   function rebuild(): void {
     const w = worldSig.value;
+    const t0 = performance.now();
     /* 无世界（程序化预览）时的 genSeed/genStyle 直接用 ctx.meta——它有出厂默认
        （createShellCtx: auto/1234/continent），深链 #seed=/#style= 也已落在同一处。 */
-    buildN++;   // 侵蚀令牌：任何一次重建都使在飞的侵蚀单过期（见 requestErode 注）
-    clearTimeout(ultraTimer);   // 改动来了＝撤掉排着的静置精修（工作档落定后自会重排）
-    ultra = null;               // 精修只对本次构建有效：落笔即弃，画面回到工作档合成（见状态头注）
-    ctx.routeClient.cancelUltra();   // 在飞的精修单也撤：几十秒的单跑完只会被令牌作废，白占一核
-    const t0 = performance.now();
     /* 类型网格按实例复用：只动 heightOverrides 的重建（高程笔每个 move）传同一个 Grid，基底与水面、起伏场、
        类型纹理、水面标高全按 Grid 实例记忆＝一并免算；键外任一项变了就换新实例，记忆整批作废。
        地貌笔改涂改必换数组（paintTerrainPath 只 filter/concat），撤销换世界＝换引用，故引用比较够用。 */
     const gk = `${ctx.mapId}|${yearSig.value}|${terrMetaKey(ctx.meta)}`, ov = w ? w.terrainOverrides : null;
-    if (!ctx.grid || gk !== gridKey || ov !== gridOv) {
+    const reuse = !!ctx.grid && gk === gridKey && ov === gridOv;
+    if (!reuse) {
       ctx.grid = buildGridCells(ctx.meta, ov || [], yearSig.value);
       gridKey = gk; gridOv = ov;
     }
-    const coarse = buildElevField(ctx.meta, w ? w.heightOverrides : undefined, ctx.grid, yearSig.value);
-    pendHovs = w ? w.heightOverrides : undefined;
+    const hovs = w ? w.heightOverrides : undefined, mode = erodeMode(ctx.meta);
+    const coarseNow = buildElevField(ctx.meta, hovs, ctx.grid!, yearSig.value);   // 含涂改的粗格场：显示与规则的增量来源
+    /* 仅底图 / 关闭档且 Grid 没换＝侵蚀输入一字没变：不撤单、不发单、不换场，只把涂改增量叠回已定形的场（精修在屏也留着）——
+       高程笔「笔落即最终」的落点就在这里。关闭档从无工作档，走不到这一支。 */
+    if (mode !== "all" && reuse && work && workBase) {
+      pendCoarseNow = coarseNow;
+      ctx.ruleField = withDelta(work, workBase);
+      ctx.elevField = ultra ? withDelta(ultra, workBase) : ctx.ruleField;
+      settleRule();
+      upload();
+      settleBuild(t0, w);
+      return;
+    }
+    buildN++;   // 侵蚀令牌：任何一次重建都使在飞的侵蚀单过期（见 requestErode 注）
+    clearTimeout(ultraTimer);   // 改动来了＝撤掉排着的静置精修（工作档落定后自会重排）
+    ultra = null;               // 精修只对本次构建有效：落笔即弃，画面回到工作档合成（见状态头注）
+    ctx.routeClient.cancelUltra();   // 在飞的精修单也撤：几十秒的单跑完只会被令牌作废，白占一核
+    ctx.routeClient.cancelErode();   // 在飞的工作档单同撤：算完只会被令牌作废，还挡着新单排队（收笔后多等 1～4 s）
+    const erodeHovs = mode === "all" ? hovs : undefined;   // 仅底图档：侵蚀不看高程涂改
+    const coarse = mode === "all" ? coarseNow : buildElevField(ctx.meta, undefined, ctx.grid!, yearSig.value);   // 侵蚀基座与增量基准
+    pendHovs = erodeHovs;
     pendYear = yearSig.value;
-    pendGate = erodeGate(ctx.meta, pendHovs, ctx.grid, pendYear);   // 门同拍判定（轻）；数组组装延迟到 fireErode 结算（见并发闸头注）
+    pendGate = erodeGate(ctx.meta, erodeHovs, ctx.grid!, pendYear);   // 门同拍判定（轻）；数组组装延迟到 fireErode 结算（见并发闸头注）
     pendInp = null; pendUInp = null;
-    pendCoarse = coarse;
+    pendCoarse = coarse; pendCoarseNow = coarseNow;
     /* 等待窗显示（见并发闸头注）：同几何工作档在手＝粗格增量羽化叠上去；否则粗格场
        （开图先出粗帧、门关的旧契约路径、换图/改图幅弃场）。规则场与画面此刻同一份。 */
-    const key = geomKey(ctx.grid);
+    const key = geomKey(ctx.grid!);
     if (!pendGate || workKey !== key) { work = null; workBase = null; workKey = ""; }
-    ctx.ruleField = work && workBase ? fieldPlusDelta(work, workBase, coarse, ctx.grid, ctx.grid.cells) : coarseField(ctx.grid, coarse);
+    ctx.ruleField = work && workBase ? fieldPlusDelta(work, workBase, coarseNow, ctx.grid!, ctx.grid!.cells) : coarseField(ctx.grid!, coarseNow);
     ctx.elevField = ctx.ruleField;
     ruleFieldSig.value = pendGate ? null : ctx.ruleField;   // 门开＝落地前是过渡合成，规则消费者沿用上一份；门关＝粗格即终态
-    const ms = performance.now() - t0;
     upload();   // rebuild 只在渲染器就绪后发生（boot 先建 R）；缺 R=启动即错
-    ctx.builtFor = ctx.mapId + "@" + yearSig.value + "@" + gridVerSig.value;
-    $("hud").dataset.grid = `${ctx.grid.cols}×${ctx.grid.rows} 网格 ${ms.toFixed(0)} ms`;
-    // 寻路上下文随网格重建同步进 Worker（官道格按当年连线重算）
-    if (w) ctx.routeClient.setContext({ meta: ctx.meta, grid: ctx.grid, roads: roadCellSet(w.nodes, w.edges, yearSig.value, ctx.grid), world: w, yearNow: yearSig.value });
+    settleBuild(t0, w);
     /* 有单的图异步细化：谷网算好即整场换真（无细分场在屏时先出的是粗格帧）。
        几何刚换（开图/改图幅）＝这一单不欠防抖债，立即发——缓存命中时数十毫秒内即上真形；
        150ms 防抖只为连笔/连续拨年归并（同几何的后续重建照旧走它）。 */
@@ -289,5 +329,5 @@ export function createHost(ctx: ShellCtx): Host {
     const [w, h] = cssSize();
     return { lon0: ctx.view.lon0, lat0: ctx.view.lat0, degPerPx: ctx.view.degPerPx, w, h, flat: ctx.meta.worldModel === "flat" };
   }
-  return { resize, cssSize, viewBB, cosk, cam, rebuild, rebuildIfNeeded };
+  return { resize, cssSize, pxSize, viewBB, cosk, cam, rebuild, rebuildIfNeeded };
 }

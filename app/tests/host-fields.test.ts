@@ -25,14 +25,18 @@ const fakeField = (inp: ErodeInput, sx: number): ElevField => ({
 });
 
 /* holdUltra＝精修单挂起不回（模拟几十秒的在飞单）；cancels 只数撤到了在飞单的那几次（host 每次重建都调，无单时是空操作） */
-interface Seen { field?: ElevField; rule?: ElevField; workCap?: number; ultraCap?: number; holdUltra?: boolean; cancels: number; release?: (f: ElevField | null) => void }
+interface Seen { field?: ElevField; rule?: ElevField; workCap?: number; ultraCap?: number; holdUltra?: boolean; holdErode?: boolean; cancels: number; erodeCancels: number; erodes: number; lastInp?: ErodeInput; release?: (f: ElevField | null) => void; releaseE?: (f: ElevField | null) => void }
 function mkCtx(): { ctx: ShellCtx; seen: Seen } {
-  const seen: Seen = { cancels: 0 };
+  const seen: Seen = { cancels: 0, erodeCancels: 0, erodes: 0 };
   const ctx = {
     canvas: {}, ov: {},
     routeClient: {
       setContext: () => {},
-      erode: (inp: ErodeInput) => { seen.workCap = inp.cap; return Promise.resolve(fakeField(inp, 2)); },
+      erode: (inp: ErodeInput) => {
+        seen.workCap = inp.cap; seen.erodes++; seen.lastInp = inp;
+        return seen.holdErode ? new Promise<ElevField | null>(res => { seen.releaseE = res; }) : Promise.resolve(fakeField(inp, 2));
+      },
+      cancelErode: () => { if (seen.releaseE) { seen.erodeCancels++; seen.releaseE(null); seen.releaseE = undefined; } },
       erodeUltra: (inp: ErodeInput) => {
         seen.ultraCap = inp.cap;
         return seen.holdUltra ? new Promise<ElevField | null>(res => { seen.release = res; }) : Promise.resolve(fakeField(inp, 4));
@@ -49,9 +53,9 @@ function mkCtx(): { ctx: ShellCtx; seen: Seen } {
   return { ctx, seen };
 }
 /* relief>0＝侵蚀门开；0.1° 小战场＝网格约百格见方，工作档取轴上限 8×、精修档 16×（两档预算都拿得到增益） */
-const W = (): World => normalizeWorld({
+const W = (extra: Record<string, unknown> = {}): World => normalizeWorld({
   meta: { 名称: "战", worldModel: "sphere", terrain: "plain", mapKind: "tactical", relief: 0.5,
-    bbox: { lonMin: 100, lonMax: 100.1, latMin: 30, latMax: 30.1 } }
+    bbox: { lonMin: 100, lonMax: 100.1, latMin: 30, latMax: 30.1 }, ...extra }
 });
 /** 让微任务与 IO 回合走完（setImmediate 不在 mock 之列）：缓存探针 → 假单应答 → 落地 */
 const flush = async (): Promise<void> => { for (let i = 0; i < 4; i++) await new Promise(r => setImmediate(r)); };
@@ -115,6 +119,54 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.notEqual(ctx.ruleField, work, "增量非零＝新合成的场");
     assert.equal(seen.field, ctx.ruleField, "渲染器两份同一对象");
     assert.equal(seen.rule, ctx.ruleField);
+  });
+
+  it("仅底图档：高程笔重建不发单、不弃精修、不撤单；规则场＝工作档叠涂改增量且立即落定；侵蚀输入不含涂改", async () => {
+    const { ctx, seen } = mkCtx();
+    const host = createHost(ctx);
+    landWorld(ctx, W({ erode: "base" }), "t1", 3050);
+    host.rebuildIfNeeded();
+    await flush();
+    const work = ctx.ruleField!;
+    await tick(240, 6);
+    await tick(6000);
+    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "前置：精修在屏");
+    const erodes0 = seen.erodes, grid0 = ctx.grid;
+    mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
+    host.rebuild();
+    await tick(500);
+    assert.equal(ctx.grid, grid0, "只动高程＝Grid 实例复用");
+    assert.equal(seen.erodes, erodes0, "没有再发侵蚀单");
+    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "精修仍在屏（叠了涂改增量）");
+    assert.equal(ctx.ruleField!.cols, work.cols, "规则场在工作档几何上");
+    assert.notEqual(ctx.ruleField, work, "规则场＝工作档叠涂改增量（非零）");
+    assert.equal(ruleFieldSig.value, ctx.ruleField, "立即落定，不进演算中");
+    assert.notEqual(erodePhaseSig.value, "work", "胶囊不亮");
+    assert.ok(seen.lastInp!.hovGrid.every(v => v === 0), "侵蚀输入不含高程涂改");
+    assert.equal(seen.field, ctx.elevField); assert.equal(seen.rule, ctx.ruleField);
+  });
+
+  it("在飞的工作档单随重建撤掉：单以 null 收场、不进缓存、胶囊不闪、新单接管落地", async () => {
+    const { ctx, seen } = mkCtx();
+    seen.holdErode = true;
+    const host = createHost(ctx);
+    landWorld(ctx, W(), "t1", 3050);
+    host.rebuildIfNeeded();
+    await flush();
+    assert.equal(seen.erodes, 1, "前置：首单在飞");
+    assert.equal(erodePhaseSig.value, "work");
+    mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
+    seen.holdErode = false;
+    host.rebuild();
+    assert.equal(seen.erodeCancels, 1, "重建即撤在飞的单");
+    await flush();
+    assert.equal(erodePhaseSig.value, "work", "被撤的单以 null 收场不撤胶囊——新单接管");
+    assert.equal(ruleFieldSig.value, null, "落定信号仍在演算中");
+    await tick(100);   // 防抖 60ms 后新单发出并立即应答
+    await tick(240, 6);
+    assert.equal(seen.erodes, 2, "新单发出");
+    assert.equal(ctx.ruleField!.cols, ctx.grid!.cols * 2, "新单落地＝规则场换真");
+    assert.equal(ruleFieldSig.value, ctx.ruleField);
   });
 
   it("落定信号：门开＝演算中 null、工作档落地＝工作档、精修不动它、落笔回 null；门关＝粗格即落定", async () => {
@@ -186,14 +238,19 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.notEqual(ctx.grid, g2, "meta 里进派生场的键变了＝新实例（水面记忆随之作废）");
   });
 
-  it("同一存档、两种精修预算：规则场逐位相同，画面随预算变", async () => {
+  it("同一存档、两种精修预算：规则场逐位相同，画面随预算变；deviceMemory 测不出＝低档", async () => {
+    nav.deviceMemory = 16;
     const hi = mkCtx();
     const { work: hiWork } = await openAndSettle(hi.ctx);
     nav.deviceMemory = 4;   // 低内存档：精修预算减半
     const lo = mkCtx();
     const { work: loWork } = await openAndSettle(lo.ctx);
+    delete nav.deviceMemory;   // Firefox / Safari 读不到：按低档，不按够用算
+    const na = mkCtx();
+    await openAndSettle(na.ctx);
     assert.equal(hi.seen.workCap, lo.seen.workCap, "工作档预算是图种常量");
     assert.notEqual(hi.seen.ultraCap, lo.seen.ultraCap, "精修预算确实随本机内存分档（前置）");
+    assert.equal(na.seen.ultraCap, lo.seen.ultraCap, "测不出内存＝低档预算");
     assert.deepEqual(hiWork.data, loWork.data, "规则场逐位相同＝读数与规则不随机器变");
     assert.notEqual(hi.ctx.elevField!.data[0], lo.ctx.elevField!.data[0], "画面随预算变（精修只进画面）");
   });

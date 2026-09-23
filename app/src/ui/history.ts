@@ -9,11 +9,11 @@ import type { Meta, World } from "../core/types.ts";
 export const UNDO_MAX = 60;
 
 /** meta 里进网格与派生场的每一个输入：网格（bbox/terrain/genSeed/genStyle/gridN/worldModel/mapKind）、
-    高程与水面（relief/outside/elevUnitM）、侵蚀的物理尺度（kmPerDeg/planetRadiusKm）。撤销判「地形没变」与
+    高程与水面（relief/outside/elevUnitM）、侵蚀的物理尺度与档（kmPerDeg/planetRadiusKm/erode）。撤销判「地形没变」与
     host 判「类型网格可复用」同一张单子——漏一个＝改那项设置后派生场沿用旧值（outside 曾漏：撤销「图幅外」后水面仍是 320 m）。 */
 export function terrMetaKey(m: Meta): string {
   return JSON.stringify([m.bbox, m.terrain, m.genSeed, m.genStyle, m.relief, m.outside, m.gridN, m.worldModel, m.mapKind,
-    m.elevUnitM, m.kmPerDeg, m.planetRadiusKm]);
+    m.elevUnitM, m.kmPerDeg, m.planetRadiusKm, m.erode]);
 }
 export function terrKey(w: World): string {
   return terrMetaKey(w.meta || {}) + JSON.stringify([w.terrainOverrides, w.heightOverrides]);

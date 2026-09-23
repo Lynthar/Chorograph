@@ -17,14 +17,15 @@ export type TerrainStyle = "shaded" | "flat";
     paper=图幅外铺宣纸色（战术图恒铺，战略图看 meta.outside；内陆图四周不该是汪洋，图页感；色=出图垫纸色 #d9d2c0 同源）；
     snow=雪线参数（material.snowSpec：气候档基准 + 球面图随纬度；缺省=不落雪）；
     gain=晕渲法线增益（material.shadeGain 按 meta 与 degPerPx 算；缺省 1＝旧式 64 倍夸张，调用点必须传）；
-    dpr=设备像素比：等高线的线宽、挤线门、间曲线浮现门与虚线节距按 CSS 像素锚定（缺省 1＝物理像素；出图放大随 composeFrame 的临时 DPR 同变） */
-export interface TerrainRenderOpts { flat?: boolean; contour?: boolean; wrap?: boolean; cStep?: number; paper?: boolean; snow?: SnowSpec; gain?: number; dpr?: number }
+    dpr=设备像素比：等高线的线宽、挤线门、间曲线浮现门与虚线节距按 CSS 像素锚定（缺省 1＝物理像素；出图放大随 composeFrame 的临时 DPR 同变）；
+    px=可见区物理像素 [宽, 高]（缺省整幅画布）：画布后备存储可大于可见区（host.resize 只增不减），只画左上这一块，viewBB 就是它的取景。 */
+export interface TerrainRenderOpts { flat?: boolean; contour?: boolean; wrap?: boolean; cStep?: number; paper?: boolean; snow?: SnowSpec; gain?: number; dpr?: number; px?: [number, number] }
 
 /** 渲染选项唯一装配点（帧循环 / 高清出图 / 缩略图三处共用）：等高距＝调用方经 contourStepOf 取的那一档（抽象单位）、纸色与雪线按 meta、
-    增益＝shadeGain × 本机「地形立体感」、flat 按底图样式、dpr＝画布当前设备像素比。等高线仍是独立图层，推演底图不替它做主。 */
-export function terrainOpts(meta: Meta, degPerPx: number, layers: Record<string, boolean>, relief: number, style: TerrainStyle, dpr: number, cStep: number): TerrainRenderOpts {
+    增益＝shadeGain × 本机「地形立体感」、flat 按底图样式、dpr＝画布当前设备像素比、px＝可见区物理像素（host.pxSize）。等高线仍是独立图层，推演底图不替它做主。 */
+export function terrainOpts(meta: Meta, degPerPx: number, layers: Record<string, boolean>, relief: number, style: TerrainStyle, dpr: number, px: [number, number], cStep: number): TerrainRenderOpts {
   return { flat: style === "flat", contour: layers.contour, cStep, wrap: meta.worldModel !== "flat",
-    paper: paperOf(meta), snow: snowSpec(meta), gain: shadeGain(meta, degPerPx) * relief, dpr };
+    paper: paperOf(meta), snow: snowSpec(meta), gain: shadeGain(meta, degPerPx) * relief, dpr, px };
 }
 /** 等距的取场与取档：三个渲染调用点与注记都经此，等距才不会「落笔即变、落地又变」，注记也才与线同一档。
     场＝落定的规则场优先（演算中沿用上一份），没有就用当前规则场；坡度按**视口窗**统计（放大进山不再按整图的 75 分位算＝线距不随放大变密），

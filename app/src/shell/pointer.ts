@@ -129,7 +129,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     }
     if (html) {
       tip.innerHTML = html;
-      tip.style.left = Math.min(x + 14, canvas.clientWidth - 200) + "px";
+      tip.style.left = Math.min(x + 14, cssSize()[0] - 200) + "px";
       tip.style.top = (y + 10) + "px";
       tip.style.display = "block";
     } else tip.style.display = "none";
@@ -235,6 +235,24 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       }
     });
   };
+  /* 连笔里的重建按上次耗时节流（地貌笔每笔重建整张网格与基底，河洛图实测 30 ms/move）：逐 move 重建会把指针事件
+     排成队、笔迹越落越远；落笔仍逐 move 进世界（strokePath 的插值点一个不少），只是网格与场至多隔 max(REBUILD_GAP_MS, 2×上次耗时)
+     重建一次，收笔（pointerup / abortDrags）时把欠的那次补上。 */
+  const REBUILD_GAP_MS = 32;
+  let rebuildAt = 0, rebuildMs = 0, rebuildTimer: ReturnType<typeof setTimeout> | undefined;
+  const rebuildNow = (): void => {
+    clearTimeout(rebuildTimer); rebuildTimer = undefined;
+    const t = performance.now();
+    rebuild();
+    rebuildAt = performance.now(); rebuildMs = rebuildAt - t;
+  };
+  const rebuildSoon = (): void => {
+    if (rebuildTimer !== undefined) return;
+    const wait = rebuildAt + Math.max(REBUILD_GAP_MS, 2 * rebuildMs) - performance.now();
+    if (wait <= 0) rebuildNow();
+    else rebuildTimer = setTimeout(rebuildNow, wait);
+  };
+  const flushRebuild = (): void => { if (rebuildTimer !== undefined) rebuildNow(); };
   const terrainPath = (pts: readonly [number, number][]): void => {
     const grid = ctx.grid;
     if (!grid) return;
@@ -254,7 +272,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         : paintTerrainPath(w, grid, yearSig.peek(), path, paintTerrainSig.value, R + 1, brushEraseSig.value, eraNewSig.peek(), axis);
       return changed;
     });
-    if (changed) rebuild();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）；整条路径只重建一次
+    if (changed) rebuildSoon();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）；整条路径只重建一次、连笔按耗时节流
     if (axis !== "eco") return;
     /* 生态轴：改地面之外随笔落/擦真实印章（橡皮＝抹地面同时擦附近印章）。
        ⚠ 扫除是 O(布景数)/次，不能每个插值点都跑——按笔刷半径节流（播撒自带节流，见 ecoStamp）。 */
@@ -780,7 +798,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (paintStroke) { paintStroke = null; endStroke(); return; }
-    if (terrainStroke) { terrainStroke = null; endStroke(); return; }
+    if (terrainStroke) { terrainStroke = null; flushRebuild(); endStroke(); return; }
     if (decorStroke) { decorStroke = null; endStroke(); return; }
     if (multiDrag) {
       const md = multiDrag; multiDrag = null; canvas.style.cursor = "";
@@ -841,7 +859,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   const abortDrags = (): void => {
     if (opStroke) opStroke = null;                    // 保持画线武装态可重画（同 <2 点收笔语义）
     if (paintStroke) { paintStroke = null; endStroke(); }
-    if (terrainStroke) { terrainStroke = null; endStroke(); }
+    if (terrainStroke) { terrainStroke = null; flushRebuild(); endStroke(); }
     if (decorStroke) { decorStroke = null; endStroke(); }
     boxSel = null; multiDrag = null; rangeDrag = null; facingDrag = null; unitDrag = null;
     nodeDrag = null; decorDrag = null; linkDrag = null; clickTrack = null;

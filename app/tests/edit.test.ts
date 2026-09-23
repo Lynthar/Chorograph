@@ -47,7 +47,7 @@ describe("撤销栈", () => {
     assert.strictEqual(terrKey(a), terrKey(mkWorld({ ...a, meta: { ...a.meta, 名称: "改名", contourM: 20, climate: "arid" } })), "显示层设置不影响地形键");
     const c = mkWorld({ terrainOverrides: [{ lon: 1, lat: 2, t: "forest" }] });
     assert.notStrictEqual(terrKey(a), terrKey(c));
-    for (const m of [{ outside: "land" }, { gridN: 300 }, { relief: 0.5 }, { worldModel: "flat" }, { kmPerDeg: 50 }, { elevUnitM: 1000 }, { genSeed: 7 }] as const)
+    for (const m of [{ outside: "land" }, { gridN: 300 }, { relief: 0.5 }, { worldModel: "flat" }, { kmPerDeg: 50 }, { elevUnitM: 1000 }, { genSeed: 7 }, { erode: "base" }] as const)
       assert.notStrictEqual(terrKey(a), terrKey(mkWorld({ ...a, meta: { ...a.meta, ...m } })), JSON.stringify(m));
   });
   it("分域快照：同地形连续步共享地形串——驻留≈1×地形+N×对象，而非 N×整档", () => {

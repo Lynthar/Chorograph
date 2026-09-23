@@ -27,7 +27,7 @@ import type { Meta } from "../core/types.ts";
 
 export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr: PointerView): void {
   const { ov } = ctx;
-  const { cam, viewBB } = host;
+  const { cam, viewBB, cssSize, pxSize } = host;
   const { autosave } = libio;
   const times: number[] = [];
   let fps = "—", lastFtData = "";
@@ -39,7 +39,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
     const rf = ruleFieldSig.value; if (rf) ruleLanded = rf;
     const cstep = layers.terrain ? contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleLanded, ctx.ruleField, viewBB()).v : 0;   // 等距：渲染器与注记同吃一档
-    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, cstep));
+    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, pxSize(), cstep));
     if (world) {
       const octx = ov.getContext("2d")!;
       const selIdForOps = (selSig.value && selSig.value.kind === "node") ? selSig.value.id : null;
@@ -127,7 +127,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   const IDLE_MS = 1000, IDLE_PAINT_MS = 250;
   let sig: unknown[] = [], lastChange = 0, lastPaint = 0;
   const stamp = (): unknown[] => {
-    const v = ctx.view, os = ptr.opStroke, bs = ptr.boxSel, m = ptr.mxy;
+    const v = ctx.view, os = ptr.opStroke, bs = ptr.boxSel, m = ptr.mxy, [cw, ch] = cssSize();
     return [
       // 数据与图层（worldSig 换引用广播；原地改由 editVer 兜、网格重建由 gridVer 兜）
       worldSig.value, editVerSig.value, gridVerSig.value, yearSig.value, layersSig.value,
@@ -138,7 +138,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       brushSizeSig.value, brushEraseSig.value, brushSmoothSig.value,
       routePtsSig.value, routeResSig.value, unitLegsSig.value, visMaskSig.value, ruleFieldSig.value,
       // 外壳可变态（非 signal，只能逐帧比）；elevField/ruleField=侵蚀细化异步换入（引用比较有效；推演底图画规则场）
-      ctx.grid, ctx.elevField, ctx.ruleField, ctx.R, ctx.DPR, ctx.canvas.width, ctx.canvas.height,
+      ctx.grid, ctx.elevField, ctx.ruleField, ctx.R, ctx.DPR, ctx.canvas.width, ctx.canvas.height, cw, ch,
       v.lon0, v.lat0, v.degPerPx,
       // 指针瞬态（画线笔迹/框选/光标位）
       m ? m[0] : -1, m ? m[1] : -1,
@@ -173,11 +173,11 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
        可见文案不再写图名（面包屑相邻已有、画布图幅标题第三遍——2026-07-16 审阅③双写），只报来源；图名细节留 title */
     const srcLabel = !ctx.lib ? "内置示例（只读）" : ctx.source === "folder" ? `文件「${ctx.mapId || "—"}」` : `地图「${(ctx.meta || ({} as Meta)).名称 || "未命名"}」`;
     const srcShort = !ctx.lib ? "内置示例（只读）" : ctx.source === "folder" ? "📁 文件夹图库" : "💾 浏览器图库";
-    /* 地势定形相位胶囊（可读性三件套之一）：命名的、可见的过程不被读成 bug——
+    /* 侵蚀计算相位胶囊（可读性三件套之一）：命名的、可见的过程不被读成 bug——
        落定后的换场自此有预告。告警态（冲突/保存失败）在场时让位，警报优先。 */
     const ep = erodePhaseSig.value;
     const epTxt = saveConflictSig.value || ctx.saveErr ? ""
-      : ep === "work" ? "⛰ 地势定形中… · " : ep === "ultra" ? "⛰ 地势精修中… · " : ep === "done" ? "✓ 地势已定形 · " : "";
+      : ep === "work" ? "⛰ 侵蚀计算中… · " : ep === "ultra" ? "⛰ 侵蚀精修中… · " : ep === "done" ? "✓ 侵蚀已完成 · " : "";
     /* ⚠ 冲突自成一档，不能并进「自动保存失败」那句——那句尾巴写着「随下次改动重试」，
        而冲突态恰恰**不会**重试（守卫短路着，等用户在弹层里决断），并进去就是在说假话。 */
     const ftTxt = epTxt + (readOnlySig.value

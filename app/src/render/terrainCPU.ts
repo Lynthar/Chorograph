@@ -240,7 +240,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
      格边像素会取到邻格的颜色；逐像素与 GL 同式取样（x/pxpd、y/pxpdY、经度折回）才逐格一致。
      所在格类型平色 + 等高线；不扭曲、不晕渲、不描岸线（水陆界就是格边）；图幅外＝深海或纸色。 */
   function renderFlat(viewBB: BBox, opts: TerrainRenderOpts): void {
-    const g = grid!, gb = g.bb, W = canvas.width, H = canvas.height;
+    const g = grid!, gb = g.bb, [W, H] = opts.px ?? [canvas.width, canvas.height];
     const pxpd = W / (viewBB.lonMax - viewBB.lonMin), pxpdY = H / (viewBB.latMax - viewBB.latMin), cx = (gb.lonMin + gb.lonMax) / 2;
     const lons = new Float64Array(W), cols = new Int32Array(W);   // 每列经度（折回后）与格列；-1＝图幅外
     for (let x = 0; x < W; x++) {
@@ -437,7 +437,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
       if (!grid) return;
       if (opts.flat) { renderFlat(viewBB, opts); return; }
-      const pxpd = canvas.width / (viewBB.lonMax - viewBB.lonMin);
+      const [W, H] = opts.px ?? [canvas.width, canvas.height];   // 可见区（画布可更大，只画左上这一块）
+      const pxpd = W / (viewBB.lonMax - viewBB.lonMin);
       // 球面环绕：把视口平移 k×360° 折回网格所在域做瓦片判定/重建，贴图时再按拷贝偏移回来
       const k = opts.wrap
         ? 360 * Math.round(((grid.bb.lonMin + grid.bb.lonMax) / 2 - (viewBB.lonMin + viewBB.lonMax) / 2) / 360)
@@ -455,14 +456,14 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       // 底色=深水（视口越出网格范围的部分；战术图按 paper 裁决铺宣纸色），再按世界拷贝贴瓦片。
       // 纵向用独立 pxpdY：viewBB 经度含 cos(lat0) 校正、纬度不含，贴图须各向异性拉伸
       //（对齐旧 drawTile 经 project 求角点的行为；瓦片内部仍为方度像素，交给 drawImage 缩放）。
-      const pxpdY = canvas.height / (viewBB.latMax - viewBB.latMin);
+      const pxpdY = H / (viewBB.latMax - viewBB.latMin);
       ctx.fillStyle = opts.paper ? "#d9d2c0" : "rgb(40,90,132)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, W, H);
       if (tile) {
         const py0 = (viewBB.latMax - tile.bb.latMax) * pxpdY, py1 = (viewBB.latMax - tile.bb.latMin) * pxpdY;
         for (const s of (opts.wrap ? [-360, 0, 360] : [0])) {
           const x0 = (tile.bb.lonMin - k + s - viewBB.lonMin) * pxpd, x1 = (tile.bb.lonMax - k + s - viewBB.lonMin) * pxpd;
-          if (x1 <= 0 || x0 >= canvas.width) continue;
+          if (x1 <= 0 || x0 >= W) continue;
           ctx.drawImage(tile.cv, x0, py0, x1 - x0, py1 - py0);
         }
       }
