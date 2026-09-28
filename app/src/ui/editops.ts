@@ -2,6 +2,7 @@
    语义对齐旧实现：删地点连带清理其连线与派系 territory 引用；新对象 id 走 core/util.newId；
    数据经度一律折回本初域（平面世界不折）。撤销/广播由调用方经 state.mutateWorld 走管线。 */
 import { wrapLon } from "../core/geo.ts";
+import { DH_MAX_M, elevUnitM } from "../core/elev.ts";
 import { newId, parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
 import { TRACK_OK, isModern, setUnitPoint, unitKind, unitPos, type TrackKey } from "../core/units.ts";
@@ -255,7 +256,7 @@ export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: numbe
 export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
   path: readonly (readonly [number, number])[],
   t: string, size: number, erase: boolean, era?: EraNew | null,
-  axis: "both" | "lf" | "eco" = "both"): boolean {
+  axis: "both" | "lf" | "eco" = "both", wiped?: { n: number }): boolean {   // wiped＝跨调用累加本笔清掉的手雕高程条数（收笔回执用）
   const { bb, step, cells } = grid;
   const recStep = recordBlockStep(w, step);
   const R = size - 1, prec = step >= 0.05 ? 2 : 4, tol = step * 0.4;
@@ -312,6 +313,7 @@ export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
   // 与旧逐格 filter+push 的产物同序：存活者按原序 + 新涂按盘序追加（新涂中心互异＝不会互相命中）
   w.terrainOverrides = deadT.size || added.length ? (deadT.size ? ovs.filter(o => !deadT.has(o)) : ovs).concat(added) : ovs;
   if (deadH.size) w.heightOverrides = hovs!.filter(o => !deadH.has(o));   // 只在真移除时赋回（缺键不落盘之约）
+  if (wiped) wiped.n += deadH.size;
   return changed;
 }
 
@@ -338,6 +340,7 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
   const es = era && era.on && era.since != null && isFinite(era.since) ? era.since : null;
   const eu = era && era.on && era.until != null && isFinite(era.until) ? era.until : null;
   const bkt = bucketByCell(ovs, bb, step);   // 逐 dab 索引（预筛，候选仍过全谓词；桶内保数组序＝find 首个命中）
+  const cap = DH_MAX_M / elevUnitM(w.meta);   // 写端与读端 dhOf 同一上限：笔下存不出读端会钳掉的值
   const dead = new Set<HeightOverride>();
   const seen = new Set<number>();
   let changed = false;
@@ -354,7 +357,9 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
       const ex = (bkt.get(k) || []).find(o => !dead.has(o) && Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
         && (+(o.step as number) || step) <= step * 1.001 + 5.1e-5 && (o.since ?? null) === es && (o.until ?? null) === eu);   // 尺寸判据同 paintTerrainPath 的 hit：绝对项吸收旧档 4 位量化
       if (ex) {
-        ex.dh = +(ex.dh + dh).toFixed(6);
+        const nd = Math.max(-cap, Math.min(cap, +(ex.dh + dh).toFixed(6)));
+        if (nd === ex.dh) continue;               // 已到幅度上限：这一格不再叠，也不记改动
+        ex.dh = nd;
         if (recStep) ex.step = +step.toFixed(7);   // 顺手把旧章的量化 step 校直——不然它在重建端仍按粗块解读
         if (Math.abs(ex.dh) < 1e-6) dead.add(ex);
       } else {
@@ -673,8 +678,8 @@ export function addPhaseAt(w: World, T: number): Phase | null {
   const list = Array.isArray(m.phases) ? m.phases : (m.phases = []);
   if (list.some(p => p && isFinite(+p.t) && Math.abs(+p.t - T) < 1e-9)) return null;
   const p: Phase = { t: +T, 名称: `相位 ${list.length + 1}` };
-  list.push(p);
-  list.sort((a, b) => (+a.t || 0) - (+b.t || 0));
+  const tOf = (q: Phase | null) => (q && +q.t) || 0;   // 成员可为 null（手编档）；新表排好再赋值＝中途抛错不留半截
+  m.phases = [...list, p].sort((a, b) => tOf(a) - tOf(b));
   return p;
 }
 

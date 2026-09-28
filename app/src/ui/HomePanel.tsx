@@ -32,7 +32,7 @@ export function HomePanel() {
           <button type="button" class="tbtn" title="以内置示例大陆新开一张地图" onClick={() => acts?.newFromSample()}>📜 从内置示例新建</button>
           <button type="button" class="tbtn" title="自定义架空历法（月名/月长/每日时数）并命名存下，新建地图时可直接选用" onClick={() => { calOverlaySig.value = true; }}>📅 历法</button>
           {v.fsSupported && v.source !== "folder" && (
-            <button type="button" class="tbtn" title="链接一个本地文件夹作为图库，直接读写其中的 .json（需 Edge/Chrome 经 localhost 或 https）" onClick={() => acts?.linkFolder()}>📁 链接文件夹</button>
+            <button type="button" class="tbtn" title="链接一个本地文件夹作为图库，直接读写其中的 .json（需浏览器支持读写本地文件夹，如 Edge / Chrome）" onClick={() => acts?.linkFolder()}>📁 链接文件夹</button>
           )}
           {/* GeoJSON 一次只收一个：字段映射弹层是逐文件一份，多选会排出一串弹层 */}
           <input ref={geoRef} type="file" accept=".geojson,.json,application/geo+json,application/json" style={{ display: "none" }}
@@ -57,7 +57,7 @@ export function HomePanel() {
               <button type="button" class="tbtn" title="改链接到另一个文件夹" onClick={() => acts?.linkFolder()}>📁 更换文件夹</button></>
             : <>当前图库：<b>💾 浏览器图库</b>{v.fsSupported
               ? <span class="sub"> — 也可「📁 链接文件夹」把地图存成真正的 .json 文件，随时用其它软件/网盘管理</span>
-              : <span class="sub"> —「链接文件夹」需用 Edge/Chrome 经 localhost 或 https 打开（当前环境不支持）</span>}</>}
+              : <span class="sub"> —「链接文件夹」需要浏览器支持读写本地文件夹（当前环境不支持；Edge / Chrome 可用）</span>}</>}
         </div>
         <div class="hm-grid">
           {v.entries.map(m => {

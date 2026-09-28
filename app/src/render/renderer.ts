@@ -63,7 +63,8 @@ export interface TerrainRenderer {
       精修档也在此；缺省=按 ELEV[类型] 示意常数合成粗格，旧行为）。
       rule=规则场（工作档）：两种底图的等高线与推演底图的高程都取它＝与光标读数同源；缺省＝field。
       wsurf=每格水面高程（core/elev.waterSurface，海 0／内陆湖在岸线高度）：
-      水陆判据与深浅色都以它为基准，必传——漏了内陆湖会静默沉回海平面。 */
+      水陆判据与深浅色都以它为基准，必传——漏了内陆湖会静默沉回海平面。
+      传入的数组一律当不可变快照：内容变了就换新数组——CPU 渲染器按引用判「这份没变」、只补画变了的那片，原地改写的内容不会上屏。 */
   uploadGrid(grid: Grid, wsurf: Float32Array, field?: ElevField, rule?: ElevField): void;
   render(viewBB: BBox, opts?: TerrainRenderOpts): void;
   /** 单帧可渲染的最大画布边长 px（高清出图按此钳倍数；超限 GL 会静默给黑帧或裁切） */

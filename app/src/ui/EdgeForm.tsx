@@ -39,23 +39,23 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
 
   return (
     <div ref={box} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-      <div class="frow"><label>名称</label>
+      <div class="frow"><label for="ee_name">名称</label>
         <input class="fld" id="ee_name" defaultValue={e.名称 || ""} placeholder="如 梓泽江" /></div>
       <div class="frow"><label>存在 · 起 / 止（留空＝远古 / 至今）</label>
         <div class="fx2">
-          <input class="fld" id="ee_since" type={eraTy(cal, tac)} placeholder={`起(${eraPh(cal, tac)})`} defaultValue={e.since != null ? fmtWhenForm(cal, tac, e.since) : ""} />
-          <input class="fld" id="ee_until" type={eraTy(cal, tac)} placeholder={`止(${eraPh(cal, tac)})`} defaultValue={e.until != null ? fmtWhenForm(cal, tac, e.until) : ""} />
+          <input class="fld" id="ee_since" aria-label="存在 · 起" type={eraTy(cal, tac)} placeholder={`起(${eraPh(cal, tac)})`} defaultValue={e.since != null ? fmtWhenForm(cal, tac, e.since) : ""} />
+          <input class="fld" id="ee_until" aria-label="存在 · 止" type={eraTy(cal, tac)} placeholder={`止(${eraPh(cal, tac)})`} defaultValue={e.until != null ? fmtWhenForm(cal, tac, e.until) : ""} />
         </div></div>
-      {e.type === "river" && <div class="frow"><label>水面宽 米（留空＝示意细线；放大后按真实尺度显宽）</label>
+      {e.type === "river" && <div class="frow"><label for="ee_width">水面宽 米（留空＝示意细线；放大后按真实尺度显宽）</label>
         <input class="fld" id="ee_width" type="number" min={0} step={10}
           placeholder="如 200" defaultValue={e.widthM != null ? String(e.widthM) : ""} /></div>}
-      {e.type === "wall" && <div class="frow"><label>齿面（缺省在画线方向左侧；岸线惯例＝齿朝水）</label>
-        <div class="chips"><button type="button" class="ch tr" id="ee_rev" aria-pressed={e.reverse ? "true" : "false"}
+      {e.type === "wall" && <div class="frow"><label id="ee_rev_lab">齿面（缺省在画线方向左侧；岸线惯例＝齿朝水）</label>
+        <div class="chips" role="group" aria-labelledby="ee_rev_lab"><button type="button" class="ch tr" id="ee_rev" aria-pressed={e.reverse ? "true" : "false"}
           onClick={ev => { const b = ev.currentTarget as HTMLButtonElement; b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true"); }}>翻转齿面</button></div></div>}
       <CertaintyChips id="ee_cert" value={typeof e.certainty === "string" ? e.certainty : ""} />
-      <div class="frow"><label>属性（每行「键：值」，值留空的行不保存）</label>
+      <div class="frow"><label for="ee_kv">属性（每行「键：值」，值留空的行不保存）</label>
         <textarea class="fld" id="ee_kv" rows={7} placeholder={e.type === "river" ? "河流建议：宽度/深度/流量/水质/丰水期/枯水期" : e.type === "wall" ? "工事建议：形制/高度/守方/存废" : "键：值"} defaultValue={kvText} /></div>
-      <div class="frow"><label>说明</label>
+      <div class="frow"><label for="ee_note">说明</label>
         <textarea class="fld" id="ee_note" rows={2} placeholder="说明" defaultValue={typeof e.note === "string" ? e.note : ""} /></div>
       <div class="in-actions">
         <button class="bt zhu tr" onClick={save}>保存修改</button>

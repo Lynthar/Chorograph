@@ -5,7 +5,7 @@ import { project, projectSeq, unproject, visibleWorldCopies } from "../core/proj
 import { EDGE_STYLE } from "../core/constants.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { hexA, errText } from "../core/util.ts";
-import { drawOverlay, drawOp } from "../render/overlay.ts";
+import { drawOverlay, drawOp, type LoopBudget } from "../render/overlay.ts";
 import type { ElevField } from "../core/elev.ts";
 import { contourStepOf, terrainOpts } from "../render/renderer.ts";
 import { drawAnalysis } from "../render/analysis.ts";
@@ -32,10 +32,16 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   const times: number[] = [];
   let fps = "—", lastFtData = "";
   let ruleLanded: ElevField | null = null;   // 标高点与等高线注记读的场：落定的规则场；演算中（sig 为 null）沿用上一份
+  /* 涂域环首算每帧限时：至少 TERR_FRAME_MS（低于 50 ms 长任务线），本帧其余绘制更慢时按它放大——首算最多占一帧的一半，
+     否则边界极繁的图每帧重画已算的层就要几百 ms、每帧只进一层，画全要拖成一次算完的数倍。
+     有层没算完就 terrPass+1，它进指纹＝下一帧接着画；常规地图一帧算得完，与不限时逐位同 */
+  const TERR_FRAME_MS = 40;
+  let terrPass = 0, terrMs = TERR_FRAME_MS;
   /* 画一帧（地形+叠加层+工具预览）：rAF 循环逐帧调用；host.resize 设完画布尺寸后同步补画共用——
      设 canvas 宽高即清屏，若等下一帧 rAF 补画，空白帧会先被合成上屏（检查器滑开/收起的 0.22s 过渡
      经 ResizeObserver 逐帧触发 resize，空白帧与画面帧交替＝整屏闪烁）。 */
-  const paint = (): void => {
+  const paint = (full = false): void => {
+    const tp = performance.now();
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
     const rf = ruleFieldSig.value; if (rf) ruleLanded = rf;
     const cstep = layers.terrain ? contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleLanded, ctx.ruleField, viewBB()).v : 0;   // 等距：渲染器与注记同吃一档
@@ -49,7 +55,10 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       const edgeSelIdx = (selSig.value && selSig.value.kind === "edge") ? selSig.value.idx : null;
       const decorSelId = (selSig.value && selSig.value.kind === "decor") ? selSig.value.id : null;
       const decorMultiIds = (selSig.value && selSig.value.kind === "multi") ? selSig.value.decorIds || null : null;
-      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, visMasks: visMaskSig.value, detect: detectSig.value, ruleField: ruleLanded, contourStep: cstep, smooth: brushSmoothSig.value, edgeSelIdx, editing: modeSig.value === "edit", decorSelId, decorMultiIds });
+      const loopBudget: LoopBudget = { ms: full ? Infinity : terrMs, spent: 0, done: 0, skipped: 0 };
+      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, visMasks: visMaskSig.value, detect: detectSig.value, ruleField: ruleLanded, contourStep: cstep, smooth: brushSmoothSig.value, edgeSelIdx, editing: modeSig.value === "edit", decorSelId, decorMultiIds, loopBudget });
+      if (loopBudget.skipped) terrPass++;
+      terrMs = Math.max(TERR_FRAME_MS, performance.now() - tp - loopBudget.spent);
       const m = modeSig.value;
       if (m === "measure" || m === "route") drawAnalysis(octx, cam(), ctx.meta, m, routePtsSig.value, routeResSig.value, ctx.DPR);
       if (m === "edit" && editSubSig.value === "paint") {
@@ -148,7 +157,8 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       autosave.pending, ctx.savedAt, ctx.saveErr, ctx.bootNote, ctx.mapId, ctx.source, ctx.lib,
       saveConflictSig.value, erodePhaseSig.value, readOnlySig.value,
       uiPrefsSig.value.relief,   // 地形立体感（本机偏好）进晕渲增益：改了必须重画
-      terrainStyleSig.value      // 底图样式（观感/推演）
+      terrainStyleSig.value,     // 底图样式（观感/推演）
+      terrPass                   // 涂域环分帧首算未完（见 TERR_FRAME_MS）
     ];
   };
   const changed = (a: unknown[], b: unknown[]): boolean => a.length !== b.length || a.some((x, i) => x !== b[i]);

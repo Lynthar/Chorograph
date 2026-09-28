@@ -8,6 +8,7 @@ import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEve
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
+import { DH_MAX_M } from "../src/core/elev.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive, setTerrainStyle, terrainStyleSig,
   modeSig, paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, railToolOf, readOnlySig, redoWorld, revealLayersFor, selMembers, selSig, setRailTool, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
@@ -324,6 +325,10 @@ describe("编辑操作内核", () => {
     w4.heightOverrides![0].since = 3100;                                    // 笔下雕痕改成未来时段
     paintTerrainAt(w4, g, 3000, 101.5, 31.5, "plain", 1, false, null, "lf");
     assert.strictEqual(w4.heightOverrides!.length, 2, "当刻不生效的雕痕不清（时段层语义）");
+    const acc = { n: 0 }, w5 = mk(), w6 = mk();
+    paintTerrainPath(w5, g, 3000, [[101.5, 31.5], [103.5, 33.5]], "plain", 1, false, null, "lf", acc);
+    paintTerrainPath(w6, g, 3000, [[101.5, 31.5]], "plain/forest", 1, false, null, "eco", acc);
+    assert.strictEqual(acc.n, 2, "收笔回执的计数＝本笔各次调用真清掉的雕痕之和（生态轴不计）");
   });
   it("涂改块尺寸 ov.step：格细于 1° 就记（对齐旧 paintAt·存档格式兼容）", async () => {
     const { paintTerrainAt } = await import("../src/ui/editops.ts");
@@ -433,6 +438,19 @@ describe("signals 变更管线", () => {
     assert.strictEqual(canUndoSig.value, false, "抛异常不留可撤销步（幽灵快照已回收）");
     assert.strictEqual(worldSig.value, ref0, "未广播、不换引用");
     assert.strictEqual(editVerSig.value, ev0, "未递增 editVer");
+  });
+  it("mutateWorld：fn 改了一半再抛＝世界回滚到改前、不留撤销步、异常照抛", () => {
+    setWorldState(mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }] }));
+    const before = JSON.parse(JSON.stringify(worldSig.value));
+    assert.throws(() => mutateWorld(w => { w.nodes[0].lon = 99; w.nodes.push({ id: "b", type: "city", lon: 0, lat: 0 }); throw new Error("boom"); }), /boom/);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(worldSig.value)), before);
+    assert.strictEqual(canUndoSig.value, false);
+  });
+  it("相位表带 null 成员（手编档）：新增相位照常排序，不抛也不丢已有项", () => {
+    setWorldState(mkWorld());
+    mutateWorld(w => { w.meta.phases = [null as never, { t: 5 }]; });
+    mutateWorld(w => { addPhaseAt(w, 3); });
+    assert.deepStrictEqual(worldSig.value!.meta.phases!.map(p => p && p.t), [null, 3, 5]);
   });
   it("undo/redo：世界回滚、选中清空、地形变化才动 gridVer", () => {
     setWorldState(mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }] }));
@@ -1181,6 +1199,20 @@ describe("子工具自动开图层（隐藏层上放置＝幽灵编辑，切入�
     applyPreset("地理");
     assert.strictEqual(terrainStyleSig.peek(), "flat", "预设只管图层，不改底图样式");
     setTerrainStyle("shaded"); layersSig.value = s0;
+  });
+});
+
+describe("高程笔的幅度上限", () => {
+  it("累加到 ±DH_MAX_M 即停：再涂不改值、不记改动（不留空撤销步）", () => {
+    const M = { worldModel: "sphere", terrain: "plain", gridN: 4, elevUnitM: 2000, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;
+    const w = mkWorld({ meta: M });
+    const grid = buildGridCells(M, [], 0);
+    const cap = DH_MAX_M / 2000;
+    assert.ok(paintHeightAt(w, grid, 101.5, 31.5, cap - 0.5, 1, null));
+    assert.ok(paintHeightAt(w, grid, 101.5, 31.5, 1, 1, null), "越过上限的那一笔钳到上限");
+    assert.strictEqual(w.heightOverrides![0].dh, cap);
+    assert.strictEqual(paintHeightAt(w, grid, 101.5, 31.5, 1, 1, null), false, "已在上限：无改动");
+    assert.ok(paintHeightAt(w, grid, 101.5, 31.5, -1, 1, null), "反向照常");
   });
 });
 

@@ -1,7 +1,7 @@
 /* UI 挂载器：工具轨/上下文抽屉/检查器渲染进 .main 的透明挂点（.mount，
    display:contents 使组件根节点直接参与弹性布局）；抽屉重开页签在画布区 #cvTabMount；
    时间坞组件直渲 footer#dock、搜索进顶栏 #searchWrap；悬浮笔刷框/作战线框仍在画布容器；
-   开始界面（图库）/帮助/设置弹层/开图加载舞台为全屏覆盖层挂点。 */
+   开始界面（图库）/帮助/设置弹层/开图加载舞台为全屏覆盖层挂点。每个挂点包一层 Guard：一栏出错只换掉这一栏（提示条 + 重试）。 */
 import { render } from "preact";
 import { ToolRail } from "./ToolRail.tsx";
 import { Drawer, DrawerTab } from "./Drawer.tsx";
@@ -18,30 +18,31 @@ import { SettingsOverlay } from "./SettingsOverlay.tsx";
 import { SaveConflictOverlay } from "./SaveConflictOverlay.tsx";
 import { CalendarOverlay } from "./CalendarOverlay.tsx";
 import { GeoImportOverlay } from "./GeoImportOverlay.tsx";
+import { Guard } from "./Guard.tsx";
 
 export function mountUI(): void {
   const rail = document.getElementById("railMount");
-  if (rail) render(<ToolRail />, rail);
+  if (rail) render(<Guard name="工具轨"><ToolRail /></Guard>, rail);
   const dw = document.getElementById("drawerMount");
-  if (dw) render(<Drawer />, dw);
+  if (dw) render(<Guard name="抽屉"><Drawer /></Guard>, dw);
   const insp = document.getElementById("inspMount");
-  if (insp) render(<Inspector />, insp);
+  if (insp) render(<Guard name="检查器"><Inspector /></Guard>, insp);
   const tab = document.getElementById("cvTabMount");
-  if (tab) render(<DrawerTab />, tab);
+  if (tab) render(<Guard name="抽屉页签"><DrawerTab /></Guard>, tab);
   const tb = document.getElementById("dock");
-  if (tb) render(<TimeDock />, tb);
+  if (tb) render(<Guard name="时间轴"><TimeDock /></Guard>, tb);
   const ls = document.getElementById("stageMount");
-  if (ls) render(<LoadStage />, ls);
+  if (ls) render(<Guard name="开图进度"><LoadStage /></Guard>, ls);
   const sw = document.getElementById("searchWrap");
-  if (sw) render(<SearchBox />, sw);
+  if (sw) render(<Guard name="搜索"><SearchBox /></Guard>, sw);
   const bm = document.getElementById("fpropsMount");
-  if (bm) render(<FpropsBar />, bm);
+  if (bm) render(<Guard name="笔刷属性条"><FpropsBar /></Guard>, bm);
   const om = document.getElementById("opMount");
-  if (om) render(<OpBox />, om);
+  if (om) render(<Guard name="作战线框"><OpBox /></Guard>, om);
   const tm = document.getElementById("toastMount");
   if (tm) render(<Toast />, tm);
   const hm = document.getElementById("homeMount");
-  if (hm) render(<HomePanel />, hm);
+  if (hm) render(<Guard name="图库"><HomePanel /></Guard>, hm);
   const ovl = document.getElementById("ovlMount");
-  if (ovl) render(<><HelpOverlay /><SettingsOverlay /><SaveConflictOverlay /><CalendarOverlay /><GeoImportOverlay /></>, ovl);
+  if (ovl) render(<><Guard name="帮助"><HelpOverlay /></Guard><Guard name="设置"><SettingsOverlay /></Guard><Guard name="冲突处置"><SaveConflictOverlay /></Guard><Guard name="历法"><CalendarOverlay /></Guard><Guard name="GeoJSON 导入"><GeoImportOverlay /></Guard></>, ovl);
 }

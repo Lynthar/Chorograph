@@ -5,13 +5,15 @@
    · 战术图：年份/存在时段用「年-月-日」文本（parseYMD/fmtYMD），另有视域栏（火力逐圈 / 视野 / 现代图雷达）。
    输入用非受控 + key=节点id：换选中即重置，重渲不丢输入。 */
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import type { Ref } from "preact";
 import { ARC_DEG, EVENT_TMPL, EVENT_TYPES, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, RADAR_M, RADAR_TGT_M, nodeCatOf } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm, fmtWhenRange } from "../core/calendar.ts";
 import { isModern, nodeEyeM } from "../core/units.ts";
 import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, noteFormWarn, opDrawSig, parseWhenInput, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, warnNumInput, worldSig, yearSig } from "./state.ts";
 import { addEventNear, addOwner, applyNodeForm, changeNodeType, draftOfRange, moveNode, removeOwner, updateOwner, type NodeRangeDraft } from "./editops.ts";
 import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
-import type { WorldNode } from "../core/types.ts";
+import { ERODE_MODES, erodeMode, type ErodeMode } from "../core/erode.ts";
+import type { Meta, WorldNode } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 
 /** 战役事件点的作战线列表 + 画线按钮（对齐旧 nodeEditForm 作战线段）。
@@ -60,15 +62,15 @@ function OwnersEditor({ n }: { n: WorldNode }) {
       <div class="sub" style={{ marginTop: "4px" }}>归属沿革（分时段归属，覆盖上方固定归属；留空起/止=远古/至今）</div>
       {owners.map((o, i) => (
         <div key={n.id + ":o" + i}>
-          <select class="fld" value={o.faction || ""} onChange={e => mut(x => updateOwner(x, i, { faction: (e.currentTarget as HTMLSelectElement).value }))}>
+          <select class="fld" value={o.faction || ""} aria-label={`归属沿革 ${i + 1} · 派系`} onChange={e => mut(x => updateOwner(x, i, { faction: (e.currentTarget as HTMLSelectElement).value }))}>
             <option value="">中立/自由</option>
             {world.factions.map(f => <option key={f.id} value={f.id}>{f.名称 || f.id}</option>)}
           </select>
           <div class="seg">
-            <input class="fld" type={eraTy(cal, tac)} style={{ width: "40%" }} placeholder={`起(${eraPh(cal, tac)})`}
+            <input class="fld" type={eraTy(cal, tac)} style={{ width: "40%" }} placeholder={`起(${eraPh(cal, tac)})`} aria-label={`归属沿革 ${i + 1} · 起`}
               defaultValue={o.since != null ? fmtWhenForm(cal, tac, o.since) : ""} key={n.id + ":os" + i + ":" + (o.since ?? "")}
               onChange={e => mut(x => updateOwner(x, i, { since: tv((e.currentTarget as HTMLInputElement).value) }))} />
-            <input class="fld" type={eraTy(cal, tac)} style={{ width: "40%" }} placeholder={`止(${eraPh(cal, tac)})`}
+            <input class="fld" type={eraTy(cal, tac)} style={{ width: "40%" }} placeholder={`止(${eraPh(cal, tac)})`} aria-label={`归属沿革 ${i + 1} · 止`}
               defaultValue={o.until != null ? fmtWhenForm(cal, tac, o.until) : ""} key={n.id + ":ou" + i + ":" + (o.until ?? "")}
               onChange={e => mut(x => updateOwner(x, i, { until: tv((e.currentTarget as HTMLInputElement).value) }))} />
             <button type="button" class="link" style={{ color: "var(--q-zhu)", alignSelf: "center" }} title="删除此段" onClick={() => mut(x => removeOwner(x, i))}>✕</button>
@@ -198,18 +200,18 @@ export function NodeForm({ n }: { n: WorldNode }) {
     if (id) selSig.value = { kind: "node", id };   // 落默认名并选中→表单改名（去 prompt）
   };
   const genTac = () => {
-    tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(val("ef_tacdia") ?? "") || 60) };
+    tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(val("ef_tacdia") ?? "") || 60), erode: readTacErode(box.current?.querySelector<HTMLSelectElement>("#ef_tacerode")) };
   };
 
   return (
     <div ref={box} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-      <div class="frow"><label>{isLabel ? "标注文本" : "名称"}</label>
+      <div class="frow"><label for="ef_name">{isLabel ? "标注文本" : "名称"}</label>
         {isLabel
           ? <textarea class="fld" id="ef_name" rows={3} defaultValue={n.名称 || ""}
               placeholder="可多行；风向用箭头字符如 ↗；不确定加「？」「（一说…）」" />
           : <input class="fld" id="ef_name" defaultValue={n.名称 || ""} placeholder="地点名称" />}</div>
       {!isEv && !isLabel && (
-        <div class="frow"><label>类型 · 改选立即生效</label>
+        <div class="frow"><label for="ef_type">类型 · 改选立即生效</label>
           {/* 两级（2026-07-30）：类别 chips + 只列本类的下拉。换类别＝换成该类默认型（各记一步撤销）。
               未知/旧类型（nodeCatOf 取不到）回退全量下拉，免得归不了类的地点被锁死改不了型。 */}
           {cat && (
@@ -230,12 +232,12 @@ export function NodeForm({ n }: { n: WorldNode }) {
       <div class="frow"><label>经纬度°（东经 / 北纬为正，±85）</label>
         <div class="fx2">
           <input class="fld" id="ef_lon" type="number" step={0.0001} key={n.id + ":lon" + n.lon}
-            defaultValue={String(n.lon)} placeholder="经度°" title="经度（东经为正）——按坐标精确落点；拖动地点亦可" />
+            defaultValue={String(n.lon)} placeholder="经度°" aria-label="经度°" title="经度（东经为正）——按坐标精确落点；拖动地点亦可" />
           <input class="fld" id="ef_lat" type="number" step={0.0001} key={n.id + ":lat" + n.lat}
-            defaultValue={String(n.lat)} placeholder="纬度°" title="纬度（北纬为正，±85）" />
+            defaultValue={String(n.lat)} placeholder="纬度°" aria-label="纬度°" title="纬度（北纬为正，±85）" />
         </div></div>
       {isEv && (
-        <div class="frow"><label>事件子类型（仅战役带 对阵/结果/作战线）</label>
+        <div class="frow"><label for="ef_evtype">事件子类型（仅战役带 对阵/结果/作战线）</label>
           <select class="fld" id="ef_evtype" title="事件子类型：只有战役带 对阵/结果/作战线" value={evt}
             onChange={e => {
               const v = (e.currentTarget as HTMLSelectElement).value;
@@ -245,7 +247,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
             {Object.keys(EVENT_TYPES).map(k => <option key={k} value={k}>{EVENT_TYPES[k].sym} {EVENT_TYPES[k].名}</option>)}
           </select></div>
       )}
-      {isEv && <div class="frow"><label>{tac ? "发生日" : "发生年份"} · 时间轴据此定位</label>
+      {isEv && <div class="frow"><label for="ef_year">{tac ? "发生日" : "发生年份"} · 时间轴据此定位</label>
         <input class="fld" id="ef_year" type={eraTy(cal, tac)} key={n.id + ":y" + (tac ? "t" : "n")}
           placeholder={tac
             ? (cal.kind === "earth" ? "年-月-日，可带时刻 13:30；前N=公元前" : "年-月-日，如 3107-3-7")
@@ -254,25 +256,26 @@ export function NodeForm({ n }: { n: WorldNode }) {
       {isEv && (n.tacmap || !tac) && (
         <div class="seg" style={{ alignItems: "center" }}>
           <button type="button" class="tbtn" title={n.tacmap ? "重新生成一张战术图并改链到它（旧图保留在图库）" : "以此事件为中心生成小范围战场图（地形/地点/派系按当年快照继承）"} onClick={genTac}>{n.tacmap ? "⟳ 重新生成战术图" : "⚔ 生成战术图"}</button>
-          <input class="fld" id="ef_tacdia" type="number" min={20} max={140} step={10} defaultValue="60" style={{ width: "5em" }} title="战场直径 km——生成范围（默认 60,钳 20~140）" />
+          <input class="fld" id="ef_tacdia" type="number" min={20} max={140} step={10} defaultValue="60" style={{ width: "5em" }} title="战场直径 km——生成范围（默认 60,钳 20~140）" aria-label="战场直径 km" />
           <span class="sub">km 直径</span>
+          <TacErodeSelect id="ef_tacerode" meta={worldSig.value?.meta} />
         </div>
       )}
-      {isBattle && <div class="frow"><label>对阵</label>
+      {isBattle && <div class="frow"><label for="ef_sides">对阵</label>
         <input class="fld" id="ef_sides" defaultValue={typeof n.sides === "string" ? n.sides : ""} placeholder="如 起义军 vs 帝国" /></div>}
-      {isBattle && <div class="frow"><label>结果</label>
+      {isBattle && <div class="frow"><label for="ef_result">结果</label>
         <input class="fld" id="ef_result" defaultValue={typeof n.result === "string" ? n.result : ""} placeholder="如 官军克偃师" /></div>}
       {isBattle && <OpList n={n} />}
       {isLabel && (
         <div class="frow"><label>字号 · 屏幕锚定</label>
           <div class="fx2">
-            <select class="fld" id="ef_fs" title="字号（图面文字大小）">
+            <select class="fld" id="ef_fs" aria-label="字号" title="字号（图面文字大小）">
               {![11, 13, 17].includes(+fsCur) && <option value={fsCur} selected>{fsCur}px（自定义）</option>}
               <option value="11" selected={+fsCur === 11}>小注 11px</option>
               <option value="13" selected={+fsCur === 13}>正文 13px</option>
               <option value="17" selected={+fsCur === 17}>标题 17px</option>
             </select>
-            <select class="fld" id="ef_pin" title="屏幕角固定：帧标题/图注块不随地图平移，同角多条按时段轮换；固定后画布不可点选，经搜索或撤销管理">
+            <select class="fld" id="ef_pin" aria-label="屏幕锚定" title="屏幕角固定：帧标题/图注块不随地图平移，同角多条按时段轮换；固定后画布不可点选，经搜索或撤销管理">
               <option value="" selected={!n.pin}>📍 地图锚定</option>
               <option value="nw" selected={n.pin === "nw"}>⌜ 左上角固定</option>
               <option value="ne" selected={n.pin === "ne"}>⌝ 右上角固定</option>
@@ -282,7 +285,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
           </div></div>
       )}
       {!isEv && (
-        <div class="frow"><label>归属</label>
+        <div class="frow"><label for="ef_fac">归属</label>
           <select class="fld" id="ef_fac">
             <option value="" selected={!n.faction}>（无/中立）</option>
             {world.factions.map(f => <option key={f.id} value={f.id} selected={n.faction === f.id}>{f.名称 || f.id}</option>)}
@@ -294,16 +297,16 @@ export function NodeForm({ n }: { n: WorldNode }) {
           <div class="fin"><OwnersEditor n={n} /></div>
         </details>
       )}
-      {!isEv && !isLabel && <div class="frow"><label>范围半径 km（{n.type === "resource" ? "矿脉/产区幅员" : "城郊/地域幅员"}，留空＝仅一点）</label>
+      {!isEv && !isLabel && <div class="frow"><label for="ef_r">范围半径 km（{n.type === "resource" ? "矿脉/产区幅员" : "城郊/地域幅员"}，留空＝仅一点）</label>
         <input class="fld" id="ef_r" type="number" min={0} step={1} defaultValue={n.radiusKm ? String(n.radiusKm) : ""} placeholder="如 120" /></div>}
       {!isLabel && <CertaintyChips id="ef_cert" value={typeof n.certainty === "string" ? n.certainty : ""} />}
       {!isEv && (
         <div class="frow"><label>存在 · 起 / 止（留空＝远古 / 至今）</label>
           <div class="fx2">
             <input class="fld" id="ef_since" type={eraTy(cal, tac)} key={n.id + ":s" + (tac ? "t" : "n")}
-              placeholder={`起(${eraPh(cal, tac)})`} defaultValue={n.since != null ? fmtWhenForm(cal, tac, n.since) : ""} />
+              placeholder={`起(${eraPh(cal, tac)})`} aria-label="存在 · 起" defaultValue={n.since != null ? fmtWhenForm(cal, tac, n.since) : ""} />
             <input class="fld" id="ef_until" type={eraTy(cal, tac)} key={n.id + ":u" + (tac ? "t" : "n")}
-              placeholder={`止(${eraPh(cal, tac)})`} defaultValue={n.until != null ? fmtWhenForm(cal, tac, n.until) : ""} />
+              placeholder={`止(${eraPh(cal, tac)})`} aria-label="存在 · 止" defaultValue={n.until != null ? fmtWhenForm(cal, tac, n.until) : ""} />
           </div></div>
       )}
       {sight && (
@@ -314,18 +317,18 @@ export function NodeForm({ n }: { n: WorldNode }) {
             {rows.map((r, i) => (
               <div key={r.k} class="frow"><label>火力圈 {i + 1} · 名称 / 半径 km · 直射 / 曲射{r.fire === "arc" ? " · 射角°" : ""}</label>
                 <div class="fx2">
-                  <input class="fld" id={"ef_rgn" + r.k} defaultValue={r.init.名称} placeholder="如 岸炮 / 床弩" />
+                  <input class="fld" id={"ef_rgn" + r.k} defaultValue={r.init.名称} placeholder="如 岸炮 / 床弩" aria-label={`火力圈 ${i + 1} · 名称`} />
                   <button type="button" class="link" style={{ color: "var(--q-zhu)", alignSelf: "center" }} title="删除此圈"
                     onClick={() => setRows(rows.filter(x => x.k !== r.k))}>✕</button>
                 </div>
                 <div class="fx2">
-                  <input class="fld" id={"ef_rgk" + r.k} type="number" min={0} step={0.1} defaultValue={r.init.km} placeholder="半径 km" />
-                  <select class="fld" value={r.fire} title="直射＝按视线裁（眼位＝所在处高程＋观察高度）；曲射＝按固定射角的弹道裁，挡在弹道之上的山打不过去"
+                  <input class="fld" id={"ef_rgk" + r.k} type="number" min={0} step={0.1} defaultValue={r.init.km} placeholder="半径 km" aria-label={`火力圈 ${i + 1} · 半径 km`} />
+                  <select class="fld" value={r.fire} aria-label={`火力圈 ${i + 1} · 直射 / 曲射`} title="直射＝按视线裁（眼位＝所在处高程＋观察高度）；曲射＝按固定射角的弹道裁，挡在弹道之上的山打不过去"
                     onChange={e => { const f = (e.currentTarget as HTMLSelectElement).value === "direct" ? "direct" : "arc"; setRows(rows.map(x => x.k === r.k ? { ...x, fire: f } : x)); }}>
                     <option value="arc" selected={r.fire === "arc"}>曲射（弹道）</option>
                     <option value="direct" selected={r.fire === "direct"}>直射（视线）</option>
                   </select>
-                  {r.fire === "arc" && <input class="fld" id={"ef_rga" + r.k} type="number" min={5} max={85} step={1} defaultValue={r.init.arcDeg}
+                  {r.fire === "arc" && <input class="fld" id={"ef_rga" + r.k} type="number" min={5} max={85} step={1} defaultValue={r.init.arcDeg} aria-label={`火力圈 ${i + 1} · 射角°`}
                     placeholder={`射角 缺省 ${ARC_DEG}°`} title={`曲射射角（度）：${ARC_DEG}° 是最大射程射角；迫击炮 45～85、投石机约 45。留空＝${ARC_DEG}°`} />}
                 </div></div>
             ))}
@@ -333,19 +336,19 @@ export function NodeForm({ n }: { n: WorldNode }) {
             <div class="frow"><label>视野半径 km（留空＝不画）· 观察高度 m</label>
               <div class="fx2">
                 <input class="fld" id="ef_vision" type="number" min={0} step={0.1} defaultValue={typeof n.vision === "number" && n.vision > 0 ? String(n.vision) : ""}
-                  placeholder="烽燧瞭望 · 按视线裁" title="瞭望半径：圈内只填视线可达的格（地形遮挡与地平线都计入）；编辑态选中后可拖圈左侧手柄调节" />
+                  placeholder="烽燧瞭望 · 按视线裁" aria-label="视野半径 km" title="瞭望半径：圈内只填视线可达的格（地形遮挡与地平线都计入）；编辑态选中后可拖圈左侧手柄调节" />
                 <input class="fld" id="ef_eye" type="number" min={0} step="any" defaultValue={typeof n.eyeM === "number" && n.eyeM >= 0 ? String(n.eyeM) : ""}
-                  placeholder={`观察高度 缺省 ${nodeEyeM({ ...n, eyeM: undefined })} m`}
+                  placeholder={`观察高度 缺省 ${nodeEyeM({ ...n, eyeM: undefined })} m`} aria-label="观察高度 m"
                   title="眼位离地面的高度（米）：城楼、望楼、炮台胸墙；留空＝按类型缺省。视野圈与直射火力圈共用" />
               </div></div>
             {modern && <div class="frow"><label>雷达 探测半径 km（留空＝无）· 天线高度 m · 目标高度 m</label>
               <div class="fx2">
                 <input class="fld" id="ef_radar" type="number" min={0} step={1} defaultValue={typeof n.radar === "number" && n.radar > 0 ? String(n.radar) : ""}
-                  placeholder="探测半径 如 80" title="雷达探测半径：图上只填雷达视线可达的格（折射按 4/3 地球半径），圈线点划" />
+                  placeholder="探测半径 如 80" aria-label="雷达 探测半径 km" title="雷达探测半径：图上只填雷达视线可达的格（折射按 4/3 地球半径），圈线点划" />
                 <input class="fld" id="ef_radarm" type="number" min={0} step="any" defaultValue={typeof n.radarM === "number" && n.radarM >= 0 ? String(n.radarM) : ""}
-                  placeholder={`天线 缺省 ${RADAR_M} m`} title={`天线离地面的高度（米）；留空＝${RADAR_M} m`} />
+                  placeholder={`天线 缺省 ${RADAR_M} m`} aria-label="天线高度 m" title={`天线离地面的高度（米）；留空＝${RADAR_M} m`} />
                 <input class="fld" id="ef_radartgt" type="number" min={0} step="any" defaultValue={typeof n.radarTgtM === "number" && n.radarTgtM >= 0 ? String(n.radarTgtM) : ""}
-                  placeholder={`目标 缺省 ${RADAR_TGT_M} m`} title={`假定目标离地面的高度（米）：低空 ${RADAR_TGT_M}、中空数千；目标越高，地平线越远。留空＝${RADAR_TGT_M} m`} />
+                  placeholder={`目标 缺省 ${RADAR_TGT_M} m`} aria-label="目标高度 m" title={`假定目标离地面的高度（米）：低空 ${RADAR_TGT_M}、中空数千；目标越高，地平线越远。留空＝${RADAR_TGT_M} m`} />
               </div></div>}
           </div>
         </details>
@@ -353,11 +356,11 @@ export function NodeForm({ n }: { n: WorldNode }) {
       <details class="fgroup" open>
         <summary>属性 · 说明 · 双链</summary>
         <div class="fin">
-          <div class="frow"><label>属性（每行「键：值」，值留空的行不保存）</label>
+          <div class="frow"><label for="ef_kv">属性（每行「键：值」，值留空的行不保存）</label>
             <textarea class="fld" id="ef_kv" rows={5} defaultValue={kvText} /></div>
-          <div class="frow"><label>说明</label>
+          <div class="frow"><label for="ef_note">说明</label>
             <textarea class="fld" id="ef_note" rows={3} defaultValue={n.note || ""} placeholder="说明" /></div>
-          <div class="frow"><label>Obsidian 双链（不含 [[]]）</label>
+          <div class="frow"><label for="ef_link">Obsidian 双链（不含 [[]]）</label>
             <input class="fld" id="ef_link" defaultValue={n.link || ""} placeholder="目标笔记名" /></div>
         </div>
       </details>
@@ -369,4 +372,20 @@ export function NodeForm({ n }: { n: WorldNode }) {
       </div>
     </div>
   );
+}
+
+/** 生成战术图的侵蚀计算档（事件卡片与事件表单共用）：预选母图的档——母图保住的手雕高程，子图缺省也保住 */
+export function TacErodeSelect({ id, meta, sref }: { id?: string; meta: Meta | undefined; sref?: Ref<HTMLSelectElement> }) {
+  const cur = erodeMode(meta);
+  return (
+    <select class="fld" id={id} ref={sref} style={{ width: "auto" }} aria-label="子图侵蚀计算"
+      title="子图的侵蚀计算：底图与涂改＝高程涂改也被侵蚀重塑；仅底图＝高程涂改原样保留、只侵蚀地类底图；关闭＝不侵蚀。预选与母图相同，生成后可在设置里改">
+      {(Object.keys(ERODE_MODES) as ErodeMode[]).map(k => <option key={k} value={k} selected={cur === k}>侵蚀 · {ERODE_MODES[k].名}</option>)}
+    </select>
+  );
+}
+/** 下拉的值 → 档；读不到＝不传（core 按母图定） */
+export function readTacErode(el: HTMLSelectElement | null | undefined): ErodeMode | undefined {
+  const v = el?.value;
+  return v === "all" || v === "base" || v === "none" ? v : undefined;
 }

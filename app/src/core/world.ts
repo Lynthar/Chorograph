@@ -35,9 +35,9 @@ export function normalizeWorld(w: unknown): World {
   const bb = o.meta.bbox, num = (x: any) => typeof x === "number" && isFinite(x);
   if (bb != null && !(isRec(bb) && num(bb.lonMin) && num(bb.lonMax) && num(bb.latMin) && num(bb.latMax)
     && bb.lonMin < bb.lonMax && bb.latMin < bb.latMax)) delete o.meta.bbox;
-  // 物理标定同规（2026-08 审查）：半径/每度里程非有限或 ≤0 剔键回默认——负值会产出负距离，
+  // 物理标定同规（2026-08 审查）：半径/每度里程/高程标定非有限或 ≤0 剔键回默认——负值会产出负距离与倒置的高程，
   // 消费端 `+(x) || 10000` 的兜底只挡 0/NaN、挡不住负数与 Infinity。合法档零影响。
-  for (const k of ["planetRadiusKm", "kmPerDeg"]) {
+  for (const k of ["planetRadiusKm", "kmPerDeg", "elevUnitM"]) {
     const v = o.meta[k];
     if (v != null && !(isFinite(+v) && +v > 0)) delete o.meta[k];
   }
@@ -79,6 +79,7 @@ export function normalizeWorld(w: unknown): World {
     dropIfNotArray(f, ["paint", "territory"]);
     if (Array.isArray(f.territory)) f.territory = f.territory.filter((t: any) => typeof t === "string" && t);
     if (Array.isArray(f.paint)) f.paint = f.paint.filter(isRec).map((L: any) => {
+      dropIfNotArray(L, ["cells"]);   // 非数组的 cells（如 {}）让涂域解码 for-of 抛异常，每帧红条
       if (Array.isArray(L.cells)) L.cells = L.cells.filter((c: any) => Array.isArray(c));   // 剔除非数组格（territory 对 c[0] 崩）
       return L;
     });
@@ -106,7 +107,7 @@ export function normalizeWorld(w: unknown): World {
   if (Array.isArray(o.events) && o.events.length) {
     const byId = (id: unknown) => (o.nodes || []).find((n: any) => n.id === id);
     o.events.forEach((ev: any, k: number) => {
-      if (byId(ev.id)) return;                      // 幂等：已迁移过则跳过
+      if (!isRec(ev) || byId(ev.id)) return;        // 非对象成员跳过（旧档迁移不经 validate）；已迁移过则跳过＝幂等
       const at = byId(ev.at);
       const base = at ? [at.lon, at.lat] : [106 + (k % 5), 38];
       const nd: any = { id: ev.id || ("ev_m" + k), 名称: ev.名称 || "事件",
@@ -116,7 +117,7 @@ export function normalizeWorld(w: unknown): World {
       if (ev.result) nd.result = ev.result;
       if (Array.isArray(ev.arrows)) {
         const ops = ev.arrows.map((a: any) => {
-          const A = byId(a.from), B = byId(a.to); if (!A || !B) return null;
+          const A = isRec(a) && byId(a.from), B = isRec(a) && byId(a.to); if (!A || !B) return null;
           return { kind: "attack", pts: [[A.lon, A.lat], [B.lon, B.lat]], side: a.side || null, troop: "", label: a.label || "", w: 3 };
         }).filter(Boolean);
         if (ops.length) nd.ops = ops;

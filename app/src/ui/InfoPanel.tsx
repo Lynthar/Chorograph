@@ -12,9 +12,9 @@ import { fmtKm, tget } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
 import { detectedBy, type VisMask } from "../core/viewshed.ts";
 import type { SightRes } from "../worker/routeProto.ts";
-import { clearOpSel, readOnlySig, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, visMaskSig, detectSig, worldSig, yearSig } from "./state.ts";
+import { clearOpSel, readOnlySig, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, visMaskSig, detectSig, visFailSig, worldSig, yearSig } from "./state.ts";
 import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
-import { NodeForm } from "./NodeForm.tsx";
+import { NodeForm, TacErodeSelect, readTacErode } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
 import { FactionForm } from "./FactionForm.tsx";
 import { UnitForm } from "./UnitForm.tsx";
@@ -39,9 +39,11 @@ const canWrite = () => !readOnlySig.value;
 const certLabel = (v: unknown): string | null =>
   tget(CERTAINTY, v)?.名 || null;
 
-/** 视域读数尾巴：可达占比（掩膜未到＝空）＋眼位挪了多远 */
+/** 视域读数尾巴：可达占比（掩膜未到＝空）＋眼位挪了多远；最近一轮计算失败时标明占比是旧的或根本没有 */
 function reach(m: VisMask | undefined, 名: string): string {
-  return m && m.nIn > 0 ? ` · ${名} ${Math.round(100 * m.nVis / m.nIn)}%${m.eyeOff > 0 ? `（眼位偏 ${Math.round(m.eyeOff)} m）` : ""}` : "";
+  const fail = visFailSig.value;
+  if (!(m && m.nIn > 0)) return fail ? ` · ${名} 未算出` : "";
+  return ` · ${名} ${Math.round(100 * m.nVis / m.nIn)}%${m.eyeOff > 0 ? `（眼位偏 ${Math.round(m.eyeOff)} m）` : ""}${fail ? " · 沿用上次结果" : ""}`;
 }
 
 /** 地点的视域读数：火力逐圈（射击方式 + 可达占比）、视野、雷达（现代图）。掩膜按圈下标对应原数组 */
@@ -68,10 +70,10 @@ function observerName(world: World, T: number, r: SightRes): string {
 function DetectRow({ u, world, T }: { u: Unit; world: World; T: number }) {
   const rs = detectSig.value.get(u.id) || [];
   if (!rs.length) return null;
-  const seen = detectedBy(rs);
-  if (seen.length) return <><b>被发现</b><span>{seen.map(r => `${observerName(world, T, r)}（${r.ring === "radar" ? "雷达" : "视野"}）`).join("、")}</span></>;
+  const seen = detectedBy(rs), stale = visFailSig.value ? " · 沿用上次结果" : "";
+  if (seen.length) return <><b>被发现</b><span>{seen.map(r => `${observerName(world, T, r)}（${r.ring === "radar" ? "雷达" : "视野"}）`).join("、")}{stale}</span></>;
   const blocked = rs.filter(r => r.hit!.inRange).length, far = rs.length - blocked;
-  return <><b>被发现</b><span class="num">未被发现{blocked ? ` · 地形遮挡 ${blocked}` : ""}{far ? ` · 超出半径 ${far}` : ""}</span></>;
+  return <><b>被发现</b><span class="num">未被发现{blocked ? ` · 地形遮挡 ${blocked}` : ""}{far ? ` · 超出半径 ${far}` : ""}{stale}</span></>;
 }
 
 /** Obsidian 双链行（对齐旧 linkRow/bindCopy） */
@@ -106,6 +108,7 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
   const f = fid ? world.factions.find(x => x.id === fid) : null;
   const s = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
   const diaRef = useRef<HTMLInputElement>(null);   // 生成战术图直径（内联数字框，去 prompt）
+  const erodeRef = useRef<HTMLSelectElement>(null);
   if (editingNow()) {
     return <><CardHead title={`编辑 · ${n.名称 || n.id}`} /><NodeForm key={n.id} n={n} /></>;
   }
@@ -177,12 +180,13 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
           <button class="bt tr" title="打开这场战役的战术图（当前图自动保存）" onClick={() => { tacReqSig.value = { type: "open", evId: n.id }; }}>⚔ 打开战术图 {n.tacmap.name ? `· ${n.tacmap.name}` : ""}</button>
         )}
         {isBattle && !n.tacmap && !tac && canWrite() && (
-          <span style={{ display: "inline-flex", gap: "5px", alignItems: "center" }}>
+          <span style={{ display: "inline-flex", flexWrap: "wrap", gap: "5px", alignItems: "center" }}>
             <button class="bt tr" title="以此事件为中心生成小范围战场图（地形/地点/派系按当年快照继承）" onClick={() => {
-              tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(diaRef.current?.value ?? "") || 60) };
+              tacReqSig.value = { type: "gen", evId: n.id, dia: Math.max(1, +(diaRef.current?.value ?? "") || 60), erode: readTacErode(erodeRef.current) };
             }}>⚔ 生成战术图</button>
-            <input ref={diaRef} class="fld" type="number" min={20} max={140} step={10} defaultValue="60" style={{ width: "5em" }} title="战场直径 km（钳 20~140；对角线红线 200km）" />
+            <input ref={diaRef} class="fld" type="number" min={20} max={140} step={10} defaultValue="60" style={{ width: "5em" }} title="战场直径 km（钳 20~140；对角线红线 200km）" aria-label="战场直径 km" />
             <span class="sub">km</span>
+            <TacErodeSelect meta={world.meta} sref={erodeRef} />
           </span>
         )}
         {canWrite() && <button class="bt tr" onClick={() => { inspEditSig.value = true; }}>编辑{isEv ? "事件" : isLabel ? "标注" : "地点"}</button>}
@@ -441,8 +445,8 @@ function DecorCard({ d, world }: { d: Decor; world: World }) {
       {canWrite()
         ? <>
             <div class="setrow" style={{ marginTop: "6px" }}>
-              <label>大小</label>
-              <input type="range" min={0.5} max={2.5} step={0.1} value={String(size)}
+              <label for="dc_size">大小</label>
+              <input id="dc_size" type="range" min={0.5} max={2.5} step={0.1} value={String(size)}
                 onChange={e => patch({ size: +(e.currentTarget as HTMLInputElement).value })} />
               <span class="num">×{size.toFixed(1)}</span>
             </div>

@@ -214,6 +214,20 @@ describe("多边形栅格化（rasterizePolys）", () => {
     assert.deepEqual(cells, ["0,0"]);
   });
 
+  it("求交或三元组撞上限：返回已算出的部分并置截断回执；未撞上限不置", () => {
+    const sq = (x: number): [number, number][][] => [[[x, 0], [x + 1, 0], [x + 1, 4], [x, 4], [x, 0]]];
+    const cut = { hit: false };
+    const part = rasterizePolys([sq(0), sq(2)], BB4, 1, { ...GEO_CAPS, crossings: 5 }, cut);
+    assert.equal(cut.hit, true, "求交预算耗尽");
+    assert.ok(cellsOf(part, BB4, 1).length < 8, "只涂进一部分");
+    const cut2 = { hit: false };
+    rasterizePolys([sq(0), sq(2)], BB4, 1, { ...GEO_CAPS, runs: 3 }, cut2);
+    assert.equal(cut2.hit, true, "三元组撞上限");
+    const ok = { hit: false };
+    assert.equal(cellsOf(rasterizePolys([sq(0), sq(2)], BB4, 1, GEO_CAPS, ok), BB4, 1).length, 8);
+    assert.equal(ok.hit, false);
+  });
+
   it("图外的多边形一格不落；网格超闸返 null", () => {
     assert.equal(rasterizePolys([[[[90, 80], [91, 80], [91, 81], [90, 80]]]], BB4, 1, GEO_CAPS), null);
     assert.equal(rasterizePolys([[[[1, 1], [3, 1], [3, 3], [1, 1]]]], BB4, 1, { ...GEO_CAPS, cells: 4 }), null);
@@ -327,6 +341,12 @@ describe("转换（convertGeoJSON）", () => {
     ), { ...GEO_CAPS, features: 1 });
     const r = convertGeoJSON(scan, mapping(), opts());
     assert.ok(r.notes.some(s => s.includes("跳过")) || r.notes.some(s => s.includes("只导入了前一部分")), r.notes.join("｜"));
+  });
+
+  it("栅格化撞预算：涂域只进了一部分，回执必须说出来", () => {
+    const scan = scanGeoJSON(fc(feat({ type: "Polygon", coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] })), GEO_CAPS);
+    const r = convertGeoJSON(scan, mapping(), { ...opts(), caps: { ...GEO_CAPS, crossings: 2 } });
+    assert.ok(r.notes.some(s => s.includes("只涂进了一部分")), r.notes.join("｜"));
   });
 
   it("时段层数撞闸：多出来的沿革不导，但必须报出来", () => {

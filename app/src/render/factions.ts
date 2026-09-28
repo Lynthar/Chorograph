@@ -9,6 +9,10 @@ import { hexA } from "../core/util.ts";
 import type { Faction, Meta, World, WorldNode } from "../core/types.ts";
 
 const LOOP_CACHE = new WeakMap<object, { smooth: number; loops: Pt[][] }>();
+/** 涂域环首算的逐帧额度：每层首算要扫整张地图格网，层多的外来档一帧算完会冻住页面。
+    spent 累计本帧首算耗时、done 计本帧算了几层，达 ms 后余下未缓存的层留到下一帧（skipped 计数，调用方据此续画）；
+    至少算完一层才判额度＝每帧必前进（地形先吃掉整帧时间也不会饿死）。ms＝Infinity 即一次算全（出图要完整）。 */
+export interface LoopBudget { ms: number; spent: number; done: number; skipped: number }
 /** 派系名标签（对齐旧 drawFactionLabel）：楷体描白，落在疆域/凸包质心 */
 function drawFactionLabel(ctx: CanvasRenderingContext2D, f: Faction, cx: number, cy: number) {
   ctx.font = "bold 15px KaiTi,楷体,serif"; ctx.textAlign = "center";
@@ -16,7 +20,7 @@ function drawFactionLabel(ctx: CanvasRenderingContext2D, f: Faction, cx: number,
   ctx.fillStyle = hexA(f.color || "#888", 0.95); ctx.fillText(f.名称 || "", cx, cy);
   ctx.textAlign = "start";
 }
-export function drawFactions(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined, world: World, yearNow: number, smooth = 2) {
+export function drawFactions(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined, world: World, yearNow: number, smooth = 2, budget?: LoopBudget) {
   for (const f of world.factions) {
     if (!activeAt(f, yearNow)) continue;
     const col = f.color || "#888";
@@ -28,7 +32,14 @@ export function drawFactions(ctx: CanvasRenderingContext2D, cam: Camera, meta: M
         ctx.beginPath();
         for (const L of pls) {
           let c = LOOP_CACHE.get(L);
-          if (!c || c.smooth !== smooth) { c = { smooth, loops: territoryLoops(L, (meta || {}).bbox, smooth, paintStep(meta)) }; LOOP_CACHE.set(L, c); }   // 层整体传入＝cells/runs 双认（读旧写新）
+          if (!c || c.smooth !== smooth) {
+            if (budget && budget.done && budget.spent >= budget.ms) { budget.skipped++; if (!c) continue; }   // 额度用完：旧平滑档的先画着，没有的下一帧补
+            else {
+              const t0 = budget ? performance.now() : 0;
+              c = { smooth, loops: territoryLoops(L, (meta || {}).bbox, smooth, paintStep(meta)) }; LOOP_CACHE.set(L, c);   // 层整体传入＝cells/runs 双认（读旧写新）
+              if (budget) { budget.spent += performance.now() - t0; budget.done++; }
+            }
+          }
           for (const lp of c.loops) {
             const pts = lp.map(p => project(cam, p[0], p[1]));
             pts.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]));

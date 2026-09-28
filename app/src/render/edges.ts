@@ -5,7 +5,7 @@ import { EDGE_STYLE, certaintyStyle } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
 import { activeAt, opVisibleAt } from "../core/time.ts";
 import { project, projectSeq, type Camera } from "../core/projection.ts";
-import { kmPerDegLat } from "../core/geo.ts";
+import { kmPerDeg } from "../core/geo.ts";
 import { chaikinOpen, meander } from "../core/geometry.ts";
 import type { LabelField } from "./labels.ts";
 import type { Edge, Meta, Op, World, WorldNode } from "../core/types.ts";
@@ -15,7 +15,7 @@ import type { Edge, Meta, Op, World, WorldNode } from "../core/types.ts";
    导出供 pickEdge 拾取走廊同源（宽河点在河面即可选中）。 */
 export function riverWpx(meta: Meta | undefined, cam: Camera, e: Edge): number {
   const wm = +(e.widthM as number) || 0;
-  return wm > 0 ? Math.max(2.6, (wm / 1000) / kmPerDegLat(meta) / cam.degPerPx) : 2.6;
+  return wm > 0 ? Math.max(2.6, (wm / 1000) / kmPerDeg(meta) / cam.degPerPx) : 2.6;
 }
 function strokeRiver(ctx: CanvasRenderingContext2D, pts: [number, number][], wpx: number, selected: boolean, dash?: number[] | null): void {
   const stroke = (w: number, col: string) => {

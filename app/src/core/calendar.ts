@@ -303,10 +303,11 @@ export function parseWhenForm(cal: CalendarSpec, tac: boolean, s: unknown): numb
   return tac ? parseYMD(cal, s) : parseYearForm(cal, s);
 }
 
-/** 某年的日戳范围 [首日, 末日]（战术图 tacSpan 缺省/时间轴包络用）。custom 与旧 y*dpy 算式逐位一致 */
+/** 某年起一整年的日戳范围 [首日, 末日]（战术图 tacSpan 缺省/时间轴包络用）：整数年＝该年 1 月 1 日起，custom 与旧 y*dpy 逐位一致；
+    带月的小数年（yearMonthT 编码）＝该月首日起一年。⚠ 不能把小数年按全年线性折成日数：不等长月与 earth 会落到错日、凭空带出时分。 */
 export function yearSpanT(cal: CalendarSpec, y: number): [number, number] {
-  if (cal.kind === "earth") return [earthToJDN(y, 1, 1), earthToJDN(y + 1, 1, 1) - 1];
-  return [y * cal.dpy, (y + 1) * cal.dpy - 1];
+  const { y: Y, m } = yearMonthOf(cal, y);
+  return [tacT(cal, Y, m, 1), tacT(cal, Y + 1, m, 1) - 1];
 }
 
 /* —— 表单输入策略（各编辑表单共用；custom 战略图与 v0.14 现状逐字一致）—— */

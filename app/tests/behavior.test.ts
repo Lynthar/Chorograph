@@ -3,12 +3,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { calOf, fmtDayTime, fmtMD, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearForm, fromT, monthLabel, monthsOf, parseYMD, parseYearForm, tacT, yearMonthOf, yearMonthT, yearSpanT, ymdOverflow } from "../src/core/calendar.ts";
-import { COS_LAT_FLOOR, distKm, haversine, kmPerDeg, kmPerDegLat, kmPerDegXY, lonCos, wrapLon } from "../src/core/geo.ts";
+import { COS_LAT_FLOOR, distKm, haversine, kmPerDeg, kmPerDegXY, lonCos, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
 import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
-import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
+import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, type Grid } from "../src/core/grid.ts";
+import { erodeGate, erodeInput } from "../src/core/erode.ts";
 import { peakSpots, waterSpots } from "../src/core/spots.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
@@ -20,7 +21,8 @@ import { fmtStrength, nodeEyeM, parseStrength, rangeDirect, setUnitPoint, unitAl
 import { astar, computeRoute } from "../src/core/route.ts";
 import { wallTeeth } from "../src/render/edges.ts";
 import { facingHandlePx, pickFacingHandle, unitSpots } from "../src/render/units.ts";
-import { planTile, tileCovers } from "../src/render/terrainCPU.ts";
+import { changedBox, coastInk, planTile, sameGeom, tileCovers, unionBB, wrapCopies } from "../src/render/terrainCPU.ts";
+import { drawFactions, type LoopBudget } from "../src/render/factions.ts";
 import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, WORLD_KM_PER_DEG, WORLD_RADIUS_KM } from "../src/core/world.ts";
 import { BAKE_CAP, blankTacticalWorld, createTacticalWorld } from "../src/core/tactical.ts";
 import { MAX_RUN_DIM, eachPaintCenter, paintCellSet, paintDims, paintStep, resamplePaintRuns, runsDims, territoryLoops } from "../src/core/territory.ts";
@@ -183,6 +185,16 @@ describe("历法·真实地球（earth：日戳=JDN，儒略≤1582-10-04/格里
     // 越界月＝解析不出（不静默进位到次年）
     assert.strictEqual(parseYearForm(C, "3107-13"), null);
     assert.strictEqual(parseYearForm(calOf({ months: 10, dpm: 36 }), "3107-11"), null);
+  });
+  it("yearSpanT：带月的小数年＝该月首日起一年（earth / 不等长月不落错日、不带时分）", () => {
+    assert.deepStrictEqual(yearSpanT(E, yearMonthT(E, 1815, 6)), [tacT(E, 1815, 6, 1), tacT(E, 1816, 6, 1) - 1]);
+    const U = calOf({ monthLens: [10, 20, 30] } as never);
+    assert.ok(U.off, "不等长月走前缀和路径");
+    assert.deepStrictEqual(yearSpanT(U, yearMonthT(U, 1, 2)), [tacT(U, 1, 2, 1), tacT(U, 2, 2, 1) - 1]);
+    assert.deepStrictEqual(fromT(U, yearSpanT(U, yearMonthT(U, 1, 2))[0]), { y: 1, m: 2, d: 1 });
+    const C = calOf();
+    assert.deepStrictEqual(yearSpanT(C, yearMonthT(C, 3107, 6)), [3107 * 360 + 150, 3108 * 360 + 149], "等长月与旧 y*dpy 式同值");
+    assert.deepStrictEqual(yearSpanT(E, yearMonthT(E, -215, 7)), [tacT(E, -215, 7, 1), tacT(E, -214, 7, 1) - 1], "公元前同规");
   });
   it("yearSpanT：custom 与旧 y*dpy 一致；earth=当年 JDN 闭区间", () => {
     assert.deepStrictEqual(yearSpanT(calOf(), 3107), [3107 * 360, 3108 * 360 - 1]);
@@ -733,6 +745,48 @@ describe("CPU 兜底瓦片复用判定", () => {
   });
   it("视口越界部分被网格范围裁掉后仍算覆盖", () => {
     assert.strictEqual(tileCovers({ bb: gridBB, pxpd: 15 }, { lonMin: 60, lonMax: 140, latMin: 10, latMax: 60 }, 15, gridBB), true);
+  });
+  it("wrapCopies：视口跨环绕缝时两份拷贝各露出网格一侧，各自要瓦片；跨日期线的区域图与不环绕仍是一份", () => {
+    const V = (lonMin: number, lonMax: number) => ({ lonMin, lonMax, latMin: 0, latMax: 10 });
+    const G = (lonMin: number, lonMax: number) => ({ lonMin, lonMax, latMin: -80, latMax: 80 });
+    assert.deepStrictEqual(wrapCopies(V(170, 190), G(-180, 180), true).map(c => c + 0), [-360, 0], "全球图看日期线：东西两侧各一份");
+    assert.deepStrictEqual(wrapCopies(V(50, 310), G(-60, 60), true).map(c => c + 0), [-360, 0], "缩远的大陆图：一侧露东缘、一侧露西缘");
+    assert.deepStrictEqual(wrapCopies(V(170, 190), G(150, 210), true).map(c => c + 0), [0], "跨日期线的区域图本身不绕缝");
+    assert.deepStrictEqual(wrapCopies(V(500, 520), G(150, 210), true).map(c => c + 0), [-360], "平移过整圈折回");
+    assert.deepStrictEqual(wrapCopies(V(0, 1), G(10, 20), false), [0]);
+  });
+  it("增量补画的变化包围盒：逐元比对、按每格 stride 折回格下标；无变化 null", () => {
+    const a = new Float32Array(6 * 4), b = a.slice();
+    assert.strictEqual(changedBox(a, b, 6, 4), null);
+    b[2 * 6 + 3] = 1; b[3 * 6 + 1] = -1;
+    assert.deepStrictEqual(changedBox(a, b, 6, 4), [1, 2, 3, 3]);
+    const m0 = new Float32Array(5 * 3 * 7), m1 = m0.slice();
+    m1[(1 * 5 + 4) * 7 + 6] = 0.5;                                     // 格 (4,1) 的第 7 个材质分量
+    assert.deepStrictEqual(changedBox(m0, m1, 5, 3, 7), [4, 1, 4, 1]);
+    const G = { cols: 2, rows: 2, step: 0.5, bb: { lonMin: 0, lonMax: 1, latMin: 0, latMax: 1 } };
+    assert.ok(sameGeom(G, { ...G, bb: { ...G.bb } }));
+    assert.ok(!sameGeom(G, { ...G, step: 0.25 }));
+    assert.deepStrictEqual(unionBB([{ lonMin: 1, lonMax: 2, latMin: 5, latMax: 6 }, { lonMin: 0, lonMax: 1.5, latMin: 5.5, latMax: 9 }]),
+      { lonMin: 0, lonMax: 2, latMin: 5, latMax: 9 });
+  });
+  it("岸线逐像素着墨：子窗多算一圈外缘，内窗与整幅计算逐字节同（补画的前提）；无水陆界不动像素", () => {
+    const W = 64, H = 48, elev = new Float32Array(W * H), wsv = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) elev[y * W + x] = Math.sin(x * 0.37) * Math.cos(y * 0.29) + 0.3 * Math.sin(x * y * 0.011);
+    for (const w of [1, 1.5, 3]) {
+      const full = new Uint8ClampedArray(W * H * 4).fill(200);
+      coastInk(full, elev, wsv, W, H, w);
+      assert.ok(full.some(v => v !== 200), "有水陆界就着墨");
+      const [x0, y0, x1, y1] = [20, 12, 44, 33], m = Math.ceil(w) + 3;
+      const X0 = x0 - m, Y0 = y0 - m, SW = x1 - x0 + 2 * m, SH = y1 - y0 + 2 * m;
+      const se = new Float32Array(SW * SH), sw = new Float32Array(SW * SH), sd = new Uint8ClampedArray(SW * SH * 4).fill(200);
+      for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) se[y * SW + x] = elev[(Y0 + y) * W + X0 + x];
+      coastInk(sd, se, sw, SW, SH, w);
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) for (let c = 0; c < 4; c++)
+        assert.strictEqual(sd[((y - Y0) * SW + x - X0) * 4 + c], full[(y * W + x) * 4 + c], `w=${w} (${x},${y}) 通道 ${c}`);
+    }
+    const flat = new Uint8ClampedArray(W * H * 4).fill(200);
+    coastInk(flat, new Float32Array(W * H).fill(1), wsv, W, H, 1.5);
+    assert.ok(flat.every(v => v === 200), "全是陆地＝一个像素都不动");
   });
   it("planTile：请求超像素预算时记录请求分辨率——下一帧同口径复用（记录封顶值则永判重建）", () => {
     const vb = { lonMin: 100, lonMax: 110, latMin: 35, latMax: 40 };
@@ -1912,6 +1966,15 @@ describe("战术图生成（快照烘焙）", () => {
     assert.ok(w.terrainOverrides.every(o => (o.step as number) > mstep * 1.5), "粗采瓦片的章尺寸＝k×母格边（k>1）");
   });
 
+  it("侵蚀计算档：缺省随母图（底图与涂改不落键），作者选的档压过母图", () => {
+    const src = srcWorld();
+    assert.strictEqual(createTacticalWorld(src, ev, 60, {}).meta.erode, undefined, "母图缺键＝底图与涂改＝子图也不落键");
+    src.meta.erode = "base";
+    assert.strictEqual(createTacticalWorld(src, ev, 60, {}).meta.erode, "base", "母图仅底图：手雕高程在子图上也不被再侵蚀");
+    assert.strictEqual(createTacticalWorld(src, ev, 60, { erode: "none" }).meta.erode, "none");
+    assert.strictEqual(createTacticalWorld(src, ev, 60, { erode: "all" }).meta.erode, undefined);
+    assert.strictEqual(src.meta.erode, "base", "母图不动");
+  });
   it("earth 历法母图：calendar 原样继承、tacSpan=当年 JDN、说明用公元纪年", () => {
     const src = srcWorld();
     src.meta.calendar = { kind: "earth" };
@@ -1921,6 +1984,10 @@ describe("战术图生成（快照烘焙）", () => {
     assert.strictEqual(w.meta.battleYear, 1863);
     assert.deepStrictEqual(w.meta.tacSpan, [tacT(E, 1863, 1, 1), tacT(E, 1864, 1, 1) - 1]);
     assert.ok(String(w.meta.说明).includes("公元1863"));
+    const wm = createTacticalWorld(src, { ...ev, year: yearMonthT(E, 1815, 6) } as WorldNode, 200, {});
+    assert.deepStrictEqual(wm.meta.tacSpan, [tacT(E, 1815, 6, 1), tacT(E, 1816, 6, 1) - 1], "事件带月：自该月首日起一年，不带时分");
+    assert.deepStrictEqual(blankTacticalWorld({ 名称: "月", lon: 114, lat: 38, diaKm: 20, battleYear: yearMonthT(E, 1815, 6), calendar: { kind: "earth" } }, "d").meta.tacSpan,
+      wm.meta.tacSpan, "直接新建同规");
   });
   it("地点：出界/失效/事件点剔除，归属沿革烘焙为当年归属，since/until/owners 剥离", () => {
     const w = createTacticalWorld(srcWorld(), ev, 200, {});
@@ -2093,7 +2160,7 @@ describe("渲染材质表", () => {
     close(shadeGain(M, 0.05) * oldE, 8, 9);                                      // 5.6 km/px＝整幅之外
     // 战略图（出厂 10000 km 星球，自动格 6.67 km）：放大 50 km 比例尺档 ≈ 48 倍
     const S: Meta = { worldModel: "sphere", planetRadiusKm: 10000, bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } };
-    const oldS = 2 * NRM0 * (1 + FX.macroW) * kmPerDegLat(S) * 1000 / 2000;
+    const oldS = 2 * NRM0 * (1 + FX.macroW) * kmPerDeg(S) * 1000 / 2000;
     close(shadeGain(S, 0.00275) * oldS, 96, 0);
   });
   it("八度门控：整幅视角（≈33px/度）恒零＝旧缩放档观感保持；放大单调增到 1", () => {
@@ -2482,7 +2549,7 @@ describe("缩放极限 minDppFor（比例尺档位 + 小图护栏 + 物理地板
     const cosLat = m.worldModel === "flat" ? 1 : Math.max(0.05, Math.cos((bb.latMin + bb.latMax) / 2 * Math.PI / 180));
     return Math.max((bb.lonMax - bb.lonMin) * cosLat / W, (bb.latMax - bb.latMin) / H) * 1.1;
   };
-  const kmPx = (m: Meta, dpp: number): number => dpp * kmPerDegLat(m);   // ＝比例尺读数的口径
+  const kmPx = (m: Meta, dpp: number): number => dpp * kmPerDeg(m);   // ＝比例尺读数的口径
   const TAC: Meta = { mapKind: "tactical", worldModel: "flat", kmPerDeg: 111.19,
     bbox: { lonMin: 0, lonMax: 1.2591, latMin: 38, latMax: 39.2591 } };          // 140km 战场
   const STRAT: Meta = { worldModel: "sphere", planetRadiusKm: 10000,
@@ -2501,7 +2568,7 @@ describe("缩放极限 minDppFor（比例尺档位 + 小图护栏 + 物理地板
     assert.ok(v < fitOf(STRAT), "放大到底必须严格细于缩小到底");
   });
   it("中小战略图走护栏：档位比全图整屏还粗时不许把相机钉死", () => {
-    const fit = fitOf(SMALL), byScale = 50 / (110 * kmPerDegLat(SMALL));
+    const fit = fitOf(SMALL), byScale = 50 / (110 * kmPerDeg(SMALL));
     assert.ok(byScale > fit, "前提：3° 的图按 50km 档，放大极限会落在缩小极限之外");
     const v = minDppFor(SMALL, fit);
     assert.ok(Math.abs(v - fit / 10) < 1e-12, "护栏＝至少 10 倍可放大");
@@ -2674,6 +2741,85 @@ describe("嵌套集合非数组＝删键（normalizeWorld 统一守卫）", () =
   });
 });
 
+describe("更深一层的坏形状：涂域 cells 是对象、旧事件的箭头成员是 null", () => {
+  const BAD = (nullEvent = true) => ({
+    meta: {}, nodes: [{ id: "a", type: "city", lon: 1, lat: 1 }, { id: "b", type: "city", lon: 2, lat: 2 }],
+    factions: [{ id: "f", paint: [{ cells: {} }] }],
+    events: [...(nullEvent ? [null] : []), { id: "e", at: "a", arrows: [null, { from: "a", to: "b" }] }]
+  });
+  it("normalize 后涂域解码与旧事件迁移都不抛，好的箭头照迁", () => {
+    const w = normalizeWorld(BAD());
+    assert.strictEqual((w.factions[0].paint![0] as Record<string, unknown>).cells, undefined, "非数组 cells 删键");
+    assert.deepStrictEqual(territoryLoops(w.factions[0].paint![0], undefined, 0), []);
+    const ev = w.nodes.find(n => n.id === "e")!;
+    assert.strictEqual(ev.ops!.length, 1, "null 箭头丢弃、好箭头迁成作战线");
+  });
+  it("validate 对两处都出声且不升 fatal（事件成员本身是 null 仍是既有的 fatal）", () => {
+    const v = validateWorld(BAD(false) as never);
+    assert.strictEqual(v.ok, true);
+    const paths = v.warnings.map(x => x.path);
+    assert.ok(paths.includes("factions[0].paint[0].cells"), paths.join(" / "));
+    assert.ok(paths.includes("events[0].arrows[0]"), paths.join(" / "));
+  });
+});
+
+describe("涂域环首算按帧限时（drawFactions 的 LoopBudget）", () => {
+  const meta = { bbox: { lonMin: 0, lonMax: 4, latMin: 0, latMax: 4 }, gridN: 8, worldModel: "flat" } as never;
+  const cam = { lon0: 2, lat0: 2, degPerPx: 0.01, w: 400, h: 400, flat: true };
+  const mkWorld = () => ({ meta, nodes: [], edges: [], factions: [0, 1, 2].map(k =>
+    ({ id: "f" + k, 名称: "派" + k, color: "#336699", paint: [{ runs: { pd: 0.5, d: [k * 2, 1, 3, k * 2 + 1, 1, 3] } }] })) }) as never;
+  /** 记录画布调用（路径坐标与文字）；属性赋值照收 */
+  const recorder = () => {
+    const log: string[] = [];
+    const ctx = new Proxy({}, { get: (_t, k) => k === "measureText" ? () => ({ width: 10 }) : (...a: unknown[]) => { log.push(String(k) + JSON.stringify(a)); }, set: () => true });
+    return { ctx: ctx as never, log };
+  };
+  it("额度为 0 时每帧恰好前进一层、未算的计入 skipped；算完后不再 skipped", () => {
+    const w = mkWorld(), frames: number[][] = [];
+    for (let i = 0; i < 4; i++) {
+      const b: LoopBudget = { ms: 0, spent: 0, done: 0, skipped: 0 };
+      drawFactions(recorder().ctx, cam, meta, w, 0, 2, b);
+      frames.push([b.done, b.skipped]);
+    }
+    assert.deepStrictEqual(frames, [[1, 2], [1, 1], [1, 0], [0, 0]]);
+  });
+  it("分帧算完后画出的与一次算全逐位相同；额度无限＝一帧算全", () => {
+    const a = mkWorld(), b = mkWorld();
+    for (let i = 0; i < 3; i++) drawFactions(recorder().ctx, cam, meta, a, 0, 2, { ms: 0, spent: 0, done: 0, skipped: 0 });
+    const ra = recorder(), rb = recorder(), full: LoopBudget = { ms: Infinity, spent: 0, done: 0, skipped: 0 };
+    drawFactions(ra.ctx, cam, meta, a, 0, 2);
+    drawFactions(rb.ctx, cam, meta, b, 0, 2, full);
+    assert.strictEqual(full.skipped, 0);
+    assert.deepStrictEqual(ra.log, rb.log);
+    assert.ok(ra.log.some(x => x.startsWith("lineTo")), "确实画了疆域");
+  });
+});
+
+describe("高程涂改的幅度上限（DH_MAX_M）：读端钳边、写端存不出超限值、校验出声", () => {
+  const meta = { terrain: "plain", worldModel: "flat", kmPerDeg: 1, gridN: 8, erode: "all", bbox: { lonMin: 0, lonMax: 8, latMin: 0, latMax: 8 } } as never;
+  it("dhOf：非数＝0、超限钳到 ±DH_MAX_M（按本图 elevUnitM 折算）", () => {
+    assert.strictEqual(dhOf({ dh: 1e20 }, meta), DH_MAX_M / 2000);
+    assert.strictEqual(dhOf({ dh: -1e20 }, { elevUnitM: 1000 } as never), -DH_MAX_M / 1000);
+    assert.strictEqual(dhOf({ dh: 0.3 }, meta), 0.3, "限内原样");
+    assert.strictEqual(dhOf({ dh: "x" }, meta), 0);
+  });
+  it("高程场与侵蚀输入都只见到钳后的幅度", () => {
+    const grid = buildGridCells(meta, [], 0), hov = [{ lon: 4, lat: 4, step: 16, dh: 1e20 }];
+    const f = buildElevField(meta, hov, grid, 0);
+    assert.ok(Math.max(...f) <= DH_MAX_M / 2000 + 1, `场最高 ${Math.max(...f)}`);
+    const inp = erodeInput(meta, hov, grid, 0)!;
+    assert.strictEqual(Math.max(...inp.hovGrid), DH_MAX_M / 2000, "侵蚀输入的涂改栅格同钳");
+    assert.strictEqual(erodeGate(meta, hov, grid, 0), true, "门与输入同判");
+  });
+  it("validate：超限提示、不升 fatal；无效 elevUnitM 提示且 normalize 剔键", () => {
+    const v = validateWorld({ meta, nodes: [], heightOverrides: [{ lon: 1, lat: 1, dh: 1e20 }] });
+    assert.strictEqual(v.ok, true);
+    assert.ok(v.warnings.some(x => x.path === "heightOverrides[0].dh"), v.warnings.map(x => x.path).join(" / "));
+    assert.ok(validateWorld({ meta: { elevUnitM: -2000 }, nodes: [] }).warnings.some(x => x.path === "meta.elevUnitM"));
+    assert.strictEqual(normalizeWorld({ meta: { elevUnitM: -2000 }, nodes: [] }).meta.elevUnitM, undefined);
+  });
+});
+
 /* 数据不变量提示（2026-08-31 审查）：这些原先一声不吭地进库，坏在看不见的地方。 */
 describe("导入不变量提示（一律 warning，不拒开）", () => {
   const V = (o: object) => validateWorld({ meta: {}, nodes: [], ...o }).warnings.map(w => `${w.path}|${w.msg}`);
@@ -2728,6 +2874,18 @@ describe("涂域行程编码的解码工作量与自报 pd 脱钩（校验通过
     assert.strictEqual(runsDims({ pd: 1 / MAX_RUN_DIM, d: [] }, bb)?.iMax, MAX_RUN_DIM + 1, "恰在上限的 pd 可信");
     assert.strictEqual(runsDims({ pd: 0.9 / MAX_RUN_DIM, d: [] }, bb), null);
     assert.strictEqual(runsDims({ pd: Infinity, d: [] }, bb), null);
+  });
+  it("重叠段每格只回调一次：20 万条同一整行段＝一行的格数，不按段长重复展开", () => {
+    const d: number[] = [];
+    for (let k = 0; k < 200000; k++) d.push(0, 0, 4096);
+    assert.strictEqual(count({ pd: 1 / 4096, d }), 4096);
+  });
+  it("乱序与重叠的段按行求并：行优先、行内列递增，与规范写法的格集合一致", () => {
+    const seen: [number, number][] = [];
+    eachPaintCenter({ runs: { pd: 0.25, d: [1, 5, 3, 0, 0, 4, 1, 2, 4, 0, 2, 1] } }, bb, (lon, lat) => {
+      seen.push([Math.round((lon - bb.lonMin) / 0.25 - 0.5), Math.round((lat - bb.latMin) / 0.25 - 0.5)]);
+    });
+    assert.deepStrictEqual(seen, [[0, 0], [1, 0], [2, 0], [3, 0], [2, 1], [3, 1], [4, 1]], "列上界 iMax＝5：第 1 行 [2,6) 钳成 [2,5)、[5,8) 整段出界");
   });
   it("真消费者 territoryLoops 对同一炸弹立即返回；validateWorld 把荒谬的 pd 判为致命（拒开而不是静默空层）", () => {
     const L = { runs: { pd: 1e-20, d: [0, 1e16, 4] } };

@@ -132,7 +132,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     const ev = req.evId && w ? w.nodes.find(n => n.id === req.evId) : null;
     if (req.type === "parent") openParentMap();
     else if (req.type === "open" && ev) openTacmap(ev);
-    else if (req.type === "gen" && ev) genTactical(ev, req.dia);
+    else if (req.type === "gen" && ev) genTactical(ev, req.dia, req.erode);
   });
   /* 顶栏「⬆ 战略图」：仅战术图且有 parent 时显示（v0.14 #btnParent，title 带上级图名）。
      parent 直取 worldSig（不读 ctx.meta——batch 冲刷时编排 effect 未必已同步它） */

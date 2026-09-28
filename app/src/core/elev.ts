@@ -113,6 +113,14 @@ export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32
 export function elevUnitM(meta: Meta | undefined): number {
   return +((meta || {}).elevUnitM as number) || 2000;
 }
+/** 一枚高程涂改的幅度上限（米，正负同值）：宽过地球（珠峰 8.8 km、马里亚纳 11 km）与火星奥林帕斯山（约 22 km）的起伏。
+    外来档的荒谬值（如 1e20）超限即钳边，不带进高程场、等高线与侵蚀 */
+export const DH_MAX_M = 30000;
+/** 涂改的生效幅度（抽象单位）：非数＝0，超出 ±DH_MAX_M 钳边。读端（高程场 / 侵蚀门 / 侵蚀输入）一律经此取值——各读各的就不再逐位同判 */
+export function dhOf(o: { dh?: unknown }, meta: Meta | undefined): number {
+  const cap = DH_MAX_M / elevUnitM(meta), v = +(o.dh as number) || 0;
+  return v > cap ? cap : v < -cap ? -cap : v;
+}
 /** 高程笔幅度档（米/笔；2026-08-10 精度批，用户点单「战术 1m 起、战略 10m 起」）。 */
 export const HEIGHT_STEPS_TAC = [1, 5, 10, 25, 50];
 export const HEIGHT_STEPS_STRAT = [10, 25, 50, 100, 250];
@@ -413,7 +421,7 @@ export function buildElevField(meta: Meta | undefined, hov: HeightOverride[] | u
   const f = reliefField(m, grid).slice();   // 涂改逐笔叠在记忆的「基底+起伏」上：高程笔每个 move 只剩这三步
   (hov || []).forEach(o => {
     if (!activeAt(o, yearNow)) return;
-    const dh = +o.dh || 0; if (!dh) return;
+    const dh = dhOf(o, m); if (!dh) return;
     const rc = stampRect(o, grid);
     if (!rc) return;
     for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) f[r * cols + c] += dh;

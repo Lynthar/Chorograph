@@ -17,6 +17,7 @@ import type { GeoMapping, GeoScan } from "../core/geojson.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { ElevField } from "../core/elev.ts";
+import type { ErodeMode } from "../core/erode.ts";
 import { noMasks, type VisMasks } from "../core/viewshed.ts";
 import type { SightRes } from "../worker/routeProto.ts";
 import type { TerrainStyle } from "../render/renderer.ts";
@@ -81,10 +82,12 @@ export const unitLegsSig = signal<Map<string, Leg[]>>(new Map());
 export const visMaskSig = signal<VisMasks>(noMasks());
 /** 飞行目标被谁看见（shell/viewshed 独写）：部队 id → 他派各观察圈的点对点视线结果 */
 export const detectSig = signal<Map<string, SightRes[]>>(new Map());
+/** 最近一轮视域计算失败（shell/viewshed 独写）：卡片据此把读数标成「未算出 / 沿用上次结果」，换图与撤销重做时清零 */
+export const visFailSig = signal(false);
 
 /** 战术图请求桥（组件→外壳）：InfoPanel 战役卡按钮设值，外壳 effect 消费做库链接/生成/导航
    （生成/打开涉及 IndexedDB/文件夹 IO，只能在外壳做；组件不碰库）。 */
-export type TacReq = { type: "gen" | "open" | "parent"; evId?: string; dia?: number } | null;
+export type TacReq = { type: "gen" | "open" | "parent"; evId?: string; dia?: number; erode?: ErodeMode } | null;
 export const tacReqSig = signal<TacReq>(null);
 
 /** 视角跳转请求桥（组件→外壳）：事件时间线/搜索点选后要求相机移动（相机不是信号，外壳 effect 消费）。
@@ -254,16 +257,17 @@ function roBlocked(): boolean {
   return true;
 }
 
-/** 一切编辑的总入口：快照 → 原地改 → 浅拷贝换引用广播。opts.grid=改了地形（须重建网格） */
+/** 一切编辑的总入口：快照 → 原地改 → 浅拷贝换引用广播。opts.grid=改了地形（须重建网格）。
+    fn 抛异常＝整步作废：不留撤销步，异常照抛给调用方；fn 已改了一半的，按快照回滚（未改则不广播）。 */
 export function mutateWorld(fn: (w: World) => void, opts: { grid?: boolean } = {}): void {
   const w = worldSig.peek();
   if (!w || roBlocked()) return;
-  hist.push(w);
+  const snap = hist.push(w);
   try {
     fn(w);
   } catch (e) {
-    hist.dropLast();   // fn 抛异常：回收刚压入的快照，不留一步空撤销（幽灵快照）
-    syncHistFlags();
+    const prev = snap ? hist.revert(w) : null;
+    if (prev) applyRestored(w, prev); else syncHistFlags();
     throw e;
   }
   batch(() => {
@@ -377,7 +381,7 @@ function applyRestored(cur: World, snapshot: World): void {
     linkFromSig.value = null;
     cancelOpDraw(); clearOpSel();
     unitLegsSig.value = new Map();                          // 部队可达性缓存失效（外壳按新网格重算）
-    visMaskSig.value = noMasks(); detectSig.value = new Map();
+    visMaskSig.value = noMasks(); detectSig.value = new Map(); visFailSig.value = false;
     worldSig.value = restored;
     yearSig.value = yearRangeOf(restored, yearSig.peek()).year;
     if (gridChanged) gridVerSig.value++;
@@ -409,7 +413,7 @@ export function setWorldState(w: World): void {
     linkFromSig.value = null;
     cancelOpDraw(); clearOpSel();
     unitLegsSig.value = new Map();
-    visMaskSig.value = noMasks(); detectSig.value = new Map();
+    visMaskSig.value = noMasks(); detectSig.value = new Map(); visFailSig.value = false;
     worldSig.value = w;
     yearSig.value = yearRangeOf(w, yearSig.peek()).year;
   });

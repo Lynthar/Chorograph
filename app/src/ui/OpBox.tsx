@@ -52,27 +52,27 @@ export function OpBox() {
         <span class="sp"></span>
         <button type="button" id="obClose" title="关闭 (Esc)" onClick={() => clearOpSel()}>✕</button>
       </div>
-      <div class="bb-row"><label>派系</label>
+      <div class="bb-row"><label for="obSide">派系</label>
         <select class="fld" id="obSide" style={{ flex: "1" }} title="所属派系（决定线色）" value={op.side || ""}
           onChange={e => opEdit(o => { o.side = (e.currentTarget as HTMLSelectElement).value || null; })}>
           <option value="">（默认红）</option>
           {world.factions.map(f => <option key={f.id} value={f.id}>{f.名称 || f.id}</option>)}
         </select>
       </div>
-      <div class="bb-row"><label>部队</label>
+      <div class="bb-row"><label for="obTroop">部队</label>
         <input class="fld" id="obTroop" style={{ flex: "1" }} key={k + ":troop"} defaultValue={op.troop || ""} placeholder="如 皇天卫"
           onInput={e => opEdit(o => { o.troop = (e.currentTarget as HTMLInputElement).value.trim(); })} />
       </div>
-      <div class="bb-row"><label>标注</label>
+      <div class="bb-row"><label for="obLabel">标注</label>
         <input class="fld" id="obLabel" style={{ flex: "1" }} key={k + ":label"} defaultValue={op.label || ""} placeholder="如 南下"
           onInput={e => opEdit(o => { o.label = (e.currentTarget as HTMLInputElement).value.trim(); })} />
       </div>
-      <div class="bb-row"><label>粗细</label>
+      <div class="bb-row"><label for="obW">粗细</label>
         <input type="range" id="obW" min={1} max={8} step={1} value={op.w || 3}
           onInput={e => opEdit(o => { o.w = Math.max(1, Math.min(8, +(e.currentTarget as HTMLInputElement).value || 3)); })} />
         <span class="bb-v" id="obWV">{op.w || 3}</span>
       </div>
-      <div class="bb-row"><label>线型</label>
+      <div class="bb-row" role="group" aria-labelledby="obDashLab"><label id="obDashLab">线型</label>
         <label style={{ display: "flex", alignItems: "center", gap: "4px", cursor: "pointer", flex: "1", whiteSpace: "nowrap" }}>
           <input type="checkbox" id="obDash" checked={!!op.dash}
             onChange={e => opEdit(o => { if ((e.currentTarget as HTMLInputElement).checked) o.dash = true; else delete o.dash; })} />
@@ -80,10 +80,10 @@ export function OpBox() {
         </label>
       </div>
       <div class="bb-row"><label>存在</label>
-        <input class="fld" id="obSince" type={eraTy(cal, tac)} style={{ flex: "1", minWidth: "0" }} key={k + ":s"}
+        <input class="fld" id="obSince" aria-label="存在 · 起" type={eraTy(cal, tac)} style={{ flex: "1", minWidth: "0" }} key={k + ":s"}
           placeholder={`起(${eraPh(cal, tac)})`} defaultValue={op.since != null ? fmtWhenForm(cal, tac, op.since) : ""}
           onChange={setSpan("since")} />
-        <input class="fld" id="obUntil" type={eraTy(cal, tac)} style={{ flex: "1", minWidth: "0" }} key={k + ":u"}
+        <input class="fld" id="obUntil" aria-label="存在 · 止" type={eraTy(cal, tac)} style={{ flex: "1", minWidth: "0" }} key={k + ":u"}
           placeholder={`止(${eraPh(cal, tac)})`} defaultValue={op.until != null ? fmtWhenForm(cal, tac, op.until) : ""}
           onChange={setSpan("until")} />
       </div>

@@ -27,22 +27,22 @@ export function FactionForm({ f }: { f: Faction }) {
   const del = () => deleteFactionAt(f.id);
   return (
     <div ref={box} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-      <div class="frow"><label>名称</label>
+      <div class="frow"><label for="ff_name">名称</label>
         <input class="fld" id="ff_name" defaultValue={f.名称 || ""} placeholder="派系名称" /></div>
       <div class="frow"><label>颜色 · 阵营</label>
         <div class="fx2" style={{ alignItems: "center" }}>
-          <input type="color" id="ff_color" defaultValue={f.color || "#888888"}
+          <input type="color" id="ff_color" aria-label="颜色" defaultValue={f.color || "#888888"}
             style={{ width: "52px", height: "26px", flex: "none", padding: "0", border: "1px solid var(--q-ln)", borderRadius: "4px", background: "var(--q-pn)" }} />
-          <input class="fld" id="ff_camp" defaultValue={f.阵营 || ""} placeholder="如 守序中立" />
+          <input class="fld" id="ff_camp" aria-label="阵营" defaultValue={f.阵营 || ""} placeholder="如 守序中立" />
         </div></div>
       <div class="frow"><label>存续 · 起 / 止（留空＝远古 / 至今）</label>
         <div class="fx2">
-          <input class="fld" id="ff_since" type={eraTy(cal, tac)} placeholder={`起(${eraPh(cal, tac)})`} defaultValue={f.since != null ? fmtWhenForm(cal, tac, f.since) : ""} />
-          <input class="fld" id="ff_until" type={eraTy(cal, tac)} placeholder={`止(${eraPh(cal, tac)})`} defaultValue={f.until != null && (tac || f.until < 9999) ? fmtWhenForm(cal, tac, f.until) : ""} />
+          <input class="fld" id="ff_since" aria-label="存续 · 起" type={eraTy(cal, tac)} placeholder={`起(${eraPh(cal, tac)})`} defaultValue={f.since != null ? fmtWhenForm(cal, tac, f.since) : ""} />
+          <input class="fld" id="ff_until" aria-label="存续 · 止" type={eraTy(cal, tac)} placeholder={`止(${eraPh(cal, tac)})`} defaultValue={f.until != null && (tac || f.until < 9999) ? fmtWhenForm(cal, tac, f.until) : ""} />
         </div></div>
-      <div class="frow"><label>说明</label>
+      <div class="frow"><label for="ff_note">说明</label>
         <textarea class="fld" id="ff_note" rows={3} placeholder="说明" defaultValue={typeof f.note === "string" ? f.note : ""} /></div>
-      <div class="frow"><label>Obsidian 双链（不含 [[]]）</label>
+      <div class="frow"><label for="ff_link">Obsidian 双链（不含 [[]]）</label>
         <input class="fld" id="ff_link" defaultValue={f.link || ""} placeholder="目标笔记名" /></div>
       <div class="in-actions">
         <button class="bt zhu tr" onClick={save}>保存修改</button>

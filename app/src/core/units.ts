@@ -3,7 +3,7 @@
    缓存与失效由调用层管理，同旧版 state._legs 的角色）。 */
 import { ALL_KINDS, ARC_DEG, EYE_M, EYE_M_KIND, EYE_M_NODE, FIRE_DIRECT_KIND, RADAR_M, RADAR_TGT_M, VANTAGE_M } from "./constants.ts";
 import { tget } from "./util.ts";
-import { distKm, kmPerDegLat, lonCos, toRad } from "./geo.ts";
+import { distKm, kmPerDeg, lonCos, toRad } from "./geo.ts";
 import { astar, endToEnd } from "./route.ts";
 import type { Grid } from "./grid.ts";
 import type { Arm, Meta, NodeRange, TrackPt, Unit, WorldNode } from "./types.ts";
@@ -199,7 +199,7 @@ export function unitFootKm(u: Unit): { front: number; depth: number } | null {
 
 /** 经纬向的 km 换算基（同 ringPx/笔刷环之规：经向再除 lonCos） */
 function kmScale(meta: Meta | undefined, lat: number): { kpd: number; cosn: number } {
-  return { kpd: kmPerDegLat(meta), cosn: lonCos(meta, lat) };
+  return { kpd: kmPerDeg(meta), cosn: lonCos(meta, lat) };
 }
 
 /** 两点间方位角（度，0=正北顺时针）：经差按 cos 纬度折算＝与图面观感同向；零长返回 null */

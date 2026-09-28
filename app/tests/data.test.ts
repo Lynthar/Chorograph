@@ -179,6 +179,22 @@ describe("localStorage 旧档迁移", () => {
     assert.strictEqual(((await lib.getEntry(a.id))!).name, "本地改名");
     lib.close();
   });
+  it("列表之后、写入之前新库被另一处保存：迁移按陈旧跳过，不把新库倒回旧来源", async () => {
+    const lib = await freshLib();
+    await migrateFromLocalStorage(lib, mkLS(WORLDS));
+    const bumped = { ...WORLDS, "yutu.maps.v1": JSON.stringify([{ ...OLD_IDX[0], updatedAt: 5000 }, OLD_IDX[1]]) };
+    let raced = false;
+    const racing: typeof lib = { ...lib, async save(id, w, snap, at, base) {
+      if (!raced) { raced = true; await lib.save(id, { meta: { 名称: "新库新改" }, nodes: [{ id: "new-user-edit", type: "city", lon: 0, lat: 0 }] } as never, {}, 30000, base); }
+      return lib.save(id, w, snap, at, base);
+    } };
+    const r = await migrateFromLocalStorage(racing, mkLS(bumped));
+    assert.deepStrictEqual(r, { imported: 0, updated: 0, skipped: 2 });
+    const a = (await lib.list()).find(e => e.srcLS!.id === "lsA")!;
+    assert.strictEqual(a.updatedAt, 30000, "版本不倒退");
+    assert.deepStrictEqual((await lib.getWorld(a.id))!.nodes.map(n => n.id), ["new-user-edit"]);
+    lib.close();
+  });
   it("坏档跳过不炸；索引坏 JSON 视为无旧档", async () => {
     const lib = await freshLib();
     const r = await migrateFromLocalStorage(lib, mkLS({

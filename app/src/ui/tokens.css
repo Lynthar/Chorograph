@@ -279,6 +279,9 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .row.on .nm{color:var(--q-zhu);font-weight:700}
 .row .tag-tac{font-size:var(--fs-xs);color:var(--q-faint);border:1px solid var(--q-ln);border-radius:4px;padding:0 4px;flex:none}
 .hint{font-size:var(--fs-xs);color:var(--q-faint);line-height:1.7;border:1px dashed var(--q-ln);border-radius:var(--r-sm);padding:7px 9px}
+/* 域级错误隔离的提示条（ui/Guard）：朱色＝出错，按钮沿用 .tbtn */
+.guard-err{font-size:var(--fs-xs);line-height:1.7;color:var(--q-zhu);background:var(--q-zhuwash);border:1px solid var(--q-zhu);border-radius:var(--r-sm);padding:7px 9px;margin:6px}
+.guard-err .tbtn{margin-left:8px}
 .hint kbd{font:10px var(--f-mono);border:1px solid var(--q-ln2);border-bottom-width:2px;border-radius:4px;padding:0 4px;color:var(--q-dim);background:none}
 
 /* ── 空态基形 ── */

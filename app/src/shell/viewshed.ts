@@ -11,7 +11,8 @@ import { activeAt, ownerAt } from "../core/time.ts";
 import { REFRACT_OPTICAL, REFRACT_RADAR, TARGET_M, noMasks, type ViewField } from "../core/viewshed.ts";
 import { VANTAGE_GAIN_M, VANTAGE_M } from "../core/constants.ts";
 import { layerOn } from "../render/overlay.ts";
-import { worldSig, yearSig, editVerSig, layersSig, isTacSig, ruleFieldSig, visMaskSig, detectSig } from "../ui/state.ts";
+import { worldSig, yearSig, editVerSig, layersSig, isTacSig, ruleFieldSig, visMaskSig, detectSig, visFailSig, showToast } from "../ui/state.ts";
+import { errText } from "../core/util.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { SightReq, SightRes, VisReq, VisTag } from "../worker/routeProto.ts";
 import type { Grid } from "../core/grid.ts";
@@ -98,13 +99,20 @@ export function viewFieldOf(meta: Meta, f: ElevField, grid: Grid): ViewField {
 
 export function wireViewshed(ctx: ShellCtx): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let seq = 0, pushed: ElevField | null = null;
+  let seq = 0, pushed: ElevField | null = null, lineage: Meta | undefined;
+  /* 失败只在转入失败态时响一次（拖动连发不刷屏）；读数的「未算出 / 沿用上次结果」由卡片读 visFailSig */
+  const failed = (why: string): void => {
+    if (!visFailSig.peek()) showToast(`视域计算失败（${why}）　图上可达区未更新`, { err: true });
+    visFailSig.value = true;
+  };
   const flight = singleFlight((meta: Meta, f: ElevField, grid: Grid, obs: VisReq[], sights: SightReq[]) => {
     const my = ++seq;
     if (pushed !== f) { ctx.routeClient.setViewField(viewFieldOf(meta, f, grid)); pushed = f; }
     const sp: Promise<SightRes[] | null> = sights.length ? ctx.routeClient.sight(sights) : Promise.resolve([]);
     return Promise.all([ctx.routeClient.viewshed(obs), sp]).then(([res, sres]) => {
       if (seq !== my) return;
+      if (!res || !sres) failed("计算线程不可用");
+      else if (visFailSig.peek()) visFailSig.value = false;
       if (res) {
         const m = noMasks();
         for (const r of res) {
@@ -121,7 +129,7 @@ export function wireViewshed(ctx: ShellCtx): () => void {
         for (const r of sres) if (r.hit) (d.get(r.tgt) || d.set(r.tgt, []).get(r.tgt)!).push(r);
         if (d.size || detectSig.peek().size) detectSig.value = d;   // 空换空不广播：否则每轮视域都白重画一帧
       }
-    }, e => console.warn("视域计算失败（保持上一份）：", e));   // 拒绝也要落定——闸自会放闸并补发
+    }, e => { console.warn("视域计算失败（保持上一份）：", e); if (seq === my) failed(errText(e)); });   // 拒绝也要落定——闸自会放闸并补发
   }, () => fire());
   function fire(): void {
     const w = worldSig.peek(), f = ruleFieldSig.peek(), meta = w ? w.meta || {} : null;
@@ -133,12 +141,16 @@ export function wireViewshed(ctx: ShellCtx): () => void {
     const w = worldSig.value, T = yearSig.value, L = layersSig.value, tac = isTacSig.value, f = ruleFieldSig.value;
     editVerSig.value;                                       // 依赖：拖部队/改半径/改高度（经防抖归并）
     clearTimeout(timer);
+    /* 换图与撤销重做换 meta 对象、同图编辑不换：换了就作废在飞的单——结果按 id 落表，别的图里同 id 的对象会接走它。
+       同图编辑不作废：拖动期间照样落中间结果 */
+    if (w && w.meta !== lineage) { lineage = w.meta; seq++; }
     const want = !!w && tac && visObservers(w, T, L, w.meta || {}).length > 0;
     if (!want) {
       seq++; flight.clearDirty();                           // 令牌作废＝换图/清圈后到货的旧结果不落 sig，也不为它补发
       const cur = visMaskSig.peek();
       if (cur.unit.size || cur.node.size) visMaskSig.value = noMasks();
       if (detectSig.peek().size) detectSig.value = new Map();
+      if (visFailSig.peek()) visFailSig.value = false;
       return;
     }
     if (!f) return;                                         // 规则场演算中：沿用上一份，落定换引用后再跑

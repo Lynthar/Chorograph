@@ -54,12 +54,6 @@ export function distKm(meta: Meta | undefined, lon1: number, lat1: number, lon2:
   return haversine(lon1, lat1, lon2, lat2, +(m.planetRadiusKm ?? 0) || 10000);
 }
 
-/** 每纬度里程（地点范围圈/缩放下限用） */
-export function kmPerDegLat(meta: Meta | undefined): number {
-  const m = meta || {};
-  return m.worldModel === "flat" ? flatKmPerDeg(m) : (2 * Math.PI * (+(m.planetRadiusKm ?? 0) || 10000) / 360);
-}
-
 /** 经度归一到 [-180,180)；平面世界不折返（有"世界之涯"） */
 export function wrapLon(l: number, flat: boolean): number {
   if (flat) return l;

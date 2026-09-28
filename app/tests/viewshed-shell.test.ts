@@ -9,13 +9,15 @@ import { landWorld } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
 import { buildGridCells } from "../src/core/grid.ts";
 import { coarseField, type ElevField } from "../src/core/elev.ts";
-import { detectSig, layersSig, mutateWorld, ruleFieldSig, visMaskSig, worldSig, yearSig } from "../src/ui/state.ts";
+import { detectSig, layersSig, mutateWorld, ruleFieldSig, toastSig, visFailSig, visMaskSig, worldSig, yearSig } from "../src/ui/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import type { SightReq, SightRes, VisReq, VisRes } from "../src/worker/routeProto.ts";
 import type { VisMask } from "../src/core/viewshed.ts";
 import type { World } from "../src/core/types.ts";
 
 const settle = (): Promise<void> => new Promise(r => setTimeout(r, 130));   // 防抖 80 + 微任务
+/** 轮询到条件成立（最多 2 s）：只数「发了几单」的断言不该押在固定等待上，机器一忙就误红 */
+const until = async (ok: () => boolean): Promise<void> => { for (let t = 0; t < 200 && !ok(); t++) await new Promise(r => setTimeout(r, 10)); };
 
 interface Seen { pushes: number; calls: VisReq[][]; sights: SightReq[][]; reject: boolean }
 function mkCtx(): { ctx: ShellCtx; seen: Seen } {
@@ -152,12 +154,36 @@ describe("视域编排（shell/viewshed）", () => {
       await settle();
       assert.equal(seen.calls.length, 1);
       assert.equal(size(), 0, "失败＝无掩膜");
+      assert.equal(visFailSig.value, true, "失败态给卡片标「未算出」");
+      assert.match(toastSig.value!.text, /视域计算失败/);
       seen.reject = false;
       mutateWorld(x => { x.units[0].track[0].lat = 30.6; });
       await settle();
       assert.equal(seen.calls.length, 2, "闸已放");
       assert.equal(size(), 1);
+      assert.equal(visFailSig.value, false, "成功即清失败态");
     } finally { console.warn = warn; }
+  });
+
+  it("换图作废在飞的旧单：A 图结果不落到同 id 的 B 图；B 返回 null 也不残留 A", async () => {
+    const pend: { obs: VisReq[]; res: (v: VisRes[] | null) => void }[] = [];
+    ctx.routeClient.viewshed = (obs: VisReq[]) => new Promise<VisRes[] | null>(res => { pend.push({ obs, res }); });
+    const mask = (o: VisReq): VisMask =>
+      ({ bb: { lonMin: o.lon, lonMax: o.lon, latMin: o.lat, latMax: o.lat }, cols: 1, rows: 1, vis: new Uint8Array([1]), nVis: 1, nIn: 1, eyeOff: 0 });
+    open(ctx, TAC([U("v", { vision: 3 })]));
+    await until(() => pend.length === 1);
+    assert.equal(pend.length, 1);
+    open(ctx, TAC([U("v", { vision: 3, track: [{ t: 3050, lon: 100.7, lat: 30.5 }] })]));
+    await settle();
+    pend[0].res(pend[0].obs.map(o => ({ owner: o.owner, id: o.id, ring: o.ring, idx: o.idx, mask: mask(o) })));
+    await until(() => pend.length === 2);
+    assert.equal(size(), 0, "A 的掩膜不落到 B");
+    assert.equal(pend.length, 2, "落地后补发 B 的单");
+    assert.equal(pend[1].obs[0].lon, 100.7);
+    pend[1].res(null);
+    await settle();
+    assert.equal(size(), 0, "B 失败也不残留 A");
+    assert.equal(visFailSig.value, true);
   });
 
   it("visObservers：曲射按射角成单（缺键 45°）、直射不带射角；观察高度走兵种缺省（舰船 15 m）", () => {

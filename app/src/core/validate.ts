@@ -8,6 +8,7 @@ import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
 import { ERODE_MODES } from "./erode.ts";
 import { MAX_RUN_DIM, runsDims } from "./territory.ts";
+import { DH_MAX_M, elevUnitM } from "./elev.ts";
 import { DEFAULT_BBOX, type BBox, type PaintRuns } from "./types.ts";
 
 export interface Issue { path: string; msg: string }
@@ -90,7 +91,7 @@ export function validateWorld(w: unknown): ValidateResult {
     && (bb.lonMin as number) < (bb.lonMax as number) && (bb.latMin as number) < (bb.latMax as number)
     ? { lonMin: bb.lonMin as number, lonMax: bb.lonMax as number, latMin: bb.latMin as number, latMax: bb.latMax as number } : DEFAULT_BBOX;
   // 物理标定须为正数（normalizeWorld 对无效值剔键回默认，此处仅提示写手——负半径=负距离）
-  for (const k of ["planetRadiusKm", "kmPerDeg"] as const) {
+  for (const k of ["planetRadiusKm", "kmPerDeg", "elevUnitM"] as const) {
     const v = meta[k];
     if (v != null && !(isFinite(+(v as number)) && +(v as number) > 0))
       W(`meta.${k}`, `须为正数（现为 ${JSON.stringify(v)}），将按默认值处理`);
@@ -134,7 +135,9 @@ export function validateWorld(w: unknown): ValidateResult {
         F(`${p}.paint[${k}].runs`, "涂域行程编码过大（疑损坏或恶意档）");
       else if (R && Array.isArray(R.d) && !runsDims(R as PaintRuns, bbox))
         F(`${p}.paint[${k}].runs`, `涂域行程编码的格边 pd 把图幅切成超过 ${MAX_RUN_DIM} 格（疑损坏或恶意档）`);
-      if (Array.isArray((L as { cells?: unknown }).cells) && ((L as { cells: unknown[] }).cells).length > 4000000)
+      const cells = (L as { cells?: unknown }).cells;
+      if (cells != null && !Array.isArray(cells)) W(`${p}.paint[${k}].cells`, "涂域格坐标不是数组，打开时将被丢弃");
+      else if (Array.isArray(cells) && cells.length > 4000000)
         F(`${p}.paint[${k}].cells`, "涂域格坐标过多（疑损坏或恶意档）");
     });
   });
@@ -211,10 +214,17 @@ export function validateWorld(w: unknown): ValidateResult {
     if (!isNum(t.lon) || !isNum(t.lat)) W(p, "涂改块经纬度无效");
     checkTimed(p, t);
   });
+  const unitM = isNum(meta.elevUnitM) && (meta.elevUnitM as number) > 0 ? (meta.elevUnitM as number) : elevUnitM(undefined);   // 无效标定按缺省（同 normalize 剔键）
   (Array.isArray(o.heightOverrides) ? (o.heightOverrides as Record<string, unknown>[]) : []).forEach((h, i) => {
     const p = `heightOverrides[${i}]`;   // 同 terrainOverrides 之规；应用端对非数字自会跳过，这里仅提示写手
     if (!isNum(h.lon) || !isNum(h.lat) || !isNum(h.dh)) W(p, "高程涂改需要数字 lon/lat/dh，该项不生效");
+    else if (Math.abs(h.dh as number) * unitM > DH_MAX_M) W(`${p}.dh`, `高程涂改幅度超出 ±${DH_MAX_M / 1000} km，按 ±${DH_MAX_M / 1000} km 计`);
     checkTimed(p, h);
+  });
+
+  /* —— 旧版事件表（打开时迁成事件点）：箭头成员不是对象的，迁移时丢弃 —— */
+  (Array.isArray(o.events) ? (o.events as Record<string, unknown>[]) : []).forEach((ev, i) => {
+    if (Array.isArray(ev.arrows)) ev.arrows.forEach((a, j) => { if (!isObj(a)) W(`events[${i}].arrows[${j}]`, "箭头成员不是对象，迁移时将被丢弃"); });
   });
 
   /* —— 部队（战术图） —— */

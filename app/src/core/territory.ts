@@ -48,22 +48,48 @@ export function runsDims(R: PaintRuns | null | undefined, bb: BBox): { pd: numbe
 }
 
 /** 遍历一份涂域数据的每个格心（经纬）：cells 与 runs 双认（读旧写新之约）。
-    runs 的工作量只由 runsDims 定、与三元组自报的起列/长度无关：行列都钳进 [-2, 上界)，
-    每个三元组至多 MAX_RUN_DIM 次回调——pd 自报 1e-20 或起列 1e16（i+1===i）都不能让循环不终止。 */
+    runs 的格按行优先、列递增回调，每格至多一次（见 eachRunCover）——pd 自报 1e-20、起列 1e16（i+1===i）、
+    上百万条重叠段都不能让工作量超出解码网格。 */
 export function eachPaintCenter(src: PaintSrc, bb: BBox, cb: (lon: number, lat: number) => void): void {
   if (!src) return;
   const L = Array.isArray(src) ? { cells: src, runs: undefined as PaintRuns | undefined } : src;
   for (const c of L.cells || []) { if (Array.isArray(c)) cb(+c[0], +c[1]); }
   const dims = runsDims(L.runs, bb);
-  if (dims) {
-    const { pd, iMax, jMax } = dims, d = L.runs!.d;
-    for (let k = 0; k + 2 < d.length; k += 3) {
-      const j = Math.floor(+d[k]), i0 = Math.max(-2, Math.floor(+d[k + 1])), len = Math.floor(+d[k + 2]);
-      if (!(j >= -2 && j < jMax) || !isFinite(i0) || !(len > 0)) continue;
-      const iEnd = Math.min(i0 + len, iMax);
-      const lat = bb.latMin + (j + 0.5) * pd;
-      for (let i = i0; i < iEnd; i++) cb(bb.lonMin + (i + 0.5) * pd, lat);
+  if (!dims) return;
+  const { pd } = dims;
+  eachRunCover(L.runs!.d, dims.iMax, dims.jMax, (j, i0, iEnd) => {
+    const lat = bb.latMin + (j + 0.5) * pd;
+    for (let i = i0; i < iEnd; i++) cb(bb.lonMin + (i + 0.5) * pd, lat);
+  });
+}
+
+/** runs 三元组钳进解码网格（行列 [-2, 上界)）后按行求并：回调每段互不相交的覆盖区间 [i0, iEnd)，行递增、行内列递增。
+    工作量 ≤ 三元组数 + 有段的行数 × 网格宽，与段长及重叠次数无关——按段展开时，重复段让一层几十 MB 的档解出几十亿格。 */
+function eachRunCover(d: readonly number[], iMax: number, jMax: number, run: (j: number, i0: number, iEnd: number) => void): void {
+  const n = Math.floor(d.length / 3), J = new Int32Array(n), A = new Int32Array(n), B = new Int32Array(n);
+  const R = jMax + 2, W = iMax + 2, head = new Int32Array(R + 1);   // 行、列都偏移 +2 存（下界 -2）
+  let m = 0;
+  for (let k = 0; k + 2 < d.length; k += 3) {
+    const j = Math.floor(+d[k]), i0 = Math.max(-2, Math.floor(+d[k + 1])), len = Math.floor(+d[k + 2]);
+    if (!(j >= -2 && j < jMax) || !isFinite(i0) || !(len > 0)) continue;
+    const iEnd = Math.min(i0 + len, iMax);
+    if (!(iEnd > i0)) continue;
+    J[m] = j + 2; A[m] = i0 + 2; B[m] = iEnd + 2; head[j + 3]++; m++;
+  }
+  for (let r = 0; r < R; r++) head[r + 1] += head[r];
+  const order = new Int32Array(m), at = head.slice(0, R);
+  for (let t = 0; t < m; t++) order[at[J[t]]++] = t;
+  const diff = new Int32Array(W + 1);
+  for (let r = 0; r < R; r++) {
+    if (head[r] === head[r + 1]) continue;
+    diff.fill(0);
+    for (let q = head[r]; q < head[r + 1]; q++) { diff[A[order[q]]]++; diff[B[order[q]]]--; }
+    let c = 0, s = -1;
+    for (let x = 0; x < W; x++) {
+      c += diff[x];
+      if (c > 0) { if (s < 0) s = x; } else if (s >= 0) { run(r - 2, s - 2, x - 2); s = -1; }
     }
+    if (s >= 0) run(r - 2, s - 2, W - 2);
   }
 }
 

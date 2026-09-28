@@ -19,7 +19,7 @@ export interface DirHandleLike {
   removeEntry(name: string): Promise<void>;
 }
 
-/** 环境支持检测（Edge/Chrome 且 localhost/https；file:// 与 Firefox/Safari 无此 API） */
+/** 能力检测：只看目录选择器在不在——有没有它随浏览器、协议与权限而定，别按协议或浏览器名下断言 */
 export function fsSupported(): boolean {
   return typeof (globalThis as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
 }

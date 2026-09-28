@@ -10,8 +10,8 @@ const OPTS: [string, string][] = [["", "确证"], ...CERTAINTY_ORDER.map(k => [k
 export function CertaintyChips({ id, value }: { id: string; value?: string }) {
   const cur = value && tget(CERTAINTY, value) ? value : "";
   return (
-    <div class="frow"><label>可靠性（史料/考据把握；缺省＝确证，不写入存档）</label>
-      <div class="chips" id={id}>
+    <div class="frow"><label id={id + "_lab"}>可靠性（史料/考据把握；缺省＝确证，不写入存档）</label>
+      <div class="chips" id={id} role="group" aria-labelledby={id + "_lab"}>
         {OPTS.map(([v, 名]) => (
           <button key={v || "sure"} type="button" class="ch tr" data-cv={v} aria-pressed={cur === v}
             onClick={ev => {

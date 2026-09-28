@@ -3,8 +3,9 @@
    生态色调 + 海岸线，2026-08 起加 域扭曲/微八度/材质纹理/谷影/岩化/水面观感——
    结构与系数同 GL（数值系数单一真源 render/material.FX），噪声哈希不同（此处 sin-hash fp64、
    GL 是 PCG2D fp32）＝观感同构而非逐位一致，与宏观 fbm 的既有纪律相同。
-   等高线与 GL 版同构地画在**规则场（工作档）的无噪声制图面**（首/计曲线，contourStepFor 的 1-2-5 阶梯相邻两档交叉淡入；像素量按 opts.dpr 锚 CSS 像素）。
-   性能策略沿袭旧版：**世界锚定瓦片 + 30% 余量**——平移只重贴图，视口越出余量或缩放变档才重渲。
+   等高线与 GL 版同构地画在**规则场（工作档）的无噪声制图面**（首/计曲线，contourStepFor 的 1-2-5 阶梯单系取档；像素量按 opts.dpr 锚 CSS 像素）。
+   性能策略沿袭旧版：**世界锚定瓦片 + 30% 余量**——平移只重贴图，视口越出余量或缩放变档才重渲；
+   数据同形的改动（笔刷）只补画变了的那片，补画与整幅重画逐字节相同。
    推演底图（opts.flat）例外：逐屏幕像素直接栅格化、不走瓦片（贴图重采样会让格边像素取到邻格）。 */
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps } from "../core/constants.ts";
@@ -46,6 +47,72 @@ export function planTile(
   if (bb.lonMax <= bb.lonMin || bb.latMax <= bb.latMin) return "none";
   const cap = Math.sqrt(MAX_TILE_PX / ((bb.lonMax - bb.lonMin) * (bb.latMax - bb.latMin)));
   return { bb, renderPxpd: Math.min(pxpd, cap), pxpd };
+}
+
+/** 视口落在哪几份世界拷贝上（导出以便单测）：各份的经度偏移 c（视口 +c＝折回网格所在域），只留与网格相交的。
+    球面环绕时视口可同时跨两三份拷贝、各露出网格的不同部分——只按最近的一份规划瓦片，另一侧就无瓦片可贴、露出底色。 */
+export function wrapCopies(viewBB: BBox, gridBB: BBox, wrap: boolean): number[] {
+  if (!wrap) return [0];
+  const k = 360 * Math.round(((gridBB.lonMin + gridBB.lonMax) / 2 - (viewBB.lonMin + viewBB.lonMax) / 2) / 360);
+  return [k - 360, k, k + 360].filter(c => viewBB.lonMin + c < gridBB.lonMax && viewBB.lonMax + c > gridBB.lonMin);
+}
+
+/** 岸线：水陆相邻两像素之间的格边描 w 宽的线段（竖段在像素左边、横段在上边，端点落在邻像素中心），按 4×4 超采样算覆盖、
+    以 55% 深蓝逐像素混进 d——不走画布描边：浏览器按路径繁简换光栅算法，补画窗与整块瓦片的抗锯齿会差一两级。
+    w 按屏幕像素封顶（同 GL 约 1.4 px 的 coast 带）：只按 pxpd 放大时战术图放大后每段描成上百 px 宽＝沿岸成片矩形染色 */
+export function coastInk(d: Uint8ClampedArray, elev: Float32Array, wsv: Float32Array, W: number, H: number, w: number): void {
+  const land = (i: number): boolean => elev[i] >= wsv[i] - 0.02;
+  const sv = new Uint8Array(W * H), sh = new Uint8Array(W * H), near = new Uint8Array(W * H);
+  const hw = w / 2, R = Math.ceil(hw) + 1;
+  for (let y = 1; y < H; y++) for (let x = 1; x < W; x++) {
+    const i = y * W + x, a = land(i);
+    if (a !== land(i - 1)) sv[i] = 1;
+    if (a !== land(i - W)) sh[i] = 1;
+    if (sv[i] || sh[i]) for (let yy = Math.max(0, y - R); yy <= Math.min(H - 1, y + R); yy++) near.fill(1, yy * W + Math.max(0, x - R), yy * W + Math.min(W - 1, x + R) + 1);
+  }
+  for (let py = 0; py < H; py++) for (let px = 0; px < W; px++) {
+    if (!near[py * W + px]) continue;
+    let n = 0;
+    for (let b = 0; b < 4; b++) {
+      const sy = py + (b + 0.5) / 4, ry = Math.floor(sy + 0.5);
+      for (let a = 0; a < 4; a++) {
+        const sx = px + (a + 0.5) / 4, rx = Math.floor(sx + 0.5);
+        let hit = false;
+        if (ry >= 1 && ry < H) for (let x = Math.max(1, Math.ceil(sx - hw)); !hit && x <= Math.min(W - 1, Math.floor(sx + hw)); x++) hit = sv[ry * W + x] === 1;
+        if (rx >= 1 && rx < W) for (let y = Math.max(1, Math.ceil(sy - hw)); !hit && y <= Math.min(H - 1, Math.floor(sy + hw)); y++) hit = sh[y * W + rx] === 1;
+        if (hit) n++;
+      }
+    }
+    if (!n) continue;
+    const k = 0.55 * n / 16, q = (py * W + px) * 4;
+    d[q] += (38 - d[q]) * k; d[q + 1] += (66 - d[q + 1]) * k; d[q + 2] += (86 - d[q + 2]) * k;
+  }
+}
+/** 两份同形数组的变化包围盒（行主序、每格 stride 个数）：[c0, r0, c1, r1] 闭区间，无变化 null（导出以便单测） */
+export function changedBox(a: ArrayLike<number>, b: ArrayLike<number>, cols: number, rows: number, stride = 1): number[] | null {
+  let c0 = cols, r0 = rows, c1 = -1, r1 = -1;
+  const rs = cols * stride;
+  for (let r = 0; r < rows; r++) {
+    const o = r * rs;
+    let lo = 0;
+    while (lo < rs && a[o + lo] === b[o + lo]) lo++;
+    if (lo === rs) continue;
+    let hi = rs - 1;
+    while (a[o + hi] === b[o + hi]) hi--;
+    c0 = Math.min(c0, Math.floor(lo / stride)); c1 = Math.max(c1, Math.floor(hi / stride));
+    if (r < r0) r0 = r;
+    r1 = r;
+  }
+  return c1 < 0 ? null : [c0, r0, c1, r1];
+}
+/** 两个格网（Grid / ElevField）同形：行列数、格距与范围逐位相同 */
+export function sameGeom(a: { cols: number; rows: number; step: number; bb: BBox }, b: { cols: number; rows: number; step: number; bb: BBox }): boolean {
+  return a.cols === b.cols && a.rows === b.rows && a.step === b.step && a.bb.lonMin === b.bb.lonMin && a.bb.lonMax === b.bb.lonMax
+    && a.bb.latMin === b.bb.latMin && a.bb.latMax === b.bb.latMax;
+}
+export function unionBB(bs: BBox[]): BBox {
+  return { lonMin: Math.min(...bs.map(b => b.lonMin)), lonMax: Math.max(...bs.map(b => b.lonMax)),
+    latMin: Math.min(...bs.map(b => b.latMin)), latMax: Math.max(...bs.map(b => b.latMax)) };
 }
 
 /* 等高线助手（与 GL 版同构）：sstep=smoothstep；cw=线强（w0..w1 带宽像素，数值 +1e-6 防零梯度平台整面刷线）；oddK=倍数奇偶 */
@@ -132,7 +199,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   let grid: Grid | null = null;
   let field: ElevField | null = null;   // 画面场含几何（粗格或侵蚀细分，精修档在此；缺省=按 ELEV[类型] 合成粗格,旧行为）
   let rule: ElevField | null = null;    // 规则场（工作档）：推演底图的等高线取它＝与光标读数同源；缺省＝画面场
-  let tile: { cv: HTMLCanvasElement; bb: BBox; pxpd: number; key: string } | null = null;
+  type Tile = { cv: HTMLCanvasElement; bb: BBox; pxpd: number; key: string; rp: number; o: TerrainRenderOpts };   // rp/o＝实际渲染分辨率与选项（补画照用）
+  let tiles: Tile[] = [];   // 每份露出网格的世界拷贝一张（常态一张，跨环绕缝时两张）
+  let dirty: BBox[] = [];   // 自上次 render 以来数据变了的经纬矩形（已外扩到取样半径），render 时补进留用的瓦片
   /* 逐格材质/色调（uploadGrid 预算；7 浮点=canopy,dune,ridge,marsh,rough,albVar,rock + tint 3 通道与有无） */
   let cellMat: Float32Array | null = null;
   let cellTint: Float32Array | null = null;
@@ -275,8 +344,14 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   function renderTile(bb: BBox, pxpd: number, opts: TerrainRenderOpts): HTMLCanvasElement {
     const W = Math.max(2, Math.round((bb.lonMax - bb.lonMin) * pxpd)), H = Math.max(2, Math.round((bb.latMax - bb.latMin) * pxpd));
     const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
-    const octx = cv.getContext("2d")!, img = octx.createImageData(W, H), d = img.data;
-    const L2P = (x: number, y: number): [number, number] => [bb.lonMin + x / pxpd, bb.latMax - y / pxpd];
+    cv.getContext("2d")!.putImageData(paintTile(bb, pxpd, opts, 0, 0, W, H), 0, 0);
+    return cv;
+  }
+  /** 瓦片 bb 里像素窗 [x0, x0+W)×[y0, y0+H) 的画面：纯逐像素计算、坐标恒从整块瓦片的原点量起＝窗内每个像素与整幅渲染逐字节同，
+      只有窗边几像素（邻像素差分、岸线看不到窗外的格边）不同——补画须多算一圈外缘再裁掉 */
+  function paintTile(bb: BBox, pxpd: number, opts: TerrainRenderOpts, x0: number, y0: number, W: number, H: number): ImageData {
+    const img = new ImageData(W, H), d = img.data;
+    const L2P = (x: number, y: number): [number, number] => [bb.lonMin + (x0 + x) / pxpd, bb.latMax - (y0 + y) / pxpd];
     /* 趟一：elev=双线性+宏观 fbm+微八度（晕渲/色阶/海岸）；esh=elev+材质纹理（只进法线）；
        ed=规则场制图面（帐篷平滑，等高线取它＝与读数同源）；cav=画面场帐篷差谷影。
        高程采样过同一域扭曲（同 GL：晕渲是画可形变，等高线是尺不动——ed 用未扭曲坐标）。 */
@@ -409,67 +484,118 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       }
       const q = i * 4; d[q] = col[0]; d[q + 1] = col[1]; d[q + 2] = col[2]; d[q + 3] = 255;
     }
-    octx.putImageData(img, 0, 0);
-    octx.strokeStyle = "rgba(38,66,86,.55)"; octx.lineWidth = Math.max(1, pxpd / 14); octx.beginPath();
-    for (let y = 1; y < H; y++) for (let x = 1; x < W; x++) {
-      const i = y * W + x, a = elev[i] >= wsv[i] - 0.02;
-      if (a !== (elev[i - 1] >= wsv[i - 1] - 0.02)) { octx.moveTo(x, y - 0.5); octx.lineTo(x, y + 0.5); }
-      if (a !== (elev[i - W] >= wsv[i - W] - 0.02)) { octx.moveTo(x - 0.5, y); octx.lineTo(x + 0.5, y); }
+    coastInk(d, elev, wsv, W, H, Math.max(1, Math.min(1.5 * (opts.dpr ?? 1), pxpd / 14)));
+    return img;
+  }
+
+  /** 把上传前后两份数据的差异折成经纬矩形（外扩到每个像素取样所及：扭曲 + 宏观坡 ±1 格 + 双线性与帐篷平滑）；
+      网格或场换了形状＝"all"（整块重画） */
+  function changedSince(p: { g: Grid; f: ElevField; r: ElevField; ws: Float32Array; mat: Float32Array; tint: Float32Array; has: Uint8Array }): BBox[] | "all" {
+    const g = grid!, f = field!, r = rule!;
+    if (g !== p.g && !sameGeom(g, p.g)) return "all";
+    const m = g.step * 3 + Math.max(f.step, r.step) * 2, out: BBox[] = [];
+    const add = (box: number[] | null, geo: { bb: BBox; step: number }): void => {
+      if (box) out.push({ lonMin: geo.bb.lonMin + box[0] * geo.step - m, lonMax: geo.bb.lonMin + (box[2] + 1) * geo.step + m,
+        latMin: geo.bb.latMin + box[1] * geo.step - m, latMax: geo.bb.latMin + (box[3] + 1) * geo.step + m });
+    };
+    for (const [a, b] of p.r === p.f && r === f ? [[p.f, f]] : [[p.f, f], [p.r, r]]) {
+      if (a === b) continue;
+      if (!sameGeom(a, b) || !a.shadow !== !b.shadow) return "all";
+      add(changedBox(a.data, b.data, b.cols, b.rows), b);
+      if (a.shadow && a.shadow !== b.shadow) add(changedBox(a.shadow, b.shadow!, b.cols, b.rows), b);
     }
-    octx.stroke();
-    return cv;
+    if (p.ws !== cellWS) add(changedBox(p.ws, cellWS!, g.cols, g.rows), g);
+    if (p.mat !== cellMat) {
+      add(changedBox(p.mat, cellMat!, g.cols, g.rows, 7), g); add(changedBox(p.tint, cellTint!, g.cols, g.rows, 3), g);
+      add(changedBox(p.has, cellTintHas!, g.cols, g.rows), g);
+    }
+    return out;
+  }
+  /** 把 rects 补进瓦片；要补的面积过半返回 false（整块重画更省） */
+  function patchTile(t: Tile, rects: BBox[]): boolean {
+    const W = t.cv.width, H = t.cv.height, pd = t.rp, dpr = t.o.dpr ?? 1;
+    const pm = Math.ceil(10 * dpr) + Math.ceil(1.5 * dpr) + 3;   // 变化能波及的像素：间曲线门 ±10 CSS px 取样 + 岸线线宽 + 邻像素差分
+    const rm = Math.ceil(1.5 * dpr) + 3;                          // 只算不贴的外缘：让窗边像素也看得见窗外的邻像素与岸线格边
+    const wins: number[][] = [];
+    let area = 0;
+    for (const d of rects) {
+      const x0 = Math.max(0, Math.floor((d.lonMin - t.bb.lonMin) * pd) - pm), x1 = Math.min(W, Math.ceil((d.lonMax - t.bb.lonMin) * pd) + pm);
+      const y0 = Math.max(0, Math.floor((t.bb.latMax - d.latMax) * pd) - pm), y1 = Math.min(H, Math.ceil((t.bb.latMax - d.latMin) * pd) + pm);
+      if (x1 > x0 && y1 > y0) { wins.push([x0, y0, x1, y1]); area += (x1 - x0) * (y1 - y0); }
+    }
+    if (area > 0.5 * W * H) return false;
+    const tctx = t.cv.getContext("2d")!;
+    for (const [x0, y0, x1, y1] of wins) {
+      const X0 = Math.max(0, x0 - rm), Y0 = Math.max(0, y0 - rm), X1 = Math.min(W, x1 + rm), Y1 = Math.min(H, y1 + rm);
+      tctx.putImageData(paintTile(t.bb, pd, t.o, X0, Y0, X1 - X0, Y1 - Y0), X0, Y0, x0 - X0, y0 - Y0, x1 - x0, y1 - y0);   // 只贴内窗、逐字节，不经合成
+    }
+    return true;
   }
 
   return {
     canvas, kind: "cpu",
     uploadGrid(g: Grid, wsurf: Float32Array, f?: ElevField, r?: ElevField) {
+      const prev = tiles.length && grid ? { g: grid, f: field!, r: rule!, ws: cellWS!, mat: cellMat!, tint: cellTint!, has: cellTintHas! } : null;
       const sameGrid = g === grid;
-      grid = g; field = f || coarseField(g, fieldOfTypes(g)); rule = r || field; tile = null; cellWS = wsurf;
-      if (sameGrid) return;   // 同一 Grid 实例＝只动了高程，逐格材质/色调不变
-      const n = g.rows * g.cols;   // 逐格材质/色调预算（renderTile 每像素四角查表）
-      cellMat = new Float32Array(n * 7); cellTint = new Float32Array(n * 3); cellTintHas = new Uint8Array(n);
-      for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {
-        const k = r * g.cols + c, cell = g.cells[r][c], m = materialFor(cell), t = terrainProps(cell).tint;
-        cellMat.set([m.canopy, m.dune, m.ridge, m.marsh, m.rough, m.albVar, m.rock], k * 7);
-        if (t) { cellTint.set(t, k * 3); cellTintHas[k] = 1; }
+      grid = g; field = f || coarseField(g, fieldOfTypes(g)); rule = r || field; cellWS = wsurf;
+      if (!sameGrid) {   // 同一 Grid 实例＝只动了高程，逐格材质/色调不变
+        const n = g.rows * g.cols;   // 逐格材质/色调预算（renderTile 每像素四角查表）
+        cellMat = new Float32Array(n * 7); cellTint = new Float32Array(n * 3); cellTintHas = new Uint8Array(n);
+        for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {
+          const k = r * g.cols + c, cell = g.cells[r][c], m = materialFor(cell), t = terrainProps(cell).tint;
+          cellMat.set([m.canopy, m.dune, m.ridge, m.marsh, m.rough, m.albVar, m.rock], k * 7);
+          if (t) { cellTint.set(t, k * 3); cellTintHas[k] = 1; }
+        }
       }
+      const d = prev ? changedSince(prev) : "all";
+      if (d === "all") { tiles = []; dirty = []; }
+      else if (d.length) dirty = dirty.length + d.length > 16 ? [unionBB(dirty.concat(d))] : dirty.concat(d);   // 攒多了并成一块，免得逐块重算外缘
     },
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
       if (!grid) return;
       if (opts.flat) { renderFlat(viewBB, opts); return; }
       const [W, H] = opts.px ?? [canvas.width, canvas.height];   // 可见区（画布可更大，只画左上这一块）
       const pxpd = W / (viewBB.lonMax - viewBB.lonMin);
-      // 球面环绕：把视口平移 k×360° 折回网格所在域做瓦片判定/重建，贴图时再按拷贝偏移回来
-      const k = opts.wrap
-        ? 360 * Math.round(((grid.bb.lonMin + grid.bb.lonMax) / 2 - (viewBB.lonMin + viewBB.lonMax) / 2) / 360)
-        : 0;
-      const vb: BBox = k ? { lonMin: viewBB.lonMin + k, lonMax: viewBB.lonMax + k, latMin: viewBB.latMin, latMax: viewBB.latMax } : viewBB;
-      const key = `g${(opts.gain ?? 1).toFixed(2)}` + (opts.contour ? `c${opts.cStep || 0.12}d${opts.dpr ?? 1}` : "");   // 增益随缩放变，入键
-      const plan = planTile(tile, key, vb, pxpd, grid.bb);
-      if (plan === "none") tile = null;
-      else if (plan !== "keep") {
-        /* 瓦片被像素预算封顶（renderPxpd < pxpd）时贴回屏幕要放大 pxpd/renderPxpd 倍：等高线的像素量按 CSS 像素锚定，
-           喂给瓦片的 dpr 须同比缩小，否则线在屏幕上按放大倍数变粗（960 px 方图 DPR4 实测 6.8 px） */
-        const s = plan.renderPxpd / plan.pxpd;
-        tile = { cv: renderTile(plan.bb, plan.renderPxpd, s < 1 ? { ...opts, dpr: (opts.dpr ?? 1) * s } : opts), bb: plan.bb, pxpd: plan.pxpd, key };
+      // 球面环绕：视口按每份拷贝平移 c 折回网格所在域做瓦片判定/重建，贴图时再按拷贝偏移回来
+      const copies = wrapCopies(viewBB, grid.bb, !!opts.wrap);
+      /* 键须罩住瓦片读到的每个选项（增益随缩放变）：数据不变时瓦片留用，漏一项＝改那项设置后画面不动 */
+      const S = opts.snow;
+      const key = `g${(opts.gain ?? 1).toFixed(2)}d${opts.dpr ?? 1}` + (opts.contour ? `c${opts.cStep || 0.12}` : "") + (opts.paper ? "p" : "")
+        + (S ? `s${S.base},${S.lat ? 1 : 0},${S.refM},${S.unitM}` : "");
+      const next: Tile[] = [];
+      for (const c of copies) {
+        const vb: BBox = c ? { lonMin: viewBB.lonMin + c, lonMax: viewBB.lonMax + c, latMin: viewBB.latMin, latMax: viewBB.latMax } : viewBB;
+        let t = next.concat(tiles).find(x => planTile(x, key, vb, pxpd, grid!.bb) === "keep");   // 视口宽过一份世界时几份拷贝要的是同一片
+        if (t && dirty.length && !next.includes(t) && !patchTile(t, dirty)) { const stale = t; tiles = tiles.filter(x => x !== stale); t = undefined; }
+        if (!t) {
+          const plan = planTile(null, key, vb, pxpd, grid.bb);
+          if (typeof plan !== "object") continue;
+          /* 瓦片被像素预算封顶（renderPxpd < pxpd）时贴回屏幕要放大 pxpd/renderPxpd 倍：等高线的像素量按 CSS 像素锚定，
+             喂给瓦片的 dpr 须同比缩小，否则线在屏幕上按放大倍数变粗（960 px 方图 DPR4 实测 6.8 px） */
+          const s = plan.renderPxpd / plan.pxpd;
+          const o = s < 1 ? { ...opts, dpr: (opts.dpr ?? 1) * s } : opts;
+          t = { cv: renderTile(plan.bb, plan.renderPxpd, o), bb: plan.bb, pxpd: plan.pxpd, key, rp: plan.renderPxpd, o };
+        }
+        if (!next.includes(t)) next.push(t);
       }
+      tiles = next; dirty = [];
       // 底色=深水（视口越出网格范围的部分；战术图按 paper 裁决铺宣纸色），再按世界拷贝贴瓦片。
       // 纵向用独立 pxpdY：viewBB 经度含 cos(lat0) 校正、纬度不含，贴图须各向异性拉伸
       //（对齐旧 drawTile 经 project 求角点的行为；瓦片内部仍为方度像素，交给 drawImage 缩放）。
       const pxpdY = H / (viewBB.latMax - viewBB.latMin);
       ctx.fillStyle = opts.paper ? "#d9d2c0" : "rgb(40,90,132)";
       ctx.fillRect(0, 0, W, H);
-      if (tile) {
-        const py0 = (viewBB.latMax - tile.bb.latMax) * pxpdY, py1 = (viewBB.latMax - tile.bb.latMin) * pxpdY;
-        for (const s of (opts.wrap ? [-360, 0, 360] : [0])) {
-          const x0 = (tile.bb.lonMin - k + s - viewBB.lonMin) * pxpd, x1 = (tile.bb.lonMax - k + s - viewBB.lonMin) * pxpd;
+      for (const t of tiles) {
+        const py0 = (viewBB.latMax - t.bb.latMax) * pxpdY, py1 = (viewBB.latMax - t.bb.latMin) * pxpdY;
+        for (const c of copies) {
+          const x0 = (t.bb.lonMin - c - viewBB.lonMin) * pxpd, x1 = (t.bb.lonMax - c - viewBB.lonMin) * pxpd;
           if (x1 <= 0 || x0 >= W) continue;
-          ctx.drawImage(tile.cv, x0, py0, x1 - x0, py1 - py0);
+          ctx.drawImage(t.cv, x0, py0, x1 - x0, py1 - py0);
         }
       }
     },
     maxDim() { return 16384; },   // Canvas2D 各主流实现的稳妥边长
     rendererName() { return "CPU 瓦片（Canvas2D 兜底）"; },
-    dispose() { tile = null; grid = null; field = null; cellMat = null; cellTint = null; cellTintHas = null; cellWS = null; }
+    dispose() { tiles = []; dirty = []; grid = null; field = null; cellMat = null; cellTint = null; cellTintHas = null; cellWS = null; }
   };
 }

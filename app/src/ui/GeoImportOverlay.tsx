@@ -39,7 +39,7 @@ function GeoImportCard({ req }: { req: GeoImportReq }) {
   const keyRow = (label: string, val: string, onPick: (v: string) => void, hint?: string) => (
     <div class="setrow">
       <label>{label}</label>
-      <select value={val} onChange={e => onPick((e.currentTarget as HTMLSelectElement).value)}>
+      <select value={val} aria-label={label} onChange={e => onPick((e.currentTarget as HTMLSelectElement).value)}>
         <option value="" selected={val === ""}>— 不用 —</option>
         {req.scan.keys.map(k => <option value={k.key} selected={val === k.key}>{k.key}</option>)}
       </select>
@@ -69,8 +69,8 @@ function GeoImportCard({ req }: { req: GeoImportReq }) {
 
         <div class="mo-sec">落点</div>
         <div class="setrow">
-          <label>导入到</label>
-          <div class="seg">
+          <label id="gj_target_lab">导入到</label>
+          <div class="seg" role="group" aria-labelledby="gj_target_lab">
             <button type="button" class={"tbtn" + (target === "new" ? " on" : "")} onClick={() => setTarget("new")}>🆕 新建一张图</button>
             {req.canMerge && (
               <button type="button" class={"tbtn" + (target === "merge" ? " on" : "")} onClick={() => setTarget("merge")}>
@@ -92,8 +92,8 @@ function GeoImportCard({ req }: { req: GeoImportReq }) {
           ? typeVals.map(v => `${v}→${NODE_STYLE[guessNodeType(v, map.typeDefault)].名}`).join("　")
           : "不用则一律按下面的缺省类型")}
         <div class="setrow">
-          <label>缺省类型</label>
-          <select value={map.typeDefault} onChange={e => set({ typeDefault: (e.currentTarget as HTMLSelectElement).value })}>
+          <label for="gj_typedef">缺省类型</label>
+          <select id="gj_typedef" value={map.typeDefault} onChange={e => set({ typeDefault: (e.currentTarget as HTMLSelectElement).value })}>
             {NODE_CAT_ORDER.map(ck => (
               <optgroup label={NODE_CATS[ck].名}>
                 {NODE_CATS[ck].types.map(t => (
@@ -109,15 +109,15 @@ function GeoImportCard({ req }: { req: GeoImportReq }) {
 
         <div class="mo-sec">几何落成什么</div>
         <div class="setrow">
-          <label>线</label>
-          <select value={map.lineType} onChange={e => set({ lineType: (e.currentTarget as HTMLSelectElement).value as GeoLineType })}>
+          <label for="gj_line">线</label>
+          <select id="gj_line" value={map.lineType} onChange={e => set({ lineType: (e.currentTarget as HTMLSelectElement).value as GeoLineType })}>
             {GEO_LINE_TYPES.map(k => <option value={k} selected={map.lineType === k}>{EDGE_STYLE[k].名}</option>)}
           </select>
           <span class="sub">{c.line ? `${c.line} 条线要素` : "本文件没有线要素"}　道路与商路要挂两端地点，导进来的线只能落这两种</span>
         </div>
         <div class="setrow">
-          <label>面</label>
-          <div class="seg">
+          <label id="gj_poly_lab">面</label>
+          <div class="seg" role="group" aria-labelledby="gj_poly_lab">
             <button type="button" class={"tbtn" + (map.polyAs === "paint" ? " on" : "")} onClick={() => set({ polyAs: "paint" })}>涂域</button>
             <button type="button" class={"tbtn" + (map.polyAs === "outline" ? " on" : "")} onClick={() => set({ polyAs: "outline" })}>边界折线</button>
             <button type="button" class={"tbtn" + (map.polyAs === "both" ? " on" : "")} onClick={() => set({ polyAs: "both" })}>两者都要</button>
@@ -131,15 +131,15 @@ function GeoImportCard({ req }: { req: GeoImportReq }) {
         )}
         {wantOutline && (
           <div class="setrow">
-            <label>边界线型</label>
-            <select value={map.outlineType} onChange={e => set({ outlineType: (e.currentTarget as HTMLSelectElement).value as GeoLineType })}>
+            <label for="gj_outline">边界线型</label>
+            <select id="gj_outline" value={map.outlineType} onChange={e => set({ outlineType: (e.currentTarget as HTMLSelectElement).value as GeoLineType })}>
               {GEO_LINE_TYPES.map(k => <option value={k} selected={map.outlineType === k}>{EDGE_STYLE[k].名}</option>)}
             </select>
             <span class="sub">每个环落一条自由折线</span>
           </div>
         )}
         <div class="setrow">
-          <label>折线抽稀</label>
+          <label for="gj_simp">折线抽稀</label>
           <input type="checkbox" id="gj_simp" checked={map.simplify}
             onChange={e => set({ simplify: (e.currentTarget as HTMLInputElement).checked })} />
           <label for="gj_simp" style={{ width: "auto", fontWeight: 400 }} class="sub">

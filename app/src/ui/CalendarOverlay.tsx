@@ -71,8 +71,8 @@ function CalendarCard() {
         <button class="x tr" aria-label="关闭" onClick={() => { calOverlaySig.value = false; }}>✕</button>
       </div>
       <div class="mo-body" onInput={() => bump(tick + 1)} key={curId}>
-        <div class="setrow"><label>已存历法</label>
-          <div class="seg" style={{ flexWrap: "wrap" }}>
+        <div class="setrow"><label id="cal_list_lab">已存历法</label>
+          <div class="seg" role="group" aria-labelledby="cal_list_lab" style={{ flexWrap: "wrap" }}>
             {list.map(t => (
               <button key={t.id} type="button" class={"tbtn" + (t.id === curId ? " on" : "")} aria-pressed={t.id === curId}
                 onClick={() => setCurId(t.id)}>{t.名称}</button>
@@ -87,28 +87,28 @@ function CalendarCard() {
         </div>}
 
         <h4 style={{ margin: "14px 0 4px" }}>基本</h4>
-        <div class="setrow"><label>名称</label>
+        <div class="setrow"><label for="cal_name">名称</label>
           <input type="text" id="cal_name" class="wide" defaultValue={cur ? cur.名称 : "新历法"} /></div>
-        <div class="setrow"><label>纪元前缀</label>
+        <div class="setrow"><label for="cal_era">纪元前缀</label>
           <input type="text" id="cal_era" style={{ width: "6em" }} defaultValue={c.era || "SE"} />
           <span class="sub">纪年前缀，印在年份之前，如 SE3107</span></div>
 
         <h4 style={{ margin: "14px 0 4px" }}>月</h4>
-        <div class="setrow"><label>月数</label>
+        <div class="setrow"><label for="cal_m">月数</label>
           <input type="number" id="cal_m" min={1} step={1} style={{ width: "5em" }} defaultValue={String(c.months || (c.monthLens ? c.monthLens.length : 12))} />
           <span class="sub">填了「逐月日数」时以那一串的长度为准</span></div>
-        <div class="setrow"><label>每月日数</label>
+        <div class="setrow"><label for="cal_len">每月日数</label>
           <input type="text" id="cal_len" class="wide" defaultValue={lenText} />
           <span class="sub">填一个数＝各月等长；填一串（如 31，28，31，30）＝逐月不同</span></div>
-        <div class="setrow"><label>月名</label>
+        <div class="setrow"><label for="cal_names">月名</label>
           <input type="text" id="cal_names" class="wide" defaultValue={(c.monthNames || []).join("，")} placeholder="霜月，苍月，玄月" />
           <span class="sub">按次序分隔，逗号与顿号都认；留空＝1月、2月…，缺的那几个也按「3月」式回退</span></div>
 
         <h4 style={{ margin: "14px 0 4px" }}>一日</h4>
-        <div class="setrow"><label>每日几时</label>
+        <div class="setrow"><label for="cal_hpd">每日几时</label>
           <input type="number" id="cal_hpd" min={1} max={MAX_HPD} step={1} style={{ width: "5em" }} defaultValue={String(c.hoursPerDay || 24)} />
           <span class="sub">时间轴「时」档一步＝一日的 1/时数</span></div>
-        <div class="setrow"><label>每时几分</label>
+        <div class="setrow"><label for="cal_mph">每时几分</label>
           <input type="number" id="cal_mph" min={1} max={MAX_MPH} step={1} style={{ width: "5em" }} defaultValue={String(c.minutesPerHour || 60)} />
           <span class="sub">时 × 分＝日内时刻的最细刻度，显示成「08:15」式</span></div>
 

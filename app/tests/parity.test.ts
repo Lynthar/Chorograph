@@ -7,7 +7,7 @@ import goldenJson from "./fixtures/legacy-golden.json" with { type: "json" };
 import * as C from "../src/core/constants.ts";
 import { fbm, hash2, vnoise } from "../src/core/noise.ts";
 import { seedTerrain } from "../src/core/terrain.ts";
-import { distKm, flatKmPerDeg, haversine, kmPerDegLat, wrapLon } from "../src/core/geo.ts";
+import { distKm, flatKmPerDeg, haversine, kmPerDeg, wrapLon } from "../src/core/geo.ts";
 import { calOf, fmtT, fmtYMD, fromT, parseYMD, tacT } from "../src/core/calendar.ts";
 import { clampView, minDegPerPx, panByView, project, projectSeq, unproject, visibleWorldCopies, zoomAtView, type Camera } from "../src/core/projection.ts";
 import { autoGridN, buildGridCells, roadCellSet } from "../src/core/grid.ts";
@@ -155,7 +155,7 @@ describe("地理距离一致", () => {
   for (const gc of golden.geo) {
     it(`meta=${JSON.stringify(gc.meta)}`, () => {
       for (const pr of gc.pairs) assert.strictEqual(distKm(gc.meta, pr.p[0], pr.p[1], pr.p[2], pr.p[3]), pr.distKm);
-      assert.strictEqual(kmPerDegLat(gc.meta), gc.kmPerDegLat);
+      assert.strictEqual(kmPerDeg(gc.meta), gc.kmPerDegLat);
       assert.strictEqual(flatKmPerDeg(gc.meta), gc.flatKmPerDeg);
       assert.strictEqual(minDegPerPx(gc.meta), gc.minDegPerPx);
       const flat = gc.meta.worldModel === "flat";

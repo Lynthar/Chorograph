@@ -137,7 +137,7 @@ export function yearRangeOf(world: World, yearNow: number): YearRange {
   if (m.mapKind === "tactical") {
     const c = calOf(m.calendar);
     const y = isFinite(m.battleYear as number) ? (m.battleYear as number) : fromT(c, yearNow || 0).y;
-    const span = yearSpanT(c, y);   // 整年日戳范围（custom 与旧 y*dpy 算式逐位一致；earth=JDN）
+    const span = yearSpanT(c, y);   // 自该年（带月则自该月首日）起一整年的日戳范围
     let lo = Array.isArray(m.tacSpan) && isFinite(m.tacSpan[0]) ? m.tacSpan[0] : span[0];
     let hi = Array.isArray(m.tacSpan) && isFinite(m.tacSpan[1]) ? m.tacSpan[1] : span[1];
     const ts = [...(world.nodes || []).filter(n => n.type === "event" && isFinite(n.year as number)).map(n => n.year as number),

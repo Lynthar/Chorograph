@@ -8,7 +8,7 @@
 import { NODE_STYLE, RANK_KM_PX, certaintyStyle } from "../core/constants.ts";
 import { activeAt, evCurrentAt, evFutureAt, ownerAt } from "../core/time.ts";
 import { project, type Camera } from "../core/projection.ts";
-import { kmPerDegLat, lonCos } from "../core/geo.ts";
+import { kmPerDeg, lonCos } from "../core/geo.ts";
 import { hexA, tget } from "../core/util.ts";
 import type { LabelField } from "./labels.ts";
 import type { Meta, World, WorldNode } from "../core/types.ts";
@@ -213,7 +213,7 @@ export function nodeVisibleAt(n: WorldNode, cam: Camera, meta: Meta | undefined,
   if (n.type === "label" && L.notes === false) return false;
   if (opts.editing) return true;                       // 编辑也按当年世界编辑，但全部地点可见
   const s = tget(NODE_STYLE, n.type) || NODE_STYLE.city;
-  return cam.degPerPx * kmPerDegLat(meta) <= RANK_KM_PX[s.rank == null ? 2 : s.rank];
+  return cam.degPerPx * kmPerDeg(meta) <= RANK_KM_PX[s.rank == null ? 2 : s.rank];
 }
 export function drawNodes(
   ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined, world: World, yearNow: number,
@@ -285,7 +285,7 @@ export function drawNodeRanges(
   ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
   world: World, yearNow: number, selId?: string | null
 ) {
-  const kpd = kmPerDegLat(meta);
+  const kpd = kmPerDeg(meta);
   for (const n of world.nodes) {
     if (!(typeof n.radiusKm === "number" && n.radiusKm > 0)) continue;
     const selected = n.id === selId;

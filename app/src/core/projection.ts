@@ -1,6 +1,6 @@
 /* 投影：经纬度 ↔ 屏幕像素（等距圆柱变体；平面世界 cos=1，球面按视中心纬度校正 + 经度环绕）。
    旧实现读全局 state.view/canvas/DPR——这里全部参数化为 Camera（尺寸取 CSS 像素）。 */
-import { kmPerDegLat, toRad, wrapLon } from "./geo.ts";
+import { kmPerDeg, toRad, wrapLon } from "./geo.ts";
 import type { BBox, Meta } from "./types.ts";
 
 export interface Camera {
@@ -92,7 +92,7 @@ export function visibleWorldCopies(cam: Camera, meta: Meta | undefined): number[
 
 /* 缩放下限随世界尺度自适应：放大到底≈5 m/像素；星球半径改了自动跟着变 */
 export function minDegPerPx(meta: Meta | undefined): number {
-  const k = kmPerDegLat(meta);
+  const k = kmPerDeg(meta);
   return (isFinite(k) && k > 0) ? Math.max(1e-6, 0.005 / k) : 0.004;
 }
 
@@ -111,7 +111,7 @@ export const MIN_ZOOM_RANGE = 10;
     ⚠ 传纯 fit：不含 meta.view.degPerPx0 那半句——它是存档里的自由数值，手编一个大的会连带把
     放大这一头也放松。fitDpp 非正/非有限＝当没有图幅，只按档位与物理地板定。 */
 export function minDppFor(meta: Meta | undefined, fitDpp: number): number {
-  const phys = minDegPerPx(meta), k = kmPerDegLat(meta);
+  const phys = minDegPerPx(meta), k = kmPerDeg(meta);
   if (!(isFinite(k) && k > 0)) return phys;
   const floorKm = (meta || {}).mapKind === "tactical" ? SCALE_FLOOR_KM.tactical : SCALE_FLOOR_KM.strategic;
   const byScale = floorKm / (SCALE_BAR_PX * k);

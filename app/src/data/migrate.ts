@@ -4,6 +4,7 @@
    · 幂等可反复跑：条目带 srcLS{id,updatedAt,entryUpdatedAt} 记出身，启动时增量同步；
    · 旧版又改了某图 → 若新库侧没动过（updatedAt 仍等于导入时值）则覆入，动过则保守跳过（新库为准）。 */
 import { normalizeWorld } from "../core/world.ts";
+import { isStaleError } from "./guard.ts";
 import { openDB, reqP } from "./idb.ts";
 import type { Library, MapEntry } from "./library.ts";
 
@@ -60,10 +61,16 @@ export async function migrateFromLocalStorage(lib: Library, ls: LSLike): Promise
         srcLS: { id: lsId, updatedAt: lsUpd, entryUpdatedAt: upd } });
       res.imported++;
     } else if (lsUpd > prev.srcLS!.updatedAt && prev.updatedAt === prev.srcLS!.entryUpdatedAt) {
-      await lib.save(prev.id, normalizeWorld(w),
-        { view: snap.view, year: snap.year, thumb: snap.thumb ?? undefined,
-          srcLS: { id: lsId, updatedAt: lsUpd, entryUpdatedAt: lsUpd } }, lsUpd);
-      res.updated++;
+      /* 基准＝列表时读到的版本：读完到写入之间新库若被保存过（另一个标签），守卫拦下＝按「两边都改过」跳过 */
+      try {
+        await lib.save(prev.id, normalizeWorld(w),
+          { view: snap.view, year: snap.year, thumb: snap.thumb ?? undefined,
+            srcLS: { id: lsId, updatedAt: lsUpd, entryUpdatedAt: lsUpd } }, lsUpd, prev.updatedAt);
+        res.updated++;
+      } catch (err) {
+        if (!isStaleError(err)) throw err;
+        res.skipped++;
+      }
     } else {
       res.skipped++;   // 已最新，或两边都改过（保新库、不覆盖）
     }

@@ -31,7 +31,7 @@ const randSeed = () => Math.floor(Math.random() * 99999) + 1;
 /** 时代（战术图专有；创建与设置同一行）：现代解锁雷达等近现代账目。普通函数直接返回节点，不是组件（同 KeyRow 之训） */
 function PeriodRow({ modern }: { modern: boolean }) {
   return (
-    <div class="setrow"><label>时代</label>
+    <div class="setrow" role="group" aria-labelledby="sw_period_lab"><label id="sw_period_lab">时代</label>
       <label><input type="radio" name="sw_period" value="ancient" defaultChecked={!modern} /> {PERIOD_NAME.ancient}</label>
       <label><input type="radio" name="sw_period" value="modern" defaultChecked={modern} /> {PERIOD_NAME.modern}</label>
       <span class="sub">现代：部队表单多出雷达（探测半径 / 天线高度 / 目标高度），层面板多「雷达覆盖」；飞行高度与机械化速度将来也挂在这里。随时可改；改回古代只收起这些行，已填的数据不丢。</span>
@@ -42,7 +42,7 @@ function PeriodRow({ modern }: { modern: boolean }) {
 /** 侵蚀计算档（既有图可改；缺键＝底图与涂改，新图亦此）。普通函数直接返回节点，不是组件（同 PeriodRow） */
 function ErodeRow({ cur }: { cur: ErodeMode }) {
   return (
-    <div class="setrow"><label>侵蚀计算</label>
+    <div class="setrow" role="group" aria-labelledby="sw_erode_lab"><label id="sw_erode_lab">侵蚀计算</label>
       {(Object.keys(ERODE_MODES) as ErodeMode[]).map(k => <label key={k}><input type="radio" name="sw_erode" value={k} defaultChecked={cur === k} /> {ERODE_MODES[k].名}</label>)}
       <span class="sub">底图与涂改＝高程涂改也被侵蚀，松笔后算完落地换成刻出沟谷的真形；仅底图＝高程笔所见即所得、笔落即最终，只有地类底图（含地貌笔的改动）被侵蚀；关闭＝不侵蚀，没有细分、沟谷与烘焙阴影（DEM 导入或纯手工雕刻用）。随时可改。</span>
     </div>
@@ -345,24 +345,24 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
   const prefsBlock = (
     <>
       <h4 style={{ margin: "10px 0 4px" }}>界面（本机偏好，不入存档）</h4>
-      <div class="setrow"><label>主题</label>
-        <div class="seg">
+      <div class="setrow"><label id="sw_theme_lab">主题</label>
+        <div class="seg" role="group" aria-labelledby="sw_theme_lab">
           <button type="button" class={"tbtn" + (uiP.theme === "light" ? " on" : "")} aria-pressed={uiP.theme === "light"} onClick={() => setUiPrefs({ theme: "light" })}>亮 · 素笺</button>
           <button type="button" class={"tbtn" + (uiP.theme === "dark" ? " on" : "")} aria-pressed={uiP.theme === "dark"} onClick={() => setUiPrefs({ theme: "dark" })}>暗 · 漆</button>
         </div>
       </div>
-      <div class="setrow"><label>密度</label>
-        <div class="seg">
+      <div class="setrow"><label id="sw_den_lab">密度</label>
+        <div class="seg" role="group" aria-labelledby="sw_den_lab">
           <button type="button" class={"tbtn" + (uiP.den === "loose" ? " on" : "")} aria-pressed={uiP.den === "loose"} onClick={() => setUiPrefs({ den: "loose" })}>浏览 · 松</button>
           <button type="button" class={"tbtn" + (uiP.den === "tight" ? " on" : "")} aria-pressed={uiP.den === "tight"} onClick={() => setUiPrefs({ den: "tight" })}>兵棋 · 紧</button>
         </div>
       </div>
-      <div class="setrow"><label>出图图例</label>
+      <div class="setrow" role="group" aria-labelledby="sw_legend_lab"><label id="sw_legend_lab">出图图例</label>
         <label><input type="checkbox" checked={uiP.legend !== false}
           onChange={e => setUiPrefs({ legend: (e.currentTarget as HTMLInputElement).checked })} /> 战术图导出附图例块（派系·兵种·状态，右下角）</label>
       </div>
-      <div class="setrow"><label>出图清晰度</label>
-        <div class="seg">
+      <div class="setrow"><label id="sw_scale_lab">出图清晰度</label>
+        <div class="seg" role="group" aria-labelledby="sw_scale_lab">
           {[1, 2, 3, 4].map(n => (
             <button type="button" class={"tbtn" + (uiP.exportScale === n ? " on" : "")} aria-pressed={uiP.exportScale === n}
               title={n === 1 ? "按屏幕原样导出" : `像素密度放大 ${n} 倍导出（取景不变；PNG 记录物理尺寸，打印大小恒等于屏上所见）`}
@@ -370,8 +370,8 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
           ))}
         </div>
       </div>
-      <div class="setrow"><label>地形立体感</label>
-        <div class="seg">
+      <div class="setrow"><label id="sw_shade_lab">地形立体感</label>
+        <div class="seg" role="group" aria-labelledby="sw_shade_lab">
           {RELIEF_STEPS.map(n => (
             <button type="button" class={"tbtn" + (uiP.relief === n ? " on" : "")} aria-pressed={uiP.relief === n}
               title={`晕渲明暗按此倍率加强（×1＝战术图放大 16 倍、战略图 96 倍的坡度夸张；屏幕与出图同用，不入存档）`}
@@ -395,8 +395,8 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       {!ro && <>
       <h4 style={{ margin: "12px 0 4px" }}>世界参数</h4>
       {create && (
-        <div class="setrow"><label>地图种类</label>
-          <div class="seg">
+        <div class="setrow"><label id="sw_mapkind_lab">地图种类</label>
+          <div class="seg" role="group" aria-labelledby="sw_mapkind_lab">
             <button type="button" class={"tbtn" + (tacNew ? "" : " on")} aria-pressed={!tacNew} onClick={() => setTacNew(false)}>🗺 战略图（世界·按年）</button>
             <button type="button" class={"tbtn" + (tacNew ? " on" : "")} aria-pressed={tacNew} onClick={() => setTacNew(true)}>⚔ 战术战场（一战·按日与时）</button>
           </div>
@@ -404,7 +404,7 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         </div>
       )}
       {/* 换图种即换默认名（key 换＝重挂）：战场叫「新地图」与标签打架；已输入的名字让位于图种切换 */}
-      <div class="setrow"><label>{create && tacNew ? "战场名称" : "地图名称"}</label>
+      <div class="setrow"><label for="sw_name">{create && tacNew ? "战场名称" : "地图名称"}</label>
         <input type="text" id="sw_name" class="wide" key={create && tacNew ? "tacname" : "name"}
           defaultValue={create && tacNew ? (base && base.mapKind === "tactical" ? d.名称 : "新战场") : d.名称} /></div>
       {!create && (
@@ -420,17 +420,17 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
           readoutText 一律「行不在就用预填值」。战术分支恒平面且 bbox 由中心＋直径推出，整块不出。 */}
       {create && !tacNew && (
         <>
-          <div class="setrow"><label>世界形态</label>
+          <div class="setrow" role="group" aria-labelledby="sw_model_lab"><label id="sw_model_lab">世界形态</label>
             <label><input type="radio" name="sw_model" value="sphere" checked={model === "sphere"} onChange={() => { setModel("sphere"); bumpRo(); }} /> 球面星球（大圆距离）</label>
             <label><input type="radio" name="sw_model" value="flat" checked={model === "flat"} onChange={() => { setModel("flat"); bumpRo(); }} /> 平面·天圆地方（直线距离）</label>
           </div>
           {model === "sphere"
-            ? <div class="setrow"><label>星球半径 km</label><input type="number" id="sw_radius" min={WORLD_RADIUS_KM[0]} max={WORLD_RADIUS_KM[1]} step={100} defaultValue={String(d.radius)}
+            ? <div class="setrow"><label for="sw_radius">星球半径 km</label><input type="number" id="sw_radius" min={WORLD_RADIUS_KM[0]} max={WORLD_RADIUS_KM[1]} step={100} defaultValue={String(d.radius)}
                 onChange={snapNum(WORLD_RADIUS_KM[0], WORLD_RADIUS_KM[1], 10000, "星球半径", " km")} /><span class="sub">大圆距离与每度里程都由它定。第一世界地球≈6371；钳 {WORLD_RADIUS_KM[0]}~{WORLD_RADIUS_KM[1]}</span></div>
-            : <div class="setrow"><label>每度里程 km/°</label><input type="number" id="sw_kmdeg" min={WORLD_KM_PER_DEG[0]} max={WORLD_KM_PER_DEG[1]} step={1} defaultValue={kmdegPre}
+            : <div class="setrow"><label for="sw_kmdeg">每度里程 km/°</label><input type="number" id="sw_kmdeg" min={WORLD_KM_PER_DEG[0]} max={WORLD_KM_PER_DEG[1]} step={1} defaultValue={kmdegPre}
                 onChange={e => { const el = e.currentTarget as HTMLInputElement; if (el.value.trim() === "") { setNumWarn(""); bumpRo(); return; } snapNum(WORLD_KM_PER_DEG[0], WORLD_KM_PER_DEG[1], 111, "每度里程", " km")(e); }} /><span class="sub">平面世界一度折多少公里——直线距离与格边都由它定。地球口径 111.19；留空＝{kmdegPre}</span></div>}
-          <div class="setrow"><label>经度范围 °</label><input type="number" id="sw_lonmin" step={1} defaultValue={String(d.lonMin)} onChange={snapBox} /> ~ <input type="number" id="sw_lonmax" step={1} defaultValue={String(d.lonMax)} onChange={snapBox} /></div>
-          <div class="setrow"><label>纬度范围 °</label><input type="number" id="sw_latmin" step={1} defaultValue={String(d.latMin)} onChange={snapBox} /> ~ <input type="number" id="sw_latmax" step={1} defaultValue={String(d.latMax)} onChange={snapBox} /><span class="sub">决定地形网格边界（创建后锁定）。{model === "sphere" ? "球面钳在纬 ±90、经跨 ≤360" : "平面的度是自由标尺，钳在导入闸的红线上（经跨 3600、纬跨 1700）"}</span></div>
+          <div class="setrow"><label>经度范围 °</label><input type="number" id="sw_lonmin" aria-label="经度范围 · 起" step={1} defaultValue={String(d.lonMin)} onChange={snapBox} /> ~ <input type="number" id="sw_lonmax" aria-label="经度范围 · 止" step={1} defaultValue={String(d.lonMax)} onChange={snapBox} /></div>
+          <div class="setrow"><label>纬度范围 °</label><input type="number" id="sw_latmin" aria-label="纬度范围 · 起" step={1} defaultValue={String(d.latMin)} onChange={snapBox} /> ~ <input type="number" id="sw_latmax" aria-label="纬度范围 · 止" step={1} defaultValue={String(d.latMax)} onChange={snapBox} /><span class="sub">决定地形网格边界（创建后锁定）。{model === "sphere" ? "球面钳在纬 ±90、经跨 ≤360" : "平面的度是自由标尺，钳在导入闸的红线上（经跨 3600、纬跨 1700）"}</span></div>
         </>
       )}
       {create && tacNew && (
@@ -440,41 +440,49 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
           <div class="setrow"><label>关联</label>
             <span class="sub">此处建的是<b>独立战场</b>，历法与年份自成一套。要让战场跟随某张战略图的历法与位置，请在那张战略图里选中战役事件点、点「⚔ 生成战术图」。</span></div>
           <div class="setrow"><label>战场中心 °</label>
-            <input type="number" id="sw_clon" min={-360} max={360} step={0.001} defaultValue={String(tacPre.clon)} title="中心经度（东经为正）"
+            <input type="number" id="sw_clon" aria-label="中心经度" min={-360} max={360} step={0.001} defaultValue={String(tacPre.clon)} title="中心经度（东经为正）"
               onChange={snapNum(-360, 360, 114, "中心经度", "°")} /> ,
-            <input type="number" id="sw_clat" min={-85} max={85} step={0.001} defaultValue={String(tacPre.clat)} title="中心纬度（北纬为正）"
+            <input type="number" id="sw_clat" aria-label="中心纬度" min={-85} max={85} step={0.001} defaultValue={String(tacPre.clat)} title="中心纬度（北纬为正）"
               onChange={snapNum(-85, 85, 38, "中心纬度", "°")} />
             <span class="sub">图幅正中那一点的经纬度。它定两件事：地形初稿取自程序化世界的哪一块、本图的经纬度读数与量距基准；与真实地理无关就随手填（战场恒平面，纬度不再影响格子形状）</span></div>
-          <div class="setrow"><label>战场直径 km</label>
+          <div class="setrow"><label for="sw_dia">战场直径 km</label>
             <input type="number" id="sw_dia" min={TAC_DIA_KM[0]} max={TAC_DIA_KM[1]} step={1} defaultValue={String(tacPre.dia)}
               onChange={snapNum(TAC_DIA_KM[0], TAC_DIA_KM[1], 60, "战场直径", " km")} />
             <span class="sub">图幅边长（钳 {TAC_DIA_KM[0]}~{TAC_DIA_KM[1]}，对角线红线 200km）；野战 15~40、会战 40~120</span></div>
-          <div class="setrow"><label>战役年份</label>
+          <div class="setrow"><label for="sw_byear">战役年份</label>
             <input type="text" id="sw_byear" defaultValue="" placeholder={calKind === "earth" ? "如 前204 / 1815" : "如 3107"} />
             <span class="sub">时间轴锚在这一年的日戳区间；细节日期落图后在时间轴上拨</span></div>
-          <div class="setrow"><label>最细等高距 米</label>
+          <div class="setrow"><label for="sw_contourm">最细等高距 米</label>
             <input type="number" id="sw_contourm" min={0} step={5} defaultValue={base && base.contourM != null ? String(base.contourM) : ""} placeholder="留空＝10" />
             <span class="sub">等高线的最细一档；平原战场 10、山地战场 50~100</span></div>
           <PeriodRow modern={!!(base && base.period === "modern")} />
         </>
       )}
       {!create && m.mapKind === "tactical" && <PeriodRow modern={m.period === "modern"} />}
-      <div class="setrow"><label>地形初稿</label>
+      <div class="setrow" role="group" aria-labelledby="sw_terr_lab"><label id="sw_terr_lab">地形初稿</label>
         <label><input type="radio" name="sw_terr" value="auto" defaultChecked={terr === "auto"} onChange={() => setTerr("auto")} /> 自动生成</label>
         <label><input type="radio" name="sw_terr" value="plain" defaultChecked={terr === "plain"} onChange={() => setTerr("plain")} /> 空白平原</label>
         {terr === "sample" && <label><input type="radio" name="sw_terr" value="sample" defaultChecked onChange={() => setTerr("sample")} /> 示例大陆</label>}
         {terr === "island" && <label><input type="radio" name="sw_terr" value="island" defaultChecked onChange={() => setTerr("island")} /> 四海环岛</label>}
       </div>
       <div class="setrow" id="swGenRow" style={{ display: terr === "auto" ? "flex" : "none" }}><label>生成参数</label>
-        <select id="sw_genstyle" title="大陆=单块居中大陆；群岛=四海散岛" defaultValue={d.genStyle}>
+        <select id="sw_genstyle" aria-label="生成参数 · 风格" title="大陆=单块居中大陆；群岛=四海散岛" defaultValue={d.genStyle}>
           <option value="continent" selected={d.genStyle === "continent"}>大陆</option>
           <option value="archipelago" selected={d.genStyle === "archipelago"}>群岛</option>
         </select>
-        <input type="number" id="sw_genseed" min={1} step={1} style={{ width: "6.5em" }} title="随机种子——同一种子永远生成同一块大陆" defaultValue={String(d.genSeed)} />
+        <input type="number" id="sw_genseed" aria-label="生成参数 · 种子" min={1} step={1} style={{ width: "6.5em" }} title="随机种子——同一种子永远生成同一块大陆" defaultValue={String(d.genSeed)} />
         <button type="button" class="tbtn" title="随机换一个种子，生成另一块大陆" onClick={reroll}>⟳ 换一换</button>
       </div>
       <div class="setrow"><label></label><span class="sub">「自动生成」按种子程序化生成海岸线/山川/生态；初稿只是底子——编辑模式可继续涂改，已涂改的格子(terrainOverrides)始终保留其上。</span></div>
-      <div class="setrow"><label>地势起伏</label>
+      <div class="setrow"><label for="sw_climate">气候</label>
+        {/* 初值同样落在 option 的 selected 上（见下方 sw_relief 注）；档外/缺键一律「未设定」＝旧图逐位不变 */}
+        <select id="sw_climate">
+          <option value="" selected={!climCur}>未设定（雪线 {SNOW_M} m，不随纬度）</option>
+          {CLIMATE_ORDER.map(k => <option key={k} value={k} selected={climCur === k}>{CLIMATE[k].名}（雪线约 {CLIMATE[k].snowM} m）</option>)}
+        </select>
+        <span class="sub">定雪线基准：球面图再随纬度在图幅内变化（高纬低、低纬高），平面图不随纬度。只动观感，随时可改。</span>
+      </div>
+      <div class="setrow"><label for="sw_relief">地势起伏</label>
         {/* ⚠ 初值必须落在 option 的 selected 上（同 sw_genstyle / ef_fs 之法）：核心 Preact 只在
             `name in dom` 时写属性，而 HTMLSelectElement **没有** defaultValue——单靠它会落成惰性
             attribute、选中项永远停在首项「无」，于是「打开设置什么都不改点应用」就把这张图的
@@ -488,24 +496,16 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         </select>
         <span class="sub">山有高低、等高线成形；编辑→地形→⛰高程 可再手工雕琢。随时可改，不动数据。</span>
       </div>
-      <div class="setrow"><label>气候</label>
-        {/* 初值同样落在 option 的 selected 上（见 sw_relief 注）；档外/缺键一律「未设定」＝旧图逐位不变 */}
-        <select id="sw_climate">
-          <option value="" selected={!climCur}>未设定（雪线 {SNOW_M} m，不随纬度）</option>
-          {CLIMATE_ORDER.map(k => <option key={k} value={k} selected={climCur === k}>{CLIMATE[k].名}（雪线约 {CLIMATE[k].snowM} m）</option>)}
-        </select>
-        <span class="sub">定雪线基准：球面图再随纬度在图幅内变化（高纬低、低纬高），平面图不随纬度。只动观感，随时可改。</span>
-      </div>
       {!(create && tacNew) && (
         /* 最细等高距（战略图与既有图的入口；战术新建在上方自己那一行）：等高距的地板，随时可改，只动观感 */
-        <div class="setrow"><label>最细等高距 米</label>
+        <div class="setrow"><label for="sw_contourm">最细等高距 米</label>
           <input type="number" id="sw_contourm" min={0} step={5} defaultValue={base && base.contourM != null ? String(base.contourM) : ""} placeholder="留空＝10" />
           <span class="sub">等高距按地势与缩放自适应（1-2-5 阶梯，每第 5 条加粗为计曲线），永不细于此值；平原 10、山地 50～100。</span>
         </div>
       )}
       {!create && (
         /* 图幅外（app 模式改；随时可改，只动观感）：判据同时供水面高程与图幅外底色两处用 */
-        <div class="setrow"><label>图幅外</label>
+        <div class="setrow" role="group" aria-labelledby="sw_out_lab"><label id="sw_out_lab">图幅外</label>
           <label><input type="radio" name="sw_out" value="sea" defaultChecked={!inland} /> 海</label>
           <label><input type="radio" name="sw_out" value="land" defaultChecked={inland} /> 陆地</label>
           <span class="sub">内陆图选「陆地」：碰到图幅边的水体也按内陆湖定水面（不再沉到海平面），图幅外铺纸色而非深海。</span>
@@ -527,7 +527,7 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         {create ? (
           <>
             {/* ⚠ 选中态落在 option 的 selected 上：核心 Preact 的 <select defaultValue> 不生效（见令牌/表单坑位） */}
-            <select id="sw_calkind" onChange={e => setCalSel((e.currentTarget as HTMLSelectElement).value)}>
+            <select id="sw_calkind" aria-label="纪年历法" onChange={e => setCalSel((e.currentTarget as HTMLSelectElement).value)}>
               {baseCalKeep && <option value="keep" selected={calSel === "keep"}>沿用原图的历法</option>}
               <option value="default" selected={calSel === "default"}>默认架空历法（12 月 × 30 日）</option>
               {calTemplatesSig.value.map(t => (
@@ -542,13 +542,13 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
           ? <span class="sub">真实地球历法（公元；儒略≤1582-10-04 / 格里≥10-15）——创建后锁定</span>
           : <>
               <span class="sub">架空 {curCal.months}月×{curCal.lens ? "逐月不等" : curCal.dpm + "日"}{curCal.names ? " · 有月名" : ""}{curCal.hpd !== 24 || curCal.mph !== 60 ? ` · 一日${curCal.hpd}时×${curCal.mph}分` : ""} · 纪元</span>
-              <input type="text" id="sw_era_app" style={{ width: "4.5em" }} title="纪元前缀（仅显示用，可随时改）" defaultValue={curCal.era} />
+              <input type="text" id="sw_era_app" aria-label="纪元前缀" style={{ width: "4.5em" }} title="纪元前缀（仅显示用，可随时改）" defaultValue={curCal.era} />
               <span class="sub">（历法结构创建后锁定）</span>
             </>)}
       </div>
       {create && <div class="setrow"><label></label><span class="sub">真实历法=公元纪年（输入「前216」表公元前）、真实月长与闰年、1582 儒略→格里切换，战术图日程用真实日期。架空历法在「📅 历法」里自定月数/月长/月名/每日时数并命名存下，此处直接选用。<b>历法在创建后锁定</b>（更改会错位已保存的日戳）。</span></div>}
       {create && prefsBlock}
-      <div class="setrow"><label>Obsidian 库名</label><input type="text" id="sw_vault" class="wide" defaultValue={d.vault} /><span class="sub">双链直开用</span></div>
+      <div class="setrow"><label for="sw_vault">Obsidian 库名</label><input type="text" id="sw_vault" class="wide" defaultValue={d.vault} /><span class="sub">双链直开用</span></div>
       </>}
       {!create && (
         <div id="setDataSec">

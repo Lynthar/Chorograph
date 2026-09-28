@@ -17,6 +17,7 @@ import { autoGridN, buildGridCells } from "./grid.ts";
 import { activeAt, ownerAt, paintLayersAt } from "./time.ts";
 import { paintStep, resamplePaintRuns } from "./territory.ts";
 import { calOf, fmtYear, yearSpanT } from "./calendar.ts";
+import { erodeMode, type ErodeMode } from "./erode.ts";
 import type { CalendarCfg, GenStyle, Meta, PaintLayer, TerrainMode, TerrainOverride, World, WorldNode } from "./types.ts";
 
 const clone = <T>(o: T): T => JSON.parse(JSON.stringify(o));
@@ -89,6 +90,7 @@ export interface TacBakeOpts {
   parentMapId?: string | null;   // 双向链接：meta.parent.map（外壳传当前图 id）
   yearNow?: number;              // 事件无 year 时的年份兜底
   today?: string;               // 更新戳 YYYY-MM-DD（外壳传，保持纯函数）
+  erode?: ErodeMode;             // 子图的侵蚀计算档（作者生成时选）；缺省＝母图的档——母图保住的手雕高程不该在子图上被再侵蚀
 }
 
 /** 从战役事件点烘焙一张战术世界（子图恒平面）。dia 内部钳 [20,140]；units:[] 空。
@@ -203,6 +205,8 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   if (m.climate) meta.climate = m.climate;                // 气候档随图继承（子图恒平面＝只取档值，不随纬度）
   if (m.period === "modern") meta.period = "modern";      // 时代随图继承（母图一般没有；设置里可改）
   if (m.outside === "land") meta.outside = "land";        // 图幅外随图继承：母图声明内陆，切边的湖在子图仍是湖（不继承＝水面沉回 0）
+  const er = opts.erode ?? erodeMode(m);
+  if (er !== "all") meta.erode = er;                      // 缺键＝底图与涂改（同设置的写法）
   if (m.vault) meta.vault = m.vault;
   meta.gridN = autoGridN(meta);   // 尺度身份盖章（同 blankTacticalWorld）
 

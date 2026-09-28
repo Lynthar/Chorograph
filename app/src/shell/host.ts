@@ -9,7 +9,7 @@ import { terrMetaKey } from "../ui/history.ts";
 import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { ShellCtx } from "./ctx.ts";
-import type { Camera } from "../core/projection.ts";
+import { viewCosK, type Camera } from "../core/projection.ts";
 import type { BBox, HeightOverride, TerrainOverride, World } from "../core/types.ts";
 
 export interface Host {
@@ -67,7 +67,7 @@ export function createHost(ctx: ShellCtx): Host {
      直喂 R.render），而对象层走 projection.viewCosK（平面=1）——此处曾无条件 cos(lat0)，
      平面战术图（恒真实纬度，尺度定形批起）上地形与地点/部队横向错位 1/cosφ（38° 处 +27%），
      拖拽平移与方向键微调（pointer 两处经此函数）同病。球面分支逐位不变。 */
-  const cosk = (): number => ctx.meta.worldModel === "flat" ? 1 : Math.cos(ctx.view.lat0 * Math.PI / 180);
+  const cosk = (): number => viewCosK({ flat: ctx.meta.worldModel === "flat", lat0: ctx.view.lat0 });
 
   /* 侵蚀细化的并发闸：150ms 防抖（同拍的 legs/route 先进同一 Worker 队列、连续拨年/连笔只算
      最后一帧）+ 同一时刻至多一单在 Worker 里；飞行中再来重建只记「还有活」，回来后按最新网格

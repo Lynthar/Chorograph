@@ -37,10 +37,13 @@ function decode(s: Snap): World {
 }
 
 export interface History {
-  push(w: World): void;
+  /** 压入 w 的快照；序列化失败＝放弃这步撤销并返 false */
+  push(w: World): boolean;
   undo(cur: World): World | null;
   redo(cur: World): World | null;
   dropLast(): void;   // 丢弃最近一步 undo 快照（空笔刷回收：起笔已 push 但整笔无改动）
+  /** 弹出最近一步 undo 快照：cur 与它不同＝返还原的世界（编辑中途抛错时回滚用），相同返 null */
+  revert(cur: World): World | null;
   canUndo(): boolean;
   canRedo(): boolean;
   clear(): void;
@@ -59,7 +62,8 @@ export function createHistory(max = UNDO_MAX): History {
         put(undo, w);
         if (undo.length > max) undo.shift();
         redo.length = 0;
-      } catch { /* 序列化失败=放弃这步撤销，不阻塞编辑 */ }
+        return true;
+      } catch { return false; /* 序列化失败=放弃这步撤销，不阻塞编辑 */ }
     },
     undo(cur) {
       if (!undo.length) return null;
@@ -72,6 +76,12 @@ export function createHistory(max = UNDO_MAX): History {
       return decode(redo.pop()!);
     },
     dropLast() { if (undo.length) undo.pop(); },
+    revert(cur) {
+      const s = undo.pop();
+      if (!s) return null;
+      try { const c = encode(cur, s); if (c.t === s.t && c.o === s.o) return null; } catch { /* 串不出来＝按改过处理 */ }
+      return decode(s);
+    },
     canUndo: () => undo.length > 0,
     canRedo: () => redo.length > 0,
     clear() { undo.length = 0; redo.length = 0; },

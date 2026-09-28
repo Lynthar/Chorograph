@@ -2,7 +2,7 @@
    浏览左拖/中键/Space+左拖=平移；编辑·选择空白拖=框选（Shift=强制框选）；
    按住地点/布景/部队=拖移；连线可点点或拖拽成线；其余工具空白按下只作点击。
    模块内闭持全部拖拽/笔迹瞬态；frame 经 PointerView 只读画线笔迹/框选/光标位。 */
-import { unproject, clampView, minDppFor, zoomAtView, panByView } from "../core/projection.ts";
+import { unproject, clampView, minDppFor, zoomAtView, panByView, viewCosK } from "../core/projection.ts";
 import { ALL_KINDS, CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite, terrainProps } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
 import { BRUSH_NOTCHES, brushRadiusCells, brushDabStepDeg, interpolatePath } from "../core/brush.ts";
@@ -145,7 +145,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
 
   let drag: PanDrag | null = null, nodeDrag: IdDrag | null = null,
     paintStroke: PaintStroke | null = null, opStroke: OpStroke | null = null,
-    terrainStroke: { lastX: number; lastY: number } | null = null, decorStroke: DecorStroke | null = null,
+    terrainStroke: { lastX: number; lastY: number; wiped: { n: number } } | null = null, decorStroke: DecorStroke | null = null,
     boxSel: BoxSel | null = null, multiDrag: MultiDrag | null = null,
     unitDrag: IdDrag | null = null, rangeDrag: RangeDrag | null = null, facingDrag: FacingDrag | null = null,
     mxy: [number, number] | null = null;
@@ -211,7 +211,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       ⚠ 按**横向**折算（球面图上 cos 纬度那一侧每像素跨的度数更大），否则高纬横拖会跳格。 */
   const dabStepPx = (cellDeg: number, R: number): number => {
     const c = cam();
-    const cosK = c.flat ? 1 : Math.cos(c.lat0 * Math.PI / 180);
+    const cosK = viewCosK(c);
     return Math.max(0.05, brushDabStepDeg(cellDeg, R) * cosK / c.degPerPx);
   };
   const paintPath = (pts: readonly [number, number][]): void => {
@@ -253,6 +253,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     else rebuildTimer = setTimeout(rebuildNow, wait);
   };
   const flushRebuild = (): void => { if (rebuildTimer !== undefined) rebuildNow(); };
+  /** 收地形笔：补欠的重建、回收空笔；地貌笔清掉了手雕高程就报数（否则整片雕痕无声消失） */
+  const endTerrainStroke = (): void => {
+    const n = terrainStroke ? terrainStroke.wiped.n : 0;
+    terrainStroke = null; flushRebuild(); endStroke();
+    if (n) showToast(`本笔复位了 ${n} 处手雕高程（地貌笔会清掉笔下的高程涂改）`, { undo: true });
+  };
   const terrainPath = (pts: readonly [number, number][]): void => {
     const grid = ctx.grid;
     if (!grid) return;
@@ -269,7 +275,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     mutateWorldLive(w => {
       changed = axis === "height"
         ? paintHeightPath(w, grid, path, brushEraseSig.peek() ? -dhAbs : dhAbs, R + 1, eraNewSig.peek())
-        : paintTerrainPath(w, grid, yearSig.peek(), path, paintTerrainSig.value, R + 1, brushEraseSig.value, eraNewSig.peek(), axis);
+        : paintTerrainPath(w, grid, yearSig.peek(), path, paintTerrainSig.value, R + 1, brushEraseSig.value, eraNewSig.peek(), axis, terrainStroke?.wiped);
       return changed;
     });
     if (changed) rebuildSoon();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）；整条路径只重建一次、连笔按耗时节流
@@ -332,7 +338,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const c = cam();
     const rDeg = (brushRadiusCells(ctx.meta, "terrain", brushSizeSig.peek()) + 0.5) * grid.step;
     const rPx = Math.max(3, rDeg / c.degPerPx);
-    const cosK = c.flat ? 1 : Math.cos(c.lat0 * Math.PI / 180);
+    const cosK = viewCosK(c);
     const spacing = Math.max(10, 1.5 * rPx);                        // 每约一笔刷宽落一簇（旧 9×档 ÷ (5+6×档) 大档趋近 1.5，同比）
     if (ecoSprayLast && Math.hypot(x - ecoSprayLast.x, y - ecoSprayLast.y) < spacing) return;   // 未到间距不重落
     ecoSprayLast = { x, y };
@@ -509,7 +515,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     }
     if (world && modeSig.value === "edit" && editSubSig.value === "terrain") {
       beginStroke();                              // 一笔=一步撤销（undo 按 terrKey 重建网格；收笔回收空笔）
-      terrainStroke = { lastX: e.offsetX, lastY: e.offsetY };
+      terrainStroke = { lastX: e.offsetX, lastY: e.offsetY, wiped: { n: 0 } };
       ecoSprayLast = ecoSweepLast = null;         // 新笔重置播撒/扫除节流，首落即撒即扫
       canvas.setPointerCapture(e.pointerId);
       terrainPath([[e.offsetX, e.offsetY]]);
@@ -799,7 +805,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (paintStroke) { paintStroke = null; endStroke(); return; }
-    if (terrainStroke) { terrainStroke = null; flushRebuild(); endStroke(); return; }
+    if (terrainStroke) { endTerrainStroke(); return; }
     if (decorStroke) { decorStroke = null; endStroke(); return; }
     if (multiDrag) {
       const md = multiDrag; multiDrag = null; canvas.style.cursor = "";
@@ -860,7 +866,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   const abortDrags = (): void => {
     if (opStroke) opStroke = null;                    // 保持画线武装态可重画（同 <2 点收笔语义）
     if (paintStroke) { paintStroke = null; endStroke(); }
-    if (terrainStroke) { terrainStroke = null; flushRebuild(); endStroke(); }
+    if (terrainStroke) endTerrainStroke();
     if (decorStroke) { decorStroke = null; endStroke(); }
     boxSel = null; multiDrag = null; rangeDrag = null; facingDrag = null; unitDrag = null;
     nodeDrag = null; decorDrag = null; linkDrag = null; clickTrack = null;

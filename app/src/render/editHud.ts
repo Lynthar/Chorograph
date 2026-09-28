@@ -2,7 +2,7 @@
    在 drawOverlay/drawAnalysis 之后同一 ctx 上绘制（CSS 像素坐标系）。 */
 import { PD } from "../core/constants.ts";
 import { runsDims } from "../core/territory.ts";
-import { project, type Camera } from "../core/projection.ts";
+import { project, viewCosK, type Camera } from "../core/projection.ts";
 import { hexA } from "../core/util.ts";
 import { DEFAULT_BBOX } from "../core/types.ts";
 import type { BBox, PaintLayer } from "../core/types.ts";
@@ -44,7 +44,7 @@ export function drawBrushRing(ctx: CanvasRenderingContext2D, cam: Camera, x: num
      横=r·cos、纵=r（旧正圆取横向半径，高纬纵向低估 cos 倍，lat38° 约差 21%）。
      环是纯预览：小于屏幕下限时整体放大到可辨（保持椭圆比例），**实际涂宽不变**——
      真值看 fprops 读数；深色实描衬底让浅色虚线在繁杂地形上仍可辨（2026-08-26 R4-#9①）。 */
-  const cosK = cam.flat ? 1 : Math.cos(cam.lat0 * Math.PI / 180);
+  const cosK = viewCosK(cam);
   let rx = rDeg / cam.degPerPx * cosK, ry = rDeg / cam.degPerPx;
   const MIN_R = 6;   // 屏幕半径下限（CSS px）：总览下 3px 的环落在地形上等于盲画
   if (ry < MIN_R) { rx *= MIN_R / ry; ry = MIN_R; }

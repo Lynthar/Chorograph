@@ -9,7 +9,7 @@
      谷线走，旧档（relief>0）读数会移动；战略图与其战术烘焙在同一位置的起伏也从逐位一致降为
      近似一致（侵蚀依赖网格分辨率，噪声输入仍同锚）。 */
 import { hash2 as sinHash2 } from "./noise.ts";
-import { baseElev, elevBilinear, elevUnitM, waterMask, LAND_FLOOR, WATER_CEIL, type ElevField } from "./elev.ts";
+import { baseElev, dhOf, elevBilinear, elevUnitM, waterMask, LAND_FLOOR, WATER_CEIL, type ElevField } from "./elev.ts";
 import { gnoise, makeRelief, mountainness, type ReliefSampler, RELIEF_CARVE_K, RELIEF_GATE_HI, RELIEF_GATE_LO, RELIEF_LAMBDA_KM, RELIEF_M,
   RELIEF_ROUGH_HI, RELIEF_ROUGH_LO, RELIEF_STRIKE, RELIEF_W, RELIEF_E0, RELIEF_E1, RIDGED_MEAN } from "./relief.ts";
 import { kmPerDegXY } from "./geo.ts";
@@ -187,7 +187,7 @@ export function erodeGate(meta: Meta | undefined, hov: HeightOverride[] | undefi
   if (Math.max(0, Math.min(1, +(m.relief as number) || 0)) > 0) return true;
   for (const o of hov || []) {
     if (!activeAt(o, yearNow)) continue;
-    const dh = +o.dh || 0; if (!dh) continue;
+    const dh = dhOf(o, m); if (!dh) continue;
     if (stampRect(o, grid)) return true;
   }
   return false;
@@ -207,7 +207,7 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
   let hasHov = false;
   for (const o of hov || []) {
     if (!activeAt(o, yearNow)) continue;
-    const dh = +o.dh || 0; if (!dh) continue;
+    const dh = dhOf(o, m); if (!dh) continue;
     const rc = stampRect(o, grid);
     if (!rc) continue;
     for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) hovGrid[r * cols + c] += dh;

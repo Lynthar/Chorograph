@@ -5,7 +5,7 @@
 import { CLIMATE, parseComposite, allComposites } from "../core/constants.ts";
 import { elevUnitM } from "../core/elev.ts";
 import { tget } from "../core/util.ts";
-import { kmPerDegLat } from "../core/geo.ts";
+import { kmPerDeg } from "../core/geo.ts";
 import { gridStepDeg } from "../core/grid.ts";
 import type { Landform, Meta } from "../core/types.ts";
 
@@ -156,7 +156,7 @@ export function exagFor(cellKm: number, kmPerPx: number): number {
 }
 /** 渲染器法线增益：旧式每度法线（细节路 2·NRM0 + 宏观路 ×macroW）换算成 E 倍真实坡度 */
 export function shadeGain(meta: Meta | undefined, degPerPx: number): number {
-  const kmd = kmPerDegLat(meta), U = elevUnitM(meta);
+  const kmd = kmPerDeg(meta), U = elevUnitM(meta);
   return exagFor(gridStepDeg(meta) * kmd, degPerPx * kmd) * U / (2 * NRM0 * (1 + FX.macroW) * kmd * 1000);
 }
 

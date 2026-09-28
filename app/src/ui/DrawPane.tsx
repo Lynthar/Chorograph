@@ -5,6 +5,7 @@
 import { DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, nodeCatOf, parseComposite } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhen, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
 import { HEIGHT_STEPS_STRAT, HEIGHT_STEPS_TAC, heightStepM } from "../core/elev.ts";
+import { useLayoutEffect } from "preact/hooks";
 import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
@@ -26,11 +27,10 @@ function PaintCtx() {
   const world = worldSig.value!;
   const tac = isTacSig.value;
   const cal = calOf((world.meta || {}).calendar);
-  let pf = paintFactionSig.value;
-  if (!pf || !world.factions.some(f => f.id === pf)) {
-    pf = (world.factions[0] || {}).id || null;
-    if (pf !== paintFactionSig.peek()) paintFactionSig.value = pf;
-  }
+  const cur = paintFactionSig.value;
+  const pf = cur && world.factions.some(f => f.id === cur) ? cur : (world.factions[0] || {}).id || null;
+  /* 渲染期只读：缺省派系落回信号放到提交后（笔刷与叠加层读的是信号）——渲染期写信号在 Preact 里次序不可靠 */
+  useLayoutEffect(() => { if (pf !== paintFactionSig.peek()) paintFactionSig.value = pf; }, [pf]);
   const f = pf ? world.factions.find(x => x.id === pf) : null;
   const layers = f?.paint || [];
   let li = paintLayerSig.value;
@@ -121,7 +121,7 @@ function TerrainCtx() {
       <div class="seg2">
         <button aria-pressed={axis === "lf"} title="只改地貌（平原/丘陵/山地…），生态保留；涂到之处的手雕高程一并复位" onClick={() => { terrainAxisSig.value = "lf"; }}>地貌</button>
         <button aria-pressed={axis === "eco"} title="只改生态：地面色调/寻路代价 + 随笔落下真实布景印章（可单独选中调整）" onClick={() => { terrainAxisSig.value = "eco"; }}>生态</button>
-        <button aria-pressed={axis === "height"} title="抬升/下切地势（只改高程观感与等高线，不改类型/寻路）" onClick={() => { terrainAxisSig.value = "height"; }}>⛰ 高程</button>
+        <button aria-pressed={axis === "height"} title="抬升/下切地势：等高线、读数与视域随之变，地貌与寻路不变" onClick={() => { terrainAxisSig.value = "height"; }}>⛰ 高程</button>
       </div>
       {axis === "lf" ? (
         <>
@@ -151,13 +151,13 @@ function TerrainCtx() {
         <>
           {/* 幅度分档（2026-08-10 精度批，用户点单）：战术 1m 起精雕、战略 10m 起粗塑；米数经
               elevUnitM 折成抽象 dh（pointer.terrainDab）。档表按图种取＝换图自动换排 */}
-          <div class="sec" style={{ marginTop: "4px" }}>幅度<span class="mini">每笔抬降的米数 · 可叠加</span></div>
+          <div class="sec" style={{ marginTop: "4px" }}>幅度<span class="mini">只改高低 · 不改地貌与寻路</span></div>
           <div class="chips">
             {(isTacSig.value ? HEIGHT_STEPS_TAC : HEIGHT_STEPS_STRAT).map(v => (
               <button key={v} class="ch tr" aria-pressed={stepM === v} onClick={() => { heightStepMSig.value = v; }}>±{v}m</button>
             ))}
           </div>
-          <div class="hint">高程画笔：按住拖动{brushEraseSig.value ? <b>▼ 下切</b> : <b>▲ 抬升</b>}地势（每笔 ±{stepM}m，可反复叠加；<kbd>E</kbd> 换向、<kbd>[ ]</kbd> 调大小）。山峰/棱线/凹路皆可雕；开「等高线」图层看效果。水域恒平、陆地不跌成滩涂。笔画即时可见；松笔后侵蚀计算约需一至三秒把草稿冲出沟谷（进度见顶栏）、等高线与读数都取自计算后的地势；设置里「侵蚀计算」选「仅底图」则笔落即最终、不再变形。</div>
+          <div class="hint">高程画笔：按住拖动{brushEraseSig.value ? <b>▼ 下切</b> : <b>▲ 抬升</b>}地势（每笔 ±{stepM}m，可反复叠加；<kbd>E</kbd> 换向、<kbd>[ ]</kbd> 调大小）。山峰/棱线/凹路皆可雕；开「等高线」图层看效果。地貌与寻路不变，视野、火力与雷达圈按新地势重算。水域恒平、陆地不跌成滩涂。笔画即时可见；松笔后侵蚀计算约需一至三秒把草稿冲出沟谷（进度见顶栏）、等高线与读数都取自计算后的地势；设置里「侵蚀计算」选「仅底图」则笔落即最终、不再变形。</div>
         </>
       )}
     </>

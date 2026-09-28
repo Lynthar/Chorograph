@@ -305,7 +305,7 @@ export function simplifyLine(pts: Pt[], tol: number): Pt[] {
 /* 逐行扫描线（偶奇填充）落进位图：行桶让每行只看跨越它的边——政区级多边形上比全量遍历
    快一个量级。半开判据 `(y0<=cy)!==(y1<=cy)` 与列的 [x0,x1) 同源，防共享边重复填。 */
 function fillPoly(mask: Uint8Array, cols: number, rows: number, bb: BBox, pd: number,
-                  rings: Pt[][], budget: { left: number }): void {
+                  rings: Pt[][], budget: { left: number; cut: boolean }): void {
   const ax: number[] = [], ay: number[] = [], bx: number[] = [], by: number[] = [];
   let y0 = Infinity, y1 = -Infinity, x0 = Infinity, x1 = -Infinity;
   for (const r of rings) {
@@ -329,7 +329,7 @@ function fillPoly(mask: Uint8Array, cols: number, rows: number, bb: BBox, pd: nu
       const lo = Math.min(ay[e], by[e]), hi = Math.max(ay[e], by[e]);
       const e0 = Math.max(jLo, Math.ceil(jOf(lo))), e1 = Math.min(jHi, Math.ceil(jOf(hi)) - 1);
       for (let j = e0; j <= e1; j++) {
-        if (budget.left-- <= 0) return;
+        if (budget.left-- <= 0) { budget.cut = true; return; }
         (bucket[j - jLo] || (bucket[j - jLo] = [])).push(e);
       }
     }
@@ -362,34 +362,37 @@ function fillPoly(mask: Uint8Array, cols: number, rows: number, bb: BBox, pd: nu
   }
 }
 
-/** 位图 → 行程编码（三元组 [行, 起列, 长]，与 eachPaintCenter 的解码同约定） */
-function maskToRuns(mask: Uint8Array, cols: number, rows: number, pd: number, cap: number): PaintRuns | null {
+/** 位图 → 行程编码（三元组 [行, 起列, 长]，与 eachPaintCenter 的解码同约定）；三元组撞 cap 即停，cut＝后面还有没写进去的格 */
+function maskToRuns(mask: Uint8Array, cols: number, rows: number, pd: number, cap: number): { runs: PaintRuns | null; cut: boolean } {
   const d: number[] = [];
   for (let j = 0; j < rows; j++) {
     const row = j * cols;
     let run = -1;
     for (let i = 0; i < cols; i++) {
       if (mask[row + i]) { if (run < 0) run = i; }
-      else if (run >= 0) { d.push(j, run, i - run); run = -1; if (d.length >= cap * 3) return { pd, d }; }
+      else if (run >= 0) { d.push(j, run, i - run); run = -1; if (d.length >= cap * 3) return { runs: { pd, d }, cut: mask.indexOf(1, row + i) >= 0 }; }
     }
-    if (run >= 0) { d.push(j, run, cols - run); if (d.length >= cap * 3) return { pd, d }; }
+    if (run >= 0) { d.push(j, run, cols - run); if (d.length >= cap * 3) return { runs: { pd, d }, cut: mask.indexOf(1, row + cols) >= 0 }; }
   }
-  return d.length ? { pd, d } : null;
+  return { runs: d.length ? { pd, d } : null, cut: false };
 }
 
 /**
  * 一组多边形 → 涂域行程编码（并集；单个多边形内部按偶奇填充，洞自然扣掉）。
  * @param polys 每个成员＝一个多边形的环列表 [外环, 洞…]
  * @param bb 目标图范围；pd 涂域格边（须＝地形格边，否则涂域与地形错格）
- * @returns 一格都没盖到返 null；格数或三元组撞上限时返回已算出的部分
+ * @param cut 可选回执：求交次数或三元组撞上限、结果只是一部分时置 cut.hit＝true——调用方必须据此告知用户，不能报完整成功
+ * @returns 一格都没盖到返 null；格数超 caps.cells 返 null（不置 cut，由调用方先判）；撞上限时返回已算出的部分
  */
-export function rasterizePolys(polys: Pt[][][], bb: BBox, pd: number, caps: GeoCaps): PaintRuns | null {
+export function rasterizePolys(polys: Pt[][][], bb: BBox, pd: number, caps: GeoCaps, cut?: { hit: boolean }): PaintRuns | null {
   const { cols, rows } = paintDims(bb, pd);
   if (cols * rows > caps.cells) return null;
   const mask = new Uint8Array(cols * rows);
-  const budget = { left: caps.crossings };
+  const budget = { left: caps.crossings, cut: false };
   for (const rings of polys) fillPoly(mask, cols, rows, bb, pd, rings, budget);
-  return maskToRuns(mask, cols, rows, pd, caps.runs);
+  const r = maskToRuns(mask, cols, rows, pd, caps.runs);
+  if (cut && (budget.cut || r.cut)) cut.hit = true;
+  return r.runs;
 }
 
 /* —— 转换 —— */
@@ -501,6 +504,7 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
 
   /* 栅格化：按派系归拢分层，层数撞闸就并进最后一层——宁可少几段沿革，也不让一份档生出上千层 */
   const byFaction = new Map<string, { name: string; layers: PaintLayer[]; dropped: number }>();
+  let partial = 0;
   const { cols, rows } = paintDims(opts.bbox, opts.pd);
   const tooBig = cols * rows > opts.caps.cells;
   if (tooBig && buckets.size) res.notes.push(`目标地图的涂域网格 ${cols}×${rows} 超出可栅格化上限，面已改为只落边界线`);
@@ -509,7 +513,9 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
     const g = byFaction.get(b.name) || { name: b.name, layers: [], dropped: 0 };
     byFaction.set(b.name, g);
     if (g.layers.length >= opts.caps.layers) { g.dropped++; continue; }
-    const runs = rasterizePolys(b.polys, opts.bbox, opts.pd, opts.caps);
+    const cut = { hit: false };
+    const runs = rasterizePolys(b.polys, opts.bbox, opts.pd, opts.caps, cut);
+    if (cut.hit) partial++;
     if (!runs) continue;
     const L: PaintLayer = { runs };
     if (b.since != null) L.since = b.since;
@@ -536,6 +542,7 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
     if (g.dropped) res.notes.push(`「${g.name}」的时段层超过 ${opts.caps.layers} 个，${g.dropped} 段沿革未导入`);
   }
 
+  if (partial) res.notes.push(`${partial} 层涂域超出可栅格化规模（面过于复杂），只涂进了一部分`);
   if (scan.skipped) res.notes.push(`${scan.skipped} 个要素没有可识别的几何，已跳过`);
   if (longLines) res.notes.push(`${longLines} 条折线点数过多，已跳过（可勾选「折线抽稀」再试）`);
   if (scan.truncated) res.notes.push("文件超出可处理规模，只导入了前一部分");

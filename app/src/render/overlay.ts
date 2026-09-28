@@ -4,13 +4,13 @@
    数百要素直绘足够；万级批量与空间索引在 后段定案。 */
 import { LAYERS } from "../core/constants.ts";
 import { project, SCALE_BAR_PX, unproject, visibleWorldCopies, type Camera } from "../core/projection.ts";
-import { distKm, kmPerDegLat, lonCos, wrapLon } from "../core/geo.ts";
+import { distKm, kmPerDeg, lonCos, wrapLon } from "../core/geo.ts";
 import { calOf, fmtT, fmtYear } from "../core/calendar.ts";
 import { fmtKm } from "../core/util.ts";
 import { isModern } from "../core/units.ts";
 import { drawDecor } from "./decor.ts";
 import { drawRanges, drawUnits } from "./units.ts";
-import { drawFactions } from "./factions.ts";
+import { drawFactions, type LoopBudget } from "./factions.ts";
 import { drawEdges, drawOps } from "./edges.ts";
 import { drawNodes, drawNodeRanges, drawPinnedNotes } from "./nodes.ts";
 import { createLabelField } from "./labels.ts";
@@ -28,6 +28,7 @@ export { drawOp } from "./edges.ts";
 export { pickEdge, pickOp, pickNode, nodesInBox } from "./pick.ts";
 export { pinnedStackH } from "./nodes.ts";   // 出图图例让开 se 屏幕角标注（library.composeFrame）
 export type { NodeGateOpts } from "./nodes.ts";
+export type { LoopBudget } from "./factions.ts";
 
 /** 战术图专属层 id（tacOnly 的唯一消费点，与 LayersPane 的「战术」小签同源于 LAYERS） */
 const TAC_ONLY = new Set(LAYERS.filter(l => l.tacOnly).map(l => l.id));
@@ -57,6 +58,7 @@ export interface OverlayOpts {
   smooth?: number;                    // 涂域边界平滑档（Chaikin 轮数 0–3；缺省 2，笔刷框调）
   edgeSelIdx?: number | null;         // 选中连线下标（红晕高亮，对齐旧 isSelEdge）
   editing?: boolean;                  // 编辑模式：全部地点可见（对齐旧 nodeVisible）
+  loopBudget?: LoopBudget;            // 涂域环首算的本帧额度（缺省＝一次算全）
 }
 
 /** 焦点部队＝选中 + 框选的部队 id；空＝无焦点态（各圈平铺） */
@@ -97,7 +99,7 @@ export function drawOverlay(
     for (const shift of visibleWorldCopies(cam, meta)) {
       const c2: Camera = { ...cam, lonShift: shift };
       if (on("decor")) drawDecor(ctx, c2, world, yearNow, opts.grid ? opts.grid.step : 1, decorSel);   // 手绘布景（印章尺度随格距 step；生态笔刷落的真实印章同此层）
-      if (on("politics")) drawFactions(ctx, c2, meta, world, yearNow, opts.smooth ?? 2);
+      if (on("politics")) drawFactions(ctx, c2, meta, world, yearNow, opts.smooth ?? 2, opts.loopBudget);
       if (on("range")) drawNodeRanges(ctx, c2, meta, world, yearNow, opts.selId);   // 地点范围虚线圈
       if (on("ranges") || on("vision") || on("radar")) drawRanges(ctx, c2, meta, world, yearNow, {   // 火力射程/视野/雷达圈：垫在连线/地点之下
         fire: on("ranges"), vision: on("vision"), radar: on("radar") && isModern(meta), masks: opts.visMasks,   // 雷达层随时代（层面板同门）
@@ -157,7 +159,7 @@ function drawGraticule(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | 
    图幅外(k<0)只画线不标数。样式与经纬网同（淡青细线,同一图层开关）。 */
 function drawKmGrid(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta): void {
   const bb = meta.bbox!;
-  const dLat = 1 / kmPerDegLat(meta);                     // 1km 的纬度跨度
+  const dLat = 1 / kmPerDeg(meta);                     // 1km 的纬度跨度
   const dLon = dLat / lonCos(meta, (bb.latMin + bb.latMax) / 2);
   const kmPerPx = cam.degPerPx / dLon;
   if (!isFinite(kmPerPx) || kmPerPx <= 0) return;

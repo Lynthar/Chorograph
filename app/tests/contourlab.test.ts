@@ -1,7 +1,9 @@
 /* 等高线注记的纯几何（render/contourlab）：注记等高距的取法、等值线链成折线、按曲率定位。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { LAB_MAX_LEVELS, labStepFor, placeLabels, tracePolylines, type LabSurf } from "../src/render/contourlab.ts";
+import { LAB_MAX_LEVELS, drawContourLabels, labStepFor, placeLabels, tracePolylines, type LabSurf } from "../src/render/contourlab.ts";
+import { buildGridCells } from "../src/core/grid.ts";
+import { coarseField } from "../src/core/elev.ts";
 
 /** 采样面：行 0 在上，v(x,y) 给值（NaN＝不出线） */
 function surf(w: number, h: number, v: (x: number, y: number) => number): LabSurf {
@@ -78,5 +80,27 @@ describe("注记定位（placeLabels）", () => {
   });
   it("折线短于量直跨度＝弃标（不会给出 NaN 落点）", () => {
     for (const v of placeLabels(line(13, i => [i * 10, 0]), 340, 110, 200)) assert.ok(isFinite(v));
+  });
+});
+
+describe("注记完整入口（drawContourLabels）对外来高程有界完成", () => {
+  const meta = { terrain: "plain", worldModel: "flat", kmPerDeg: 1, gridN: 8, erode: "none",
+    bbox: { lonMin: 0, lonMax: 8, latMin: 0, latMax: 8 } } as never;
+  const cam = { lon0: 4, lat0: 4, degPerPx: 0.02, w: 400, h: 400, flat: true };
+  const draw = (fill: (lon: number, lat: number) => number): string[] => {
+    const grid = buildGridCells(meta, [], 0);
+    const data = new Float32Array(grid.rows * grid.cols);
+    for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++)
+      data[r * grid.cols + c] = fill(grid.bb.lonMin + (c + 0.5) * grid.step, grid.bb.latMin + (r + 0.5) * grid.step);
+    const texts: string[] = [];
+    const ctx = new Proxy({}, { get: (_t, k) => k === "measureText" ? () => ({ width: 10 }) : k === "fillText" ? (s: string) => { texts.push(s); } : () => {} });
+    drawContourLabels(ctx as never, cam, meta, coarseField(grid, data), grid, { tryPlace: () => true } as never, 0.01);
+    return texts;
+  };
+  it("常数 1e20 的高程场（校验放行的超大涂改）立即返回、不出注记", () => {
+    assert.deepStrictEqual(draw(() => 1e20), []);
+  });
+  it("正常坡面照常出注记（对照）", () => {
+    assert.ok(draw(lon => 0.2 + lon * 0.05).length > 0);
   });
 });

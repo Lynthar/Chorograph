@@ -162,11 +162,14 @@ function build(cam: Camera, meta: Meta | undefined, f: ElevField, grid: Grid, ba
     }
     return g > 0 && Math.abs(e - level) / g <= LAB_SNAP_PX ? [lon, lat] : null;
   };
-  if (step > 0) {
+  /* 枚举按条数计（不按编号 k 判终止）：外来档的超大高程涂改让 k 超出安全整数，k+1===k 就永不结束；
+     labStepFor 给出的条数不超过 LAB_MAX_LEVELS+1，封顶取其两倍 */
+  const k0 = step > 0 ? Math.ceil(mn / step - 1e-9) : NaN;
+  if (Number.isSafeInteger(k0) && mxv > mn) {
     const surf: LabSurf = { w: sw, h: shh, v };
     const sp = LAB_SPACING_PX / LAB_SAMPLE_PX, ml = LAB_MIN_LEN_PX / LAB_SAMPLE_PX, spn = LAB_SPAN_PX / LAB_SAMPLE_PX;
-    for (let k = Math.ceil(mn / step - 1e-9); k * step <= mxv; k++) {
-      const level = k * step, m = Math.round(level * U);
+    for (let n = 0; n <= 2 * LAB_MAX_LEVELS && (k0 + n) * step <= mxv; n++) {
+      const level = (k0 + n) * step, m = Math.round(level * U);
       for (const poly of tracePolylines(surf, level)) {
         const pos = placeLabels(poly, sp, ml, spn);
         for (let t = 0; t + 1 < pos.length; t += 2) {

@@ -16,6 +16,7 @@ import { FAC_PALETTE } from "../ui/editops.ts";
 import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues, worldCap } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
+import type { ErodeMode } from "../core/erode.ts";
 import { contourStepOf, terrainOpts } from "../render/renderer.ts";
 import { safeName, errText, newId } from "../core/util.ts";
 import { exportScaleFit, pngSetDpi } from "../core/png.ts";
@@ -39,7 +40,7 @@ import type { MapEntry } from "../data/library.ts";
 import type { FolderMapEntry } from "../data/folder.ts";
 
 declare global {
-  /** File System Access API 目录选择器（Edge/Chrome；调用前先 fsSupported() 探测） */
+  /** File System Access API 目录选择器（调用前先 fsSupported() 探测） */
   function showDirectoryPicker(opts?: { mode?: "read" | "readwrite"; id?: string }): Promise<FolderHandle>;
 }
 
@@ -67,7 +68,7 @@ export interface LibraryIO {
   refreshLib(): Promise<void>;
   openParentMap(): Promise<boolean>;
   openTacmap(ev: WorldNode): Promise<boolean>;
-  genTactical(ev: WorldNode, dia?: number | null): Promise<boolean>;
+  genTactical(ev: WorldNode, dia?: number | null, erode?: ErodeMode): Promise<boolean>;
 }
 
 export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): LibraryIO {
@@ -337,6 +338,10 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       const got = await folderReadWorldAt(ctx.folderDir!, fn);   // 同一个 File 出内容与 mtime（同上之由）
       const w = got.world;
       if (!w) { alert("无法读取该地图文件（可能已被移动、改名或损坏）。"); return false; }
+      /* 文件夹里的文件可被外部软件或同步替换，与导入同一道闸；只拦 fatal，warning 只进控制台（同 bootSample：开图不是写手在改） */
+      const v = validateWorld(w);
+      if (!v.ok) { alert(`「${fn}」无法打开：\n` + formatIssues(v.fatal)); return false; }
+      if (v.warnings.length) console.warn(`打开「${fn}」有 ${v.warnings.length} 条提示：\n` + formatIssues(v.warnings));
       stageStep(1, (w.meta || ({} as Meta)).名称 || fn);
       await paintFrame();
       snapView();
@@ -482,12 +487,12 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
 
   /* ================= 战术图：生成 / 打开 / 父子导航================= */
   /* 从战役事件点烘焙一张战术图，入库、在父图事件写双向链接、打开它。dia=战场直径 km */
-  async function genTactical(ev: WorldNode, dia?: number | null): Promise<boolean> {
+  async function genTactical(ev: WorldNode, dia?: number | null, erode?: ErodeMode): Promise<boolean> {
     if (!ctx.lib) { alert("图库不可用，无法生成战术图。"); return false; }
     /* 只读闸放在库级创建之前：子图先 create 再回写父图，只挡后一步＝#ro=1&gentac= 的链接一点开就往读者图库塞图 */
     if (readOnlySig.peek()) { showToast("这是只读分享的地图，不能从它生成战术图　可先「↓ 存入我的图库」"); return false; }
     const world = createTacticalWorld(worldSig.peek()!, ev, dia || 60,
-      { parentMapId: ctx.mapId, yearNow: yearSig.peek(), today: new Date().toISOString().slice(0, 10) });
+      { parentMapId: ctx.mapId, yearNow: yearSig.peek(), today: new Date().toISOString().slice(0, 10), erode });
     let newId: string | null = null, link: NonNullable<WorldNode["tacmap"]> | null = null;
     if (ctx.source === "folder" && ctx.folderDir) {
       const fn = await folderCreate(ctx.folderDir, world, (f, p) => { fcachePatch(ctx.fcache, ctx.folderDir!.name, f, p); });
@@ -563,8 +568,8 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
         const [w, h] = host.pxSize();   // 可见区 × 新 DPR：存储临时改成恰好出图尺寸（可见区仍由 canvasWrap 定，取景不变）
         canvas.width = w; canvas.height = h;
         ov.width = w; ov.height = h;
-        if (ctx.repaint) ctx.repaint();   // 叠加层按新 DPR 重画（地形随即再渲一次，同帧幂等）
       }
+      if (ctx.repaint) ctx.repaint(true);   // 叠加层按当前 DPR 重画且涂域一次算全（屏上那帧可能还在分帧首算）；地形随即再渲一次，同帧幂等
       const [vw, vh] = host.pxSize();
       const R = layersSig.peek().terrain ? ctx.R : null;
       if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v));
