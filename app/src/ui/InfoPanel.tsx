@@ -6,11 +6,13 @@ import { useRef } from "preact/hooks";
 import { ARM_NAME, CERTAINTY, DECOR, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS } from "../core/constants.ts";
 import { edgeLenKm, polylineKm } from "../core/geometry.ts";
 import { calOf, fmtT, fmtWhen, fmtWhenRange } from "../core/calendar.ts";
-import { fmtStrength, isModern, unitArcDeg, unitArm, unitEyeM, unitFacingAt, unitFireDirect, unitFireKm, unitFootKm, unitInheritedAt, unitKind, unitMoraleAt, unitPos, unitRadarKm, unitRadarM, unitRadarTgtM, unitSpeedAt, unitStatusAt, unitStrengthAt } from "../core/units.ts";
+import { fmtStrength, isModern, arcDegOf, nodeEyeM, nodeVisionKm, rangeDirect, unitAltAt, unitArm, unitEyeM, type TrackKey, unitFacingAt, unitFireDirect, unitFireKm, unitFootKm, unitInheritedAt, unitKind, unitMoraleAt, unitPos, radarKmOf, radarMOf, radarTgtMOf, unitSpeedAt, unitStatusAt, unitStrengthAt } from "../core/units.ts";
 import { activeAt, ownerAt, paintLayersAt } from "../core/time.ts";
 import { fmtKm, tget } from "../core/util.ts";
 import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types.ts";
-import { clearOpSel, readOnlySig, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, visMaskSig, worldSig, yearSig } from "./state.ts";
+import { detectedBy, type VisMask } from "../core/viewshed.ts";
+import type { SightRes } from "../worker/routeProto.ts";
+import { clearOpSel, readOnlySig, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, visMaskSig, detectSig, worldSig, yearSig } from "./state.ts";
 import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
@@ -36,6 +38,41 @@ const canWrite = () => !readOnlySig.value;
 /** 可靠性胶囊文案（柱B）：确证＝不出胶囊（缺省无须声明），推断/传说才标出 */
 const certLabel = (v: unknown): string | null =>
   tget(CERTAINTY, v)?.名 || null;
+
+/** 视域读数尾巴：可达占比（掩膜未到＝空）＋眼位挪了多远 */
+function reach(m: VisMask | undefined, 名: string): string {
+  return m && m.nIn > 0 ? ` · ${名} ${Math.round(100 * m.nVis / m.nIn)}%${m.eyeOff > 0 ? `（眼位偏 ${Math.round(m.eyeOff)} m）` : ""}` : "";
+}
+
+/** 地点的视域读数：火力逐圈（射击方式 + 可达占比）、视野、雷达（现代图）。掩膜按圈下标对应原数组 */
+function NodeSightRows({ n, world }: { n: WorldNode; world: World }) {
+  const mk = visMaskSig.value.node.get(n.id), vk = nodeVisionKm(n), rk = isModern(world.meta) ? radarKmOf(n) : 0;
+  return <>
+    {(n.ranges || []).map((r, i) => {
+      const km = +r.km || 0, direct = rangeDirect(r);
+      return km > 0 && <><b>{r.名称 || "火力"}</b><span class="num">{km} km · {direct ? "直射" : `曲射 · 射角 ${arcDegOf(r)}°`}{reach(mk && mk.fire && mk.fire[i], direct ? "视线可达" : "弹道可达")}</span></>;
+    })}
+    {vk > 0 && <><b>视野圈</b><span class="num">{vk} km · 观察高度 {nodeEyeM(n)} m{reach(mk && mk.vision, "视线可达")}</span></>}
+    {rk > 0 && <><b>雷达</b><span class="num">{rk} km · 天线 {radarMOf(n)} m · 目标 {radarTgtMOf(n)} m{reach(mk && mk.radar, "视线可达")}</span></>}
+  </>;
+}
+
+/** 观察者的称呼：「派系·名称」 */
+function observerName(world: World, T: number, r: SightRes): string {
+  const o = r.owner === "unit" ? (world.units || []).find(q => q.id === r.id) : world.nodes.find(q => q.id === r.id);
+  const fid = !o ? null : r.owner === "unit" ? (o as Unit).faction : ownerAt(o as WorldNode, T);
+  const f = fid ? world.factions.find(x => x.id === fid) : null;
+  return (f ? `${f.名称 || f.id}·` : "") + ((o && o.名称) || r.id);
+}
+/** 飞行部队被他派的视野圈与雷达发现与否：没有他派的圈可判＝不出这一行 */
+function DetectRow({ u, world, T }: { u: Unit; world: World; T: number }) {
+  const rs = detectSig.value.get(u.id) || [];
+  if (!rs.length) return null;
+  const seen = detectedBy(rs);
+  if (seen.length) return <><b>被发现</b><span>{seen.map(r => `${observerName(world, T, r)}（${r.ring === "radar" ? "雷达" : "视野"}）`).join("、")}</span></>;
+  const blocked = rs.filter(r => r.hit!.inRange).length, far = rs.length - blocked;
+  return <><b>被发现</b><span class="num">未被发现{blocked ? ` · 地形遮挡 ${blocked}` : ""}{far ? ` · 超出半径 ${far}` : ""}</span></>;
+}
 
 /** Obsidian 双链行（对齐旧 linkRow/bindCopy） */
 function LinkRow({ target }: { target?: string }) {
@@ -96,7 +133,7 @@ function NodeCard({ n, world }: { n: WorldNode; world: World }) {
         <b>坐标</b><span class="num">{n.lon}° · {n.lat}°</span>
         {(n.since != null || n.until != null) && <><b>存在</b><span class="num">{n.since != null ? fmtWhen(cal, tac, n.since) : "远古"} – {n.until != null ? fmtWhen(cal, tac, n.until) : "至今"}</span></>}
         {typeof n.radiusKm === "number" && n.radiusKm > 0 && <><b>范围</b><span class="num">{n.radiusKm} km</span></>}
-        {(n.ranges || []).length > 0 && <><b>火力</b><span>{n.ranges!.map(r => `${r.名称 || "射程"} ${r.km}km`).join("、")}</span></>}
+        <NodeSightRows n={n} world={world} />
         {n.字段 && Object.entries(n.字段).map(([k, v]) => <><b>{k}</b><span>{String(v)}</span></>)}
       </div>
       {n.owners && n.owners.length > 0 && (
@@ -242,7 +279,8 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
   const legs = unitLegsSig.value.get(u.id) || [];
   const track = u.track || [];
   const foot = unitFootKm(u);
-  const inh = (i: number, key: "strength" | "speed" | "morale") => unitInheritedAt(u, i, key);
+  const inh = (i: number, key: TrackKey) => unitInheritedAt(u, i, key);
+  const air = unitArm(u) === "air";
   /* 战场尺度的逐航点控件（坐标微调/状态/朝向/逐航点存量）只在战术图出——战略图的部队是基础摆件，
      动向只保留「看得见的年份+位置」与删除（误记一笔总得能清掉，改写则直接再拖一次）。 */
   const full = editable && tac;
@@ -292,7 +330,7 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
                 主行已排到删钮，六个控件挤一行会把日期与腿账压没。 */}
             {full && <div class="sub" style={{ paddingLeft: "2px", marginTop: "2px" }}>
               {([["strength", "兵力", "人", inh(i, "strength")], ["speed", "速度", "km/日", inh(i, "speed")],
-                 ["morale", "士气", "0–100", inh(i, "morale")]] as const).map(([key, 名, unit, cur]) => (
+                 ["morale", "士气", "0–100", inh(i, "morale")], ...(air ? [["altM", "高度", "海拔 m", inh(i, "altM")]] as const : [])] as const).map(([key, 名, unit, cur]) => (
                 <span key={key} style={{ marginRight: "6px", whiteSpace: "nowrap" }}>{名}{" "}
                   <input class="fld" type="number" min={0} step="any" title={`${名}（${unit}）：自该航点起生效；留空＝沿用 ${cur ?? "—"}`}
                     key={i + ":" + key + (q[key] ?? "")}
@@ -344,15 +382,17 @@ function UnitCard({ u, world }: { u: Unit; world: World }) {
         {morale != null && <><b>士气</b><span class="num">{morale} / 100</span></>}
         <b>速度</b><span class="num">{unitSpeedAt(u, T)} km/日 · {tget(ARM_NAME, unitArm(u)) || "陆行"}</span>
         <b>当前({fmtWhen(cal, tac, T)})</b><span class="num">{p ? `${p.lon.toFixed(3)}° · ${p.lat.toFixed(3)}°` : "未入场 / 已离场"}</span>
-        {(() => {   // 视域读数：各圈带「可达」占比（掩膜由外壳算好，未到＝不显示占比；飞行部队不判）
-          const mk = visMaskSig.value.get(u.id), air = unitArm(u) === "air";
-          const pct = (m: { nVis: number; nIn: number; eyeOff: number } | undefined, 名: string) => !air && m && m.nIn > 0
-            ? ` · ${名} ${Math.round(100 * m.nVis / m.nIn)}%${m.eyeOff > 0 ? `（眼位偏 ${Math.round(m.eyeOff)} m）` : ""}` : "";
+        {(() => {   // 视域读数：各圈带「可达」占比（掩膜由外壳算好，未到＝不显示占比；飞行部队按飞行高度判，没填不判）
+          const mk = visMaskSig.value.unit.get(u.id), air = unitArm(u) === "air", alt = air ? unitAltAt(u, T) : null;
+          const noAlt = air && alt == null, skip = " · 未填飞行高度，不判";
+          const pct = (m: VisMask | undefined, 名: string) => noAlt ? skip : reach(m, 名);
           const direct = unitFireDirect(u);
           return <>
-            {unitFireKm(u) > 0 && <><b>火力圈</b><span class="num">{unitFireKm(u)} km · {direct ? "直射" : `曲射 · 射角 ${unitArcDeg(u)}°`}{pct(mk && mk.fire, direct ? "视线可达" : "弹道可达")}</span></>}
-            {typeof u.vision === "number" && u.vision > 0 && <><b>视野圈</b><span class="num">{u.vision} km · 观察高度 {unitEyeM(u)} m{air ? " · 飞行不判视线" : pct(mk && mk.vision, "视线可达")}</span></>}
-            {isModern(world.meta) && unitRadarKm(u) > 0 && <><b>雷达</b><span class="num">{unitRadarKm(u)} km · 天线 {unitRadarM(u)} m · 目标 {unitRadarTgtM(u)} m{air ? " · 飞行不判" : pct(mk && mk.radar, "视线可达")}</span></>}
+            {air && tac && <><b>飞行高度</b><span class="num">{alt != null ? `海拔 ${Math.round(alt)} m` : "未填"}</span></>}
+            {unitFireKm(u) > 0 && <><b>火力圈</b><span class="num">{unitFireKm(u)} km · {direct ? "直射" : `曲射 · 射角 ${arcDegOf(u)}°`}{pct(mk && mk.fire && mk.fire[0], direct ? "视线可达" : "弹道可达")}</span></>}
+            {typeof u.vision === "number" && u.vision > 0 && <><b>视野圈</b><span class="num">{u.vision} km · {air ? "眼位＝飞行高度" : `观察高度 ${unitEyeM(u)} m`}{pct(mk && mk.vision, "视线可达")}</span></>}
+            {isModern(world.meta) && radarKmOf(u) > 0 && <><b>雷达</b><span class="num">{radarKmOf(u)} km · {air ? "天线＝飞行高度" : `天线 ${radarMOf(u)} m`} · 目标 {radarTgtMOf(u)} m{pct(mk && mk.radar, "视线可达")}</span></>}
+            {air && alt != null && <DetectRow u={u} world={world} T={T} />}
           </>;
         })()}
         {(() => { const ft = unitFootKm(u); return ft

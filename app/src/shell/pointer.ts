@@ -27,7 +27,7 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUn
   type EditSub, type Sel }
   from "../ui/state.ts";
 import { addNode, addEdge, addFreeEdge, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
-  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setUnitFacing, setNodeRangeKm, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath }
+  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setUnitFacing, setNodeRangeKm, setNodeVision, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath }
   from "../ui/editops.ts";
 import { poolGet } from "../ui/stamps.ts";
 import { paintDims, maskFromLayer, brushMask, runsFromMask, ensurePaintLayer, type PaintMask } from "../ui/paint.ts";
@@ -721,9 +721,10 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const km = distKm(ctx.meta, rangeDrag.lon, rangeDrag.lat, dataLon(ctx.meta, ll[0]), ll[1]);   // 半径=圈心到光标的地理距离（球面周期化，跨拷贝安全）
       const rd = rangeDrag;
-      mutateWorldLive(w => typeof rd.ring === "string"
-        ? setUnitRing(w, rd.id, rd.ring, km)      // 部队视野/火力（同机制：拖近零清除）
-        : setNodeRangeKm(w, rd.id, rd.ring, km)); // 据点防御圈（钳底不删）
+      mutateWorldLive(w => typeof rd.ring === "number"
+        ? setNodeRangeKm(w, rd.id, rd.ring, km)   // 地点火力圈（钳底不删）
+        : rd.owner === "node" ? setNodeVision(w, rd.id, km)   // 地点视野（拖近零清除）
+        : setUnitRing(w, rd.id, rd.ring, km));    // 部队视野/火力（同机制：拖近零清除）
       return;
     }
     if (unitDrag) {

@@ -17,7 +17,8 @@ import type { GeoMapping, GeoScan } from "../core/geojson.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { ElevField } from "../core/elev.ts";
-import type { UnitMasks } from "../core/viewshed.ts";
+import { noMasks, type VisMasks } from "../core/viewshed.ts";
+import type { SightRes } from "../worker/routeProto.ts";
 import type { TerrainStyle } from "../render/renderer.ts";
 import type { Arm, Decor, Edge, Faction, Meta, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
 import { tget } from "../core/util.ts";
@@ -76,8 +77,10 @@ export const selMembers = (s: Sel): SelMembers =>
 export const isTacSig = computed(() => (worldSig.value?.meta || {}).mapKind === "tactical");
 /** 部队可达性预算缓存（外壳按网格/编辑版本重算填入；渲染层只读，帧内不算路）。键=部队 id */
 export const unitLegsSig = signal<Map<string, Leg[]>>(new Map());
-/* —— 视域（视线掩膜；shell/viewshed 独写）：部队 id → 视野圈/直射火力圈各一张；无掩膜＝画整圆 —— */
-export const visMaskSig = signal<Map<string, UnitMasks>>(new Map());
+/* —— 视域（视线掩膜；shell/viewshed 独写）：部队 / 地点各一张表，id → 各圈掩膜；无掩膜＝画整圆 —— */
+export const visMaskSig = signal<VisMasks>(noMasks());
+/** 飞行目标被谁看见（shell/viewshed 独写）：部队 id → 他派各观察圈的点对点视线结果 */
+export const detectSig = signal<Map<string, SightRes[]>>(new Map());
 
 /** 战术图请求桥（组件→外壳）：InfoPanel 战役卡按钮设值，外壳 effect 消费做库链接/生成/导航
    （生成/打开涉及 IndexedDB/文件夹 IO，只能在外壳做；组件不碰库）。 */
@@ -374,7 +377,7 @@ function applyRestored(cur: World, snapshot: World): void {
     linkFromSig.value = null;
     cancelOpDraw(); clearOpSel();
     unitLegsSig.value = new Map();                          // 部队可达性缓存失效（外壳按新网格重算）
-    visMaskSig.value = new Map();
+    visMaskSig.value = noMasks(); detectSig.value = new Map();
     worldSig.value = restored;
     yearSig.value = yearRangeOf(restored, yearSig.peek()).year;
     if (gridChanged) gridVerSig.value++;
@@ -406,7 +409,7 @@ export function setWorldState(w: World): void {
     linkFromSig.value = null;
     cancelOpDraw(); clearOpSel();
     unitLegsSig.value = new Map();
-    visMaskSig.value = new Map();
+    visMaskSig.value = noMasks(); detectSig.value = new Map();
     worldSig.value = w;
     yearSig.value = yearRangeOf(w, yearSig.peek()).year;
   });
@@ -522,6 +525,13 @@ function takeWhenNotes(): { text: string; err: boolean } | null {
 /** 表单静默变形回执（通用出口）：与 parseWhenInput 共用同一条缓冲，由本次提交末尾那条回执捎走。
     数值字段（兵力/速度）打不进合法值时，空删语义会把原值抹掉——同「只报不改」之规，说出来即可。 */
 export function noteFormWarn(text: string): void { noteWhen(text, true); }
+/** 数值输入框的静默变形回执：type=number 打不进合法值时 .value 恒为空串（badInput 才知道用户敲了什么），非正/负数另报。
+    只报不改；元素不在版面上＝不报 */
+export function warnNumInput(el: HTMLInputElement | null | undefined, 名: string, tail: string, allowZero = false): void {
+  if (!el) return;
+  if (el.validity?.badInput) noteFormWarn(`${名}不是数值　${tail}`);
+  else if (el.value.trim() && !(parseFloat(el.value) >= (allowZero ? 0 : 1e-9))) noteFormWarn(`${名}须为${allowZero ? "非负数" : "正数"}　${tail}`);
+}
 
 function noteWhen(text: string, err: boolean): void {
   whenNotes.push({ text, err });

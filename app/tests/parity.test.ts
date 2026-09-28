@@ -84,8 +84,8 @@ describe("常量与旧实现深度一致", () => {
     assert.deepStrictEqual(C.DECOR, g.DECOR);
   });
   it("地点/事件类型与模板", () => {
-    // NODE_STYLE/NODE_TYPES/NODE_TMPL：剔除新增 "label"（v0.15）与柱B 微地物六类后与旧版逐位一致
-    const NEW_NODE_TYPES = ["label", "camp", "pass", "bridge", "summit", "manor", "site"];
+    // NODE_STYLE/NODE_TYPES/NODE_TMPL：剔除新增 "label"（v0.15）、柱B 微地物六类与视域地点两类后与旧版逐位一致
+    const NEW_NODE_TYPES = ["label", "camp", "pass", "bridge", "summit", "manor", "site", "battery", "radarsite"];
     assert.deepStrictEqual(stripKeys(C.NODE_STYLE, NEW_NODE_TYPES), g.NODE_STYLE);
     for (const t of NEW_NODE_TYPES) assert.ok(C.NODE_STYLE[t], `新增类型「${t}」应存在（防豁免空转）`);
     assert.deepStrictEqual(C.NODE_TYPES.filter(t => !NEW_NODE_TYPES.includes(t)), g.NODE_TYPES);

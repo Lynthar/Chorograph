@@ -215,6 +215,8 @@ const TYPE_WORDS: [RegExp, string][] = [
   [/县|市|城|city|town_?c/i, "city"],
   [/镇|town/i, "town"],
   [/乡|村|village|hamlet/i, "village"],
+  [/炮台|炮位|battery/i, "battery"],
+  [/雷达|radar/i, "radarsite"],
   [/关|隘|pass/i, "pass"],
   [/塞|堡|要塞|fort|castle|citadel/i, "fortress"],
   [/营|垒|camp/i, "camp"],

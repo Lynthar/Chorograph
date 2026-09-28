@@ -1,12 +1,12 @@
 /* 兵棋部队（v0.14 战术图）：位置插值、航点写入、行军可达性校验。
    自旧实现原样迁移并纯化——unitLegs 不再内建缓存（渲染帧不许触发 A*，
    缓存与失效由调用层管理，同旧版 state._legs 的角色）。 */
-import { ALL_KINDS, ARC_DEG, EYE_M, EYE_M_KIND, FIRE_DIRECT_KIND, RADAR_M, RADAR_TGT_M, VANTAGE_M } from "./constants.ts";
+import { ALL_KINDS, ARC_DEG, EYE_M, EYE_M_KIND, EYE_M_NODE, FIRE_DIRECT_KIND, RADAR_M, RADAR_TGT_M, VANTAGE_M } from "./constants.ts";
 import { tget } from "./util.ts";
 import { distKm, kmPerDegLat, lonCos, toRad } from "./geo.ts";
 import { astar, endToEnd } from "./route.ts";
 import type { Grid } from "./grid.ts";
-import type { Arm, Meta, TrackPt, Unit } from "./types.ts";
+import type { Arm, Meta, NodeRange, TrackPt, Unit, WorldNode } from "./types.ts";
 
 export function unitKind(u: Unit) { return tget(ALL_KINDS, u.kind) || null; }
 export function unitArm(u: Unit): Arm { return (u.arm || (unitKind(u) || {} as { arm?: Arm }).arm || "land") as Arm; }
@@ -16,11 +16,13 @@ export function unitSpeed(u: Unit): number { return +(u.speed || 0) || (unitKind
    ⚠ 与 st 的「每航点各自声明、缺省＝常态」不同——这三样是**存量**，某航点没重新声明就意味着「没变」，
    绝不能悄悄弹回基线（打光的兵不会自己长回来）。故一律自当刻所在航点**向前回溯最近一次声明**。 ── */
 
-/** 三种存量的合法值域（与 editops.setUnitWaypointNum 落键的判据同源）：兵力整人 ≥1、速度任意正数（0.5 km/日的
-    慢速推进是合法声明，按 ≥1 读会静默跳过它）、士气 ≥0（0＝崩溃是有意义的值） */
-const TRACK_OK: Record<"strength" | "speed" | "morale", (v: number) => boolean> = { strength: v => v >= 1, speed: v => v > 0, morale: v => v >= 0 };
+/** 逐航点存量的键 */
+export type TrackKey = "strength" | "speed" | "morale" | "altM";
+/** 存量的合法值域（与 editops.setUnitWaypointNum 落键的判据同源）：兵力整人 ≥1、速度任意正数（0.5 km/日的
+    慢速推进是合法声明，按 ≥1 读会静默跳过它）、士气 ≥0（0＝崩溃是有意义的值）、飞行高度 ≥0（海拔，低于地面按地面） */
+export const TRACK_OK: Record<TrackKey, (v: number) => boolean> = { strength: v => v >= 1, speed: v => v > 0, morale: v => v >= 0, altM: v => v >= 0 };
 /** 回溯 idx 及其之前最近一次合法声明的数值 */
-function trackNum(u: Unit, idx: number, key: "strength" | "speed" | "morale"): number | null {
+function trackNum(u: Unit, idx: number, key: TrackKey): number | null {
   const tr = u.track || [], ok = TRACK_OK[key];
   for (let i = Math.min(idx, tr.length - 1); i >= 0; i--) {
     const v = +(tr[i] as unknown as Record<string, unknown>)[key]!;
@@ -41,20 +43,33 @@ export function unitSpeedAt(u: Unit, T: number): number {
 }
 /** 当刻士气（0–100）：航点声明优先，回落部队级基线；无从可取＝null（未记录，不显示） */
 export function unitMoraleAt(u: Unit, T: number): number | null {
-  const w = trackNum(u, idxAt(u, T), "morale");
-  if (w != null) return w;
-  const b = +(u.morale as number);
-  return isFinite(b) && b >= 0 ? b : null;
+  return trackNum(u, idxAt(u, T), "morale") ?? baseNum(u, "morale");
 }
 /** 第 idx 个航点「若不声明则沿用的值」——只看它**之前**的航点，都没有才回落部队级基线。
     航点表单的占位符用它：所见即留空后的结果，「留空＝没变」这条语义才看得见。 */
-export function unitInheritedAt(u: Unit, idx: number, key: "strength" | "speed" | "morale"): number | null {
+export function unitInheritedAt(u: Unit, idx: number, key: TrackKey): number | null {
   const w = trackNum(u, idx - 1, key);
   if (w != null) return w;
   if (key === "strength") return parseStrength(u.strength);
   if (key === "speed") return unitSpeed(u);
-  const b = +(u.morale as number);
+  return baseNum(u, key);
+}
+/** 士气与飞行高度的部队级基线：非负才算，否则 null（未记录） */
+function baseNum(u: Unit, key: "morale" | "altM"): number | null {
+  const b = +(u[key] as number);
   return isFinite(b) && b >= 0 ? b : null;
+}
+/** 航点 i 生效的飞行高度（回溯声明，再回落基线）；无＝null */
+function altOfPt(u: Unit, i: number): number | null { return trackNum(u, i, "altM") ?? baseNum(u, "altM"); }
+/** 当刻飞行高度（海拔 m）：航段内按两端生效值线性插值（爬升/下滑是连续的，同位置插值之规）；
+    一端没有高度就取起点的值；未入场或无从可取＝null＝不判视线 */
+export function unitAltAt(u: Unit, T: number): number | null {
+  const p = unitPos(u, T);
+  if (!p) return null;
+  const tr = u.track || [], a = altOfPt(u, p.i), q = tr[p.i + 1];
+  if (a == null || !q || q.t === tr[p.i].t) return a;
+  const b = altOfPt(u, p.i + 1)!, k = Math.min(1, Math.max(0, (T - tr[p.i].t) / (q.t - tr[p.i].t)));
+  return a + (b - a) * k;
 }
 
 /** 兵力落库归一：只认纯数字（或纯数字串），返回「人」数；空/文本/非正数一律 null＝不设此键。
@@ -89,9 +104,9 @@ export function unitFireKm(u: Unit): number {
   return legacy > 0 ? legacy : 0;
 }
 
-/** 直射＝火力圈按视线裁；缺键＝曲射＝整圆。判据只此一处（渲染、检查器、视域编排同走） */
-/** 直射（按视线裁）还是曲射（按射角弹道裁）：显式值优先，缺键按兵种缺省（判据只此一处） */
+/** 直射（按视线裁）还是曲射（按射角弹道裁）：飞行部队恒直射（从飞行高度按视线判），否则显式值优先、缺键按兵种缺省（判据只此一处） */
 export function unitFireDirect(u: Unit): boolean {
+  if (unitArm(u) === "air") return true;
   return u.fire === "direct" ? true : u.fire === "arc" ? false : FIRE_DIRECT_KIND.has(String(u.kind));
 }
 /** 观察高度（米）：显式值优先（0 合法＝伏地），否则兵种缺省 */
@@ -104,15 +119,26 @@ export function unitVantageM(u: Unit): number {
   const ft = unitFootKm(u);
   return ft ? 500 * Math.max(ft.front, ft.depth) : VANTAGE_M;
 }
+/* 以下几项部队与地点同义（键同名，值来自存档故逐项防御）：射角、雷达三项 */
 /** 曲射射角（度）：档外/缺键＝ARC_DEG */
-export function unitArcDeg(u: Unit): number {
-  const a = +(u.arcDeg as number);
+export function arcDegOf(x: { arcDeg?: unknown }): number {
+  const a = +(x.arcDeg as number);
   return a > 0 && a < 90 ? a : ARC_DEG;
 }
 /** 雷达探测半径 km；无雷达＝0 */
-export function unitRadarKm(u: Unit): number { const r = +(u.radar as number); return r > 0 ? r : 0; }
-export function unitRadarM(u: Unit): number { const v = +(u.radarM as number); return isFinite(v) && v >= 0 ? v : RADAR_M; }
-export function unitRadarTgtM(u: Unit): number { const v = +(u.radarTgtM as number); return isFinite(v) && v >= 0 ? v : RADAR_TGT_M; }
+export function radarKmOf(x: { radar?: unknown }): number { const r = +(x.radar as number); return r > 0 ? r : 0; }
+export function radarMOf(x: { radarM?: unknown }): number { const v = +(x.radarM as number); return isFinite(v) && v >= 0 ? v : RADAR_M; }
+export function radarTgtMOf(x: { radarTgtM?: unknown }): number { const v = +(x.radarTgtM as number); return isFinite(v) && v >= 0 ? v : RADAR_TGT_M; }
+
+/** 地点的观察高度（米）：显式值优先（0 合法），否则按类型缺省 */
+export function nodeEyeM(n: WorldNode): number {
+  const v = +(n.eyeM as number);
+  return isFinite(v) && v >= 0 ? v : (tget(EYE_M_NODE, n.type) ?? EYE_M);
+}
+/** 地点火力圈是否直射：缺键＝曲射（旧档据点圈自此按 45° 弹道裁，同部队 2026-09-09 之规） */
+export function rangeDirect(r: NodeRange): boolean { return r.fire === "direct"; }
+/** 地点视野半径 km；无＝0 */
+export function nodeVisionKm(n: WorldNode): number { const v = +(n.vision as number); return v > 0 ? v : 0; }
 /** 时代：现代才有雷达等近现代账目；缺键＝古代（判据只此一处） */
 export function isModern(meta: Meta | undefined): boolean { return (meta || {}).period === "modern"; }
 

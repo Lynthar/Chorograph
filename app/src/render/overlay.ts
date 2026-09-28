@@ -19,7 +19,8 @@ import { drawContourLabels } from "./contourlab.ts";
 import type { Grid } from "../core/grid.ts";
 import type { ElevField } from "../core/elev.ts";
 import type { Leg } from "../core/units.ts";
-import type { UnitMasks } from "../core/viewshed.ts";
+import type { VisMasks } from "../core/viewshed.ts";
+import type { SightRes } from "../worker/routeProto.ts";
 import type { Meta, World, WorldNode } from "../core/types.ts";
 
 /* 门面再导出（拆层不改调用点）：绘制单线 drawOp 供画线预览（frame），拾取全家（pointer） */
@@ -49,7 +50,8 @@ export interface OverlayOpts {
   decorSelId?: string | null;         // 选中布景 id（虚线金框）
   decorMultiIds?: string[] | null;    // 框选的布景 id（同款金框）
   unitLegs?: Map<string, Leg[]>;      // 部队可达性预算（外壳缓存；供尾迹标超速）
-  visMasks?: Map<string, UnitMasks>;  // 视线掩膜（外壳编排；有掩膜的圈只填视线可达的格）
+  visMasks?: VisMasks;                // 视线掩膜（外壳编排；有掩膜的圈只填视线可达的格）
+  detect?: Map<string, SightRes[]>;   // 飞行部队被他派看见（外壳编排；看见的画探测圈）
   ruleField?: ElevField | null;       // 落定的规则场（标高点与等高线注记共读；数字与光标读数同源，演算中沿用上一份）
   contourStep?: number;               // 等距（抽象单位，renderer.contourStepOf 取的那一档，与地形渲染器同一档；注记按它标）
   smooth?: number;                    // 涂域边界平滑档（Chaikin 轮数 0–3；缺省 2，笔刷框调）
@@ -61,6 +63,15 @@ export interface OverlayOpts {
 function unitFocus(opts: OverlayOpts): ReadonlySet<string> | undefined {
   const s = new Set<string>(opts.multiUnitIds || []);
   if (opts.unitSelId) s.add(opts.unitSelId);
+  return s.size ? s : undefined;
+}
+/** 焦点地点＝选中 + 框选里带火力圈的那些：点一座城不该把全图火力圈压成陪衬 */
+function nodeFocus(opts: OverlayOpts, byId: Map<string, WorldNode>): ReadonlySet<string> | undefined {
+  const s = new Set<string>();
+  for (const id of [opts.selId, ...(opts.multiIds || [])]) {
+    const n = id ? byId.get(id) : undefined;
+    if (n && (n.ranges || []).some(r => +r.km > 0)) s.add(n.id);
+  }
   return s.size ? s : undefined;
 }
 
@@ -82,6 +93,7 @@ export function drawOverlay(
     const fcolor = (id: string | null) => (id && world.factions.find(f => f.id === id)?.color) || "#6b6b6b";
     const multiSet = new Set(opts.multiIds || []);
     const decorSel = { id: opts.decorSelId, ids: opts.decorMultiIds ? new Set(opts.decorMultiIds) : null };
+    const focus = unitFocus(opts), focusNodes = nodeFocus(opts, byId);
     for (const shift of visibleWorldCopies(cam, meta)) {
       const c2: Camera = { ...cam, lonShift: shift };
       if (on("decor")) drawDecor(ctx, c2, world, yearNow, opts.grid ? opts.grid.step : 1, decorSel);   // 手绘布景（印章尺度随格距 step；生态笔刷落的真实印章同此层）
@@ -89,7 +101,7 @@ export function drawOverlay(
       if (on("range")) drawNodeRanges(ctx, c2, meta, world, yearNow, opts.selId);   // 地点范围虚线圈
       if (on("ranges") || on("vision") || on("radar")) drawRanges(ctx, c2, meta, world, yearNow, {   // 火力射程/视野/雷达圈：垫在连线/地点之下
         fire: on("ranges"), vision: on("vision"), radar: on("radar") && isModern(meta), masks: opts.visMasks,   // 雷达层随时代（层面板同门）
-        focus: unitFocus(opts),                                          // 选中/框选的部队＝焦点：斜纹加粗，其余只留描边
+        focus, focusNodes,                                               // 选中/框选的部队与带火力圈的地点＝焦点：斜纹加粗，其余只留描边
         handleUnit: opts.editing ? (opts.unitSelId || null) : null,     // 编辑态选中对象的圈带半径拖动手柄
         handleNode: opts.editing ? (opts.selId || null) : null
       });
@@ -98,7 +110,7 @@ export function drawOverlay(
       if (on("arrows")) drawOps(ctx, c2, world, yearNow, opts.selId, opts.opSel, field);
       if (on("nodes")) drawNodes(ctx, c2, meta, world, yearNow, opts, multiSet, fcolor, field);   // 地点记号 + 楷体标签（避让）
       if (on("units")) drawUnits(ctx, c2, meta, world, yearNow,   // 部队【记号】压在地点之上（战场主角）；标签让地名
-        { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field,
+        { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field, detect: opts.detect,
           handleUnit: opts.editing ? (opts.unitSelId || null) : null });   // 阵形朝向手柄（同圈手柄之规：编辑态选中对象才出）
       if (on("spots") && opts.ruleField && opts.grid) drawSpotHeights(ctx, c2, meta, opts.ruleField, opts.grid, field);   // 标高点占位：让地名与部队
       if (on("terrain") && on("contour") && opts.ruleField && opts.grid)   // 等高线注记**最后**占位：让地名、部队与标高点（线由地形渲染器画，故并 terrain 门）

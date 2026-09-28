@@ -117,9 +117,18 @@ export interface WorldNode extends Timed {
   evtype?: string; year?: number; sides?: string; result?: string;
   ops?: Op[];
   tacmap?: { id?: string; file?: string; name?: string };
-  ranges?: { 名称?: string; km: number }[];
+  /* 战术图地点的视域（同部队各键语义；炮台/雷达站只是记号，任何地点都可填） */
+  ranges?: NodeRange[];       // 防御火力多圈：每圈各自直射/曲射
+  vision?: number;            // 视野半径 km（按视线裁）
+  eyeM?: number;              // 观察高度 m；缺键＝core/units.nodeEyeM 按类型
+  radar?: number;             // 雷达探测半径 km（现代图）
+  radarM?: number;            // 天线高度 m；缺键＝RADAR_M
+  radarTgtM?: number;         // 假定目标高度 m；缺键＝RADAR_TGT_M
   [k: string]: unknown;
 }
+
+/** 地点的一个火力圈：fire 缺键＝曲射（按射角弹道裁），arcDeg 缺键＝ARC_DEG */
+export interface NodeRange { 名称?: string; km: number; fire?: "direct" | "arc"; arcDeg?: number }
 
 export interface Edge extends Timed {
   from?: string; to?: string;  // 经典边（道路/商路/锚端点河）必填；自由画河/工事用 pts、两端皆无
@@ -163,6 +172,7 @@ export interface TrackPt {
   strength?: number;          // 兵力（人）
   speed?: number;             // 行军速度 km/日
   morale?: number;            // 士气 0–100
+  altM?: number;              // 飞行高度（海拔 m）：同为存量；航点间按两端生效值线性插值（core/units.unitAltAt）
 }
 
 export interface Unit extends Timed {
@@ -185,6 +195,7 @@ export interface Unit extends Timed {
   radar?: number;             // 探测半径 km（缺键＝无雷达）
   radarM?: number;            // 天线高度 m；缺键＝RADAR_M
   radarTgtM?: number;         // 假定目标高度 m；缺键＝RADAR_TGT_M
+  altM?: number;              // 飞行高度基线（海拔 m，飞行部队）：航点与基线都没有＝不判视线
   /* 阵形足印（柱B）：正面宽与纵深（km），缺省＝无足印＝标准兵棋框逐位不变。
      放大到足印够宽（>BAR_MIN_PX）才改画按比例的阵位条——万人步阵与二千轻骑不再同框等大。 */
   frontKm?: number;

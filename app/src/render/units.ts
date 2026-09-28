@@ -4,14 +4,15 @@
    世界拷贝循环逐拷贝调用（同 drawEco/drawDecor）；pickUnit 独立，自带拷贝循环（同 pickNode）。 */
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { kmPerDegLat, lonCos } from "../core/geo.ts";
-import { fmtStrength, footCornersLL, isModern, unitArcDeg, unitFacingAt, unitFireDirect, unitFireKm, unitFootKm, unitKind, unitPos, unitRadarKm, unitStatusAt, unitStrengthAt, type Leg, type UnitPos } from "../core/units.ts";
+import { fmtStrength, footCornersLL, isModern, arcDegOf, nodeVisionKm, rangeDirect, unitFacingAt, unitFireDirect, unitFireKm, unitFootKm, unitKind, unitPos, radarKmOf, unitStatusAt, unitStrengthAt, type Leg, type UnitPos } from "../core/units.ts";
 import { maskContour, maskCoverage } from "./maskraster.ts";
 import { pointInPoly } from "../core/geometry.ts";
 import { UNIT_STATUS } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { hexA, hexRGB, tget } from "../core/util.ts";
 import type { LabelField } from "./labels.ts";
-import type { UnitMasks, VisMask } from "../core/viewshed.ts";
+import { detectedBy, type VisMask, type VisMasks } from "../core/viewshed.ts";
+import type { SightRes } from "../worker/routeProto.ts";
 import type { Meta, Unit, World } from "../core/types.ts";
 
 /** 单位框色=所属派系色（缺省暗红） */
@@ -155,6 +156,7 @@ export interface UnitDrawOpts {
   multiIds?: string[] | null;      // 框选的部队 id（同款光晕，全部高亮）
   legs?: Map<string, Leg[]>;        // 可达性预算（外壳缓存；缺省=不标超速）
   labelField?: LabelField;          // 帧内标签避让场（与地名/标注共用）；缺省=旧行为无条件画
+  detect?: Map<string, SightRes[]>; // 飞行部队被他派看见（外壳算好）：看见的画探测圈
 }
 
 /** 足印够宽才改画阵位条：正面屏宽 ≤ 此值＝维持标准框（旧档与远景逐位不变） */
@@ -216,6 +218,8 @@ export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
       if (u.id === opts.handleUnit) drawFacingHandle(ctx, foot, boxColor(world, u));
     }
     else drawUnitSymbol(ctx, x, y, world, u, selMe, st);
+    const seenBy = opts.detect ? detectedBy(opts.detect.get(u.id)) : [];
+    if (seenBy.length) drawDetectHalo(ctx, x, y, foot, observerColor(world, T, seenBy.find(r => r.ring === "radar") || seenBy[0]), seenBy.some(r => r.ring === "radar"));
     if (opts.labels) {
       /* 标签仍在图面直立、仍走共用避让场；阵位条态改锚其外接盒的上下缘（条比框大得多，贴框距会压在阵中） */
       const lo = foot ? Math.max(...foot.map(q => q[1])) : y + 8.5;
@@ -242,6 +246,26 @@ export function drawUnits(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
   }
 }
 
+
+/** 观察者（部队或地点）的派系色：探测圈用看见它的那一方的颜色 */
+function observerColor(world: World, T: number, r: SightRes): string {
+  if (r.owner === "unit") { const u = (world.units || []).find(q => q.id === r.id); return u ? boxColor(world, u) : "#888"; }
+  const n = world.nodes.find(q => q.id === r.id), fid = n ? ownerAt(n, T) : null;
+  return (fid && world.factions.find(f => f.id === fid)?.color) || "#8a6a2a";
+}
+/** 探测圈：部队框（或阵位条外接盒）外一圈椭圆，虚线式样同看见它的圈（雷达点划、视野点线），色＝看见它的那一方 */
+function drawDetectHalo(ctx: CanvasRenderingContext2D, x: number, y: number, foot: [number, number][] | null | undefined, col: string, radar: boolean): void {
+  let cx = x, cy = y, hw = 13, hh = 8.5;
+  if (foot) {
+    const xs = foot.map(q => q[0]), ys = foot.map(q => q[1]);
+    cx = (Math.min(...xs) + Math.max(...xs)) / 2; cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    hw = (Math.max(...xs) - Math.min(...xs)) / 2; hh = (Math.max(...ys) - Math.min(...ys)) / 2;
+  }
+  ctx.save();
+  ctx.strokeStyle = hexA(col, .9); ctx.lineWidth = 1.6; ctx.setLineDash(DASH[radar ? "radar" : "vision"]);
+  ctx.beginPath(); ctx.ellipse(cx, cy, hw + 7, hh + 7, 0, 0, 7); ctx.stroke();
+  ctx.restore();
+}
 
 /** 框选拾取：当前时刻位置落在屏幕矩形内的部队 id（语义对齐 overlay.nodesInBox；未入场无位置不参与） */
 export function unitsInBox(cam: Camera, meta: Meta | undefined, world: World, T: number,
@@ -295,9 +319,10 @@ export interface RangesOpts {
   vision?: boolean;                // 视野圈（vision 层）
   radar?: boolean;                 // 雷达覆盖圈（radar 层 × 现代图；调用方已并门）
   handleUnit?: string | null;      // 编辑态选中部队 id → 其圈上画拖动手柄
-  handleNode?: string | null;      // 编辑态选中地点 id → 其火力圈画手柄
-  masks?: Map<string, UnitMasks>;  // 视线掩膜：有掩膜的圈只填可达的格（圈线仍画名义半径）
+  handleNode?: string | null;      // 编辑态选中地点 id → 其火力圈与视野圈画手柄
+  masks?: VisMasks;                // 视线掩膜：有掩膜的圈只填可达的格（圈线仍画名义半径）
   focus?: ReadonlySet<string>;     // 选中的部队 id：有则它们的可达区域斜纹加粗描边、其余只留描边（多队相邻靠点选分辨）
+  focusNodes?: ReadonlySet<string>; // 选中的带火力圈的地点 id：同 focus（两者任一非空即进焦点态）
 }
 
 /* 掩膜的屏幕栅格（位图 + 等值线路径），按 (掩膜, 缩放档, 派系色) 缓存：缩放档＝每格像素数取半倍频程阶梯，
@@ -369,20 +394,21 @@ function drawHatch(ctx: CanvasRenderingContext2D, ras: MaskRaster, x0: number, y
 }
 
 type RingKind = "fire" | "vision" | "radar";
-/* 透明度：掩膜填按覆盖率再乘 FILL；整圆兜底（演算中/飞行/据点）DISC 更淡；等值线描边 LINE。圈线虚线式样按圈种区分。 */
+/* 透明度：掩膜填按覆盖率再乘 FILL；整圆兜底（演算中/失败/飞行）DISC 更淡；等值线描边 LINE。圈线虚线式样按圈种区分。 */
 const FILL: Record<RingKind, number> = { fire: .30, vision: .18, radar: .15 };
 const DISC: Record<RingKind, number> = { fire: .18, vision: .07, radar: .06 };
 const LINE: Record<RingKind, number> = { fire: .95, vision: .75, radar: .6 };
 const DASH: Record<RingKind, number[]> = { fire: [5, 4], vision: [2, 3.5], radar: [6, 3, 1.5, 3] };
 
 /** 火力/视野/雷达圈：有掩膜的圈按可达区域画——按面积平均的填色（格比像素小时不丢格）+ 覆盖率 0.5 等值线
-    描边（裁进名义圆内 2 px：圆周本身不描，它就是虚线圈）；虚线圈＝名义半径。掩膜未到/飞行部队/据点＝整圆淡填。
-    焦点态（选中部队）**只作用于火力圈**：可达区域斜纹加粗描边、标签带可达读数，其余部队的火力圈只留描边；视野与雷达圈恒按无焦点态画（圈大得多，铺纹会盖住地形）。
-    部队按当日位置——火力=单值 range（旧多圈回退首条）、视野=vision，两者同机制；据点=nodes[].ranges 多圈照旧。
+    描边（裁进名义圆内 2 px：圆周本身不描，它就是虚线圈）；虚线圈＝名义半径。掩膜未到/失败/飞行部队＝整圆淡填。
+    焦点态（选中部队或带火力圈的地点）**只作用于火力圈**：可达区域斜纹加粗描边、标签带可达读数，其余的火力圈只留描边；视野与雷达圈恒按无焦点态画（圈大得多，铺纹会盖住地形）。
+    部队按当日位置——火力=单值 range（旧多圈回退首条）、视野=vision，两者同机制；地点＝ranges 多圈各按自己的射击方式，另有视野与雷达。
     标签火力在圈上、视野在圈下、雷达在圈右（相邻不打架）；雷达圈最大故垫最底。
     编辑态选中对象的圈带拖动手柄（火力=圈右、视野=圈左），配合外壳 pickRangeHandle 拖动调半径。 */
 export function drawRanges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined, world: World, T: number, opts: RangesOpts = {}): void {
-  const fire = opts.fire !== false, vision = !!opts.vision, radar = !!opts.radar, focus = opts.focus;
+  const fire = opts.fire !== false, vision = !!opts.vision, radar = !!opts.radar;
+  const focus = opts.focus, focusNodes = opts.focusNodes, anyFocus = !!(focus || focusNodes);
   /** role：null＝无焦点态；true＝焦点；false＝陪衬 */
   const fillRing = (lon: number, lat: number, km: number, col: string, kind: RingKind, label: string, handle: boolean,
     mask?: VisMask, role: boolean | null = null, hatchDeg = 0): void => {
@@ -428,32 +454,39 @@ export function drawRanges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Met
     ctx.restore();
   };
   const pctOf = (m: VisMask): string => m.nIn > 0 ? ` ${Math.round(100 * m.nVis / m.nIn)}%` : "";
+  /** 焦点态才带读数 */
+  const readout = (role: boolean | null, m: VisMask | undefined, 名: string): string => role && m ? ` · ${名}${pctOf(m)}` : "";
+  const fireHow = (direct: boolean, arc: number): string => direct ? "直射 · 视线可达" : `曲射 ${arc}° · 弹道可达`;
   let nFocus = 0;
+  /* 焦点只作用于**火力圈**（2026-09-10 用户拍板）：视野与雷达圈恒按无焦点态画。
+     它俩的圈大得多（雷达 30 km），铺上斜纹既盖住地形又与火力圈抢眼——要分辨谁是谁，看火力圈就够。 */
   (world.units || []).forEach(u => {
-    const fk = unitFireKm(u), vk = +(u.vision as number) || 0, rk = unitRadarKm(u);
+    const fk = unitFireKm(u), vk = +(u.vision as number) || 0, rk = radarKmOf(u);
     if (!((fire && fk > 0) || (vision && vk > 0) || (radar && rk > 0))) return;
     const p = unitPos(u, T); if (!p) return;
-    const col = boxColor(world, u), withHandle = u.id === opts.handleUnit, mk = opts.masks && opts.masks.get(u.id);
-    const role = focus ? focus.has(u.id) : null, deg = role ? HATCH_DEG[nFocus++ % HATCH_DEG.length] : 0;
-    const readout = (m: VisMask | undefined, 名: string): string => role && m ? ` · ${名}${pctOf(m)}` : "";   // 焦点态才带读数
-    /* 焦点只作用于**火力圈**（2026-09-10 用户拍板）：视野与雷达圈恒按无焦点态画。
-       它俩的圈大得多（雷达 30 km），铺上斜纹既盖住地形又与火力圈抢眼——要分辨谁是谁，看火力圈就够。 */
+    const col = boxColor(world, u), withHandle = u.id === opts.handleUnit, mk = opts.masks && opts.masks.unit.get(u.id);
+    const role = anyFocus ? !!(focus && focus.has(u.id)) : null, deg = role ? HATCH_DEG[nFocus++ % HATCH_DEG.length] : 0;
     if (radar && rk > 0) fillRing(p.lon, p.lat, rk, col, "radar", `雷达 ${rk}km`, false, mk && mk.radar);
     if (fire && fk > 0) {
-      const how = unitFireDirect(u) ? "直射 · 视线可达" : `曲射 ${unitArcDeg(u)}° · 弹道可达`;
-      fillRing(p.lon, p.lat, fk, col, "fire", `火力 ${fk}km${readout(mk && mk.fire, how)}`, withHandle, mk && mk.fire, role, deg);
+      const m = mk && mk.fire && mk.fire[0];
+      fillRing(p.lon, p.lat, fk, col, "fire", `火力 ${fk}km${readout(role, m, fireHow(unitFireDirect(u), arcDegOf(u)))}`, withHandle, m, role, deg);
     }
     if (vision && vk > 0) fillRing(p.lon, p.lat, vk, col, "vision", `视野 ${vk}km`, withHandle, mk && mk.vision);
   });
-  if (fire) world.nodes.forEach(n => {
-    if (!(n.ranges || []).length || !activeAt(n, T)) return;
+  world.nodes.forEach(n => {
+    const rs = n.ranges || [], vk = nodeVisionKm(n), rk = radarKmOf(n);
+    if (!((fire && rs.length) || (vision && vk > 0) || (radar && rk > 0)) || !activeAt(n, T)) return;
     const fid = ownerAt(n, T);
     const f = fid ? world.factions.find(x => x.id === fid) : null;
-    const col = (f && f.color) || "#8a6a2a", withHandle = n.id === opts.handleNode;
-    n.ranges!.forEach(r => {
+    const col = (f && f.color) || "#8a6a2a", withHandle = n.id === opts.handleNode, mk = opts.masks && opts.masks.node.get(n.id);
+    const role = anyFocus ? !!(focusNodes && focusNodes.has(n.id)) : null;
+    if (radar && rk > 0) fillRing(n.lon, n.lat, rk, col, "radar", `雷达 ${rk}km`, false, mk && mk.radar);
+    if (fire) rs.forEach((r, i) => {
       const km = +r.km || 0; if (!(km > 0)) return;
-      fillRing(n.lon, n.lat, km, col, "fire", `${r.名称 || "射程"} ${km}km`, withHandle);
+      const m = mk && mk.fire && mk.fire[i], deg = role ? HATCH_DEG[nFocus++ % HATCH_DEG.length] : 0;
+      fillRing(n.lon, n.lat, km, col, "fire", `${r.名称 || "射程"} ${km}km${readout(role, m, fireHow(rangeDirect(r), arcDegOf(r)))}`, withHandle, m, role, deg);
     });
+    if (vision && vk > 0) fillRing(n.lon, n.lat, vk, col, "vision", `视野 ${vk}km`, withHandle, mk && mk.vision);
   });
 }
 
@@ -476,7 +509,7 @@ export function pickFacingHandle(cam: Camera, meta: Meta | undefined, world: Wor
 }
 
 /** 拾取圈半径手柄（编辑态·仅选中对象）：火力圈手柄在圈右、视野圈在圈左；命中返回圈心数据坐标。
-    部队火力=单值 "range"（含旧多圈回退）、视野="vision"；据点防御圈=下标。
+    部队火力=单值 "range"（含旧多圈回退）、视野="vision"；地点火力圈=下标、视野="vision"。
     x/y=CSS 像素，自带世界拷贝循环（同 pickUnit）；fire/vision 对应图层开关（关了的层不可拖）。 */
 export function pickRangeHandle(cam: Camera, meta: Meta | undefined, world: World, T: number, x: number, y: number,
   unitId: string | null, nodeId: string | null, opts: { fire?: boolean; vision?: boolean } = {}): RingHit | null {
@@ -499,16 +532,19 @@ export function pickRangeHandle(cam: Camera, meta: Meta | undefined, world: Worl
         }
       }
     }
-    if (nodeId && fire) {
-      const n = world.nodes.find(q => q.id === nodeId);
-      if (n && (n.ranges || []).length && activeAt(n, T)) {
-        const rs = n.ranges!;
-        for (let i = 0; i < rs.length; i++) {
-          const km = +rs[i].km || 0; if (!(km > 0)) continue;
-          const [cx, cy, rx, ry] = ringPx(c2, meta, n.lon, n.lat, km);
-          if (rx < 3 && ry < 3) continue;
-          if (Math.abs(x - (cx + rx)) <= HIT && Math.abs(y - cy) <= HIT) return { owner: "node", id: n.id, ring: i, lon: n.lon, lat: n.lat };
-        }
+    const n = nodeId ? world.nodes.find(q => q.id === nodeId) : null;
+    if (n && activeAt(n, T)) {
+      const rs = fire ? n.ranges || [] : [];
+      for (let i = 0; i < rs.length; i++) {
+        const km = +rs[i].km || 0; if (!(km > 0)) continue;
+        const [cx, cy, rx, ry] = ringPx(c2, meta, n.lon, n.lat, km);
+        if (rx < 3 && ry < 3) continue;
+        if (Math.abs(x - (cx + rx)) <= HIT && Math.abs(y - cy) <= HIT) return { owner: "node", id: n.id, ring: i, lon: n.lon, lat: n.lat };
+      }
+      const vk = nodeVisionKm(n);
+      if (vision && vk > 0) {
+        const [cx, cy, rx, ry] = ringPx(c2, meta, n.lon, n.lat, vk);
+        if (!(rx < 3 && ry < 3) && Math.abs(x - (cx - rx)) <= HIT && Math.abs(y - cy) <= HIT) return { owner: "node", id: n.id, ring: "vision", lon: n.lon, lat: n.lat };
       }
     }
   }

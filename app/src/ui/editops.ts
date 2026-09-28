@@ -4,10 +4,10 @@
 import { wrapLon } from "../core/geo.ts";
 import { newId, parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
-import { isModern, setUnitPoint, unitKind, unitPos } from "../core/units.ts";
+import { TRACK_OK, isModern, setUnitPoint, unitKind, unitPos, type TrackKey } from "../core/units.ts";
 import { ALL_KINDS, CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
-import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, Op, Owner, Phase, TerrainId, TerrainOverride, TrackPt, Unit, World, WorldNode } from "../core/types.ts";
+import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, NodeRange, Op, Owner, Phase, TerrainId, TerrainOverride, TrackPt, Unit, World, WorldNode } from "../core/types.ts";
 
 export const newNodeId = (): string => newId("n");
 export const newEventId = (): string => newId("ev");
@@ -108,7 +108,10 @@ export interface NodeFormValues {
   faction?: string;            // ""=中立；undefined=事件点（无此字段）
   radiusKm?: string; since?: string; until?: string;
   kv: string;
-  ranges?: string;             // 战术图据点防御火力（每行「名称：公里数」；undefined=无此栏）
+  /* 战术图地点的视域（undefined＝无此栏＝不动；空串＝删键回落缺省） */
+  ranges?: NodeRangeDraft[];   // 火力圈逐行
+  vision?: string; eyeM?: string;
+  radar?: string; radarM?: string; radarTgtM?: string;   // 现代图才有栏
   certainty?: string;          // 可靠性档位（""=确证删键；undefined=不动此键）
   year?: string; sides?: string; result?: string;   // 事件点专属
   fs?: string; pin?: string;   // 标注（type:"label"）专属：字号 px / 屏幕角（""=地图锚定）
@@ -123,7 +126,12 @@ export function applyNodeForm(n: WorldNode, v: NodeFormValues): void {
   const kv = parseKV(v.kv);
   Object.keys(kv).forEach(k => { if (!kv[k]) delete kv[k]; });   // 值留空的模板行不保存
   if (Object.keys(kv).length) n.字段 = kv; else delete n.字段;
-  if (v.ranges !== undefined) { const rng = parseRanges(v.ranges); if (rng.length) n.ranges = rng; else delete n.ranges; }
+  if (v.ranges !== undefined) {
+    const rng = v.ranges.map(rangeOfDraft).filter((r): r is NodeRange => r !== null);
+    if (rng.length) n.ranges = rng; else delete n.ranges;
+  }
+  putPos(n, "vision", v.vision); putNonNeg(n, "eyeM", v.eyeM);
+  putPos(n, "radar", v.radar); putNonNeg(n, "radarM", v.radarM); putNonNeg(n, "radarTgtM", v.radarTgtM);
   if (v.certainty !== undefined) setCertainty(n, v.certainty);
   if (n.type === "event") {
     if (v.year !== undefined) { const y = parseFloat(v.year); if (isFinite(y)) n.year = y; else delete n.year; }
@@ -520,15 +528,16 @@ export function setUnitWaypointFacing(w: World, id: string, i: number, deg: stri
   return true;
 }
 
-/** 设/清第 i 行航点的存量（兵力/速度/士气；空或非法=删键回落到上一次声明或部队级基线）。
-    ⚠ 与 st/facing 不同，这三样缺省＝「没变」而非「回默认」——回溯语义在 core 的 unitStrengthAt 一族里，
-    这里只管落键：兵力/速度须 >0，士气收 0–100（0＝崩溃是有意义的值，不能当空处理）。 */
-export function setUnitWaypointNum(w: World, id: string, i: number, key: "strength" | "speed" | "morale", raw: string): boolean {
+/** 设/清第 i 行航点的存量（兵力/速度/士气/飞行高度；空或非法=删键回落到上一次声明或部队级基线）。
+    ⚠ 与 st/facing 不同，存量缺省＝「没变」而非「回默认」——回溯语义在 core 的 unitStrengthAt 一族里，
+    这里只管落键：兵力/速度须 >0，士气收 0–100、飞行高度 ≥0（0 都是有意义的值，不能当空处理）。 */
+export function setUnitWaypointNum(w: World, id: string, i: number, key: TrackKey, raw: string): boolean {
   const p = trackRow(w, id, i);
   if (!p) return false;
   const v = parseFloat(raw);
   if (!isFinite(v)) { delete p[key]; return true; }
   if (key === "morale") p.morale = Math.min(100, Math.max(0, Math.round(v)));
+  else if (key === "altM") { if (TRACK_OK.altM(v)) p.altM = v; else delete p.altM; }
   else if (v > 0) p[key] = key === "strength" ? Math.round(v) : v;
   else delete p[key];
   return true;
@@ -558,7 +567,16 @@ export function setUnitFacing(w: World, id: string, T: number, deg: number): boo
   return true;
 }
 
-/** 设据点第 i 个防御火力圈半径（钳制 ≥0.05km——误拖不删条目，删除走表单文本） */
+/** 设地点视野半径（同部队视野：拖到近零＝清除该圈） */
+export function setNodeVision(w: World, id: string, km: number): boolean {
+  const n = w.nodes.find(x => x.id === id);
+  if (!n || !isFinite(km)) return false;
+  const v = roundKm(km);
+  if (v >= 0.05) n.vision = v; else delete n.vision;
+  return true;
+}
+
+/** 设地点第 i 个火力圈半径（钳制 ≥0.05km——误拖不删条目，删除走表单） */
 export function setNodeRangeKm(w: World, id: string, i: number, km: number): boolean {
   const n = w.nodes.find(x => x.id === id);
   const r = n && n.ranges && n.ranges[i];
@@ -567,22 +585,36 @@ export function setNodeRangeKm(w: World, id: string, i: number, km: number): boo
   return true;
 }
 
-/** 射程文本 ↔ 数据：「名称：公里数」每行一条（对齐旧 parseRanges/uf_rng） */
-export function parseRanges(text: string): { 名称: string; km: number }[] {
-  const out: { 名称: string; km: number }[] = [];
-  (text || "").split(/\n/).forEach(line => {
-    const m = line.match(/^\s*([^:：]+)[:：]\s*([\d.]+)\s*$/);
-    if (m && +m[2] > 0) out.push({ 名称: m[1].trim(), km: +m[2] });
-  });
-  return out;
+/** 地点火力圈的表单一行（受控输入的原文） */
+export interface NodeRangeDraft { 名称: string; km: string; fire: "direct" | "arc"; arcDeg: string }
+export function draftOfRange(r: NodeRange): NodeRangeDraft {
+  return { 名称: r.名称 || "", km: +r.km > 0 ? String(r.km) : "", fire: r.fire === "direct" ? "direct" : "arc",
+    arcDeg: +(r.arcDeg as number) > 0 && +(r.arcDeg as number) < 90 ? String(r.arcDeg) : "" };
 }
-export function formatRanges(ranges: { 名称?: string; km: number }[] | undefined): string {
-  return (ranges || []).map(r => `${r.名称 || "射程"}：${r.km}`).join("\n");
+/** 表单一行 → 火力圈：半径 >0 才成圈；两档都落键（同部队）；射角只收 (0,90)、直射不带 */
+function rangeOfDraft(d: NodeRangeDraft): NodeRange | null {
+  const km = parseFloat(d.km);
+  if (!(km > 0)) return null;
+  const name = d.名称.trim(), a = parseFloat(d.arcDeg);
+  return { ...(name ? { 名称: name } : {}), km, fire: d.fire === "direct" ? "direct" : "arc",
+    ...(d.fire !== "direct" && a > 0 && a < 90 ? { arcDeg: a } : {}) };
+}
+
+/* 表单数值键（部队与地点共用）：缺席＝不动；putPos 只收正数、putNonNeg 收 0（伏地/贴地合法），其余删键回落缺省 */
+function putPos<K extends string>(o: { [P in K]?: number }, key: K, s: string | undefined): void {
+  if (s === undefined) return;
+  const x = parseFloat(s);
+  if (x > 0) o[key] = x; else delete o[key];
+}
+function putNonNeg<K extends string>(o: { [P in K]?: number }, key: K, s: string | undefined): void {
+  if (s === undefined) return;
+  const x = parseFloat(s);
+  if (isFinite(x) && x >= 0) o[key] = x; else delete o[key];
 }
 
 /** 部队表单一次提交（旧 uf_save 语义：名称空则保留、速度>0 才设否则删；火力/视野同机制：>0 才设否则删。
     提交火力时一并清掉旧多圈 ranges（归一为单值 range；旧档只读回退在渲染层）。 */
-export interface UnitFormValues { 名称: string; faction: string; kind: string; arm?: string; strength: string; strengthUnit?: string; speed: string; morale?: string; note: string; range?: string; fire?: string; arcDeg?: string; vision?: string; eyeM?: string; radar?: string; radarM?: string; radarTgtM?: string; frontKm?: string; depthKm?: string }
+export interface UnitFormValues { 名称: string; faction: string; kind: string; arm?: string; strength: string; strengthUnit?: string; speed: string; morale?: string; note: string; range?: string; fire?: string; arcDeg?: string; vision?: string; eyeM?: string; radar?: string; radarM?: string; radarTgtM?: string; altM?: string; frontKm?: string; depthKm?: string }
 export function applyUnitForm(u: Unit, v: UnitFormValues): void {
   if (v.名称) u.名称 = v.名称;
   u.faction = v.faction || null;
@@ -614,15 +646,9 @@ export function applyUnitForm(u: Unit, v: UnitFormValues): void {
      观察高度 / 天线高度 / 目标高度 0 合法，空/非法＝删键回落缺省；雷达半径 >0 才设 */
   if (v.fire !== undefined) { if (v.fire === "direct") u.fire = "direct"; else if (v.fire === "arc") u.fire = "arc"; else delete u.fire; }
   if (v.arcDeg !== undefined) { const a = parseFloat(v.arcDeg); if (a > 0 && a < 90) u.arcDeg = a; else delete u.arcDeg; }
-  if (v.vision !== undefined) { const vk = parseFloat(v.vision); if (vk > 0) u.vision = vk; else delete u.vision; }
-  const nonNeg = (s: string | undefined, key: "eyeM" | "radarM" | "radarTgtM"): void => {
-    if (s === undefined) return;
-    const x = parseFloat(s);
-    if (isFinite(x) && x >= 0) u[key] = x; else delete u[key];
-  };
-  nonNeg(v.eyeM, "eyeM");
-  if (v.radar !== undefined) { const rk = parseFloat(v.radar); if (rk > 0) u.radar = rk; else delete u.radar; }
-  nonNeg(v.radarM, "radarM"); nonNeg(v.radarTgtM, "radarTgtM");
+  putPos(u, "vision", v.vision); putNonNeg(u, "eyeM", v.eyeM);
+  putPos(u, "radar", v.radar); putNonNeg(u, "radarM", v.radarM); putNonNeg(u, "radarTgtM", v.radarTgtM);
+  putNonNeg(u, "altM", v.altM);   // 飞行高度基线（海拔 0 合法）
   /* 阵形足印（柱B）：>0 才存否则删键——无正面＝无足印＝标准框逐位不变 */
   if (v.frontKm !== undefined) { const fk = parseFloat(v.frontKm); if (fk > 0) u.frontKm = fk; else delete u.frontKm; }
   if (v.depthKm !== undefined) { const dk = parseFloat(v.depthKm); if (dk > 0) u.depthKm = dk; else delete u.depthKm; }

@@ -15,8 +15,8 @@ import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRad
 import { ELEV } from "../src/core/constants.ts";
 import { clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, errText, fmtKm, hexA, newId, parseKV, safeName } from "../src/core/util.ts";
-import { ALL_KINDS, ARM_OPT_KINDS, EDGE_STYLE, EYE_M_KIND, FIRE_DIRECT_KIND, LEGACY_KIND, MODERN_KINDS, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
-import { fmtStrength, parseStrength, setUnitPoint, unitFireDirect, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
+import { ALL_KINDS, ARM_OPT_KINDS, EDGE_STYLE, EYE_M, EYE_M_KIND, EYE_M_NODE, FIRE_DIRECT_KIND, LEGACY_KIND, MODERN_KINDS, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
+import { fmtStrength, nodeEyeM, parseStrength, rangeDirect, setUnitPoint, unitAltAt, unitFireDirect, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { astar, computeRoute } from "../src/core/route.ts";
 import { wallTeeth } from "../src/render/edges.ts";
 import { facingHandlePx, pickFacingHandle, unitSpots } from "../src/render/units.ts";
@@ -1091,6 +1091,35 @@ describe("战场表达（柱B）：微地物/工事线/主帅", () => {
     assert.strictEqual(unitFireDirect({ id: "a", kind: "marmor", fire: "arc", track: [] }), false, "显式曲射压过兵种缺省");
     assert.strictEqual(unitFireDirect({ id: "a", kind: "mart", fire: "direct", track: [] }), true, "显式直射压过兵种缺省");
     assert.strictEqual(unitFireDirect({ id: "a", kind: "__proto__", track: [] }), false, "原型键不得当成直射兵种");
+    assert.strictEqual(unitFireDirect({ id: "a", kind: "mbmb", fire: "arc", track: [] }), true, "飞行部队恒直射（从飞行高度按视线判）");
+    assert.strictEqual(unitFireDirect({ id: "a", kind: "log", arm: "air", track: [] }), true, "可选移动方式选了飞行也算");
+    assert.strictEqual(unitFireDirect({ id: "a", kind: "air", fire: "arc", track: [] }), true, "古代飞行部队（已发布旧档）显式曲射也读作直射");
+  });
+  it("飞行高度（unitAltAt）：航点声明回溯再回落基线、航段内按两端生效值线性插值、一端缺就取起点、全无＝null", () => {
+    const tr = (...pts: [number, number?][]) => pts.map(([t, altM]) => ({ t, lon: 100, lat: 30, ...(altM != null ? { altM } : {}) }));
+    const u = { id: "j", kind: "mftr", altM: 1000, track: tr([0], [10, 3000], [20], [30, 500]) };
+    assert.strictEqual(unitAltAt(u, 0), 1000, "首航点未声明＝基线");
+    assert.strictEqual(unitAltAt(u, 5), 2000, "基线 → 3000 线性爬升");
+    assert.strictEqual(unitAltAt(u, 15), 3000, "未声明的航点沿用 3000（平飞）");
+    assert.strictEqual(unitAltAt(u, 25), 1750, "3000 → 500 线性下滑");
+    assert.strictEqual(unitAltAt(u, 40), 500, "末航点后停在末值");
+    assert.strictEqual(unitAltAt(u, -1), null, "未入场");
+    const late = { id: "k", kind: "mftr", track: tr([0], [10, 3000]) };
+    assert.strictEqual(unitAltAt(late, 5), null, "起点无高度（无基线）＝不判，不从后面的声明倒推");
+    assert.strictEqual(unitAltAt(late, 10), 3000);
+    assert.strictEqual(unitAltAt({ id: "z", kind: "mftr", altM: 0, track: tr([0]) }, 0), 0, "海拔 0 合法");
+    assert.strictEqual(unitAltAt({ id: "z", kind: "mftr", altM: -5, track: tr([0]) }, 0), null, "负值不算声明");
+  });
+  it("地点视域缺省：火力圈缺键＝曲射（旧档据点圈）、观察高度按类型表且显式 0 合法、原型键不命中", () => {
+    assert.strictEqual(rangeDirect({ km: 3 }), false, "旧档缺键＝曲射");
+    assert.strictEqual(rangeDirect({ km: 3, fire: "direct" }), true);
+    for (const k of Object.keys(EYE_M_NODE)) assert.ok(NODE_STYLE[k], `观察高度表里的「${k}」不是地点类型`);
+    const at = (type: string, eyeM?: unknown) => nodeEyeM({ id: "n", type, lon: 0, lat: 0, ...(eyeM !== undefined ? { eyeM } : {}) } as WorldNode);   // 存档值可能是任何东西
+    assert.strictEqual(at("fortress"), EYE_M_NODE.fortress);
+    assert.strictEqual(at("city"), EYE_M, "未列类型取站立的人");
+    assert.strictEqual(at("fortress", 0), 0, "显式 0＝伏地");
+    assert.strictEqual(at("fortress", "坏"), EYE_M_NODE.fortress, "坏值回落缺省");
+    assert.strictEqual(at("__proto__"), EYE_M, "原型键不得命中");
   });
   it("兵种换代：旧键全可解析、新表恰十四类、旧速度与移动方式由 normalizeWorld 就地保住", () => {
     assert.strictEqual(Object.keys(UNIT_KINDS).length, 14);

@@ -2,7 +2,7 @@
    平地全可达、墙后遮挡、眼位/目标高度抬过墙、曲率地平线对解析式、湖面抬船、均匀上坡、驻地最高处眼位、R2 对逐格直算的一致率。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { REFRACT_OPTICAL, REFRACT_RADAR, viewshed, type Observer, type ViewField, type VisMask } from "../src/core/viewshed.ts";
+import { REFRACT_OPTICAL, REFRACT_RADAR, detectedBy, sightTo, viewshed, type Observer, type ViewField, type VisMask } from "../src/core/viewshed.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
 import { elevBilinear } from "../src/core/elev.ts";
 
@@ -179,14 +179,61 @@ describe("视域（core/viewshed）", () => {
   });
 });
 
+describe("点对点视线（core/viewshed.sightTo）", () => {
+  const cx = (c: number) => 100 + (c + 0.5) * STEP, cy = (r: number) => 30 + (r + 0.5) * STEP;
+  const wall = (c: number) => c === 25 ? 0.05 : 0;   // 500 m 外一道 50 m 高的墙
+
+  it("墙后地面目标被挡、飞得比视线高就看得见；判据与掩膜同（墙前后各格逐一对照）", () => {
+    const f = mkField(41, 41, wall), o = obsAt(20, 20, 1.5), m = viewshed(f, o)!;
+    for (const c of [22, 24, 26, 28, 30, 33]) {
+      const hit = sightTo(f, o, cx(c), cy(20), o.tgtM)!;
+      assert.equal(+hit.seen, visAt(f, m, c, 20), `格 ${c}：点对点与掩膜同判`);
+    }
+    assert.deepEqual(sightTo(f, o, cx(30), cy(20), 20), { inRange: true, seen: false }, "20 m 仍在墙影里");
+    assert.deepEqual(sightTo(f, o, cx(30), cy(20), 200), { inRange: true, seen: true }, "200 m 越过墙影");
+    assert.deepEqual(sightTo(f, o, cx(40), cy(20), 500), { inRange: false, seen: true }, "2 km 外：看得见但不在半径内");
+  });
+
+  it("目标海拔低于地面按地面算；观察者或目标在场外＝null", () => {
+    const f = mkField(41, 41, () => 0.3), o = obsAt(20, 20, 1.5);   // 300 m 高台
+    assert.deepEqual(sightTo(f, o, cx(28), cy(20), 0), { inRange: true, seen: true }, "海拔 0 钳到 300 m 台面");
+    assert.equal(sightTo(f, o, 99.9, cy(20), 500), null, "目标在场外");
+    assert.equal(sightTo(f, { ...o, lon: 99.9 }, cx(28), cy(20), 500), null, "观察者在场外");
+  });
+
+  it("飞行观察者（eyeAbsM）：眼位＝飞行高度，低于地面按地面，不挑驻地；掩膜与点对点同用", () => {
+    const f = mkField(41, 41, wall);
+    const hi = viewshed(f, obsAt(20, 20, 1.5, { eyeAbsM: 200, vantageM: 300 }))!;
+    assert.equal(visAt(f, hi, 30, 20), 1, "200 m 飞行高度越过墙");
+    assert.equal(hi.eyeOff, 0, "不挑驻地");
+    const low = viewshed(f, obsAt(20, 20, 1.5, { eyeAbsM: -50 }))!;
+    assert.equal(visAt(f, low, 30, 20), 0, "低于地面＝贴地，墙后看不见");
+    assert.equal(sightTo(f, obsAt(20, 20, 1.5, { eyeAbsM: 200 }), cx(30), cy(20), 2)!.seen, true);
+  });
+
+  it("detectedBy：只取在半径内且未被挡的；hit null 不算", () => {
+    const rs = [{ hit: { inRange: true, seen: true } }, { hit: { inRange: true, seen: false } }, { hit: { inRange: false, seen: true } }, { hit: null }];
+    assert.deepEqual(detectedBy(rs), [rs[0]]);
+    assert.deepEqual(detectedBy(undefined), []);
+  });
+});
+
 describe("视域 Worker 协议", () => {
-  it("未推规则场＝res null；推后与直调逐位同，观察者按 id/ring 回", () => {
+  it("未推规则场＝res null；推后与直调逐位同，观察者按 owner/id/ring/idx 回", () => {
     const st: RouteCtx = {};
     assert.deepStrictEqual(handleRouteMsg(st, { t: "viewshed", id: 1, obs: [] }), { t: "viewshed", id: 1, res: null });
     const f = mkField(41, 41, c => c === 25 ? 0.05 : 0);
     assert.strictEqual(handleRouteMsg(st, { t: "vfield", field: f }), null);
     const o = obsAt(20, 20, 1.5);
-    const r = handleRouteMsg(st, { t: "viewshed", id: 2, obs: [{ ...o, id: "u", ring: "vision" }, { ...o, km: 0, id: "u", ring: "fire" }] });
-    assert.deepStrictEqual(r, { t: "viewshed", id: 2, res: [{ id: "u", ring: "vision", mask: viewshed(f, o) }, { id: "u", ring: "fire", mask: null }] });
+    const r = handleRouteMsg(st, { t: "viewshed", id: 2, obs: [{ ...o, owner: "unit", id: "u", ring: "vision", idx: 0 }, { ...o, km: 0, owner: "node", id: "n", ring: "fire", idx: 1 }] });
+    assert.deepStrictEqual(r, { t: "viewshed", id: 2, res: [{ owner: "unit", id: "u", ring: "vision", idx: 0, mask: viewshed(f, o) }, { owner: "node", id: "n", ring: "fire", idx: 1, mask: null }] });
+  });
+  it("sight 单：未推场＝null；推后逐对回观察者标签、目标 id 与点对点结果", () => {
+    const f = mkField(41, 41, () => 0), o = { ...obsAt(20, 20, 1.5), owner: "unit" as const, id: "r", ring: "radar" as const, idx: 0 };
+    const req = { obs: o, tgt: "jet", lon: 100 + 30.5 * STEP, lat: 30 + 20.5 * STEP, altM: 500 };
+    assert.deepStrictEqual(handleRouteMsg({}, { t: "sight", id: 3, reqs: [req] }), { t: "sight", id: 3, res: null });
+    const st: RouteCtx = { vfield: f };
+    assert.deepStrictEqual(handleRouteMsg(st, { t: "sight", id: 4, reqs: [req] }),
+      { t: "sight", id: 4, res: [{ owner: "unit", id: "r", ring: "radar", idx: 0, tgt: "jet", hit: sightTo(f, o, req.lon, req.lat, 500) }] });
   });
 });

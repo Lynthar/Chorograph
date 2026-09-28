@@ -2,7 +2,7 @@
    同步回退跑同一协议函数。ctx 始终同镜像到回退态——Worker 中途挂掉也能续算。
    Worker 经 `?worker&inline` 内联进主包（Vite）——单文件产物自包含、无外部 worker 文件。 */
 import RouteWorker from "./routeWorker.ts?worker&inline";
-import { handleRouteMsg, type RouteCtx, type RouteReply, type RouteRequest, type VisReq, type VisRes } from "./routeProto.ts";
+import { handleRouteMsg, type RouteCtx, type RouteReply, type RouteRequest, type SightReq, type SightRes, type VisReq, type VisRes } from "./routeProto.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Grid } from "../core/grid.ts";
@@ -34,6 +34,8 @@ export interface RouteClient {
   setViewField(field: ViewField): void;
   /** 一批观察者的视线掩膜（寻路车道）；Worker 挂掉时返 null——调用方保持上一份 */
   viewshed(obs: VisReq[]): Promise<VisRes[] | null>;
+  /** 观察者 × 飞行目标的点对点视线（同车道、同一份规则场）；Worker 挂掉时返 null */
+  sight(reqs: SightReq[]): Promise<SightRes[] | null>;
   dispose(): void;
 }
 
@@ -150,6 +152,10 @@ export function createRouteClient(): RouteClient {
     async viewshed(obs) {
       const r = await ask({ t: "viewshed", id: ++seq, obs });
       return r.t === "viewshed" ? r.res : null;
+    },
+    async sight(reqs) {
+      const r = await ask({ t: "sight", id: ++seq, reqs });
+      return r.t === "sight" ? r.res : null;
     },
     async erode(input) {
       /* 优先走侵蚀专用 worker；它死了退回主 worker/同步回退。任一 worker 死时对应 kill 以

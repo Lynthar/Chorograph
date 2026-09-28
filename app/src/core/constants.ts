@@ -101,6 +101,9 @@ export const NODE_STYLE: Record<string, { r: number; sym: string; 名: string; r
   summit:   { r: 4.5, sym: "△", 名: "制高点", rank: 3, shape: "summit" },
   manor:    { r: 5, sym: "⌂", 名: "庄园", rank: 3, shape: "house" },
   site:     { r: 4.5, sym: "⊕", 名: "考古点", rank: 3, shape: "site" },
+  /* 视域地点（2026-09-27，additive 白名单）：记号而已——视域各键任何战术图地点都可填 */
+  battery:  { r: 5, sym: "⊙", 名: "炮台", rank: 2, shape: "battery" },
+  radarsite: { r: 5, sym: "⌓", 名: "雷达站", rank: 2, shape: "radar" },
   /* 标注（v0.15 新增，旧版打开降级为 city 记号+文本标签）：无记号、名称即图面文本 */
   label:    { r: 4, sym: "🏷", 名: "标注", rank: 0, shape: "dot" }
 };
@@ -116,7 +119,7 @@ export const LEGACY_TYPE: Record<string, string> = { vassalseat: "major", prefec
    def=该类默认型（落点即用它；定居点=city 保住旧缺省行为逐位）。 */
 export const NODE_CATS: Record<string, { 名: string; def: string; types: string[] }> = {
   settle:   { 名: "定居点", def: "city", types: ["capital", "major", "city", "town", "village", "manor", "port"] },
-  military: { 名: "军事地点", def: "fortress", types: ["fortress", "camp", "pass"] },
+  military: { 名: "军事地点", def: "fortress", types: ["fortress", "camp", "pass", "battery", "radarsite"] },
   nature:   { 名: "自然地点", def: "summit", types: ["summit", "ford", "resource"] },
   special:  { 名: "特殊地点", def: "special", types: ["special", "site", "bridge"] }
 };
@@ -154,6 +157,8 @@ export const NODE_TMPL: Record<string, string> = {
   summit: "高程：\n瞰制：\n驻守：",
   manor: "形制：\n驻守：\n围防：",
   site: "年代：\n发现：\n出土：\n对应事件：",
+  battery: "火炮：\n炮位：\n驻守：",
+  radarsite: "型号：\n波段：\n值守：",
   event: "",
   label: ""
 };
@@ -308,6 +313,9 @@ export const EYE_M_KIND: Record<string, number> = {
   mcv: 40, mddg: 20, mbb: 25, mcg: 22, mffg: 18, mpgg: 8, mpat: 10,
   mssbn: 8, mssn: 8, mssk: 8, mlha: 30, mlst: 12, msup: 18, moil: 18, mhosp: 18, mmcm: 10
 };
+/* 地点的观察高度缺省（米）：城楼、望楼、炮台胸墙；未列者取 EYE_M。另立一张表，不给平价锁定的 NODE_STYLE
+   加字段；判据只在 core/units.nodeEyeM 一处。 */
+export const EYE_M_NODE: Record<string, number> = { fortress: 10, camp: 3, battery: 5, radarsite: 10 };
 /** 眼位可挑的驻地半径（米）：无阵形足印时视线从这么大范围内最高的格心判——33 m 格的 DEM 削平脊线、眼位又在格心，
     站在「脊上」其实站在脊下一点 */
 export const VANTAGE_M = 100;

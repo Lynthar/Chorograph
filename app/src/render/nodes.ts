@@ -1,6 +1,6 @@
 /* 地点记号 + 地名标签 + 标注（自 overlay.ts 原样拆出，行为不变）：
    记号形状按类型（★都城/◉主要/●○·聚落/▲要塞/═渡口/▽事件/◆资源/✦特殊，
-   柱B 微地物：▣营垒/⋈隘口/∩桥梁/△制高点/⌂庄园/⊕考古点），描边色=当年归属；
+   柱B 微地物：▣营垒/⋈隘口/∩桥梁/△制高点/⌂庄园/⊕考古点；视域地点：⊙炮台/⌓雷达站），描边色=当年归属；
    楷体标签四方位避让（重要地点先占位），撞满则不画（选中除外）；
    事件点未发生=淡显、当年=红圈；编辑模式全部地点可见（旧 nodeVisible 语义）。
    ⚠ nodeVisibleAt 是绘制与拾取（render/pick.ts）同源的可见门——改门先想两边；
@@ -175,6 +175,13 @@ function shapePath(ctx: CanvasRenderingContext2D, x: number, y: number, r: numbe
     case "site":                                                                   // 圆内十字（考古测点惯例，十字出圆）
       ctx.arc(x, y, r * 0.8, 0, 7);
       ctx.moveTo(x - r, y); ctx.lineTo(x + r, y); ctx.moveTo(x, y - r); ctx.lineTo(x, y + r); break;
+    case "battery":                                                                // 圆形炮位 + 右上出头的炮管
+      ctx.arc(x, y, r * 0.75, 0, 7);
+      ctx.moveTo(x + r * 0.53, y - r * 0.53); ctx.lineTo(x + r * 1.15, y - r * 1.15); break;
+    case "radar":                                                                  // 抛物面天线：碗口朝右上 + 馈源杆 + 底座
+      ctx.arc(x, y, r * 0.9, Math.PI * 0.25, Math.PI * 1.25); ctx.closePath();
+      ctx.moveTo(x, y); ctx.lineTo(x + r * 0.75, y - r * 0.75);
+      ctx.moveTo(x - r * 0.8, y + r * 1.05); ctx.lineTo(x + r * 0.5, y + r * 1.05); break;
     default: ctx.arc(x, y, r, 0, 7);
   }
 }

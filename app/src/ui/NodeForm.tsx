@@ -2,14 +2,14 @@
    · 类型/事件子类改选立即生效（各记一步撤销），表单随之切换；
    · 其余字段「保存修改」一次提交（一步撤销）；空值删键；
    · 字段框未填过时按类型模板预填，值留空的行不保存；
-   · 战术图：年份/存在时段用「年-月-日」文本（parseYMD/fmtYMD），另有据点防御火力栏。
+   · 战术图：年份/存在时段用「年-月-日」文本（parseYMD/fmtYMD），另有视域栏（火力逐圈 / 视野 / 现代图雷达）。
    输入用非受控 + key=节点id：换选中即重置，重渲不丢输入。 */
-import { useLayoutEffect, useRef } from "preact/hooks";
-import { EVENT_TMPL, EVENT_TYPES, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, nodeCatOf } from "../core/constants.ts";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { ARC_DEG, EVENT_TMPL, EVENT_TYPES, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, RADAR_M, RADAR_TGT_M, nodeCatOf } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm, fmtWhenRange } from "../core/calendar.ts";
-import { formatRanges } from "./editops.ts";
-import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, opDrawSig, parseWhenInput, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, worldSig, yearSig } from "./state.ts";
-import { addEventNear, addOwner, applyNodeForm, changeNodeType, moveNode, removeOwner, updateOwner } from "./editops.ts";
+import { isModern, nodeEyeM } from "../core/units.ts";
+import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, noteFormWarn, opDrawSig, parseWhenInput, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, warnNumInput, worldSig, yearSig } from "./state.ts";
+import { addEventNear, addOwner, applyNodeForm, changeNodeType, draftOfRange, moveNode, removeOwner, updateOwner, type NodeRangeDraft } from "./editops.ts";
 import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
 import type { WorldNode } from "../core/types.ts";
 import { tget } from "../core/util.ts";
@@ -81,7 +81,13 @@ function OwnersEditor({ n }: { n: WorldNode }) {
 }
 
 /** 切类型时须防丢的文本控件 id（select 不参与：无 defaultValue 可比对；同版面的选择框靠 DOM 复用天然保值） */
-const TEXT_FIELDS = ["ef_name", "ef_lon", "ef_lat", "ef_r", "ef_since", "ef_until", "ef_rng", "ef_kv", "ef_note", "ef_link", "ef_year", "ef_sides", "ef_result"];
+const TEXT_FIELDS = ["ef_name", "ef_lon", "ef_lat", "ef_r", "ef_since", "ef_until", "ef_kv", "ef_note", "ef_link", "ef_year", "ef_sides", "ef_result",
+  "ef_vision", "ef_eye", "ef_radar", "ef_radarm", "ef_radartgt"];
+
+/** 火力圈的一行：k＝行键（增删行时其余行的非受控输入不串位）；射击方式受控——射角格随它出没 */
+interface RangeRow { k: number; init: NodeRangeDraft; fire: "direct" | "arc" }
+/** 雷达站只在现代图的下拉里出；当前就是它时照列（否则「什么都不改就保存」会被换成清单第一项） */
+const offEraType = (t: string, modern: boolean, cur: string) => t === "radarsite" && !modern && cur !== t;
 
 export function NodeForm({ n }: { n: WorldNode }) {
   const box = useRef<HTMLDivElement>(null);
@@ -116,9 +122,14 @@ export function NodeForm({ n }: { n: WorldNode }) {
   });
   const world = worldSig.value!;
   const tac = isTacSig.value;
+  const modern = isModern(world.meta);
   const cal = calOf((world.meta || {}).calendar);
   const isEv = n.type === "event";
   const isLabel = n.type === "label";
+  const sight = tac && !isEv && !isLabel;   // 视域栏：战术图的普通地点
+  const nextK = useRef(0);
+  const [rows, setRows] = useState<RangeRow[]>(() =>
+    (n.ranges || []).map(r => { const init = draftOfRange(r); return { k: nextK.current++, init, fire: init.fire }; }));
   const cat = nodeCatOf(n.type);   // 类型两级选择的当前类别；null=事件/标注/未知型
   const evt = tget(EVENT_TYPES, String(n.evtype)) ? String(n.evtype) : "battle";
   const isBattle = isEv && evt === "battle";
@@ -127,6 +138,7 @@ export function NodeForm({ n }: { n: WorldNode }) {
     ? Object.entries(n.字段).map(([k, v]) => `${k}：${v}`).join("\n")
     : (isEv ? (EVENT_TMPL[evt] || "") : (NODE_TMPL[n.type] || ""));
   const val = (id: string) => (box.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>("#" + id))?.value;
+  const numEl = (id: string) => box.current?.querySelector<HTMLInputElement>("#" + id);
   /* 时间输入：战术图「年-月-日（可带时刻）」/ earth 战略「前N」经历法解析折成日戳/年份数字串
      （applyNodeForm 按 parseFloat 语义消费；空/非法=删键）；custom 战略=原样数字串（旧语义） */
   const timeVal = (id: string) => { const v = parseWhenInput(cal, tac, val(id) ?? ""); return v == null ? "" : String(v); };
@@ -137,6 +149,20 @@ export function NodeForm({ n }: { n: WorldNode }) {
     const lonRaw = (val("ef_lon") ?? "").trim(), latRaw = (val("ef_lat") ?? "").trim();
     const lon = parseFloat(lonRaw), lat = parseFloat(latRaw);
     const coordSkipped = (lonRaw !== "" || latRaw !== "") && !(isFinite(lon) && isFinite(lat));
+    const ranges: NodeRangeDraft[] | undefined = sight
+      ? rows.map(r => ({ 名称: val("ef_rgn" + r.k) ?? "", km: val("ef_rgk" + r.k) ?? "", fire: r.fire, arcDeg: val("ef_rga" + r.k) ?? "" }))
+      : undefined;
+    /* 数值回执（只报不改）：整行空白的圈静默丢弃，填了名称或半径却没有正数半径的圈要说出来 */
+    if (ranges) ranges.forEach((d, i) => {
+      const k = rows[i].k, bad = !!numEl("ef_rgk" + k)?.validity?.badInput;
+      if ((d.名称.trim() || d.km.trim() || bad) && !(parseFloat(d.km) > 0)) noteFormWarn(`第 ${i + 1} 个火力圈的半径须为正数　该圈未保存`);
+      warnNumInput(numEl("ef_rga" + k), `第 ${i + 1} 个火力圈的射角`, `已回落 ${ARC_DEG}°`);
+    });
+    warnNumInput(numEl("ef_vision"), "视野半径", "该项已清空");
+    warnNumInput(numEl("ef_eye"), "观察高度", "已回落类型缺省", true);
+    warnNumInput(numEl("ef_radar"), "雷达探测半径", "该项已清空");
+    warnNumInput(numEl("ef_radarm"), "天线高度", `已回落 ${RADAR_M} m`, true);
+    warnNumInput(numEl("ef_radartgt"), "雷达目标高度", `已回落 ${RADAR_TGT_M} m`, true);
     mutateWorld(w => {
       const target = w.nodes.find(x => x.id === n.id);
       if (!target) return;
@@ -147,7 +173,8 @@ export function NodeForm({ n }: { n: WorldNode }) {
         radiusKm: isEv ? undefined : val("ef_r"),
         since: isEv ? undefined : timeVal("ef_since"), until: isEv ? undefined : timeVal("ef_until"),
         kv: val("ef_kv") ?? "",
-        ranges: !isEv && !isLabel && tac ? (val("ef_rng") ?? "") : undefined,
+        ranges, vision: val("ef_vision"), eyeM: val("ef_eye"),
+        radar: val("ef_radar"), radarM: val("ef_radarm"), radarTgtM: val("ef_radartgt"),
         certainty: isLabel ? undefined : readCertainty(box.current, "ef_cert"),
         year: isEv ? timeVal("ef_year") : undefined, sides: isBattle ? val("ef_sides") : undefined, result: isBattle ? val("ef_result") : undefined,
         fs: isLabel ? (val("ef_fs") ?? "") : undefined, pin: isLabel ? (val("ef_pin") ?? "") : undefined
@@ -196,7 +223,8 @@ export function NodeForm({ n }: { n: WorldNode }) {
           )}
           <select class="fld" id="ef_type" title="改类型立即生效（可撤销），表单随之切换" value={n.type}
             onChange={e => setType((e.currentTarget as HTMLSelectElement).value)}>
-            {(cat ? NODE_CATS[cat].types : NODE_TYPES).map(t => <option key={t} value={t}>{NODE_STYLE[t].sym} {NODE_STYLE[t].名}</option>)}
+            {(cat ? NODE_CATS[cat].types : NODE_TYPES).filter(t => !offEraType(t, modern, n.type))
+              .map(t => <option key={t} value={t}>{NODE_STYLE[t].sym} {NODE_STYLE[t].名}</option>)}
           </select></div>
       )}
       <div class="frow"><label>经纬度°（东经 / 北纬为正，±85）</label>
@@ -278,13 +306,53 @@ export function NodeForm({ n }: { n: WorldNode }) {
               placeholder={`止(${eraPh(cal, tac)})`} defaultValue={n.until != null ? fmtWhenForm(cal, tac, n.until) : ""} />
           </div></div>
       )}
+      {sight && (
+        <details class="fgroup" open>
+          <summary>视域 · 火力 / 视野{modern ? " / 雷达" : ""}</summary>
+          <div class="fin">
+            <div class="sub">火力圈可多个，各自选直射（按视线裁）或曲射（按射角弹道裁）；圈线是名义半径，图上只填打得到的格</div>
+            {rows.map((r, i) => (
+              <div key={r.k} class="frow"><label>火力圈 {i + 1} · 名称 / 半径 km · 直射 / 曲射{r.fire === "arc" ? " · 射角°" : ""}</label>
+                <div class="fx2">
+                  <input class="fld" id={"ef_rgn" + r.k} defaultValue={r.init.名称} placeholder="如 岸炮 / 床弩" />
+                  <button type="button" class="link" style={{ color: "var(--q-zhu)", alignSelf: "center" }} title="删除此圈"
+                    onClick={() => setRows(rows.filter(x => x.k !== r.k))}>✕</button>
+                </div>
+                <div class="fx2">
+                  <input class="fld" id={"ef_rgk" + r.k} type="number" min={0} step={0.1} defaultValue={r.init.km} placeholder="半径 km" />
+                  <select class="fld" value={r.fire} title="直射＝按视线裁（眼位＝所在处高程＋观察高度）；曲射＝按固定射角的弹道裁，挡在弹道之上的山打不过去"
+                    onChange={e => { const f = (e.currentTarget as HTMLSelectElement).value === "direct" ? "direct" : "arc"; setRows(rows.map(x => x.k === r.k ? { ...x, fire: f } : x)); }}>
+                    <option value="arc" selected={r.fire === "arc"}>曲射（弹道）</option>
+                    <option value="direct" selected={r.fire === "direct"}>直射（视线）</option>
+                  </select>
+                  {r.fire === "arc" && <input class="fld" id={"ef_rga" + r.k} type="number" min={5} max={85} step={1} defaultValue={r.init.arcDeg}
+                    placeholder={`射角 缺省 ${ARC_DEG}°`} title={`曲射射角（度）：${ARC_DEG}° 是最大射程射角；迫击炮 45～85、投石机约 45。留空＝${ARC_DEG}°`} />}
+                </div></div>
+            ))}
+            <div class="seg"><button type="button" class="tbtn" onClick={() => setRows([...rows, { k: nextK.current++, init: { 名称: "", km: "", fire: "arc", arcDeg: "" }, fire: "arc" }])}>＋ 加一个火力圈</button></div>
+            <div class="frow"><label>视野半径 km（留空＝不画）· 观察高度 m</label>
+              <div class="fx2">
+                <input class="fld" id="ef_vision" type="number" min={0} step={0.1} defaultValue={typeof n.vision === "number" && n.vision > 0 ? String(n.vision) : ""}
+                  placeholder="烽燧瞭望 · 按视线裁" title="瞭望半径：圈内只填视线可达的格（地形遮挡与地平线都计入）；编辑态选中后可拖圈左侧手柄调节" />
+                <input class="fld" id="ef_eye" type="number" min={0} step="any" defaultValue={typeof n.eyeM === "number" && n.eyeM >= 0 ? String(n.eyeM) : ""}
+                  placeholder={`观察高度 缺省 ${nodeEyeM({ ...n, eyeM: undefined })} m`}
+                  title="眼位离地面的高度（米）：城楼、望楼、炮台胸墙；留空＝按类型缺省。视野圈与直射火力圈共用" />
+              </div></div>
+            {modern && <div class="frow"><label>雷达 探测半径 km（留空＝无）· 天线高度 m · 目标高度 m</label>
+              <div class="fx2">
+                <input class="fld" id="ef_radar" type="number" min={0} step={1} defaultValue={typeof n.radar === "number" && n.radar > 0 ? String(n.radar) : ""}
+                  placeholder="探测半径 如 80" title="雷达探测半径：图上只填雷达视线可达的格（折射按 4/3 地球半径），圈线点划" />
+                <input class="fld" id="ef_radarm" type="number" min={0} step="any" defaultValue={typeof n.radarM === "number" && n.radarM >= 0 ? String(n.radarM) : ""}
+                  placeholder={`天线 缺省 ${RADAR_M} m`} title={`天线离地面的高度（米）；留空＝${RADAR_M} m`} />
+                <input class="fld" id="ef_radartgt" type="number" min={0} step="any" defaultValue={typeof n.radarTgtM === "number" && n.radarTgtM >= 0 ? String(n.radarTgtM) : ""}
+                  placeholder={`目标 缺省 ${RADAR_TGT_M} m`} title={`假定目标离地面的高度（米）：低空 ${RADAR_TGT_M}、中空数千；目标越高，地平线越远。留空＝${RADAR_TGT_M} m`} />
+              </div></div>}
+          </div>
+        </details>
+      )}
       <details class="fgroup" open>
         <summary>属性 · 说明 · 双链</summary>
         <div class="fin">
-          {!isEv && !isLabel && tac && (
-            <div class="frow"><label>火力/射程（每行「名称：公里数」，据点防御火力，画虚线圈）</label>
-              <textarea class="fld" id="ef_rng" rows={2} defaultValue={formatRanges(n.ranges)} /></div>
-          )}
           <div class="frow"><label>属性（每行「键：值」，值留空的行不保存）</label>
             <textarea class="fld" id="ef_kv" rows={5} defaultValue={kvText} /></div>
           <div class="frow"><label>说明</label>

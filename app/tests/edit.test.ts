@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, formatRanges, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, parseRanges, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
@@ -915,12 +915,30 @@ describe("部队编辑内核（战术图）", () => {
     assert.deepStrictEqual(w.units.map(u => u.id), ["u2"]);
     assert.strictEqual(removeUnit(w, "没有"), false);
   });
-  it("parseRanges/formatRanges：「名称：公里」每行一条、忽略坏行与非正数、往返", () => {
-    const rs = parseRanges("床弩：2\n投石机 : 1.5\n没有冒号\n弓 ：0");
-    assert.deepStrictEqual(rs, [{ 名称: "床弩", km: 2 }, { 名称: "投石机", km: 1.5 }], "全/半角冒号皆可；km≤0 与无冒号行剔除");
-    assert.strictEqual(formatRanges(rs), "床弩：2\n投石机：1.5");
-    assert.strictEqual(formatRanges([{ km: 3 }]), "射程：3", "缺名回退「射程」");
-    assert.strictEqual(formatRanges(undefined), "");
+  it("applyNodeForm 火力圈逐行：半径>0 才成圈、两档都落键、射角只收 (0,90) 且直射不带、空名不落键；草稿往返", () => {
+    const n: WorldNode = { id: "b", type: "battery", lon: 1, lat: 2, ranges: [{ 名称: "旧", km: 1 }] };
+    const base = { 名称: "", note: "", link: "", kv: "" };
+    applyNodeForm(n, { ...base, ranges: [
+      { 名称: " 岸炮 ", km: "6", fire: "direct", arcDeg: "30" },
+      { 名称: "空圈", km: "", fire: "arc", arcDeg: "" },
+      { 名称: "", km: "3", fire: "arc", arcDeg: "70" },
+      { 名称: "臼炮", km: "2", fire: "arc", arcDeg: "95" }
+    ] });
+    assert.deepStrictEqual(n.ranges, [{ 名称: "岸炮", km: 6, fire: "direct" }, { km: 3, fire: "arc", arcDeg: 70 }, { 名称: "臼炮", km: 2, fire: "arc" }]);
+    assert.deepStrictEqual(n.ranges!.map(draftOfRange).map(d => `${d.名称}|${d.km}|${d.fire}|${d.arcDeg}`), ["岸炮|6|direct|", "|3|arc|70", "臼炮|2|arc|"]);
+    assert.deepStrictEqual(draftOfRange({ km: 2 }).fire, "arc", "旧档缺键＝曲射");
+    applyNodeForm(n, { ...base });
+    assert.strictEqual(n.ranges!.length, 3, "不传＝不动");
+    applyNodeForm(n, { ...base, ranges: [] });
+    assert.ok(!("ranges" in n), "全删＝删键");
+  });
+  it("applyNodeForm 视野与雷达：缺席不动、半径>0 才设、三个高度 0 合法、空删键", () => {
+    const n: WorldNode = { id: "r", type: "radarsite", lon: 1, lat: 2, vision: 5, radar: 40 };
+    const base = { 名称: "", note: "", link: "", kv: "" };
+    applyNodeForm(n, { ...base, vision: "8", eyeM: "0", radarM: "25", radarTgtM: "" });
+    assert.deepStrictEqual([n.vision, n.eyeM, n.radar, n.radarM, "radarTgtM" in n], [8, 0, 40, 25, false], "雷达半径缺席不动");
+    applyNodeForm(n, { ...base, vision: "", eyeM: "abc", radar: "0" });
+    assert.ok(!("vision" in n) && !("eyeM" in n) && !("radar" in n));
   });
   it("applyUnitForm：名称空则保留、兵种定默认移动方式、兵力×单位归一为人数、速度>0 才设否则删、火力单值+提交即归一旧多圈", () => {
     const w = mkWorld({ factions: [{ id: "f1", 名称: "东军" }] });
@@ -1016,6 +1034,10 @@ describe("部队编辑内核（战术图）", () => {
     setNodeRangeKm(w, "fort", 0, 0.001);
     assert.strictEqual(n.ranges![0].km, 0.05, "据点圈钳底不删条目（删除走表单）");
     assert.strictEqual(setNodeRangeKm(w, "fort", 9, 1), false, "无此圈");
+    assert.strictEqual(setNodeVision(w, "fort", 12.3456), true);
+    assert.strictEqual(n.vision, 12.3, "地点视野同部队取整");
+    setNodeVision(w, "fort", 0.01); assert.ok(!("vision" in n), "拖到近零＝清除视野");
+    assert.strictEqual(setNodeVision(w, "没有", 5), false);
   });
   it("applyUnitForm：vision/range>0 才设、留空删键、不传不动（旧调用兼容·不误清遗留 ranges）", () => {
     const w = mkWorld();
@@ -1315,6 +1337,19 @@ describe("动向列表的行内编辑按行下标定位（同刻两行：第二�
     assert.strictEqual(setUnitWaypointAt(w, "u1", 1, 101.5, 31.5), true);
     assert.deepStrictEqual([tr[0].lon, tr[1].lon, tr[1].lat, tr[1].t, tr[1].speed], [100, 101.5, 31.5, 5, 10], "整点展开：时刻与存量都保留");
     for (const bad of [-1, 3]) assert.strictEqual(setUnitWaypointNum(w, "u1", bad, "speed", "1"), false, "行外＝false");
+  });
+  it("飞行高度按航点落键：海拔 0 合法、负值与空删键；表单基线同规", () => {
+    const w = mk(), tr = w.units[0].track!, u = w.units[0];
+    setUnitWaypointNum(w, "u1", 2, "altM", "0"); assert.strictEqual(tr[2].altM, 0, "海拔 0 是声明");
+    setUnitWaypointNum(w, "u1", 2, "altM", "-3"); assert.ok(!("altM" in tr[2]), "负值删键");
+    setUnitWaypointNum(w, "u1", 2, "altM", "8000"); setUnitWaypointNum(w, "u1", 2, "altM", "");
+    assert.ok(!("altM" in tr[2]), "空＝回到沿用");
+    applyUnitForm(u, { 名称: "", faction: "", kind: "mftr", strength: "", speed: "", note: "", altM: "9000" });
+    assert.strictEqual(u.altM, 9000);
+    applyUnitForm(u, { 名称: "", faction: "", kind: "mftr", strength: "", speed: "", note: "" });
+    assert.strictEqual(u.altM, 9000, "未渲染的行不传＝不动");
+    applyUnitForm(u, { 名称: "", faction: "", kind: "mftr", strength: "", speed: "", note: "", altM: "" });
+    assert.ok(!("altM" in u), "留空删键＝不判");
   });
   it("图上拖动仍按时刻走 setUnitWaypoint＝末一个同刻点（与绘制拾取同源）", () => {
     const w = mk(), tr = w.units[0].track!;

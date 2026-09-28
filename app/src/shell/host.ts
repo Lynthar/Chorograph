@@ -190,7 +190,7 @@ export function createHost(ctx: ShellCtx): Host {
         if (f) void fieldCachePut(ck, f);   // 过期结果也入缓存——内容寻址＝对它的输入恒真，撤销/重做正好吃到
         if (f && buildN === token && ctx.grid) landWork(f, baseC, key, true);   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
         else if (buildN === token) { dropPhase(); settleRule(); }   // 算不出＝这一轮就此落定在粗格（读数也读它）；过期（含被撤）＝新单接管相位与落定，胶囊不闪
-      }, e => {   // 拒绝也要落定（闸自会放闸并补发）——否则胶囊悬在「定形中」、读数无人落定
+      }, e => {   // 拒绝也要落定（闸自会放闸并补发）——否则胶囊悬在「侵蚀计算中」、读数无人落定
         dropPhase();
         if (buildN === token) settleRule();
         console.warn("侵蚀计算失败（保持粗格）：", e);

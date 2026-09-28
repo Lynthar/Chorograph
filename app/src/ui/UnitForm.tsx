@@ -11,7 +11,7 @@ import { useRef, useState } from "preact/hooks";
 import { ALL_KINDS, ARC_DEG, ARM_NAME, MODERN_KINDS, RADAR_M, RADAR_TGT_M, UNIT_KINDS, armOptional } from "../core/constants.ts";
 import { DEPTH_RATIO, isModern, unitArm, unitEyeM, unitFireDirect, unitFireKm, unitFootKm, unitKind } from "../core/units.ts";
 import { applyUnitForm } from "./editops.ts";
-import { deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, noteFormWarn, showToast, worldSig } from "./state.ts";
+import { deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, showToast, warnNumInput, worldSig } from "./state.ts";
 import type { Arm, Unit } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 
@@ -35,6 +35,8 @@ export function UnitForm({ u }: { u: Unit }) {
   const offEra = tget(kindList, kind) ? null : tget(ALL_KINDS, kind);
   const kDef = kd.v;
   const armOn = armOptional(kind);
+  /* 飞行部队：眼位与天线＝飞行高度（观察高度、天线高度两格不出），火力恒直射（射击方式不出） */
+  const air = (armOn ? arm : kd.arm) === "air";
   const foot = unitFootKm(u);
   const val = (id: string) => (box.current?.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("#" + id))?.value ?? "";
   /** 未渲染的行＝undefined＝applyUnitForm 不动那个键（区别于空串的「清空」语义） */
@@ -44,14 +46,9 @@ export function UnitForm({ u }: { u: Unit }) {
   const sMul = sRaw >= 10000 ? 10000 : 1;
   const sVal = sRaw ? String(+(sRaw / sMul).toFixed(4)) : "";
 
-  /* 数值字段的静默变形回执：type=number 打不进合法值时 .value 恒为空串，空删语义会把原值抹掉而毫无声响。
-     判据用 validity.badInput（浏览器才知道用户到底敲进去了什么），非正数另报——只报不改，同 parseWhenInput 之规。 */
-  const warnNum = (id: string, 名: string, tail: string, allowZero = false) => {
-    const el = box.current?.querySelector<HTMLInputElement>("#" + id);
-    if (!el) return;
-    if (el.validity?.badInput) noteFormWarn(`${名}不是数值　${tail}`);
-    else if (el.value.trim() && !(parseFloat(el.value) >= (allowZero ? 0 : 1e-9))) noteFormWarn(`${名}须为${allowZero ? "非负数" : "正数"}　${tail}`);
-  };
+  /* 数值字段的静默变形回执：空删语义会把打错的原值抹掉而毫无声响——只报不改，同 parseWhenInput 之规 */
+  const warnNum = (id: string, 名: string, tail: string, allowZero = false) =>
+    warnNumInput(box.current?.querySelector<HTMLInputElement>("#" + id), 名, tail, allowZero);
 
   const save = () => {
     /* 每个数值字段都要有回执——原先只覆盖兵力与速度，其余打错即静默删键而 toast 照说「已保存修改」，
@@ -66,6 +63,7 @@ export function UnitForm({ u }: { u: Unit }) {
     warnNum("uf_radar", "雷达探测半径", "该项已清空");
     warnNum("uf_radarm", "天线高度", `已回落 ${RADAR_M} m`, true);
     warnNum("uf_radartgt", "雷达目标高度", `已回落 ${RADAR_TGT_M} m`, true);
+    warnNum("uf_alt", "飞行高度", "该项已清空", true);
     warnNum("uf_front", `${fw}正面`, "该项已清空");
     warnNum("uf_depth", `${fw}纵深`, "该项已清空");
     mutateWorld(w => {
@@ -75,7 +73,7 @@ export function UnitForm({ u }: { u: Unit }) {
         名称: val("uf_name"), faction: val("uf_fac"), kind, arm: armOn ? arm : "",
         strength: val("uf_str"), strengthUnit: val("uf_strunit"), speed: val("uf_speed"), morale: valOpt("uf_morale"),
         range: valOpt("uf_range"), fire: valOpt("uf_fire"), arcDeg: valOpt("uf_arc"), vision: valOpt("uf_vision"), eyeM: valOpt("uf_eye"),
-        radar: valOpt("uf_radar"), radarM: valOpt("uf_radarm"), radarTgtM: valOpt("uf_radartgt"), note: val("uf_note"),
+        radar: valOpt("uf_radar"), radarM: valOpt("uf_radarm"), radarTgtM: valOpt("uf_radartgt"), altM: valOpt("uf_alt"), note: val("uf_note"),
         frontKm: valOpt("uf_front"), depthKm: valOpt("uf_depth")
       });
     });
@@ -133,43 +131,47 @@ export function UnitForm({ u }: { u: Unit }) {
         {kd.noFire
           ? <div class="frow"><label>火力投射半径</label>
               <div class="sub">「{kd.名}」无远程投射能力，不设火力圈——视野/侦察圈照常可用</div></div>
-          : <div class="frow"><label>火力投射半径 km（留空＝不画）· 直射 / 曲射{fireMode === "arc" ? " · 射角°" : ""}</label>
+          : <div class="frow"><label>火力投射半径 km（留空＝不画）· {air ? "飞行部队恒直射" : <>直射 / 曲射{fireMode === "arc" ? " · 射角°" : ""}</>}</label>
               <div class="fx2">
                 <input class="fld" id="uf_range" type="number" min={0} step={0.1}
                   defaultValue={unitFireKm(u) > 0 ? String(unitFireKm(u)) : ""}
                   placeholder="弓弩/火炮投射 · 按视线或弹道裁"
                   title="弓弩/火炮等投射半径：图上只填打得到的格，圈线是名义半径；「军」工具下选中部队可直接拖动圈右侧手柄调节（与视野同机制）" />
-                <select class="fld" id="uf_fire" value={fireMode} onChange={e => setFireMode((e.currentTarget as HTMLSelectElement).value === "direct" ? "direct" : "arc")}
+                {!air && <select class="fld" id="uf_fire" value={fireMode} onChange={e => setFireMode((e.currentTarget as HTMLSelectElement).value === "direct" ? "direct" : "arc")}
                   title="直射＝按视线裁（眼位＝所在处高程＋观察高度）；曲射＝按固定射角的弹道裁，弹道最高点＝射程×tan(射角)/4，挡在弹道之上的山打不过去">
                   <option value="arc" selected={fireMode === "arc"}>曲射（弹道）</option>
                   <option value="direct" selected={fireMode === "direct"}>直射（视线）</option>
-                </select>
-                {fireMode === "arc" && <input class="fld" id="uf_arc" type="number" min={5} max={85} step={1}
+                </select>}
+                {!air && fireMode === "arc" && <input class="fld" id="uf_arc" type="number" min={5} max={85} step={1}
                   defaultValue={typeof u.arcDeg === "number" && u.arcDeg > 0 && u.arcDeg < 90 ? String(u.arcDeg) : ""}
                   placeholder={`射角 缺省 ${ARC_DEG}°`}
                   title={`曲射射角（度）：${ARC_DEG}° 是最大射程射角；迫击炮 45～85、榴弹炮高角 45、投石机约 45。留空＝${ARC_DEG}°`} />}
               </div></div>}
-        <div class="frow"><label>视野/侦察半径 km（留空＝不画）· 观察高度 m</label>
+        {air && <div class="frow"><label>飞行高度 m（海拔；留空＝三种圈都不判视线）</label>
+          <input class="fld" id="uf_alt" type="number" min={0} step="any"
+            defaultValue={typeof u.altM === "number" && u.altM >= 0 ? String(u.altM) : ""} placeholder="如 8000"
+            title="海拔高度：低于地面按地面算。这是基线——动向里逐航点可改，航点之间按两端的高度线性过渡（爬升 / 下滑）" /></div>}
+        <div class="frow"><label>视野/侦察半径 km（留空＝不画）{air ? " · 眼位＝飞行高度" : " · 观察高度 m"}</label>
           <div class="fx2">
             <input class="fld" id="uf_vision" type="number" min={0} step={0.1}
               defaultValue={typeof u.vision === "number" && u.vision > 0 ? String(u.vision) : ""}
               placeholder="斥候瞭望/侦骑警戒 · 按视线裁"
               title="斥候瞭望/侦骑警戒半径：圈内只填视线可达的格（地形遮挡与地平线都计入），圈线是名义半径；「军」工具下选中部队可直接拖动圈左侧手柄调节。飞行部队不判视线" />
-            <input class="fld" id="uf_eye" type="number" min={0} step="any"
+            {!air && <input class="fld" id="uf_eye" type="number" min={0} step="any"
               defaultValue={typeof u.eyeM === "number" && u.eyeM >= 0 ? String(u.eyeM) : ""}
               placeholder={`观察高度 缺省 ${unitEyeM({ ...u, eyeM: undefined })} m`}
-              title="眼位离地面的高度（米）：瞭望塔/桅顶/高地上的哨位填高些；留空＝兵种缺省（陆行 2 m、舰船 15 m）。视野圈与直射火力圈共用" />
+              title="眼位离地面的高度（米）：瞭望塔/桅顶/高地上的哨位填高些；留空＝兵种缺省（陆行 2 m、舰船 15 m）。视野圈与直射火力圈共用" />}
           </div></div>
-        {modern && <div class="frow"><label>雷达 探测半径 km（留空＝无）· 天线高度 m · 目标高度 m</label>
+        {modern && <div class="frow"><label>雷达 探测半径 km（留空＝无）{air ? "" : " · 天线高度 m"} · 目标高度 m</label>
           <div class="fx2">
             <input class="fld" id="uf_radar" type="number" min={0} step={1}
               defaultValue={typeof u.radar === "number" && u.radar > 0 ? String(u.radar) : ""}
               placeholder="探测半径 如 40"
-              title="雷达探测半径：图上只填雷达视线可达的格（折射按 4/3 地球半径），圈线点划。飞行部队不判" />
-            <input class="fld" id="uf_radarm" type="number" min={0} step="any"
+              title="雷达探测半径：图上只填雷达视线可达的格（折射按 4/3 地球半径），圈线点划。飞行部队的天线在飞行高度上" />
+            {!air && <input class="fld" id="uf_radarm" type="number" min={0} step="any"
               defaultValue={typeof u.radarM === "number" && u.radarM >= 0 ? String(u.radarM) : ""}
               placeholder={`天线 缺省 ${RADAR_M} m`}
-              title={`天线离地面的高度（米）；留空＝${RADAR_M} m`} />
+              title={`天线离地面的高度（米）；留空＝${RADAR_M} m`} />}
             <input class="fld" id="uf_radartgt" type="number" min={0} step="any"
               defaultValue={typeof u.radarTgtM === "number" && u.radarTgtM >= 0 ? String(u.radarTgtM) : ""}
               placeholder={`目标 缺省 ${RADAR_TGT_M} m`}
