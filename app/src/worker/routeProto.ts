@@ -1,12 +1,13 @@
 /* 寻路 Worker 协议（纯函数）：ctx=一次性上下文（换图/重建网格/换年时重发），
    route/legs=按 id 应答；erode=侵蚀重铸（自带全部输入、不依赖 ctx——纯函数直测，
    且程序化预览无 world 时照样可算）；vfield=视线判定用的规则场（规则场落定时推送一次，
-   viewshed 单只带观察者，sight 单带观察者 × 飞行目标）。协议层不碰 Worker API——node:test 直接测；
+   viewshed 单只带观察者，sight 单带观察者 × 飞行目标，peaks 单算这份场的标高点峰表）。协议层不碰 Worker API——node:test 直接测；
    入口(routeWorker.ts)与客户端(routeClient.ts)只做消息搬运。 */
 import { computeRoute, type ComputedRoute, type RoutePoint } from "../core/route.ts";
 import { unitLegs, type Leg } from "../core/units.ts";
 import { erodeField, type ErodeInput } from "../core/erode.ts";
 import { sightTo, viewshed, type Observer, type SightHit, type ViewField, type VisMask } from "../core/viewshed.ts";
+import { peakTable, type PeakTable } from "../core/spots.ts";
 import type { ElevField } from "../core/elev.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Meta, Unit, World } from "../core/types.ts";
@@ -32,14 +33,16 @@ export type RouteRequest =
   | ({ t: "erode"; id: number } & ErodeInput)
   | { t: "vfield"; field: ViewField }
   | { t: "viewshed"; id: number; obs: VisReq[] }
-  | { t: "sight"; id: number; reqs: SightReq[] };
+  | { t: "sight"; id: number; reqs: SightReq[] }
+  | { t: "peaks"; id: number };
 
 export type RouteReply =
   | { t: "route"; id: number; res: ComputedRoute | null }
   | { t: "legs"; id: number; legs: Leg[] | null }
   | { t: "erode"; id: number; f: ElevField }
   | { t: "viewshed"; id: number; res: VisRes[] | null }
-  | { t: "sight"; id: number; res: SightRes[] | null };
+  | { t: "sight"; id: number; res: SightRes[] | null }
+  | { t: "peaks"; id: number; res: PeakTable | null };
 
 export function handleRouteMsg(st: RouteCtx, msg: RouteRequest): RouteReply | null {
   if (msg.t === "ctx") {
@@ -58,6 +61,7 @@ export function handleRouteMsg(st: RouteCtx, msg: RouteRequest): RouteReply | nu
     return { t: "sight", id: msg.id, res: f ? msg.reqs.map(({ obs: o, tgt, lon, lat, altM }) =>
       ({ owner: o.owner, id: o.id, ring: o.ring, idx: o.idx, tgt, hit: sightTo(f, o, lon, lat, altM) })) : null };
   }
+  if (msg.t === "peaks") return { t: "peaks", id: msg.id, res: st.vfield ? peakTable(st.vfield) : null };
   if (!st.grid || !st.world) {
     return msg.t === "route" ? { t: "route", id: msg.id, res: null } : { t: "legs", id: msg.id, legs: null };
   }

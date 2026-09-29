@@ -447,15 +447,16 @@ export function terrainProps(cell: string): TerrainProps {
 export const LANDFORM_ORDER: Landform[] = ["plain", "coast", "hill", "mountain", "alpine", "water"];
 export const ECO_ORDER: Ecotype[] = ["none", "forest", "grassland", "marsh", "desert"];
 
-/** 气候档 → 雪线基准（米，图幅中心纬度处；只进材质色，不进规则）。取地球各带常见值：极地贴海平面、北欧约 1200、
-    阿尔卑斯不到 3000、喜马拉雅南坡 4500～5000、赤道安第斯约 4800、干旱副热带（阿塔卡马、藏北）最高。缺键＝出厂 2050 不随纬度。 */
-export const CLIMATE: Record<Climate, { 名: string; snowM: number }> = {
-  polar:       { 名: "极地",   snowM: 300 },
-  boreal:      { 名: "寒带",   snowM: 1200 },
-  temperate:   { 名: "温带",   snowM: 2900 },
-  subtropical: { 名: "亚热带", snowM: 4600 },
-  tropical:    { 名: "热带",   snowM: 4800 },
-  arid:        { 名: "干旱",   snowM: 5700 }
+/** 气候档 → 林线 treeM 与雪线 snowM（米，图幅中心纬度处；只进观感，不进规则；treeM null＝无林）。取地球各带实测量级：
+    瑞典北部林线 650 / 冰川平衡线 1400～1500、阿尔卑斯 2200 / 不到 3000、南北纬 30°～20° 林线 3500～4000、尼泊尔南坡雪线约 5000、
+    内热带雪线 4500～4800、干旱安第斯雪线 5800 以上、大盆地林线约 3500。缺键＝出厂 2050 雪线、无林线、不随纬度。 */
+export const CLIMATE: Record<Climate, { 名: string; treeM: number | null; snowM: number }> = {
+  polar:       { 名: "极地",   treeM: null, snowM: 300 },
+  boreal:      { 名: "寒带",   treeM: 700,  snowM: 1400 },
+  temperate:   { 名: "温带",   treeM: 2200, snowM: 2900 },
+  subtropical: { 名: "亚热带", treeM: 3800, snowM: 5000 },
+  tropical:    { 名: "热带",   treeM: 3800, snowM: 4800 },
+  arid:        { 名: "干旱",   treeM: 3500, snowM: 5700 }
 };
 export const CLIMATE_ORDER: Climate[] = ["polar", "boreal", "temperate", "subtropical", "tropical", "arid"];
 

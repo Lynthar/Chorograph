@@ -10,7 +10,7 @@
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps } from "../core/constants.ts";
 import { elevBilinear, elevSmooth, coarseField, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
-import { materialFor, octaveGate, decoGate, rampColor, snowLatM, MICRO_F0, MICRO_OCTAVES, NRM0, FX } from "./material.ts";
+import { climRampColor, materialFor, octaveGate, decoGate, rampColor, snowLatM, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, type ClimLook } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
 import type { TerrainRenderer, TerrainRenderOpts } from "./renderer.ts";
@@ -189,8 +189,9 @@ const cw = (eh: number, itv: number, ad: number, w0: number, w1: number): number
 };
 const oddK = (eh: number, itv: number): number => Math.round(eh / itv) % 2 === 0 ? 0 : 1;
 
-function elevRamp(e: number, ws: number): [number, number, number] {
+function elevRamp(e: number, ws: number, clim?: ClimLook, dl = 0): [number, number, number] {
   if (e < ws - 0.02) { const t = Math.max(0, Math.min(1, (e - ws + 0.35) / 0.33)); return [40 + t * 60, 90 + t * 70, 132 + t * 66]; }
+  if (clim && clim.n > 0) return climRampColor(clim, e, dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移；同 GL）
   return rampColor(e);   // 陆地分层设色＝material.ELEV_RAMP 一张表（GL 同源）
 }
 
@@ -365,6 +366,11 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const wsv = new Float32Array(W * H);   // 逐像素水面（同 GL：与晕渲高程同取扭曲后坐标）
     const mgx = new Float32Array(W * H), mgy = new Float32Array(W * H);   // 宏观场坡（±1 格、无噪声；同 GL mn）
     const occ = new Float32Array(W * H);   // 烘焙遮蔽（侵蚀场 shadow 通道；粗格恒 0）
+    /* 球面图气候带的纬度改正（同 GL dLat：雪线、林线、色阶同一个），只随纬度＝逐行一个值；
+       林线淡出按未扭曲点的双线性画面场高程判（同 GL cd.x），趟一算好趟二复用 */
+    const clim = opts.clim, snow = opts.snow, rowShift = new Float64Array(H);
+    if (snow && snow.lat) for (let y = 0; y < H; y++) rowShift[y] = (snowLatM(Math.abs(L2P(0, y)[1])) - snow.refM) / snow.unitM;
+    const tfade = clim ? new Float32Array(W * H) : null;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = y * W + x, p = L2P(x, y);
       const rx = p[0] - lonMin, ry = p[1] - latMin;
@@ -392,7 +398,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const pf = FX.texPatchF / step;
       const pn = 0.65 * vnoise(rx * pf + 19.3, ry * pf + 5.7) + 0.35 * vnoise(rx * pf * 2.7 + 63.1, ry * pf * 2.7 + 28.9);
       const texW = texW0 * (FX.texPatchLo + (FX.texPatchHi - FX.texPatchLo) * sstep(0.32, 0.68, pn));
-      esh[i] = microOn ? e + texAt(rx, ry, MT.c, MT.d, twrEff, MT.m, pxpd) * texW : e;
+      if (tfade) { const t = clim!.treeE + rowShift[y]; tfade[i] = sstep(t, t + clim!.band, elevBil(p[0], p[1])); }
+      const twc = tfade ? MT.c * (1 - tfade[i]) : MT.c;   // 林线以上林冠纹理淡出（同 GL）
+      esh[i] = microOn ? e + texAt(rx, ry, twc, MT.d, twrEff, MT.m, pxpd) * texW : e;
       const es = elevSmooth(field!.data, field!, p[0], p[1]);
       ed[i] = rule === field ? es : elevSmooth(rule!.data, rule!, p[0], p[1]);   // 画面场为精修档时线不跟画面
       cav[i] = Math.max(-0.10, Math.min(0.16, (es - elevBil(p[0], p[1])) / field!.step * gain * 2 * NRM0 * (1 + FX.macroW) * FX.cavAmp));   // 同 GL：按真实坡度并随夸张走
@@ -418,12 +426,15 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const lt = sstep(FX.shadeKnee, 1, dn) * (1 - occ[i] * FX.shadowK);   // 投影阴影连同暖冷响应一起压暗（同 GL）
       const sh = FX.shadeLo + (FX.shadeHi - FX.shadeLo) * lt;
       const shR = FX.cool[0] + (FX.warm[0] - FX.cool[0]) * lt, shG = FX.cool[1] + (FX.warm[1] - FX.cool[1]) * lt, shB = FX.cool[2] + (FX.warm[2] - FX.cool[2]) * lt;
-      let col = elevRamp(e, ws);
+      let col = elevRamp(e, ws, clim, rowShift[y]);
       if (e >= ws - 0.02) {
         matAt(rx, ry);   // 趟二重取材质（色调/反照率/岩化）——省四条逐像素缓存数组的内存
         if (MT.tintW > 0) {
           const a = 0.45 * MT.tintW;
-          col = [col[0] * (1 - a) + MT.tr * a, col[1] * (1 - a) + MT.tg * a, col[2] * (1 - a) + MT.tb * a];
+          let tr = MT.tr, tg = MT.tg, tb = MT.tb;
+          const fk = tfade ? tfade[i] * Math.max(0, Math.min(1, MT.c / FOREST_CANOPY)) : 0;
+          if (fk > 0) { tr += (clim!.meadow[0] - tr) * fk; tg += (clim!.meadow[1] - tg) * fk; tb += (clim!.meadow[2] - tb) * fk; }   // 林线以上的森林换草甸色（同 GL）
+          col = [col[0] * (1 - a) + tr * a, col[1] * (1 - a) + tg * a, col[2] * (1 - a) + tb * a];
         }
         // 生态辨识度（同 GL）：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重）
         if (MT.d > 0.003) {
@@ -460,7 +471,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
           col = [col[0] * (1 - a) + rc[0] * a, col[1] * (1 - a) + rc[1] * a, col[2] * (1 - a) + rc[2] * a];
         }
         const S = opts.snow;   // 雪按米落（同 GL：material.snowSpec 同式，随纬度只在球面图且设了气候档；陡坡挂不住雪打六折）
-        const snE = S ? Math.max(0, S.base + (S.lat ? (snowLatM(Math.abs(p[1])) - S.refM) / S.unitM : 0)) : 1e9;
+        const snE = S ? Math.max(0, S.base + rowShift[y]) : 1e9;
         const sn = sstep(snE, snE + FX.snowBand, e) * (1 - 0.6 * sstep(FX.snowSlopeLo, FX.snowSlopeHi, slp));
         if (sn > 0) col = [col[0] + (237.15 - col[0]) * sn, col[1] + (239.7 - col[1]) * sn, col[2] + (246.075 - col[2]) * sn];
         const ak = sstep(FX.airLo, FX.airHi, e) * FX.airMix;   // 空气透视（同 GL）
@@ -561,7 +572,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       /* 键须罩住瓦片读到的每个选项（增益随缩放变）：数据不变时瓦片留用，漏一项＝改那项设置后画面不动 */
       const S = opts.snow;
       const key = `g${(opts.gain ?? 1).toFixed(2)}d${opts.dpr ?? 1}` + (opts.contour ? `c${opts.cStep || 0.12}` : "") + (opts.paper ? "p" : "")
-        + (S ? `s${S.base},${S.lat ? 1 : 0},${S.refM},${S.unitM}` : "");
+        + (S ? `s${S.base},${S.lat ? 1 : 0},${S.refM},${S.unitM}` : "") + (opts.clim ? `k${opts.clim.key}` : "");
       const next: Tile[] = [];
       for (const c of copies) {
         const vb: BBox = c ? { lonMin: viewBB.lonMin + c, lonMax: viewBB.lonMax + c, latMin: viewBB.latMin, latMax: viewBB.latMax } : viewBB;

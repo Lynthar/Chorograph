@@ -594,6 +594,55 @@ describe("侵蚀真形（core/erode）", () => {
     const rho = cov / Math.sqrt(vp * vq);
     assert.ok(rho > 0.97, `粗格块平均相关 ${rho.toFixed(4)}`);
   });
+  /* 细格战术图试验场：西两列水域，往东平原→丘陵→山地 */
+  const ramp = (cols: number, step: number, amp: number, cap: number, hovGrid?: Float32Array): ErodeInput => {
+    const rows = cols, n2 = cols * rows, elev0 = new Float32Array(n2), water = new Uint8Array(n2);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const i = r * cols + c;
+      if (c < 2) { water[i] = 1; elev0[i] = -0.35; } else elev0[i] = c < cols / 3 ? 0.16 : c < cols * 0.62 ? 0.5 : 0.9;
+    }
+    return { bb: { lonMin: 8, lonMax: 8 + cols * step, latMin: 46, latMax: 46 + rows * step }, step, cols, rows,
+      elev0, water, amp, seed: 777, kmx: 111.19, kmy: 111.19, hovGrid: hovGrid || new Float32Array(n2), cap, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000 };
+  };
+  const fieldHash = (f: ElevField): string => {
+    let x = 0x811c9dc5 | 0;
+    const u = new Uint32Array(f.data.buffer, f.data.byteOffset, f.data.length);
+    for (let i = 0; i < u.length; i++) x = Math.imul(x ^ u[i], 16777619);
+    return (x >>> 0).toString(36);
+  };
+  it("粗级物理扩散只给类型路：起伏滑杆 0 的图（真高程、纯手雕）输出逐位钉死", () => {
+    const hov = new Float32Array(24 * 24);
+    for (let r = 6; r < 18; r++) for (let c = 6; c < 18; c++) hov[r * 24 + c] = 0.2 + 0.03 * ((r * 7 + c * 3) % 5);
+    /* 哈希取自粗级按格无量纲扩散的实现：变了＝真高程图的地形跟着变了 */
+    assert.strictEqual(fieldHash(erodeField(ramp(24, 0.0024, 0, 40_000, hov))), "1c3l6tv");
+  });
+  it("粗级物理扩散以旧常数为地板：粗格大于约 224 m 的图输出逐位钉死", () => {
+    /* 133 m 格 ×8 细分再 ×4 成粗格≈0.8 km＞交界；缺省尺寸以上的战术图与战略图都在这一侧 */
+    assert.strictEqual(fieldHash(erodeField(ramp(24, 0.0072, 0.7, 40_000))), "1j1f4cn");
+  });
+  it("同一世界换细格分辨率（33 m / 17 m），谷网一致：粗级扩散按 km² 计", () => {
+    /* 按格无量纲的扩散让谷距跟着网格走（约 5 个粗格一条谷），两档高通相关只有 0.74 */
+    const lo = ramp(48, 0.0012, 0.7, 40_000), hi = ramp(48, 0.0012, 0.7, 150_000);
+    const fl = erodeField(lo), fh = erodeField(hi);
+    assert.deepStrictEqual([fl.cols / 48, fh.cols / 48], [4, 8], "前提：两档细分确为 4× 与 8×");
+    const N = 96, R = 0.003, bb = lo.bb;
+    const x0 = bb.lonMin + 3 * lo.step, x1 = bb.lonMax - 0.5 * lo.step, y0 = bb.latMin + 0.5 * lo.step, y1 = bb.latMax - 0.5 * lo.step;
+    const hp = (f: ElevField): Float64Array => {
+      const o = new Float64Array(N * N), at = (x: number, y: number): number => elevBilinear(f.data, f, x, y);
+      for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+        const x = x0 + (c + 0.5) * (x1 - x0) / N, y = y0 + (r + 0.5) * (y1 - y0) / N;
+        let s = 0;
+        for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) s += at(x + a * R, y + b * R);
+        o[r * N + c] = at(x, y) - s / 9;
+      }
+      return o;
+    };
+    const P = hp(fl), Q = hp(fh);
+    let mp = 0, mq = 0; for (let i = 0; i < P.length; i++) { mp += P[i]; mq += Q[i]; } mp /= P.length; mq /= Q.length;
+    let cov = 0, vp = 0, vq = 0; for (let i = 0; i < P.length; i++) { cov += (P[i] - mp) * (Q[i] - mq); vp += (P[i] - mp) ** 2; vq += (Q[i] - mq) ** 2; }
+    const rho = cov / Math.sqrt(vp * vq);
+    assert.ok(rho > 0.85, `两档高通相关 ${rho.toFixed(3)}`);
+  });
   it("erodeKey：同输入同键、键带算法代前缀；任一分量（单个格值/种子/幅度/bb/量纲）变即换键", () => {
     /* 键是场缓存（data/fieldcache）的全部正确性来源：漏进键的分量变了而键没变＝按键取回
        一整幅错误地形。逐分量各变一处，键必须跟着变。 */

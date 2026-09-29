@@ -16,7 +16,7 @@ import { dataLon } from "../ui/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig,
-  routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, readOnlySig, uiPrefsSig, terrainStyleSig }
+  routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, readOnlySig, uiPrefsSig, terrainStyleSig }
   from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -56,7 +56,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       const decorSelId = (selSig.value && selSig.value.kind === "decor") ? selSig.value.id : null;
       const decorMultiIds = (selSig.value && selSig.value.kind === "multi") ? selSig.value.decorIds || null : null;
       const loopBudget: LoopBudget = { ms: full ? Infinity : terrMs, spent: 0, done: 0, skipped: 0 };
-      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, visMasks: visMaskSig.value, detect: detectSig.value, ruleField: ruleLanded, contourStep: cstep, smooth: brushSmoothSig.value, edgeSelIdx, editing: modeSig.value === "edit", decorSelId, decorMultiIds, loopBudget });
+      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, visMasks: visMaskSig.value, detect: detectSig.value, ruleField: ruleLanded, spotTable: spotTableSig.value, contourStep: cstep, smooth: brushSmoothSig.value, edgeSelIdx, editing: modeSig.value === "edit", decorSelId, decorMultiIds, loopBudget });
       if (loopBudget.skipped) terrPass++;
       terrMs = Math.max(TERR_FRAME_MS, performance.now() - tp - loopBudget.spent);
       const m = modeSig.value;
@@ -145,7 +145,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       opDrawSig.value, linkTypeSig.value, linkFromSig.value,
       paintFactionSig.value, paintLayerSig.value,
       brushSizeSig.value, brushEraseSig.value, brushSmoothSig.value,
-      routePtsSig.value, routeResSig.value, unitLegsSig.value, visMaskSig.value, detectSig.value, ruleFieldSig.value,
+      routePtsSig.value, routeResSig.value, unitLegsSig.value, visMaskSig.value, detectSig.value, ruleFieldSig.value, spotTableSig.value,
       // 外壳可变态（非 signal，只能逐帧比）；elevField/ruleField=侵蚀细化异步换入（引用比较有效；推演底图画规则场）
       ctx.grid, ctx.elevField, ctx.ruleField, ctx.R, ctx.DPR, ctx.canvas.width, ctx.canvas.height, cw, ch,
       v.lon0, v.lat0, v.degPerPx,

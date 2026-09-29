@@ -9,6 +9,7 @@ import type { Grid } from "../core/grid.ts";
 import type { ErodeInput } from "../core/erode.ts";
 import type { ElevField } from "../core/elev.ts";
 import type { ViewField } from "../core/viewshed.ts";
+import type { PeakTable } from "../core/spots.ts";
 import type { Arm, Meta, Unit, World } from "../core/types.ts";
 
 export interface RouteContext { meta: Meta | undefined; grid: Grid; roads: Set<string>; world: World; yearNow: number }
@@ -30,12 +31,14 @@ export interface RouteClient {
   /** 撤掉在飞的工作档侵蚀单：同 cancelUltra——新编辑来了，上一笔的单算完只会被令牌作废，还挡着新单排队（收笔后多等 1～4 s）；
       被撤的结果不进场缓存（撤销回那一步要重算，用户拍板接受）。崩溃判死与主动撤单分开：撤单后下一单懒建新车道，判死后退回主 worker。 */
   cancelErode(): void;
-  /** 视线判定用的规则场：同 setContext 惰性推送（下一个 viewshed 单之前才克隆），规则场换引用时调一次 */
+  /** 视线判定与标高点共用的规则场：同 setContext 惰性推送（下一单之前才克隆）；与上一份同一组数组＝不重推 */
   setViewField(field: ViewField): void;
   /** 一批观察者的视线掩膜（寻路车道）；Worker 挂掉时返 null——调用方保持上一份 */
   viewshed(obs: VisReq[]): Promise<VisRes[] | null>;
   /** 观察者 × 飞行目标的点对点视线（同车道、同一份规则场）；Worker 挂掉时返 null */
   sight(reqs: SightReq[]): Promise<SightRes[] | null>;
+  /** 已推规则场的标高点峰表（同车道）；Worker 挂掉时返 null */
+  peaks(): Promise<PeakTable | null>;
   dispose(): void;
 }
 
@@ -118,7 +121,7 @@ export function createRouteClient(): RouteClient {
      故 setContext 只同步镜像到回退态（存引用,零克隆）并**记下待送件**,真正 postMessage 推迟到
      下一个 route/legs 请求之前（flushCtx）——查询永远先于自己看到最新上下文（同信道保序），
      没有查询的连笔一次都不用克隆。 */
-  let ctxMsg: RouteRequest | null = null, vfMsg: RouteRequest | null = null;
+  let ctxMsg: RouteRequest | null = null, vfMsg: RouteRequest | null = null, vfCur: ViewField | null = null;
   const flushCtx = () => {
     if (!w) return;
     if (ctxMsg) { w.postMessage(ctxMsg); ctxMsg = null; }
@@ -145,6 +148,9 @@ export function createRouteClient(): RouteClient {
       return r.t === "legs" ? r.legs : null;
     },
     setViewField(field) {
+      if (vfCur && vfCur.data === field.data && vfCur.wsurf === field.wsurf && vfCur.unitM === field.unitM
+        && vfCur.kmx === field.kmx && vfCur.kmy === field.kmy && vfCur.curvKm === field.curvKm) return;   // 视域与标高点两路各推一次同一份场＝白克隆几兆
+      vfCur = field;
       const msg: RouteRequest = { t: "vfield", field };
       handleRouteMsg(fallback, msg);
       if (w) vfMsg = msg;
@@ -156,6 +162,10 @@ export function createRouteClient(): RouteClient {
     async sight(reqs) {
       const r = await ask({ t: "sight", id: ++seq, reqs });
       return r.t === "sight" ? r.res : null;
+    },
+    async peaks() {
+      const r = await ask({ t: "peaks", id: ++seq });
+      return r.t === "peaks" ? r.res : null;
     },
     async erode(input) {
       /* 优先走侵蚀专用 worker；它死了退回主 worker/同步回退。任一 worker 死时对应 kill 以

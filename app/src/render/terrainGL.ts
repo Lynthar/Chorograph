@@ -16,7 +16,7 @@
    ⚠ 噪声坐标一律用图幅局部坐标（ll-网格原点），深放大高频档才不在 fp32 下失谐；
    ⚠ fwidth 只喂 e/es 两个一致控制流值，材质分支里不得调用。 */
 import { ELEV, terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
-import { materialTable, rampGLSL, snowLatGLSL, MICRO_F0, MICRO_OCTAVES, NRM0, FX } from "./material.ts";
+import { climRampGLSL, materialTable, rampGLSL, snowLatGLSL, CLIM_STOPS, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import { SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
 import type { BBox } from "../core/types.ts";
@@ -51,6 +51,10 @@ uniform int uWrap;                // 1=球面经度环绕（把片元经度折�
 uniform int uPaper;               // 1=图幅外铺宣纸色（战术图；色=出图垫纸色 #d9d2c0 同源）
 uniform float uSnowE;             // 雪线抽象高程（图幅中心；material.snowSpec.base；不落雪=1e9）
 uniform float uSnowLat, uSnowRef, uSnowUnit;   // 随纬度：开关 0/1（球面图且设了气候档）、参考曲线在中心纬度的米值、1/elevUnitM
+uniform int uClim, uClimN;        // 气候观感（material.climLook）：开关 0/1、色阶段数（0＝沿用 elevLand）
+uniform vec4 uClimRamp[${CLIM_STOPS}];
+uniform float uTreeE, uTreeBand;  // 林线抽象高程与淡出带宽
+uniform vec3 uMeadow;             // 林线以上森林染色换成的高山草甸色
 uniform float uGain;              // 晕渲法线增益（material.shadeGain：夸张 E∈[4,8] 倍真实坡度）
 uniform float uEroded;            // 1=场经侵蚀（带遮蔽通道）：装饰噪声按坡门控、宏观 fbm4 降到四分之一——真形自己带起伏
 uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合平色＝terrainProps.color（推演底图用；G=lf*5+eco 索引）
@@ -239,8 +243,10 @@ float wsAt(vec2 ll){
 }
 ${rampGLSL()}
 ${snowLatGLSL()}
-vec3 elevRamp(float e,float ws){
+${climRampGLSL()}
+vec3 elevRamp(float e,float ws,float dl){
   if(e<ws-0.02){ float t=clamp((e-ws+0.35)/0.33,0.0,1.0); return vec3(40.0+t*60.0,90.0+t*70.0,132.0+t*66.0)/255.0; }
+  if(uClimN>0) return climRamp(e,dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移）
   return elevLand(e);   // 陆地分层设色＝material.ELEV_RAMP 一张表（CPU 同源）
 }
 void main(){
@@ -271,6 +277,7 @@ void main(){
   gWarp=wp;   // 此后的采样全属扭曲族
   ws=wsAt(llw);   // 水陆判据、深浅色与近岸带的基准（内陆湖不在海平面）；与晕渲高程同取扭曲后坐标
   Mat mt=matAt(rel+wp+warp2Of(rel));   // 色调/材质权重中心取一次，五点采样共用（边界差 1px 可忽略）
+  float dLat=uSnowLat*(snowLatM(abs(ll.y))-uSnowRef)*uSnowUnit;   // 球面图气候带的纬度改正：雪线、林线、色阶同一个
   /* 宏观场坡先行（±1 格、无噪声）：①光照里再计一份基础坡，压低噪声皱纹话语权；
      ②陡处按坡度补糙度/棱脊——手雕高山常落在平原类型上，材质只认类型＝草地质感的光滑圆包 */
   vec2 mgv=vec2(cellAt(llw+vec2(-uGridBB.z,0.0)).x-cellAt(llw+vec2(uGridBB.z,0.0)).x,
@@ -278,6 +285,9 @@ void main(){
   float smac=length(mgv)/(2.0*uGridBB.z);   // |∇e| 每度
   float roughEff=max(mt.rough, min(float(${FX.slopeRoughMax}), smac*float(${FX.slopeRough})));
   vec4 twEff=vec4(mt.tw.xy, max(mt.tw.z, min(1.0, smac*float(${FX.slopeRidge}))), mt.tw.w);
+  float ftc=uClim==1 ? smoothstep(uTreeE+dLat,uTreeE+dLat+uTreeBand,cd.x) : 0.0;   // 林线以上森林淡出
+  float fk=ftc*clamp(mt.tw.x/float(${FOREST_CANOPY}),0.0,1.0);
+  twEff.x*=1.0-ftc;
   // 屏幕锚定纹理的幅度按 1/像素密度折算（明暗对比恒定不随缩放）；陡坡增纹已删（见 FX.texW 注）
   float texW=float(${FX.texW})/uPXPD;
   // 纹理疏密：世界锚定两八度低频调制（见 FX.texPatchF 头注）——五点采样共用此 texW，故不添假坡
@@ -316,9 +326,9 @@ void main(){
   float sh=mix(float(${FX.shadeLo}),float(${FX.shadeHi}),lt);
   vec3 shT=mix(vec3(${FX.cool.join(",")}),vec3(${FX.warm.join(",")}),lt);
   float cav=clamp((es-cd.x)/uFStep*uGain*float(${2 * NRM0 * (1 + FX.macroW)})*float(${FX.cavAmp}), -0.10, 0.16);   // 帐篷差按真实坡度并随夸张走：谷暗脊明（廉价 AO）
-  col=elevRamp(e,ws);   // 赋外层 col（此处若写 vec3 col 即遮蔽＝观感底图整幅黑）
+  col=elevRamp(e,ws,dLat);   // 赋外层 col（此处若写 vec3 col 即遮蔽＝观感底图整幅黑）
   if(e>=ws-0.02){
-    if(mt.tintW>0.0) col=mix(col, mt.tint, 0.45*mt.tintW);   // 软过渡；tintW=1 时与旧 55/45 直拼逐位同值
+    if(mt.tintW>0.0) col=mix(col, fk>0.0 ? mix(mt.tint,uMeadow,fk) : mt.tint, 0.45*mt.tintW);   // 软过渡；林线以上的森林换草甸色
     // 生态辨识度：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重 tw.y/tw.w，详见 material.ts）
     col=mix(col, vec3(${FX.sandC.join(",")}), mt.tw.y*float(${FX.sandMix}));
     if(mt.tw.w>0.003){
@@ -340,7 +350,7 @@ void main(){
     vec3 rockC=mix(vec3(0.36,0.33,0.30), vec3(0.62,0.60,0.57), clamp(e*1.1,0.0,1.0));
     col=mix(col, rockC, rk*float(${FX.rockMix}));
     // 雪按米落（material.snowSpec 同式：气候档基准 + 球面图随纬度；陡坡挂不住雪打六折）——色阶顶带只剩灰岩，白色归雪
-    float snE=max(0.0, uSnowE+uSnowLat*(snowLatM(abs(ll.y))-uSnowRef)*uSnowUnit);
+    float snE=max(0.0, uSnowE+dLat);
     float sn=smoothstep(snE,snE+float(${FX.snowBand}),e)*(1.0-0.6*smoothstep(float(${FX.snowSlopeLo}),float(${FX.snowSlopeHi}),slp));
     col=mix(col, vec3(0.93,0.94,0.965), sn);
     col=mix(col, vec3(${FX.airC.join(",")}), smoothstep(float(${FX.airLo}),float(${FX.airHi}),e)*float(${FX.airMix}));   // 空气透视
@@ -576,7 +586,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       if (!g || !pr || !f || !fRule) return;
       const S = opts.snow, H = canvas.height, [vw, vh] = opts.px ?? [canvas.width, H];
       const key = `${viewBB.lonMin},${viewBB.latMin},${viewBB.lonMax},${viewBB.latMax}|${vw}x${vh}/${H}|${+!!opts.flat}${+!!opts.contour}${+!!opts.wrap}${+!!opts.paper}`
-        + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}`;
+        + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}|${opts.clim ? opts.clim.key : ""}`;
       if (key === lastKey) return;   // 画布上已是这一帧
       lastKey = key;
       gl.viewport(0, H - vh, vw, vh);   // 可见区贴画布顶；GL 原点在左下
@@ -597,6 +607,14 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.uniform1f(U("uSnowLat"), S && S.lat ? 1 : 0);
       gl.uniform1f(U("uSnowRef"), S ? S.refM : 0);
       gl.uniform1f(U("uSnowUnit"), S ? 1 / S.unitM : 0);
+      const C = opts.clim;
+      gl.uniform1i(U("uClim"), C ? 1 : 0);
+      gl.uniform1i(U("uClimN"), C ? C.n : 0);
+      if (C) {
+        gl.uniform4fv(U("uClimRamp[0]"), C.ramp);
+        gl.uniform1f(U("uTreeE"), C.treeE); gl.uniform1f(U("uTreeBand"), C.band);
+        gl.uniform3f(U("uMeadow"), C.meadow[0] / 255, C.meadow[1] / 255, C.meadow[2] / 255);
+      }
       gl.uniform1f(U("uGain"), opts.gain ?? 1);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },

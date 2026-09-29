@@ -116,8 +116,13 @@ const EPS = 1e-5;           // 洼地填平的单调排水梯度（抽象高程/
    ⚠ 粗级只由**参照细格**定＝工作档与精修档共用同一粗级（换档不换谷网）。 */
 const COARSE_K = 4;
 const COARSE_ITERS = 48;
-const COARSE_DIFF = 0.06;   // 粗级扩散系数：格边 K 倍＝同系数下物理扩散率 K² 倍，取原值会把刚切出的谷肩磨回去
+const COARSE_DIFF = 0.06;   // 粗级扩散系数（雕体路主导的格，也是物理扩散的地板）：取细级的 0.17 会把刚切出的谷肩磨回去
 const COARSE_MIN = 24;      // 粗级任一轴少于此格数不做（夹具级小网格，谷网无处可长）
+/* 粗级扩散按物理量纲：类型路主导的格逐格系数＝4·COARSE_D_KM2/粗格边²（km），不低于 COARSE_DIFF。
+   按格无量纲时谷距是网格尺度的成谷失稳（约 5 个粗格一条），格越细刮痕越密；
+   ⚠ 只给类型路（起伏滑杆 > 0 且类型山地度 ≥ 雕体山地度）＋地板：真高程、手雕图与粗格图逐位不变 */
+const COARSE_D_KM2 = 7.5e-4;
+const DIFF_MONO = 0.5;      // 显式 4 邻扩散的单调上限：逐格系数超过它就拆子步（超 0.5 出棋盘振荡、超 1 发散）
 /* 遮蔽烘焙：高差按真实坡度换算再乘 SHADOW_EXAG（着色器夸张 E∈[exagLo,exagHi] 的中值——烘焙不知道
    当前缩放，取中值两头各差一倍）；日高 tan=|Lz|/|Lxy|=0.9/0.8485。采样步距渐增＝近处硬阴影、远处软阴影 */
 const SHADOW_EXAG = 6, TAN_SUN = 1.0607, OCC_GAIN = 1.15;
@@ -137,8 +142,8 @@ export function upscaleOf(cols: number, rows: number, cap: number, axisMax: numb
    年份免去 1~2s 重算，「先粗后细」的可见换场（用户实报读感像「还在施工/出错了」）就不再发生。
    指纹自动涵盖上方全部旋钮值；⚠ 改**公式/流程**而不动旋钮的数值行为变更须 EALGO+1，
    否则旧缓存会以旧观感还魂。 */
-const EALGO = 7;   // 2026-09-07：多重网格（粗级先长谷网）；6=起伏改公里锚定的异质多尺度脊线场（core/relief），5=连续基底，4=细带归一，3=4K 精修
-const KNOB_FP = [EALGO, MAX_FINE, MAX_FINE_TAC, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF, COARSE_K, COARSE_ITERS, COARSE_DIFF, COARSE_MIN,
+const EALGO = 8;   // 8=粗级扩散按 km²（只给类型路）；7=多重网格（粗级先长谷网）；6=起伏改公里锚定的异质多尺度脊线场（core/relief），5=连续基底，4=细带归一，3=4K 精修
+const KNOB_FP = [EALGO, MAX_FINE, MAX_FINE_TAC, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF, COARSE_K, COARSE_ITERS, COARSE_DIFF, COARSE_MIN, COARSE_D_KM2, DIFF_MONO,
   WARP1, WARP2, TYPE_FEATHER, DETAIL_AMP, DETAIL_SLOPE_K, DETAIL_SLOPE_CAP, EPS,
   RELIEF_M, RELIEF_LAMBDA_KM, RELIEF_W, RELIEF_GATE_LO, RELIEF_GATE_HI, RELIEF_ROUGH_LO, RELIEF_ROUGH_HI,
   RELIEF_STRIKE, RELIEF_E0, RELIEF_E1, RELIEF_CARVE_K, RIDGED_MEAN,
@@ -261,9 +266,13 @@ export const rowFbm = (): ((x: number, y: number) => number) => {
 /** 一级网格上的 stream-power 侵蚀：iters 轮（填洼 → D8 受水者 → 汇流面积 → 隐式下切 → 扩散）＋ postDiff 轮
     收尾扩散，原地改 L.h；水域格与图幅边缘是基准面，不动。mfd＝汇流面积多向分配（粗级必开：D8 在匀坡上
     把水束成沿格轴的平行沟，几十轮就是一把梳子）；下切仍沿最陡受水者解，隐式解要单受水者。 */
-interface Level { h: Float32Array; wat: Uint8Array; FC: number; FR: number; fstep: number; kmx: number; kmy: number; acritKm2: number }
+interface Level {
+  h: Float32Array; wat: Uint8Array; FC: number; FR: number; fstep: number; kmx: number; kmy: number; acritKm2: number;
+  /** 逐格扩散系数（有则替代 diff） */
+  dcell?: Float64Array | null;
+}
 function streamPower(L: Level, iters: number, diff: number, postDiff: number, mfd: boolean): void {
-  const { h, wat, FC, FR, fstep, kmx, kmy, acritKm2: Acrit } = L, n = FC * FR;
+  const { h, wat, FC, FR, fstep, kmx, kmy, acritKm2: Acrit, dcell } = L, n = FC * FR;
   /* 8 邻表与距离（km；经向已折 cos） */
   const NB = [-FC - 1, -FC, -FC + 1, -1, 1, FC - 1, FC, FC + 1];
   const dxs = [1, 0, 1, 1, 1, 1, 0, 1], dys = [1, 1, 1, 0, 0, 1, 1, 1];
@@ -357,14 +366,20 @@ function streamPower(L: Level, iters: number, diff: number, postDiff: number, mf
     }
   };
   /* 坡面扩散（4 邻均值回拉；水域与边缘不动） */
+  let dMax = diff;
+  if (dcell) { dMax = 0; for (let i = 0; i < n; i++) if (dcell[i] > dMax) dMax = dcell[i]; }
+  const nsub = Math.max(1, Math.ceil(dMax / DIFF_MONO));
+  const dstep = dcell ? dcell.map(v => v / nsub) : null;
   const diffuse = (): void => {
-    h2.set(h);
-    for (let r = 1; r < FR - 1; r++) for (let c = 1; c < FC - 1; c++) {
-      const i = r * FC + c;
-      if (wat[i]) continue;
-      h2[i] = h[i] + diff * ((h[i - 1] + h[i + 1] + h[i - FC] + h[i + FC]) * 0.25 - h[i]);
+    for (let q = 0; q < nsub; q++) {
+      h2.set(h);
+      for (let r = 1; r < FR - 1; r++) for (let c = 1; c < FC - 1; c++) {
+        const i = r * FC + c;
+        if (wat[i]) continue;
+        h2[i] = h[i] + (dstep ? dstep[i] : diff) * ((h[i - 1] + h[i + 1] + h[i - FC] + h[i + FC]) * 0.25 - h[i]);
+      }
+      h.set(h2);
     }
-    h.set(h2);
   };
 
   for (let it = 0; it < iters; it++) {
@@ -451,8 +466,10 @@ export function erodeField(inp: ErodeInput): ElevField {
   const reliefU = RELIEF_M / inp.unitM;
   /** 一点的初始场（细级与粗级共用）：类型基面按域扭曲采样＋4 抽头帐篷羽化（水域不扭不羽＝基准面逐位、
       雕痕不扭＝落在用户画的地方）＋雕痕＋起伏，写入 dstB/dstH[i]。山地度两路取大：类型路＝基面高程
-      （含雕体）× meta.relief；雕体路＝|dh| 自带（与 meta.relief 解耦＝纯手雕图 relief=0 也有真形）。 */
-  const initInto = (dstB: Float32Array, dstH: Float32Array, i: number, lon: number, lat: number, isWater: boolean, relief: ReliefSampler): void => {
+      （含雕体）× meta.relief；雕体路＝|dh| 自带（与 meta.relief 解耦＝纯手雕图 relief=0 也有真形）。
+      dstT 有则逐格记「类型路主导」（粗级物理扩散的门）。 */
+  const initInto = (dstB: Float32Array, dstH: Float32Array, i: number, lon: number, lat: number, isWater: boolean, relief: ReliefSampler,
+    dstT: Uint8Array | null): void => {
     let b: number;
     if (!isWater) {
       const sl = lon + wA1 * gnoise(lon * fw1, lat * fw1, seed + 101) + wA2 * gnoise(lon * fw2, lat * fw2, seed + 303);
@@ -463,8 +480,9 @@ export function erodeField(inp: ErodeInput): ElevField {
     const hb = noHov ? 0 : elevBilinear(inp.hovGrid, geo, lon, lat);
     let e = b + hb;
     if (!isWater) {
-      const m = Math.max(amp > 0 ? amp * mountainness(e) : 0, Math.min(1, Math.abs(hb) * RELIEF_CARVE_K));
+      const mT = amp > 0 ? amp * mountainness(e) : 0, mC = Math.min(1, Math.abs(hb) * RELIEF_CARVE_K), m = Math.max(mT, mC);
       if (m > 0) e += relief(lon * kmy, lat * kmy, m) * reliefU;
+      if (dstT) dstT[i] = amp > 0 && mT >= mC ? 1 : 0;
     }
     dstB[i] = b; dstH[i] = e;
   };
@@ -476,7 +494,7 @@ export function erodeField(inp: ErodeInput): ElevField {
     for (let c = 0; c < FC; c++) {
       const pc = Math.min(cols - 1, (c / sx) | 0), i = r * FC + c;
       wat[i] = water[pr * cols + pc];
-      initInto(base, h, i, bb.lonMin + (c + 0.5) * fstep, lat, wat[i] === 1, relief);
+      initInto(base, h, i, bb.lonMin + (c + 0.5) * fstep, lat, wat[i] === 1, relief, null);
     }
   }
 
@@ -488,17 +506,24 @@ export function erodeField(inp: ErodeInput): ElevField {
   const cstep = rstep * COARSE_K, CC = Math.ceil(cols * step / cstep - 1e-9), CR = Math.ceil(rows * step / cstep - 1e-9);
   if (CC >= COARSE_MIN && CR >= COARSE_MIN) {
     const nc = CC * CR, hc = new Float32Array(nc), h0 = new Float32Array(nc), bc = new Float32Array(nc), wc = new Uint8Array(nc);
+    const tc = new Uint8Array(nc);
     const reliefC = makeRelief(seed, cstep * kmy);
     for (let r = 0; r < CR; r++) {
       const lat = bb.latMin + (r + 0.5) * cstep, pr = Math.max(0, Math.min(rows - 1, Math.floor((lat - bb.latMin) / step)));
       for (let c = 0; c < CC; c++) {
         const lon = bb.lonMin + (c + 0.5) * cstep, pc = Math.max(0, Math.min(cols - 1, Math.floor((lon - bb.lonMin) / step))), i = r * CC + c;
         wc[i] = water[pr * cols + pc];
-        initInto(bc, hc, i, lon, lat, wc[i] === 1, reliefC);
+        initInto(bc, hc, i, lon, lat, wc[i] === 1, reliefC, tc);
       }
     }
     h0.set(hc);
-    streamPower({ h: hc, wat: wc, FC: CC, FR: CR, fstep: cstep, kmx, kmy, acritKm2 }, COARSE_ITERS, COARSE_DIFF, 0, true);
+    const cKm = cstep * Math.sqrt(kmx * kmy), dPhys = 4 * COARSE_D_KM2 / (cKm * cKm);
+    let dcell: Float64Array | null = null;
+    if (dPhys > COARSE_DIFF && tc.includes(1)) {
+      dcell = new Float64Array(nc);
+      for (let i = 0; i < nc; i++) dcell[i] = tc[i] ? dPhys : COARSE_DIFF;
+    }
+    streamPower({ h: hc, wat: wc, FC: CC, FR: CR, fstep: cstep, kmx, kmy, acritKm2, dcell }, COARSE_ITERS, COARSE_DIFF, 0, true);
     for (let i = 0; i < nc; i++) hc[i] -= h0[i];
     const geoC = { bb, step: cstep, cols: CC, rows: CR };
     for (let r = 0; r < FR; r++) {

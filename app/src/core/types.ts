@@ -4,7 +4,7 @@
 export type WorldModel = "sphere" | "flat";
 export type TerrainMode = "auto" | "plain" | "island" | "sample";
 export type GenStyle = "continent" | "archipelago";
-/** 气候档（meta.climate）：只定雪线基准（constants.CLIMATE），缺键＝出厂雪线且不随纬度 */
+/** 气候档（meta.climate）：定陆地配色、林线与雪线（constants.CLIMATE · render/material.climLook），缺键＝出厂配色与雪线、无林线、不随纬度 */
 export type Climate = "polar" | "boreal" | "temperate" | "subtropical" | "tropical" | "arid";
 export type TerrainId =
   | "plain" | "coast" | "hill" | "forest"
@@ -54,7 +54,7 @@ export interface Meta {
   mapKind?: "tactical";
   outside?: "land";           // 图幅外是陆地：碰到图幅边的水体也按内陆湖定水面，图幅外铺纸色（缺键=海）
   period?: "modern";          // 时代（战术图）：现代解锁雷达等近现代账目；缺键＝古代＝既有图一字不变。⚠ 与 calendar.era（纪元前缀）无关
-  climate?: Climate;          // 气候档：雪线基准，球面图再随纬度在图幅内变化（缺键=出厂 2050 m 不随纬度，旧图观感不变）
+  climate?: Climate;          // 气候档：陆地配色、林线与雪线，球面图再随纬度在图幅内变化（缺键=出厂配色、2050 m 雪线、无林线，旧图观感不变）
   erode?: "base" | "none";    // 侵蚀计算档（core/erode.erodeMode）：缺键＝底图与涂改都侵蚀（旧图逐位不变）；base＝只侵蚀地类底图、高程涂改叠在其上；none＝不侵蚀
   calendar?: CalendarCfg;     // 战术图历法（默认 12 月 × 30 日）
   parent?: TacParent;

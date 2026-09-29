@@ -212,6 +212,11 @@ function ladderDown(x: number, floorM: number): number {
   for (const m of [1, 2, 5, 10]) if (m * b <= x * (1 + 1e-9)) v = m * b;
   return Math.max(floorM, v);
 }
+/** 最细等高距（米）：本图 contourM，缺键或非正＝10——自适应等距的地板 */
+export function contourFloorM(meta: Meta | undefined): number {
+  const v = +((meta || {}).contourM as number);
+  return v > 0 ? v : 10;
+}
 /** 缩放与地势自适应的等高距：m 米、v 抽象单位；任一时刻只有一套线系（换档在跨过判据的那一刻跳一次）。
     法则：地板 contourM（缺省 10）> 上限 高程范围÷CONTOUR_LEVELS > 下限 CONTOUR_PX×坡度₇₅×米/像素，取 1-2-5 阶梯上 ≥ 下限的最小档；
     粗档装不下四级就留细档；下限越过上限（陡坡 / 整幅视角）＝上限向下吸附。stats 为 null（还没有场）按坡度 0.2、范围无穷。
@@ -219,7 +224,7 @@ function ladderDown(x: number, floorM: number): number {
 export interface ContourStep { m: number; v: number }
 export function contourStepFor(degPerPx: number, meta: Meta | undefined, stats: ContourStats | null, prevM?: number): ContourStep {
   const m = meta || {};
-  const floorM = +(m.contourM as number) > 0 ? (m.contourM as number) : 10;
+  const floorM = contourFloorM(m);
   const mPerPx = Math.max(1e-9, degPerPx) * kmPerDeg(m) * 1000;
   const lowM = Math.max(floorM, CONTOUR_PX * (stats ? stats.slope75 : 0.2) * mPerPx);
   const capM = Math.max(floorM, (stats ? stats.rangeM : Infinity) / CONTOUR_LEVELS);

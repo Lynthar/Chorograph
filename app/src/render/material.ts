@@ -7,7 +7,7 @@ import { elevUnitM } from "../core/elev.ts";
 import { tget } from "../core/util.ts";
 import { kmPerDeg } from "../core/geo.ts";
 import { gridStepDeg } from "../core/grid.ts";
-import type { Landform, Meta } from "../core/types.ts";
+import type { Climate, Landform, Meta } from "../core/types.ts";
 
 export interface Material {
   /** 四类材质纹理权重（只进光照法线，不进色阶/海岸判据）：林冠鼓包 / 沙丘波纹 / 山地棱脊 / 沼泽墩洼 */
@@ -30,12 +30,15 @@ const LF_MAT: Record<Landform, Material> = {
   water:    { canopy: 0, dune: 0, ridge: 0,    marsh: 0, rough: 0,    albVar: 0,    rock: 0 }
 };
 
+/** 森林的林冠纹理权重：林线淡出按「林冠权重 / 本值」认森林，改这里两处同变 */
+export const FOREST_CANOPY = 0.85;
+
 /** 复合串 → 材质（生态在地貌基线上修饰；水域基底一律全零——水下画不着地面质感，水面观感另在渲染器水分支） */
 export function materialFor(cell: string): Material {
   const [lf, eco] = parseComposite(cell);
   const b = { ...LF_MAT[lf] };
   if (lf === "water") return b;
-  if (eco === "forest") { b.canopy = 0.85; b.ridge *= 0.5; b.rough *= 0.6; b.albVar = 0.05; b.rock *= 0.5; }
+  if (eco === "forest") { b.canopy = FOREST_CANOPY; b.ridge *= 0.5; b.rough *= 0.6; b.albVar = 0.05; b.rock *= 0.5; }
   if (eco === "grassland") { b.albVar = 0.09; }
   if (eco === "marsh") { b.marsh = 0.75; b.ridge = 0; b.rough = 0.02; b.rock = 0; }
   if (eco === "desert") { b.dune = 0.8; b.ridge *= 0.4; b.rough = 0.05; b.albVar = 0.09; b.rock = 0; }   // albVar 抬档＝沙面明暗斑驳
@@ -83,6 +86,72 @@ export function snowSpec(meta: Meta | undefined): SnowSpec {
 }
 /** 图幅中心处的雪线抽象高程（snowSpec.base 的门面） */
 export function snowEOf(meta: Meta | undefined): number { return snowSpec(meta).base; }
+
+/* —— 气候配色与林线（缺键＝undefined＝两端都走旧路径，逐位不变）——
+   色阶按米：滩带 <180 m → 低地 V₀ → 0.6·林线 V₁ → 林线 V₂ → 林线与雪线中点（高山草甸 A）→ 雪线（岩灰 R）→ 雪线 +700 m 近白；
+   极地无林＝苔原 A 直接到 R；温带沿用 ELEV_RAMP。林线以上手涂森林的染色换成高山草甸色、林冠纹理淡出。 */
+type RGB3 = readonly [number, number, number];
+const CLIM_PAL: Record<Climate, { V?: readonly [RGB3, RGB3, RGB3]; A?: RGB3; R?: RGB3; meadow: RGB3 }> = {
+  polar:       { A: [184, 180, 160], R: [196, 194, 190], meadow: [182, 178, 150] },
+  boreal:      { V: [[96, 138, 100], [124, 146, 108], [146, 150, 116]], A: [170, 160, 128], R: [182, 178, 174], meadow: [170, 164, 120] },
+  temperate:   { meadow: [174, 164, 106] },
+  subtropical: { V: [[96, 164, 70], [146, 180, 88], [178, 168, 100]], A: [172, 142, 96], R: [184, 172, 164], meadow: [176, 164, 104] },
+  tropical:    { V: [[64, 146, 64], [108, 164, 76], [150, 166, 92]], A: [172, 156, 104], R: [180, 172, 166], meadow: [172, 162, 104] },
+  arid:        { V: [[226, 202, 150], [214, 180, 126], [196, 152, 104]], A: [176, 134, 96], R: [184, 168, 156], meadow: [184, 162, 116] }
+};
+/** 气候色阶最多段数（GL uniform 数组长度同此） */
+export const CLIM_STOPS = 8;
+const BEACH_M = 180, TREE_BAND_M = 150, TOP_M = 700;
+/** 无林（极地）的林线抽象高程：远低于任何地面，又不能大到 +带宽后丢精度（smoothstep 两沿相等＝未定义） */
+const NO_TREE_E = -100;
+/** 气候观感：ramp＝[抽象高程, r, g, b(0..1)]×n，n=0＝沿用 ELEV_RAMP；treeE/band＝林线与淡出带宽（抽象）；meadow 为 0..255。
+    球面图的纬度改正与雪线同式（snowSpec 的 lat/refM/unitM）：色阶按 e−Δ 取、林线按 treeE+Δ 判——两端都得这样读。 */
+export interface ClimLook { n: number; ramp: Float32Array; treeE: number; band: number; meadow: RGB3; key: string }
+export function climLook(meta: Meta | undefined): ClimLook | undefined {
+  const m = meta || {}, c = tget(CLIMATE, m.climate as string);
+  if (!c) return undefined;
+  const p = CLIM_PAL[m.climate as Climate], U = elevUnitM(meta), S = c.snowM, T = c.treeM;
+  const st: (readonly number[])[] = [];
+  if (p.A && p.R) {
+    st.push([BEACH_M, ...ELEV_RAMP[0].slice(1)]);
+    if (T == null || !p.V) st.push([BEACH_M, ...p.A]);
+    else st.push([BEACH_M, ...p.V[0]], [0.6 * T, ...p.V[1]], [T, ...p.V[2]], [(T + S) / 2, ...p.A]);
+    st.push([S, ...p.R], [S + TOP_M, ...ELEV_RAMP[ELEV_RAMP.length - 1].slice(1)]);
+  }
+  const ramp = new Float32Array(CLIM_STOPS * 4);
+  st.forEach((s, i) => { ramp[i * 4] = s[0] / U; ramp[i * 4 + 1] = s[1] / 255; ramp[i * 4 + 2] = s[2] / 255; ramp[i * 4 + 3] = s[3] / 255; });
+  return { n: st.length, ramp, treeE: T == null ? NO_TREE_E : T / U, band: TREE_BAND_M / U, meadow: p.meadow, key: `${m.climate}:${U}` };
+}
+/** 气候色阶取色（CPU，0..255；GL 走 climRampGLSL 同式、读同一份 ramp）。dl＝纬度改正：滩带不移（按 e 判），其上按 e−dl 取且不落回滩带——
+    否则宽纬跨球面图的低纬一侧（dl 可达 +0.7）整片低地被刷成滩色 */
+export function climRampColor(L: ClimLook, e0: number, dl = 0): [number, number, number] {
+  const r = L.ramp, n = L.n;
+  if (e0 < r[0]) return [r[1] * 255, r[2] * 255, r[3] * 255];
+  const e = Math.max(r[0], e0 - dl);
+  for (let i = 0; i < n - 1; i++) {
+    const a = i * 4, b = a + 4;
+    if (e < r[b]) {
+      if (!(r[b] > r[a])) return [r[b + 1] * 255, r[b + 2] * 255, r[b + 3] * 255];
+      const t = (e - r[a]) / (r[b] - r[a]);
+      return [(r[a + 1] + (r[b + 1] - r[a + 1]) * t) * 255, (r[a + 2] + (r[b + 2] - r[a + 2]) * t) * 255, (r[a + 3] + (r[b + 3] - r[a + 3]) * t) * 255];
+    }
+  }
+  const z = (n - 1) * 4;
+  return [r[z + 1] * 255, r[z + 2] * 255, r[z + 3] * 255];
+}
+/** climRampColor 的 GLSL 同式：`vec3 climRamp(float e0, float dl)`（uClimRamp / uClimN），返回 0..1 色 */
+export function climRampGLSL(): string {
+  return `vec3 climRamp(float e0,float dl){
+  if(e0<uClimRamp[0].x) return uClimRamp[0].yzw;
+  float e=max(uClimRamp[0].x, e0-dl);
+  for(int i=0;i<${CLIM_STOPS - 1};i++){
+    if(i+1>=uClimN) break;
+    vec4 a=uClimRamp[i], b=uClimRamp[i+1];
+    if(e<b.x) return b.x>a.x ? mix(a.yzw,b.yzw,(e-a.x)/(b.x-a.x)) : b.yzw;
+  }
+  return uClimRamp[uClimN-1].yzw;
+}`;
+}
 
 /* —— 陆地分层设色（抽象高程 → RGB 0..255）——
    段内线性；相邻两档同高程＝一道色阶台阶（滩带→绿）。GL 由 rampGLSL() 生成同式的着色器函数、

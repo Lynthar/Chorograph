@@ -477,10 +477,10 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       <div class="setrow"><label for="sw_climate">气候</label>
         {/* 初值同样落在 option 的 selected 上（见下方 sw_relief 注）；档外/缺键一律「未设定」＝旧图逐位不变 */}
         <select id="sw_climate">
-          <option value="" selected={!climCur}>未设定（雪线 {SNOW_M} m，不随纬度）</option>
-          {CLIMATE_ORDER.map(k => <option key={k} value={k} selected={climCur === k}>{CLIMATE[k].名}（雪线约 {CLIMATE[k].snowM} m）</option>)}
+          <option value="" selected={!climCur}>未设定（出厂配色 · 雪线 {SNOW_M} m · 不随纬度）</option>
+          {CLIMATE_ORDER.map(k => <option key={k} value={k} selected={climCur === k}>{CLIMATE[k].名}（{CLIMATE[k].treeM == null ? "无林" : `林线约 ${CLIMATE[k].treeM} m`} · 雪线约 {CLIMATE[k].snowM} m）</option>)}
         </select>
-        <span class="sub">定雪线基准：球面图再随纬度在图幅内变化（高纬低、低纬高），平面图不随纬度。只动观感，随时可改。</span>
+        <span class="sub">定陆地配色、林线与雪线：林线以上手涂的森林画成高山草甸；球面图再随纬度在图幅内变化（高纬低、低纬高），平面图不随纬度。只动观感，随时可改。</span>
       </div>
       <div class="setrow"><label for="sw_relief">地势起伏</label>
         {/* ⚠ 初值必须落在 option 的 selected 上（同 sw_genstyle / ef_fs 之法）：核心 Preact 只在

@@ -18,6 +18,7 @@ import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
 import { wireInteractions } from "./pointer.ts";
 import { wireOrchestration } from "./orchestrate.ts";
 import { wireViewshed } from "./viewshed.ts";
+import { wireSpots } from "./spots.ts";
 import { startFrameLoop } from "./frame.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -87,6 +88,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
      世界/年份/地形版本/选中/编辑改动 → 依序【同步 ctx.meta → 按需重建网格 → 部队可达性预算】。 */
   wireOrchestration(ctx, host);
   wireViewshed(ctx);   // 视域：落定的规则场 × 当刻部队 → 视线掩膜（shell/viewshed.ts 头注）
+  wireSpots(ctx);      // 标高点：落定的规则场 → Worker 算全场峰表（shell/spots.ts 头注）
   /* 编辑改动 → 自动保存 + 寻路上下文重发（官道格随连线增删重算）。
      meta 直取 w.meta（不靠 ctx.meta 由编排 effect 先同步——batch 冲刷顺序不保证谁先跑）；
      ctx.grid 若同批在重建，编排 effect 的 rebuild 会再发一次最终上下文，此处发的旧网格版本被覆盖。 */

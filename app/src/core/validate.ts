@@ -71,7 +71,7 @@ export function validateWorld(w: unknown): ValidateResult {
   if (meta.worldModel != null && meta.worldModel !== "sphere" && meta.worldModel !== "flat")
     W("meta.worldModel", `未知世界模型 ${JSON.stringify(meta.worldModel)}（按球面处理）`);
   if (meta.climate != null && !tget(CLIMATE, meta.climate as string))
-    W("meta.climate", `未知气候档 ${JSON.stringify(meta.climate)}（按未设定处理：出厂雪线、不随纬度）`);
+    W("meta.climate", `未知气候档 ${JSON.stringify(meta.climate)}（按未设定处理：出厂配色与雪线、无林线、不随纬度）`);
   if (meta.erode != null && !tget(ERODE_MODES, meta.erode as string))
     W("meta.erode", `未知侵蚀计算档 ${JSON.stringify(meta.erode)}（按「底图与涂改」处理）`);
   if (meta.bbox != null) {

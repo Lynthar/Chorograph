@@ -17,6 +17,7 @@ import type { GeoMapping, GeoScan } from "../core/geojson.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { ElevField } from "../core/elev.ts";
+import type { SpotTable } from "../core/spots.ts";
 import type { ErodeMode } from "../core/erode.ts";
 import { noMasks, type VisMasks } from "../core/viewshed.ts";
 import type { SightRes } from "../worker/routeProto.ts";
@@ -151,6 +152,8 @@ export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
 /** 落定的规则场（host 独写）：门关＝粗格、门开＝工作档落地后的那份；演算中为 null。
     规则消费者只认它——ctx.ruleField 在等待窗里是过渡合成，视域算在上面就是「落笔即变、落地又变」。 */
 export const ruleFieldSig = signal<ElevField | null>(null);
+/** 标高点峰表（shell/spots 独写）：落定规则场的全场峰表，演算中沿用上一份；换图清空 */
+export const spotTableSig = signal<SpotTable | null>(null);
 
 /* —— 弹层：帮助 / 设置（v0.14 .ovl；设置分 app=改当前世界参数 / create=新建地图）—— */
 export const helpOpenSig = signal(false);
@@ -414,6 +417,7 @@ export function setWorldState(w: World): void {
     cancelOpDraw(); clearOpSel();
     unitLegsSig.value = new Map();
     visMaskSig.value = noMasks(); detectSig.value = new Map(); visFailSig.value = false;
+    spotTableSig.value = null;
     worldSig.value = w;
     yearSig.value = yearRangeOf(w, yearSig.peek()).year;
   });

@@ -10,7 +10,8 @@ import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt,
 import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, type Grid } from "../src/core/grid.ts";
 import { erodeGate, erodeInput } from "../src/core/erode.ts";
-import { peakSpots, waterSpots } from "../src/core/spots.ts";
+import { peakTable, pickPeaks, waterSpots, type PickOpts } from "../src/core/spots.ts";
+import { handleRouteMsg } from "../src/worker/routeProto.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
 import { ELEV } from "../src/core/constants.ts";
@@ -29,7 +30,7 @@ import { MAX_RUN_DIM, eachPaintCenter, paintCellSet, paintDims, paintStep, resam
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
-import { ELEV_RAMP, FX, MICRO_F0, NRM0, SNOW_LAT_M, decoGate, exagFor, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, shadeGain, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
+import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, decoGate, exagFor, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, shadeGain, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
 import { terrainOpts, contourStepOf } from "../src/render/renderer.ts";
 import { CLIMATE, CLIMATE_ORDER, allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/ui/stamps.ts";
@@ -1671,7 +1672,7 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     assert.strictEqual(a.dpr, 1); assert.strictEqual(terrainOpts(meta, 0.001, {}, 1, "shaded", 2.5, [800, 600], 0.05).dpr, 2.5, "设备像素比原样进渲染选项（等高线像素量据此锚 CSS 像素）");
     assert.deepStrictEqual(a.px, [800, 600], "可见区物理像素原样进渲染选项（画布可大于可见区，渲染器只画这一块）");
     assert.strictEqual(a.gain, shadeGain(meta, 0.001) * 1.5, "增益＝shadeGain × 本机地形立体感");
-    assert.strictEqual(a.paper, paperOf(meta)); assert.deepStrictEqual(a.snow, snowSpec(meta));
+    assert.strictEqual(a.paper, paperOf(meta)); assert.deepStrictEqual(a.snow, snowSpec(meta)); assert.deepStrictEqual(a.clim, climLook(meta));
     assert.strictEqual(a.cStep, 0.05, "等距原样进渲染选项（调用方经 contourStepOf 取档）");
     assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded", 1, [800, 600], 0.05).wrap, false, "平面世界不环绕");
   });
@@ -2209,8 +2210,40 @@ describe("渲染材质表", () => {
     assert.strictEqual(snowSpec({ climate: "temperate", bbox: bb, worldModel: "flat" }).lat, false, "平面图的纬度不是气候纬度");
     assert.strictEqual(snowSpec({ climate: "polar", bbox: bb, elevUnitM: 1000 }).base, 0.3, "档值经 elevUnitM 折算");
     for (const k of ["__proto__", "toString", "热带", ""]) assert.deepStrictEqual(snowSpec({ climate: k as never, bbox: bb }), snowSpec({ bbox: bb }), `档外键 ${k} 当没设`);
-    for (let i = 1; i < CLIMATE_ORDER.length; i++) assert.ok(CLIMATE[CLIMATE_ORDER[i]].snowM > CLIMATE[CLIMATE_ORDER[i - 1]].snowM, "档序＝雪线升序");
-    assert.strictEqual(snowEOf({ climate: "boreal", bbox: bb }), 1200 / 2000, "snowEOf 是 snowSpec.base 的门面");
+    for (const k of CLIMATE_ORDER) { const t = CLIMATE[k].treeM; assert.ok(t == null || (t > 0 && t < CLIMATE[k].snowM), `${k}：林线须低于雪线`); }
+    assert.strictEqual(CLIMATE.polar.treeM, null, "极地无林");
+    assert.strictEqual(snowEOf({ climate: "boreal", bbox: bb }), 1400 / 2000, "snowEOf 是 snowSpec.base 的门面");
+  });
+  it("气候配色与林线：未设定与档外键不生效；温带沿用出厂色阶；各档色阶按米定、逐段线性、经 elevUnitM 折算", () => {
+    assert.strictEqual(climLook(undefined), undefined, "未设定＝两端走旧路径");
+    for (const k of ["__proto__", "toString", "热带", ""]) assert.strictEqual(climLook({ climate: k as never }), undefined, `档外键 ${k} 当没设`);
+    const tem = climLook({ climate: "temperate" })!;
+    assert.strictEqual(tem.n, 0, "温带沿用 ELEV_RAMP，不另立色阶");
+    assert.strictEqual(tem.treeE, 2200 / 2000);
+    assert.strictEqual(materialFor("hill/forest").canopy, FOREST_CANOPY, "林线淡出按林冠权重认森林");
+    assert.ok(climLook({ climate: "polar" })!.treeE < -1, "极地无林：林线压在一切地面之下");
+    assert.strictEqual(climLook({ climate: "boreal", elevUnitM: 1000 })!.treeE, 0.7, "林线经 elevUnitM 折算");
+    for (const k of CLIMATE_ORDER) {
+      const L = climLook({ climate: k })!;
+      if (k === "temperate") continue;
+      assert.ok(L.n >= 3 && L.n <= CLIM_STOPS, `${k}：段数 ${L.n}`);
+      for (let i = 1; i < L.n; i++) assert.ok(L.ramp[i * 4] >= L.ramp[(i - 1) * 4], `${k}：色阶高程须不降`);
+      assert.ok(Math.abs(L.ramp[0] - 180 / 2000) < 1e-7, `${k}：滩带到 180 m`);
+      assert.ok(Math.abs(L.ramp[(L.n - 2) * 4] - CLIMATE[k].snowM / 2000) < 1e-6, `${k}：岩灰落在雪线`);
+      const px = (i: number): number[] => [1, 2, 3].map(j => L.ramp[i * 4 + j] * 255);
+      for (let i = 1; i < L.n; i++) if (L.ramp[i * 4] > L.ramp[(i - 1) * 4]) {
+        const lo = L.ramp[(i - 1) * 4], hi = L.ramp[i * 4], mid = climRampColor(L, (lo + hi) / 2);
+        mid.forEach((v, j) => assert.ok(Math.abs(v - (px(i - 1)[j] + px(i)[j]) / 2) < 1e-3, `${k}：段 ${i} 中点线性`));
+      }
+      assert.deepStrictEqual(climRampColor(L, -1), px(0), "低于首档取首档");
+      assert.deepStrictEqual(climRampColor(L, 99), px(L.n - 1), "高于末档取末档");
+    }
+    const bor = climLook({ climate: "boreal" })!, b0 = bor.ramp[0];
+    assert.deepStrictEqual(climRampColor(bor, b0 + 0.01, 0.7), climRampColor(bor, b0), "纬度改正不把滩带上方的低地刷回滩色（宽纬跨球面图的低纬一侧）");
+    assert.deepStrictEqual(climRampColor(bor, b0 - 0.01, 0.7), climRampColor(bor, b0 - 0.01), "滩带本身不随纬度移");
+    assert.deepStrictEqual(climRampColor(bor, 0.5, -0.125), climRampColor(bor, 0.625), "改正为负＝按更高处取色（高纬一侧气候带下移）");
+    const g = climRampGLSL();
+    assert.ok(g.startsWith("vec3 climRamp(float e0,float dl){") && g.includes(`i<${CLIM_STOPS - 1}`) && g.includes("max(uClimRamp[0].x, e0-dl)"), "GLSL 同式（含滩带不移）、循环上限＝段数上限");
   });
   it("气候档随图：blankWorld 只在定了才写 meta.climate、战术图自母图继承、校验对档外值只警告不拒", () => {
     const bb = { lonMin: 100, lonMax: 110, latMin: 30, latMax: 40 };
@@ -2237,36 +2270,59 @@ describe("自定义印章池 poolInsert", () => {
   });
 });
 
-describe("标高点 core/spots：局部高点按突出度、水面按连通块", () => {
+describe("标高点 core/spots：真山顶按突出度、水面按连通块", () => {
   const cols = 60, rows = 40, step = 0.001, bb = { lonMin: 100, lonMax: 100.06, latMin: 30, latMax: 30.04 };
   const cells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => "plain"));
-  for (let r = 10; r < 16; r++) for (let c = 40; c < 48; c++) cells[r][c] = "water";   // 内陆湖 8×6
-  for (let r = 0; r < 4; r++) for (let c = 0; c < 10; c++) cells[r][c] = "water";       // 贴图幅边的海
+  const lake = (c0: number, r0: number, w: number, h: number): void => { for (let r = r0; r < r0 + h; r++) for (let c = c0; c < c0 + w; c++) cells[r][c] = "water"; };
+  lake(40, 10, 8, 6); lake(52, 24, 3, 2); lake(4, 30, 3, 2);   // 两湖同值、一湖异值
+  lake(0, 0, 10, 4);                                            // 贴图幅边的海
   const grid: Grid = { bb, step, cols, rows, cells };
   const wsurf = new Float32Array(cols * rows);
-  for (let r = 10; r < 16; r++) for (let c = 40; c < 48; c++) wsurf[r * cols + c] = 0.15;
+  const setWs = (c0: number, r0: number, w: number, h: number, v: number): void => { for (let r = r0; r < r0 + h; r++) for (let c = c0; c < c0 + w; c++) wsurf[r * cols + c] = v; };
+  setWs(40, 10, 8, 6, 0.15); setWs(52, 24, 3, 2, 0.15); setWs(4, 30, 3, 2, 0.2);
   const data = new Float32Array(cols * rows).fill(0.16);
-  const bump = (cx: number, cy: number, h: number, rad: number): void => {
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { const d = Math.hypot(c - cx, r - cy); if (d < rad) data[r * cols + c] += h * (1 - d / rad); }
+  const cone = (cx: number, cy: number, h: number, rad: number): void => {
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { const d = Math.hypot(c - cx, r - cy); if (d < rad) data[r * cols + c] = Math.max(data[r * cols + c], 0.16 + h * (1 - d / rad)); }
   };
-  bump(15, 25, 0.02, 4);      // 40 m 的山包
-  bump(30, 30, 0.0015, 3);    // 3 m 的埂
-  for (let r = 10; r < 16; r++) for (let c = 40; c < 48; c++) data[r * cols + c] = 0;      // 湖床在水面之下
+  cone(12, 20, 0.14, 8); cone(30, 20, 0.09, 8);                         // A 顶 0.30、B 顶 0.25
+  for (let c = 12; c <= 30; c++) data[20 * cols + c] = Math.max(data[20 * cols + c], 0.2);   // 两峰间一道 0.2 的梁＝B 的关键鞍部
+  for (let r = 33; r < 36; r++) for (let c = 20; c < 24; c++) data[r * cols + c] = 0.18;     // 平台
+  for (let r = 26; r < rows; r++) for (let c = 50; c < cols; c++) data[r * cols + c] = Math.max(data[r * cols + c], 0.16 + (c - 50) * 0.01);   // 贴东边的坡
+  for (const [c0, r0, w, h] of [[40, 10, 8, 6], [52, 24, 3, 2], [4, 30, 3, 2]]) for (let r = r0; r < r0 + h; r++) for (let c = c0; c < c0 + w; c++) data[r * cols + c] = 0;   // 湖床
   for (let r = 0; r < 4; r++) for (let c = 0; c < 10; c++) data[r * cols + c] = -0.3;
   const f: SpotField = { bb, step, cols, rows, data, shadow: null };
-  it("5 m 突出度只留 40 m 的山包；1 m 时 3 m 的埂也出；湖岸平地不因湖床更低而成「高点」；数字＝制图面高程", () => {
-    const a = peakSpots(f, grid, wsurf, 5, 5 / 2000);
-    assert.deepStrictEqual(a.map(s => [s.kind, +s.lon.toFixed(4), +s.lat.toFixed(4)]), [["peak", 100.0155, 30.0255]]);
-    assert.strictEqual(a[0].e, elevSmooth(data, f, a[0].lon, a[0].lat));
-    assert.ok(a[0].e * 2000 > 340 && a[0].e * 2000 <= 360, `顶点制图面应约 350 m，实得 ${a[0].e * 2000}`);
-    const b = peakSpots(f, grid, wsurf, 5, 1 / 2000);
-    assert.deepStrictEqual(b.map(s => [+s.lon.toFixed(4), +s.lat.toFixed(4)]).sort(), [[100.0155, 30.0255], [100.0305, 30.0305]]);
-    assert.deepStrictEqual(peakSpots({ ...f, data: new Float32Array(cols * rows).fill(0.2) }, grid, wsurf, 5, 1 / 2000), [], "全平＝无高点");
+  const vf = { ...f, wsurf, gstep: step, gcols: cols, grows: rows };
+  const at = (i: number): string => `${i % cols},${Math.floor(i / cols)}`;
+  it("峰表只收真山顶：最高者突出度无穷、矮峰＝顶高减关键鞍部；平台一座、贴边的坡与湖岸平地不成峰", () => {
+    const t = peakTable(vf);
+    assert.deepStrictEqual([...t.idx].map(at), ["12,20", "30,20", "20,33"]);
+    assert.strictEqual(t.prom[0], Infinity);
+    assert.ok(Math.abs(t.prom[1] - 0.05) < 1e-6, `B 突出度应为 0.25−0.2，实得 ${t.prom[1]}`);
+    assert.ok(Math.abs(t.prom[2] - 0.02) < 1e-6, `平台突出度应为 0.18−0.16，实得 ${t.prom[2]}`);
+    assert.deepStrictEqual(peakTable({ ...vf, data: new Float32Array(cols * rows).fill(0.2) }).idx.length, 0, "全平＝无峰");
   });
-  it("内陆水体在离岸最远处标一枚水面；贴图幅边的海（水面 0）不标", () => {
-    const w = waterSpots(grid, wsurf);
-    assert.deepStrictEqual(w.map(s => [s.kind, Math.round(s.e * 2000)]), [["water", 300]]);
+  it("选点：突出度门槛、海拔下限、屏幕窗与地面间距各自能把矮峰筛掉；数字＝制图面高程", () => {
+    const t = peakTable(vf), key = (s: { lon: number; lat: number }[]): string[] => s.map(p => `${p.lon.toFixed(4)},${p.lat.toFixed(4)}`);
+    const P = (minProm: number, minE: number, win: number, sepC: number, sepR: number, lineM = 0): PickOpts => ({ minProm, minE, win, sepC, sepR, lineM, unitM: 2000 });
+    const all = pickPeaks(t, f, P(0.01, 0, 5, 0, 0));
+    assert.deepStrictEqual(key(all), ["100.0125,30.0205", "100.0305,30.0205", "100.0205,30.0335"]);
+    assert.strictEqual(all[0].e, elevSmooth(data, f, all[0].lon, all[0].lat));
+    assert.strictEqual(pickPeaks(t, f, P(0.03, 0, 5, 0, 0)).length, 2, "平台 0.02 不到门槛");
+    assert.strictEqual(pickPeaks(t, f, P(0.01, 0.2, 5, 0, 0)).length, 2, "平台低于海拔下限");
+    assert.deepStrictEqual(key(pickPeaks(t, f, P(0.03, 0, 20, 0, 0))), key(all.slice(0, 1)), "B 距 A 18 格＜半窗 20＝只留更显著的 A");
+    assert.deepStrictEqual(key(pickPeaks(t, f, P(0.03, 0, 5, 19, 19))), key(all.slice(0, 1)), "地面间距椭圆罩住 B");
+    assert.strictEqual(pickPeaks(t, f, P(0.03, 0, 5, 17, 17)).length, 2, "间距不足 18 格＝两座都标");
+    const eA = Math.round(all[0].e * 2000);
+    assert.deepStrictEqual(key(pickPeaks(t, f, P(0.03, 0, 20, 0, 0, eA))), key(all.slice(1, 2)), "A 的数字恰在等高线上＝不标，且不再压住 B");
+    assert.strictEqual(pickPeaks(t, f, P(0.03, 0, 20, 0, 0, eA + 1)).length, 1, "不在线上照标");
+  });
+  it("水面：连通块一块一枚、在湖心；海不标；同值且相近只标大的，异值或相远都标", () => {
+    const km = { kmx: 100, kmy: 100 };   // 每格 0.1 km：两块同值湖的标点相距 1～2 km
+    const w = waterSpots(grid, wsurf, km, 0);
+    assert.deepStrictEqual(w.map(s => Math.round(s.e * 2000)), [300, 300, 400], "按块大小降序；贴图幅边的海（水面 0）不标");
     assert.ok(w[0].lon > 100.042 && w[0].lon < 100.046 && w[0].lat > 30.012 && w[0].lat < 30.014, `应在湖心一带，实得 ${w[0].lon},${w[0].lat}`);
+    assert.deepStrictEqual(waterSpots(grid, wsurf, km, 2).map(s => Math.round(s.e * 2000)), [300, 400], "同值 2 km 内只标大湖，异值照标");
+    assert.deepStrictEqual(waterSpots(grid, wsurf, km, 1).map(s => Math.round(s.e * 2000)), [300, 300, 400], "同值但相距超过合并距离＝都标");
   });
 });
 
@@ -2937,25 +2993,12 @@ describe("历法解析覆盖创建器承诺的值域（月 ≤999、日 ≤9999�
   });
 });
 
-describe("标高点：只评估可见矩形 + 粗块滑窗，结果与整场逐格评估一致", () => {
-  const cols = 96, rows = 64, step = 0.001, bb = { lonMin: 100, lonMax: 100.096, latMin: 30, latMax: 30.064 };
-  const cells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => "plain"));
-  const grid: Grid = { bb, step, cols, rows, cells };
-  const wsurf = new Float32Array(cols * rows);
-  const data = new Float32Array(cols * rows).fill(0.16);
-  const bump = (cx: number, cy: number, h: number, rad: number): void => {
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { const d = Math.hypot(c - cx, r - cy); if (d < rad) data[r * cols + c] += h * (1 - d / rad); }
-  };
-  bump(20, 20, 0.05, 6); bump(70, 40, 0.03, 5); bump(50, 10, 0.02, 4);
-  const f: SpotField = { bb, step, cols, rows, data, shadow: null };
-  const key = (s: { lon: number; lat: number }[]): string[] => s.map(p => `${p.lon.toFixed(4)},${p.lat.toFixed(4)}`).sort();
-  it("整场 k=1 与 k=2/4 找到同一组山顶；矩形只出矩形内的、且与整场评估同一批", () => {
-    const all = peakSpots(f, grid, wsurf, 16, 5 / 2000);
-    assert.strictEqual(all.length, 3);
-    for (const k of [2, 4]) assert.deepStrictEqual(key(peakSpots(f, grid, wsurf, 16, 5 / 2000, undefined, k)), key(all), `k=${k}`);
-    const left = peakSpots(f, grid, wsurf, 16, 5 / 2000, { c0: 0, r0: 0, c1: 40, r1: 64 }, 2);
-    assert.deepStrictEqual(key(left), key(all.filter(p => p.lon < 100.04)), "左半幅只出 (20,20) 那座");
-    assert.deepStrictEqual(peakSpots(f, grid, wsurf, 16, 5 / 2000, { c0: 30, r0: 30, c1: 45, r1: 45 }, 2), [], "矩形里没有山顶＝空");
-    assert.deepStrictEqual(peakSpots(f, grid, wsurf, 16, 5 / 2000, { c0: 50, r0: 10, c1: 40, r1: 5 }), [], "空矩形＝空");
+describe("标高点 Worker 协议", () => {
+  it("peaks 单：未推规则场＝null；推后与直调同", () => {
+    const cols = 12, rows = 10, step = 0.001, bb = { lonMin: 100, lonMax: 100.012, latMin: 30, latMax: 30.01 };
+    const data = new Float32Array(cols * rows).fill(0.16); data[5 * cols + 6] = 0.3;
+    const field = { bb, step, cols, rows, data, wsurf: new Float32Array(cols * rows), gstep: step, gcols: cols, grows: rows, unitM: 2000, kmx: 100, kmy: 100, curvKm: 0 };
+    assert.deepStrictEqual(handleRouteMsg({}, { t: "peaks", id: 1 }), { t: "peaks", id: 1, res: null });
+    assert.deepStrictEqual(handleRouteMsg({ vfield: field }, { t: "peaks", id: 2 }), { t: "peaks", id: 2, res: peakTable(field) });
   });
 });

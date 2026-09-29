@@ -142,7 +142,7 @@ export interface BlankWorldSpec {
   vault?: string;
   calendar?: CalendarCfg;   // 纪年历法：缺省不落盘（=custom SE 12×30）；earth/自定义纪元才写 meta
   relief?: number;          // 程序化地势起伏幅度 0..1：>0 才写 meta（缺省=无，旧图渲染不变）
-  climate?: Climate;        // 气候档（雪线基准）：定了才写 meta（缺省＝出厂雪线，不随纬度）
+  climate?: Climate;        // 气候档（配色、林线与雪线）：定了才写 meta（缺省＝出厂配色与雪线，不随纬度）
   contourM?: number;        // 最细等高距 米：>0 才写 meta（缺省不落盘＝10m）
 }
 
