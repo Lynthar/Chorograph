@@ -13,6 +13,7 @@ import type { Decor, Edge, Faction, Unit, World, WorldNode } from "../core/types
 import { detectedBy, type VisMask } from "../core/viewshed.ts";
 import type { SightRes } from "../worker/routeProto.ts";
 import { clearOpSel, readOnlySig, deleteDecorAt, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, routePtsSig, routeResSig, selectOp, selDecor, selEdge, selFaction, selMulti, selMultiDecor, selNode, selSig, selUnit, setMode, showToast, noteFormWarn, tacReqSig, unitLegsSig, visMaskSig, detectSig, visFailSig, worldSig, yearSig } from "./state.ts";
+import { inFrame, mapFrame } from "../core/frame.ts";
 import { deleteUnitWaypoint, removeDecor, removeNode, removeUnit, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus } from "./editops.ts";
 import { NodeForm, TacErodeSelect, readTacErode } from "./NodeForm.tsx";
 import { EdgeForm } from "./EdgeForm.tsx";
@@ -294,7 +295,10 @@ function TrackList({ u, editable }: { u: Unit; editable: boolean }) {
       {track.length === 0 && <div class="sub">（尚无航点——拖动部队即记录{tac ? "当日" : "当年"}位置）</div>}
       {track.map((q, i) => {
         const L = legs.find(g => g.i === i);
-        const setPt = (lon: number, lat: number) => { mutateWorld(w => { setUnitWaypointAt(w, u.id, i, lon, lat); }); };   // 行内编辑按行下标（同刻两行时按时刻会改到首行）
+        const setPt = (lon: number, lat: number) => {   // 行内编辑按行下标（同刻两行时按时刻会改到首行）
+          if (!inFrame(mapFrame(world.meta), lon, lat)) noteFormWarn("航点坐标在图幅外　已移到图廓边上");   // setUnitWaypointAt 会钳进图幅
+          mutateWorld(w => { setUnitWaypointAt(w, u.id, i, lon, lat); });
+        };
         return (
           <div key={i} class="kv">
             {/* .time＝这一条 .link 确实把时间轴拨到该时刻,是金的正当用处（其余 .link 已退回墨色） */}

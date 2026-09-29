@@ -10,6 +10,7 @@ import { ARC_DEG, EVENT_TMPL, EVENT_TYPES, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE
 import { calOf, eraPh, eraTy, fmtWhenForm, fmtWhenRange } from "../core/calendar.ts";
 import { isModern, nodeEyeM } from "../core/units.ts";
 import { deleteNodeAt, inspEditSig, isTacSig, modeSig, mutateWorld, noteFormWarn, opDrawSig, parseWhenInput, selectOp, selSig, setMode, showToast, startOpDraw, tacReqSig, warnNumInput, worldSig, yearSig } from "./state.ts";
+import { inFrame, mapFrame } from "../core/frame.ts";
 import { addEventNear, addOwner, applyNodeForm, changeNodeType, draftOfRange, moveNode, removeOwner, updateOwner, type NodeRangeDraft } from "./editops.ts";
 import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
 import { ERODE_MODES, erodeMode, type ErodeMode } from "../core/erode.ts";
@@ -151,6 +152,8 @@ export function NodeForm({ n }: { n: WorldNode }) {
     const lonRaw = (val("ef_lon") ?? "").trim(), latRaw = (val("ef_lat") ?? "").trim();
     const lon = parseFloat(lonRaw), lat = parseFloat(latRaw);
     const coordSkipped = (lonRaw !== "" || latRaw !== "") && !(isFinite(lon) && isFinite(lat));
+    if (!coordSkipped && isFinite(lon) && isFinite(lat) && !inFrame(mapFrame(world.meta), lon, lat))
+      noteFormWarn("坐标在图幅外　已移到图廓边上");   // moveNode 会钳进图幅，键入的数不能静默变
     const ranges: NodeRangeDraft[] | undefined = sight
       ? rows.map(r => ({ 名称: val("ef_rgn" + r.k) ?? "", km: val("ef_rgk" + r.k) ?? "", fire: r.fire, arcDeg: val("ef_rga" + r.k) ?? "" }))
       : undefined;

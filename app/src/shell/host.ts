@@ -9,7 +9,8 @@ import { terrMetaKey } from "../ui/history.ts";
 import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { ShellCtx } from "./ctx.ts";
-import { viewCosK, type Camera } from "../core/projection.ts";
+import { clampView, viewCosK, type Camera } from "../core/projection.ts";
+import { frameView } from "../core/frame.ts";
 import type { BBox, HeightOverride, TerrainOverride, World } from "../core/types.ts";
 
 export interface Host {
@@ -25,6 +26,8 @@ export interface Host {
   cosk(): number;
   /** 当前帧相机（投影/拾取共用参数包） */
   cam(): Camera;
+  /** 写相机的唯一入口：clampView（坏值与球面折回）→ 图页取景（core/frame.frameView）；缺 degPerPx＝不改缩放 */
+  setView(v: { lon0: number; lat0: number; degPerPx?: number }): void;
   /** 重建地形网格与高程场并上传渲染器（无世界=程序化兜底参数） */
   rebuild(): void;
   /** 年份/换图/地形版本变化时才重建（builtFor 去重键） */
@@ -52,6 +55,9 @@ export function createHost(ctx: ShellCtx): Host {
       canvas.style.width = ov.style.width = `${W / dpr}px`;
       canvas.style.height = ov.style.height = `${H / dpr}px`;
     }
+    /* 可见区变了取景就变（检查器滑开后图廓不许因视口变窄而越界）。开图前不钳：ctx.meta 还是占位图幅，
+       深链写进 ctx.view 的坐标会被拉到占位图幅上，等 setWorld 按真图幅取景 */
+    if (worldSig.peek()) setView(ctx.view);
     /* 立即同步补画：ResizeObserver 回调跑在当帧 rAF 之后——重分配后的空画布若等下一帧才画，空白帧会先被合成上屏；
        没重分配时取景也已随可见区变，同帧画上免得地图慢一拍才归中。 */
     if (ctx.repaint) ctx.repaint();
@@ -329,5 +335,11 @@ export function createHost(ctx: ShellCtx): Host {
     const [w, h] = cssSize();
     return { lon0: ctx.view.lon0, lat0: ctx.view.lat0, degPerPx: ctx.view.degPerPx, w, h, flat: ctx.meta.worldModel === "flat" };
   }
-  return { resize, cssSize, pxSize, viewBB, cosk, cam, rebuild, rebuildIfNeeded };
+  function setView(v: { lon0: number; lat0: number; degPerPx?: number }): void {
+    const [w, h] = cssSize();
+    const degPerPx = v.degPerPx ?? ctx.view.degPerPx;
+    const c = frameView({ ...clampView(v, ctx.meta), degPerPx }, ctx.meta, w, h);
+    ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = degPerPx;
+  }
+  return { resize, cssSize, pxSize, viewBB, cosk, cam, setView, rebuild, rebuildIfNeeded };
 }

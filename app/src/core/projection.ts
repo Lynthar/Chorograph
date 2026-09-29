@@ -48,6 +48,9 @@ export function projectSeq(cam: Camera, arr: ({ lon: number; lat: number } | [nu
   return out;
 }
 
+/** 球面视中心纬度上限：越近极点 cos 越小，经向被压成一条线 */
+export const VIEW_LAT_MAX = 85;
+
 /* 视角约束：球面=纬度限±85°+经度环绕；平面=限制在世界范围附近（有边界）。
    纯函数版：返回新的 lon0/lat0 与本次环绕产生的经度平移量 wrapShift
   （旧实现在拖拽中用它同步拖拽原点，避免跳变——由调用方处理）。 */
@@ -65,7 +68,7 @@ export function clampView(
     lat0 = Math.max(bb.latMin - sy, Math.min(bb.latMax + sy, lat0));
     return { lon0, lat0, wrapShift: 0 };
   }
-  lat0 = Math.max(-85, Math.min(85, lat0));
+  lat0 = Math.max(-VIEW_LAT_MAX, Math.min(VIEW_LAT_MAX, lat0));
   let s = 0;
   if (Math.abs(lon0) > 1e9) lon0 = 0;   // 亿度开外＝坏档：归零重来。旧 while±360 对其线性冻页（3.6e10≈亿次循环）甚至浮点不动点死循环（1e300-360===1e300），wrapShift 也不携带天文数
   else if (lon0 >= 180 || lon0 < -180) {

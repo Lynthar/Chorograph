@@ -197,9 +197,11 @@ export function rampGLSL(): string {
 }`;
 }
 
-/** 图幅外是否铺纸色：战术图恒铺（战场四周不该是汪洋），战略图看 meta.outside＝内陆图声明。
-    ⚠ 与 core/elev 的海/湖判据同一个 meta.outside，两处措辞须一致——一处说图幅外是陆、
-    另一处仍把边缘水体当海，就是「岸上铺着纸、湖却沉在海平面」。 */
+/** 纸色：图廓外的纸与出图垫纸（GLSL 与 tokens.css 的 canvas-wrap 底色各留一份同值字面量） */
+export const PAPER = "#d9d2c0";
+
+/** 地形画布的纸模式：画布上图幅外铺纸色、开小水塘（战术图恒开，战略图看 meta.outside＝内陆图声明）。
+    屏上看得见的图廓外纸由叠加层一律铺上（overlay 的 drawMargin），与本判据无关。 */
 export function paperOf(meta: Meta | undefined): boolean {
   const m = meta || {};
   return m.mapKind === "tactical" || m.outside === "land";

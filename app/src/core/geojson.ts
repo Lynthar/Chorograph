@@ -3,6 +3,7 @@
    只做本地转换——外部历史地理数据多禁再分发，一个字节都不进本仓库。 */
 import { NODE_STYLE } from "./constants.ts";
 import { paintDims } from "./territory.ts";
+import { inFrame, type Frame } from "./frame.ts";
 import { tget } from "./util.ts";
 import type { Pt } from "./geometry.ts";
 import type { BBox, Edge, Faction, PaintLayer, PaintRuns, WorldNode } from "./types.ts";
@@ -398,7 +399,7 @@ export function rasterizePolys(polys: Pt[][][], bb: BBox, pd: number, caps: GeoC
 /* —— 转换 —— */
 
 export interface GeoConvertOpts {
-  bbox: BBox;                            // 目标图范围（涂域栅格与其同格）
+  frame: Frame;                         // 目标图幅（core/frame.mapFrame）：涂域栅格与其同格，图外的点与整条在外的线不导入
   pd: number;                            // 涂域格边＝地形格边 gridStepDeg(meta)
   palette: string[];                     // 新派系配色（取模轮用）
   existingIds: Set<string>;              // 已占用的对象 id：并入时防撞
@@ -457,6 +458,9 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
     return t;
   };
   const tol = map.simplify ? opts.pd * 0.5 : 0;
+  /* 图幅外的东西导进来也被纸盖住、点不到：点在外就丢，线只要有一个顶点在图里就留（跨出图廓的那段由遮罩裁掉） */
+  let outPts = 0, outLines = 0;
+  const lineIn = (pts: Pt[]): boolean => pts.some(p => inFrame(opts.frame, p[0], p[1]));
   const wantPaint = map.polyAs !== "outline", wantOutline = map.polyAs !== "paint";
 
   /* 涂域按「派系名 × 起讫」分桶：CHGIS 那类沿革数据一族政区各有起讫，合成一层就把沿革抹平了 */
@@ -470,6 +474,7 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
     if (f.kind === "point") {
       const type = map.type ? guessNodeType(f.props[map.type], map.typeDefault) : map.typeDefault;
       for (const p of f.pts) {
+        if (!inFrame(opts.frame, p[0], p[1])) { outPts++; continue; }
         const n: WorldNode = { id: uid("gn"), lon: p[0], lat: p[1], type, ...t };
         if (nm) n.名称 = nm;
         if (字段) n.字段 = { ...字段 };
@@ -479,6 +484,7 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
       for (const l of f.lines) {
         const pts = simplifyLine(l, tol);
         if (pts.length > opts.caps.linePts) { longLines++; continue; }
+        if (!lineIn(pts)) { outLines++; continue; }
         const e: Edge = { type: map.lineType, pts: pts.map(p => [p[0], p[1]] as [number, number]), ...t };
         if (nm) e.名称 = nm;
         if (字段) e.字段 = { ...字段 };
@@ -488,6 +494,7 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
       if (wantOutline) for (const rings of f.polys) for (const r of rings) {
         const pts = simplifyLine(r, tol);
         if (pts.length < 2 || pts.length > opts.caps.linePts) { if (pts.length > opts.caps.linePts) longLines++; continue; }
+        if (!lineIn(pts)) { outLines++; continue; }
         const e: Edge = { type: map.outlineType, pts: pts.map(p => [p[0], p[1]] as [number, number]), ...t };
         if (nm) e.名称 = nm;
         res.edges.push(e);
@@ -505,7 +512,7 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
   /* 栅格化：按派系归拢分层，层数撞闸就并进最后一层——宁可少几段沿革，也不让一份档生出上千层 */
   const byFaction = new Map<string, { name: string; layers: PaintLayer[]; dropped: number }>();
   let partial = 0;
-  const { cols, rows } = paintDims(opts.bbox, opts.pd);
+  const { cols, rows } = paintDims(opts.frame, opts.pd);
   const tooBig = cols * rows > opts.caps.cells;
   if (tooBig && buckets.size) res.notes.push(`目标地图的涂域网格 ${cols}×${rows} 超出可栅格化上限，面已改为只落边界线`);
   for (const b of buckets.values()) {
@@ -514,7 +521,7 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
     byFaction.set(b.name, g);
     if (g.layers.length >= opts.caps.layers) { g.dropped++; continue; }
     const cut = { hit: false };
-    const runs = rasterizePolys(b.polys, opts.bbox, opts.pd, opts.caps, cut);
+    const runs = rasterizePolys(b.polys, opts.frame, opts.pd, opts.caps, cut);
     if (cut.hit) partial++;
     if (!runs) continue;
     const L: PaintLayer = { runs };
@@ -525,7 +532,7 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
   if (tooBig && !wantOutline) {   // 上面那轮没画过边界才补，否则每个环会落两条重线
     for (const b of buckets.values()) for (const rings of b.polys) for (const r of rings) {
       const pts = simplifyLine(r, tol);
-      if (pts.length >= 2 && pts.length <= opts.caps.linePts)
+      if (pts.length >= 2 && pts.length <= opts.caps.linePts && lineIn(pts))
         res.edges.push({ type: map.outlineType, pts: pts.map(p => [p[0], p[1]] as [number, number]) });
     }
   }
@@ -543,6 +550,8 @@ export function convertGeoJSON(scan: GeoScan, map: GeoMapping, opts: GeoConvertO
   }
 
   if (partial) res.notes.push(`${partial} 层涂域超出可栅格化规模（面过于复杂），只涂进了一部分`);
+  if (outPts) res.notes.push(`${outPts} 个点在图幅外，未导入`);
+  if (outLines) res.notes.push(`${outLines} 条线整条在图幅外，未导入`);
   if (scan.skipped) res.notes.push(`${scan.skipped} 个要素没有可识别的几何，已跳过`);
   if (longLines) res.notes.push(`${longLines} 条折线点数过多，已跳过（可勾选「折线抽稀」再试）`);
   if (scan.truncated) res.notes.push("文件超出可处理规模，只导入了前一部分");

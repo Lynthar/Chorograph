@@ -8,6 +8,7 @@ import {
   parseGeoYear, rasterizePolys, scanGeoJSON, simplifyLine, type GeoMapping
 } from "../src/core/geojson.ts";
 import { eachPaintCenter } from "../src/core/territory.ts";
+import { mapFrame } from "../src/core/frame.ts";
 import type { BBox } from "../src/core/types.ts";
 
 const BB4: BBox = { lonMin: 0, lonMax: 4, latMin: 0, latMax: 4 };
@@ -236,7 +237,7 @@ describe("多边形栅格化（rasterizePolys）", () => {
 
 describe("转换（convertGeoJSON）", () => {
   const opts = () => ({
-    bbox: BB4, pd: 1, palette: ["#111111", "#222222"],
+    frame: mapFrame({ bbox: BB4 }), pd: 1, palette: ["#111111", "#222222"],
     existingIds: new Set<string>(), factionByName: new Map<string, string>(), caps: GEO_CAPS
   });
 
@@ -263,6 +264,19 @@ describe("转换（convertGeoJSON）", () => {
     assert.equal(r.edges[0].名称, "汾水");
     assert.equal(r.edges[0].from, undefined);
     assert.deepEqual(r.edges[0].pts, [[0, 0], [1, 1], [2, 2]]);
+  });
+
+  it("图幅外：点丢弃、整条在外的线丢弃，跨出图廓的线保留，回执报数", () => {
+    const scan = scanGeoJSON(fc(
+      feat({ type: "Point", coordinates: [1, 1] }, {}),
+      feat({ type: "Point", coordinates: [9, 9] }, {}),
+      feat({ type: "LineString", coordinates: [[3, 3], [8, 3]] }, {}),
+      feat({ type: "LineString", coordinates: [[6, 6], [8, 8]] }, {})), GEO_CAPS);
+    const r = convertGeoJSON(scan, mapping({ lineType: "river" }), opts());
+    assert.equal(r.nodes.length, 1);
+    assert.deepEqual(r.edges.map(e => e.pts), [[[3, 3], [8, 3]]]);
+    assert.ok(r.notes.includes("1 个点在图幅外，未导入"), r.notes.join("｜"));
+    assert.ok(r.notes.includes("1 条线整条在图幅外，未导入"), r.notes.join("｜"));
   });
 
   it("面→涂域：按「分组键 × 起讫」分层，同组不同沿革各成一层", () => {

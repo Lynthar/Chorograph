@@ -2,7 +2,8 @@
    浏览左拖/中键/Space+左拖=平移；编辑·选择空白拖=框选（Shift=强制框选）；
    按住地点/布景/部队=拖移；连线可点点或拖拽成线；其余工具空白按下只作点击。
    模块内闭持全部拖拽/笔迹瞬态；frame 经 PointerView 只读画线笔迹/框选/光标位。 */
-import { unproject, clampView, minDppFor, zoomAtView, panByView, viewCosK } from "../core/projection.ts";
+import { unproject, minDppFor, zoomAtView, panByView, viewCosK } from "../core/projection.ts";
+import { frameRectsPx, inFrame, mapFrame } from "../core/frame.ts";
 import { ALL_KINDS, CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite, terrainProps } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
 import { BRUSH_NOTCHES, brushRadiusCells, brushDabStepDeg, interpolatePath } from "../core/brush.ts";
@@ -74,7 +75,7 @@ export interface PointerDeps {
 
 export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, deps: PointerDeps): PointerView {
   const { canvas } = ctx;
-  const { cam, cssSize, cosk, rebuild } = host;
+  const { cam, cssSize, cosk, rebuild, setView } = host;
   const { hideHome } = libio;
 
   /* 缩小到底（最大 度/像素）＝全图恰好整屏 × 1.1 余量：v0.14 硬编码 0.5 与图无关，
@@ -98,8 +99,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const world = worldSig.value;
     if (!world) { tip.style.display = "none"; return; }
     const layers = layersSig.peek(), yearNow = yearSig.peek();
-    const un = unitPickable() ? pickUnit(cam(), ctx.meta, world, yearNow, x, y) : null;
-    const ed = !un && !nd ? pickEdge(cam(), ctx.meta, world, yearNow, x, y, layers) : null;
+    const inside = onMap(x, y);
+    const un = inside && unitPickable() ? pickUnit(cam(), ctx.meta, world, yearNow, x, y) : null;
+    const ed = inside && !un && !nd ? pickEdge(cam(), ctx.meta, world, yearNow, x, y, layers) : null;
     /* 可靠性后缀（柱B）：确证不出字（缺省无须声明），推断/传说才标——同检查器卡片之规 */
     const certSuf = (v: unknown): string => { const c = tget(CERTAINTY, v); return c ? ` · ${esc(c.名)}` : ""; };
     let html = "";
@@ -169,6 +171,11 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   /* 拾取门（点选/悬停/框选与绘制同一套可见性）：图层显隐 + 编辑态全见/浏览态 rank 缩放门——
      关掉的层不再"隐形可选"；部队/布景拾取同规则在各调用点看 units/decor 层。 */
   const pickGate = () => ({ layers: layersSig.peek(), editing: modeSig.peek() === "edit" });
+  /* 图廓外是纸：点击、悬停、落点在那里一律无效，只认平移。判据与遮罩同一个 core/frame.inFrame */
+  const onMap = (x: number, y: number): boolean => {
+    const ll = unproject(cam(), x, y);
+    return inFrame(mapFrame(ctx.meta), ll[0], ll[1]);
+  };
   const decorPickable = () => layersSig.peek().decor !== false;
   /* 部队可拾取＝与渲染同一道门（layerOn：开关 × tacOnly）。战略图 2026-07-31 起也画部队，
      故判据不再是「战术图 && 层开」——门在 LAYERS 标记上，改层属性即两边同步。 */
@@ -310,6 +317,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (ids.length) mutateWorldLive(w => { for (const id of ids) removeDecor(w, id); });
   };
   const decorPlace = (x: number, y: number): void => {
+    if (!onMap(x, y)) return;   // 笔迹拖出图廓：跳过（钳到图廓上会沿边堆一排）
     const ll = unproject(cam(), x, y);
     const kind = decorKindSig.value;
     mutateWorldLive(w => {
@@ -343,11 +351,13 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (ecoSprayLast && Math.hypot(x - ecoSprayLast.x, y - ecoSprayLast.y) < spacing) return;   // 未到间距不重落
     ecoSprayLast = { x, y };
     let any = false;
+    const fr = mapFrame(ctx.meta);
     mutateWorldLive(w => {
       for (const it of spec) {
         if (Math.random() > Math.min(1, it.p * 1.15)) continue;     // 概率门（略提，画得密实些）
         const a = Math.random() * 6.2832, rr = Math.sqrt(Math.random()) * rPx;   // 盘内均匀散布
         const l2 = unproject(cam(), x + Math.cos(a) * rr * cosK, y + Math.sin(a) * rr);
+        if (!inFrame(fr, l2[0], l2[1])) continue;                  // 撒到图廓外的跳过（同 decorPlace）
         const size = +(it.s / (tget(DECOR_BASE, it.k) || 5) * (0.85 + Math.random() * 0.4)).toFixed(2);   // ±20% 尺寸抖动
         applyEra(addDecor(w, l2[0], l2[1], it.k, size), eraNewSig.peek());
         any = true;
@@ -470,6 +480,14 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       drag = { x: e.clientX, y: e.clientY, lon0: ctx.view.lon0, lat0: ctx.view.lat0, click: false };
       canvas.style.cursor = "grabbing";
       canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+    /* 按在图廓外：浏览态照常拖动平移（松手不算点击），其余工具一概不理。起笔在图内的线可以画出图廓，被遮罩裁掉 */
+    if (!onMap(e.offsetX, e.offsetY)) {
+      if (modeSig.value === "browse") {
+        drag = { x: e.clientX, y: e.clientY, lon0: ctx.view.lon0, lat0: ctx.view.lat0, click: false };
+        canvas.setPointerCapture(e.pointerId);
+      }
       return;
     }
     // 作战线绘制态（模态，覆盖任何编辑子工具）：按住拖一笔成线
@@ -751,10 +769,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       if (!armDrag(decorDrag, e)) return;
       const ll = unproject(cam(), e.offsetX, e.offsetY);
       const dd = decorDrag;
-      mutateWorldLive(w => {
-        const d = (w.decor || []).find(x => x.id === dd.id);
-        if (d) { d.lon = +dataLon(ctx.meta, ll[0]).toFixed(4); d.lat = +ll[1].toFixed(4); }
-      });
+      mutateWorldLive(w => moveDecor(w, dd.id, ll[0], ll[1]));
       return;
     }
     if (linkDrag) {   // 连线拖拽：橡皮筋在 rAF 里画（linkFromSig+mxy），这里只记位移
@@ -767,24 +782,24 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     }
     if (!drag) {
       // 悬停圈手柄→可拖光标（仅编辑态选中对象的圈；离开即还原）
+      const inside = onMap(e.offsetX, e.offsetY);
       if (worldSig.value && modeSig.value === "edit" && ["select", "unit"].includes(editSubSig.value)) {
         const sv = selSig.value;
         const hu = sv && sv.kind === "unit" ? sv.id : null, hn = sv && sv.kind === "node" ? sv.id : null;
-        const over = (hu || hn) && pickRangeHandle(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, hu, hn, rangeGate());
-        const overF = !over && hu && unitPickable() && pickFacingHandle(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, hu);
+        const over = inside && (hu || hn) && pickRangeHandle(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, hu, hn, rangeGate());
+        const overF = inside && !over && hu && unitPickable() && pickFacingHandle(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, hu);
         const want = over ? "ew-resize" : overF ? "grab" : "";
         /* 只在进出手柄时动光标：空格平移把光标设成 grab，别让这里把它抹掉 */
         if (!spaceHeld && canvas.style.cursor !== want && (want || canvas.style.cursor === "ew-resize" || canvas.style.cursor === "grab"))
           canvas.style.cursor = want;
       }
-      const h = worldSig.value ? pickNode(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, pickGate()) : null;
+      const h = worldSig.value && inside ? pickNode(cam(), ctx.meta, worldSig.value, yearSig.value, e.offsetX, e.offsetY, pickGate()) : null;
       hoverSig.value = h;
       if (!spaceHeld) updateTip(e.offsetX, e.offsetY, h);
       return;
     }
-    const c = clampView({ lon0: drag.lon0 - (e.clientX - drag.x) * ctx.view.degPerPx / cosk(),
-                          lat0: drag.lat0 + (e.clientY - drag.y) * ctx.view.degPerPx }, ctx.meta);
-    ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0;
+    setView({ lon0: drag.lon0 - (e.clientX - drag.x) * ctx.view.degPerPx / cosk(),
+              lat0: drag.lat0 + (e.clientY - drag.y) * ctx.view.degPerPx });
   });
   canvas.addEventListener("pointerup", e => {
     const world = worldSig.value;
@@ -823,7 +838,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (decorDrag) { decorDrag = null; canvas.style.cursor = ""; return; }
     if (linkDrag) {   // 连线拖拽收笔：拖到另一地点=成线；拖到空处=取消起点；原地未动=保持起点（可再点第二点）
       const ld = linkDrag; linkDrag = null;
-      const hit = world ? pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate()) : null;
+      const hit = world && onMap(e.offsetX, e.offsetY) ? pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate()) : null;
       /* 处置一律经 stepLink；调用点只决定「要不要处置」——原地未动＝保持起点是拖拽路径独有的 */
       if (hit && hit.id !== ld.fromId) stepLink(hit.id);
       else if (ld.moved) stepLink(null);
@@ -835,6 +850,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         if (world) clickAt(e);
         return;
       }
+      /* 框终点钳进起点所在那块图幅：框进纸里的部分不许捞到图廓外看不见的对象 */
+      const r = frameRectsPx(cam(), ctx.meta).find(q => b.x0 >= q.x0 && b.x0 <= q.x1 && b.y0 >= q.y0 && b.y0 <= q.y1);
+      if (r) { b.x1 = Math.max(r.x0, Math.min(r.x1, b.x1)); b.y1 = Math.max(r.y0, Math.min(r.y1, b.y1)); }
       const decorIds = world && decorPickable() ? decorsInBox(cam(), ctx.meta, world, yearSig.value, b.x0, b.y0, b.x1, b.y1) : [];
       if (b.decorOnly) {   // 布景工具的框选：只圈布景
         selSig.value = decorIds.length ? { kind: "multi", ids: [], decorIds } : null;
@@ -877,7 +895,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
   /* 点击动作（对齐旧 handleClick）：按模式/子工具分发 */
   function clickAt(e: PointerEvent): void {
     const world = worldSig.value;
-    if (world) {
+    if (world && onMap(e.offsetX, e.offsetY)) {
       const mode = modeSig.value;
       const hit = pickNode(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, pickGate());
       const ll = unproject(cam(), e.offsetX, e.offsetY);
@@ -940,7 +958,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (mode === "measure") { routePtsSig.value = routePtsSig.value.slice(0, -1); return; }   // 右键撤上一点
     if (mode === "edit" && editSubSig.value === "decor") {   // 右键=删单个布景（层隐藏不许盲删）
       const world = worldSig.value;
-      const d = world && decorPickable() ? pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, ctx.grid ? ctx.grid.step : 1) : null;
+      const d = world && decorPickable() && onMap(e.offsetX, e.offsetY) ? pickDecor(cam(), ctx.meta, world, yearSig.value, e.offsetX, e.offsetY, ctx.grid ? ctx.grid.step : 1) : null;
       if (d) mutateWorld(w => { removeDecor(w, d.id); });
       return;
     }
@@ -1010,8 +1028,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     /* ＋/－=以画布中心缩放；方向键=编辑模式选中地点微调（否则平移）；WASD=平移（v0.14） */
     const zoomCenter = (f: number): void => {
       const [w, h] = cssSize();
-      const r = zoomAtView(ctx.view, ctx.meta, w, h, w / 2, h / 2, f, maxDppFit(), minDppFit());
-      ctx.view.lon0 = r.lon0; ctx.view.lat0 = r.lat0; ctx.view.degPerPx = r.degPerPx;
+      setView(zoomAtView(ctx.view, ctx.meta, w, h, w / 2, h / 2, f, maxDppFit(), minDppFit()));
     };
     if (e.key === "+" || e.key === "=") { zoomCenter(0.8); return; }
     if (e.key === "-") { zoomCenter(1.25); return; }
@@ -1024,8 +1041,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         nudgeSel(e.key);   // 编辑模式选中地点(含框选集)：方向键=微调位置（WASD 仍是平移）
         return;
       }
-      const r = panByView(ctx.view, ctx.meta, panKey[0], panKey[1]);
-      ctx.view.lon0 = r.lon0; ctx.view.lat0 = r.lat0;
+      setView(panByView(ctx.view, ctx.meta, panKey[0], panKey[1]));
       return;
     }
     if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && modeSig.value === "edit" && /^Digit[1-7]$/.test(e.code)) {
@@ -1083,7 +1099,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (!id) return;
     e.preventDefault();
     const w0 = worldSig.peek();
-    if (!w0 || !(w0.units || []).some(u => u.id === id)) return;
+    if (!w0 || !(w0.units || []).some(u => u.id === id) || !onMap(e.offsetX, e.offsetY)) return;
     const ll = unproject(cam(), e.offsetX, e.offsetY);
     mutateWorld(w => { setUnitWaypoint(w, id, yearSig.peek(), ll[0], ll[1]); });
     selSig.value = { kind: "unit", id };
@@ -1109,15 +1125,13 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       }
     }
     const [w, h] = cssSize();
-    const r = zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.deltaY < 0 ? 0.85 : 1.18, maxDppFit(), minDppFit());   // v0.14 缩放步进
-    ctx.view.lon0 = r.lon0; ctx.view.lat0 = r.lat0; ctx.view.degPerPx = r.degPerPx;
+    setView(zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.deltaY < 0 ? 0.85 : 1.18, maxDppFit(), minDppFit()));   // v0.14 缩放步进
   }, { passive: false });
   /* 双击=放大（Shift+双击=缩小；仅浏览——工具模式下双击是两次点击，v0.14） */
   canvas.addEventListener("dblclick", e => {
     if (modeSig.peek() !== "browse") return;
     const [w, h] = cssSize();
-    const r = zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.shiftKey ? 1.5 : 0.62, maxDppFit(), minDppFit());
-    ctx.view.lon0 = r.lon0; ctx.view.lat0 = r.lat0; ctx.view.degPerPx = r.degPerPx;
+    setView(zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.shiftKey ? 1.5 : 0.62, maxDppFit(), minDppFit()));
   });
   addEventListener("keyup", e => { if (e.key === " ") { spaceHeld = false; if (!drag) canvas.style.cursor = ""; } });
   addEventListener("blur", () => { spaceHeld = false; if (!drag) canvas.style.cursor = ""; });

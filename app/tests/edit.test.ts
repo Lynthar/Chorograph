@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, outsideCount, pullIntoFrame, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
@@ -14,6 +14,8 @@ import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, de
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
 import type { World, WorldNode } from "../src/core/types.ts";
 
+/** 满经跨球面图幅：经度只折回不钳，测折回与舍入时用它（缺 bbox 的夹具落在 DEFAULT_BBOX 里） */
+const GLOBE = { 名称: "测试", bbox: { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 } };
 const mkWorld = (over: Partial<World> = {}): World => ({
   meta: { 名称: "测试" }, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [], ...over
 });
@@ -133,7 +135,7 @@ describe("编辑操作内核", () => {
     assert.strictEqual(w.nodes[0], n);
   });
   it("addLabel：type=label、文本=名称、经度折回四位小数（同 addNode 期望翻转）、无 link/字段", () => {
-    const w = mkWorld();
+    const w = mkWorld({ meta: GLOBE });
     const n = addLabel(w, "申时·东北风↗", 190.12345, 30.9876);
     assert.strictEqual(n.type, "label");
     assert.strictEqual(n.名称, "申时·东北风↗");
@@ -217,11 +219,14 @@ describe("编辑操作内核", () => {
     assert.strictEqual(w.decor[0].kind, "peak");
     assert.strictEqual(removeAsset(w, "s1"), false, "已无=false");
   });
-  it("moveNode：经度折回、纬度钳 ±85、四位小数", () => {
-    const w = mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }] });
+  it("moveNode：钳进图幅、经度折回、四位小数", () => {
+    const w = mkWorld({ meta: GLOBE, nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }] });
     moveNode(w, "a", 190.00006, 99);
     assert.strictEqual(w.nodes[0].lon, -169.9999);
-    assert.strictEqual(w.nodes[0].lat, 85);
+    assert.strictEqual(w.nodes[0].lat, 90, "纬度钳到图廓（球面图幅至多 ±90）");
+    const w2 = mkWorld({ nodes: [{ id: "a", type: "city", lon: 100, lat: 30 }] });   // 缺 bbox＝DEFAULT_BBOX 82～130°E、22～54°N
+    moveNode(w2, "a", 190, 99);
+    assert.deepStrictEqual([w2.nodes[0].lon, w2.nodes[0].lat], [130, 54], "拖出图廓停在最近的那条图廓上");
   });
   it("applyNodeForm：空值删键、KV 过滤空行、事件字段", () => {
     const n = { id: "e", type: "event", lon: 1, lat: 2, year: 3000, sides: "旧", radiusKm: 5 } as never as import("../src/core/types.ts").WorldNode;
@@ -799,6 +804,44 @@ describe("地形涂改", () => {
     // 生态轴 none：清生态回纯地貌 hill
     paintTerrainAt(w, buildGridCells(meta, w.terrainOverrides, 3000), 3000, lon, lat, "hill", 1, false, null, "eco");
     assert.strictEqual(cell(), "hill", "生态轴 none：清生态回纯地貌");
+  });
+});
+
+describe("图幅：点对象钳进图廓、图外对象计数与移入", () => {
+  const FLAT = { 名称: "平面", worldModel: "flat" as const, bbox: { lonMin: 0, lonMax: 10, latMin: 0, latMax: 10 } };
+  it("新增与移动的点一律钳进图廓；部队航点只钳不折回经度", () => {
+    const w = mkWorld({ meta: FLAT });
+    const d = addDecor(w, 12, 5, "tree", 1);
+    assert.deepStrictEqual([d.lon, d.lat], [10, 5]);
+    const n = addNode(w, "城", -3, 20);
+    assert.deepStrictEqual([n.lon, n.lat], [0, 10]);
+    const u = addUnit(w, "甲", 5, -1, 0);
+    assert.deepStrictEqual([u.track![0].lon, u.track![0].lat], [5, 0]);
+    setUnitWaypoint(w, u.id, 1, 20, 5);
+    assert.deepStrictEqual([u.track![1].lon, u.track![1].lat], [10, 5]);
+    setUnitWaypointAt(w, u.id, 1, 5, 99);
+    assert.deepStrictEqual([u.track![1].lon, u.track![1].lat], [5, 10]);
+    const wg = mkWorld({ meta: { 名称: "球", bbox: { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 } } });
+    const ug = addUnit(wg, "乙", 190, 0, 0);
+    assert.strictEqual(ug.track![0].lon, 190, "航点经度沿用旧约定不折回");
+  });
+  it("outsideCount 只数点（地点、布景、任一航点在外的部队），缺坐标与跨出图廓的线不算；pullIntoFrame 把它们钳回图廓", () => {
+    const w = mkWorld({
+      meta: FLAT,
+      nodes: [{ id: "in", type: "city", lon: 5, lat: 5 }, { id: "out", type: "city", lon: 30, lat: 5 },
+        { id: "nolon", type: "city" } as never as WorldNode],
+      decor: [{ id: "d", lon: -4, lat: 5, kind: "tree" }],
+      units: [{ id: "u", 名称: "丙", faction: null, kind: "linf", arm: "land", track: [{ t: 0, lon: 5, lat: 5 }, { t: 1, lon: 5, lat: 40 }] }],
+      edges: [{ type: "river", pts: [[5, 5], [50, 5]] }]
+    });
+    assert.strictEqual(outsideCount(w), 3);
+    pullIntoFrame(w);
+    assert.strictEqual(outsideCount(w), 0);
+    assert.deepStrictEqual([w.nodes[1].lon, w.nodes[1].lat], [10, 5]);
+    assert.deepStrictEqual([w.decor![0].lon, w.decor![0].lat], [0, 5]);
+    assert.deepStrictEqual(w.units![0].track![1], { t: 1, lon: 5, lat: 10 });
+    assert.deepStrictEqual(w.edges[0].pts, [[5, 5], [50, 5]], "线不动");
+    assert.strictEqual((w.nodes[2] as { lon?: number }).lon, undefined, "缺坐标的地点不补坐标");
   });
 });
 

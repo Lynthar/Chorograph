@@ -14,7 +14,7 @@ import { createTerrainCPU } from "./terrainCPU.ts";
 export type TerrainStyle = "shaded" | "flat";
 
 /** flat=推演底图（见 TerrainStyle）；cStep=等高距（抽象单位，contourStepFor 产出：1-2-5 阶梯上的一档，任一时刻只有一套线系）；
-    paper=图幅外铺宣纸色（战术图恒铺，战略图看 meta.outside；内陆图四周不该是汪洋，图页感；色=出图垫纸色 #d9d2c0 同源）；
+    paper=地形画布的纸模式（material.paperOf：画布上图幅外的底色与小水塘；屏上看得见的纸由叠加层一律铺上）；
     snow=雪线参数（material.snowSpec：气候档基准 + 球面图随纬度；缺省=不落雪）；clim=气候配色与林线（material.climLook；缺省＝出厂色阶、无林线）；
     gain=晕渲法线增益（material.shadeGain 按 meta 与 degPerPx 算；缺省 1＝旧式 64 倍夸张，调用点必须传）；
     dpr=设备像素比：等高线的线宽、挤线门、间曲线浮现门与虚线节距按 CSS 像素锚定（缺省 1＝物理像素；出图放大随 composeFrame 的临时 DPR 同变）；

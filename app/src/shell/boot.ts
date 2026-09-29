@@ -3,7 +3,7 @@
    指针交互接线 → 侧栏分隔条 → rAF 帧循环。次序即 v0.14 语义，勿轻易重排。 */
 import { effect } from "@preact/signals-core";
 import { roadCellSet } from "../core/grid.ts";
-import { clampView } from "../core/projection.ts";
+import { clampToFrame, mapFrame } from "../core/frame.ts";
 import { createTerrainRenderer } from "../render/renderer.ts";
 import { mountUI } from "../ui/mount.tsx";
 import { initCalTemplates } from "../ui/CalendarOverlay.tsx";
@@ -30,7 +30,7 @@ import type { RoutePoint } from "../core/route.ts";
 
 export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: LibraryIO): Promise<void> {
   const { canvas } = ctx;
-  const { resize, rebuild } = host;
+  const { resize, rebuild, setView } = host;
   const { autosave, boot, bindLib, goHome, refreshLib, openParentMap, openTacmap, genTactical } = libio;
   /* 界面偏好：主题（亮·素笺默认/暗·漆）×密度，本机 localStorage（yutu2.ui）持久化、
      不入存档；先于首帧应用到 #app 的 data-theme/data-den，避免主题闪变。 */
@@ -118,10 +118,9 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     /* NaN 守卫：旧档/手编档地点可缺 lon/lat（normalizeWorld 有意保留），事件行/搜索/部队行点选
        会把 undefined 递进来——clampView 经度分支放行 NaN 会写坏相机（全图消失），丢弃该请求（2026-07-12 P2） */
     if (!isFinite(req.lon) || !isFinite(req.lat)) return;
-    const c = clampView({ lon0: req.lon, lat0: req.lat }, ctx.meta);
-    ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0;
-    if (req.degPerPx != null && isFinite(req.degPerPx) && req.degPerPx > 0
-      && (req.ifAbove == null || ctx.view.degPerPx > req.ifAbove)) ctx.view.degPerPx = req.degPerPx;
+    const zoomIn = req.degPerPx != null && isFinite(req.degPerPx) && req.degPerPx > 0
+      && (req.ifAbove == null || ctx.view.degPerPx > req.ifAbove);
+    setView({ lon0: req.lon, lat0: req.lat, degPerPx: zoomIn ? req.degPerPx! : undefined });
   });
   /* 商路线型仅战略图：战术图上是战略语汇噪音（chips 已藏）,残留选中态回落道路 */
   effect(() => { if (isTacSig.value && linkTypeSig.peek() === "trade") linkTypeSig.value = "road"; });
@@ -155,10 +154,9 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   /* 顶栏「复位」（v0.14 btnReset；快捷键 0）：回世界初始视角 */
   const resetView = (): void => {
     const v = (ctx.meta || ({} as Meta)).view || { lon0: 108, lat0: 36, degPerPx0: 0.06 };
-    const c = clampView({ lon0: v.lon0, lat0: v.lat0 }, ctx.meta);   // 档内 view 不可信（NaN/超界）
-    ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0;
-    // 同 openplan.posDpp：负数能通过 `|| 0.06`，于是「复位」把镜像拉伸的视角原样复位回去
-    ctx.view.degPerPx = (typeof v.degPerPx0 === "number" && isFinite(v.degPerPx0) && v.degPerPx0 > 0) ? v.degPerPx0 : 0.06;
+    // 档内 view 不可信（NaN/超界，setView 先过 clampView）；缩放同 openplan.posDpp：负数能通过 `|| 0.06`，复位会把镜像拉伸的视角原样复位回去
+    setView({ lon0: v.lon0, lat0: v.lat0,
+      degPerPx: (typeof v.degPerPx0 === "number" && isFinite(v.degPerPx0) && v.degPerPx0 > 0) ? v.degPerPx0 : 0.06 });
   };
   $("btnReset").onclick = resetView;
   $("btnHome").onclick = () => goHome();
@@ -213,8 +211,11 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     setMode(dl.wantAnalysis);
     if (dl.wantAnalysis === "edit" && dl.wantSub) editSubSig.value = dl.wantSub as EditSub;
     if (dl.wantPts && dl.wantPts.length >= 4 && dl.wantPts.every(isFinite)) {
-      const pts: RoutePoint[] = [];
-      for (let i = 0; i + 1 < dl.wantPts.length; i += 2) pts.push({ lon: dl.wantPts[i], lat: dl.wantPts[i + 1] });
+      const pts: RoutePoint[] = [], f = mapFrame(ctx.meta);
+      for (let i = 0; i + 1 < dl.wantPts.length; i += 2) {   // 端点钳进图幅：点击走不出图廓，链接也不许（图外端点量出的直线与寻路不是一回事）
+        const [lon, lat] = clampToFrame(f, dl.wantPts[i], dl.wantPts[i + 1]);
+        pts.push({ lon, lat });
+      }
       routePtsSig.value = pts;
     }
   }

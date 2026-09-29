@@ -10,7 +10,7 @@
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps } from "../core/constants.ts";
 import { elevBilinear, elevSmooth, coarseField, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
-import { climRampColor, materialFor, octaveGate, decoGate, rampColor, snowLatM, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, type ClimLook } from "./material.ts";
+import { climRampColor, materialFor, octaveGate, decoGate, rampColor, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, type ClimLook } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
 import type { TerrainRenderer, TerrainRenderOpts } from "./renderer.ts";
@@ -594,7 +594,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       // 纵向用独立 pxpdY：viewBB 经度含 cos(lat0) 校正、纬度不含，贴图须各向异性拉伸
       //（对齐旧 drawTile 经 project 求角点的行为；瓦片内部仍为方度像素，交给 drawImage 缩放）。
       const pxpdY = H / (viewBB.latMax - viewBB.latMin);
-      ctx.fillStyle = opts.paper ? "#d9d2c0" : "rgb(40,90,132)";
+      ctx.fillStyle = opts.paper ? PAPER : "rgb(40,90,132)";
       ctx.fillRect(0, 0, W, H);
       for (const t of tiles) {
         const py0 = (viewBB.latMax - t.bb.latMax) * pxpdY, py1 = (viewBB.latMax - t.bb.latMin) * pxpdY;

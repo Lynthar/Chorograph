@@ -12,12 +12,14 @@ import { isStaleError, staleError, type StaleInfo } from "../data/guard.ts";
 import { blankWorld, clampWorldBBox, countsOf, normalizeWorld } from "../core/world.ts";
 import { convertGeoJSON, GEO_CAPS, padBBox, scanGeoJSON, type GeoMapping, type GeoResult, type GeoScan } from "../core/geojson.ts";
 import { paintStep } from "../core/territory.ts";
-import { FAC_PALETTE } from "../ui/editops.ts";
+import { mapFrame } from "../core/frame.ts";
+import { FAC_PALETTE, outsideCount, pullIntoFrame } from "../ui/editops.ts";
 import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues, worldCap } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import type { ErodeMode } from "../core/erode.ts";
 import { contourStepOf, terrainOpts } from "../render/renderer.ts";
+import { PAPER } from "../render/material.ts";
 import { safeName, errText, newId } from "../core/util.ts";
 import { exportScaleFit, pngSetDpi } from "../core/png.ts";
 import { SHARED_TAG_ID, embedShareHtml, packShare, shareHash, unpackShare } from "../core/share.ts";
@@ -34,7 +36,6 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewS
 import type { ShellCtx, FolderHandle } from "./ctx.ts";
 import type { DeepLink } from "./deeplink.ts";
 import type { Host } from "./host.ts";
-import { DEFAULT_BBOX } from "../core/types.ts";
 import type { BBox, Meta, World, WorldNode } from "../core/types.ts";
 import type { MapEntry } from "../data/library.ts";
 import type { FolderMapEntry } from "../data/folder.ts";
@@ -266,12 +267,21 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
        就会把它写进新图的基准。今天没有在冲突未决时切图的路径，但这条与清基准是同一个道理。 */
     saveConflictSig.value = null;
     tabs.setMap(tabMapKey(ctx.source, ctx.mapId));   // 向别的标签打招呼（同图即互相提醒）
-    if (p.view) {
-      ctx.view.lon0 = p.view.lon0; ctx.view.lat0 = p.view.lat0;
-      if (p.view.degPerPx != null) ctx.view.degPerPx = p.view.degPerPx;
-    }
+    /* 没有快照视角时 ctx.view 是深链写的或上一张图的，一样要按这张图取景 */
+    host.setView(p.view ? { lon0: p.view.lon0, lat0: p.view.lat0, degPerPx: p.view.degPerPx ?? undefined } : ctx.view);
     dl.urlView = dl.urlYear = false;      // URL 直达只压制首次打开
     host.rebuildIfNeeded(); refreshLib();   // 兜底（正常已在批末建过、键相符＝零开销）
+    noteOutside(p.world);
+  }
+  /* 图廓外的点对象开图就报，并给一键移入。微任务里才判只读：bootShared 是先 setWorld、后置 readOnlySig，
+     同步判会给只读读者一个改不动的按钮。 */
+  function noteOutside(w: World): void {
+    const n = outsideCount(w);
+    if (n) queueMicrotask(() => {
+      if (readOnlySig.peek()) return;
+      showToast(`${n} 个对象在图幅外，被图廓外的纸盖住、也点不到`,
+        { action: { label: "移到图廓边上", run: () => mutateWorld(pullIntoFrame) } });
+    });
   }
   /* 切图/离开前把视角与纪年快照回写（浏览器库→条目；文件夹库→foldercache） */
   function snapView(): void {
@@ -432,7 +442,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       new Date().toISOString().slice(0, 10));
     w.meta.说明 = `由 ${srcName} 导入`;
     const r = convertGeoJSON(scan, map, {
-      bbox: w.meta.bbox!, pd: paintStep(w.meta), palette: FAC_PALETTE,
+      frame: mapFrame(w.meta), pd: paintStep(w.meta), palette: FAC_PALETTE,
       existingIds: new Set<string>(), factionByName: new Map<string, string>(), caps: GEO_CAPS
     });
     applyGeo(w, r);
@@ -451,7 +461,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     for (const d of cur.decor || []) ids.add(String(d.id));
     /* 先算完再改世界：栅格化若在 mutateWorld 里抛，撤销栈会留下一步半成品 */
     const r = convertGeoJSON(scan, map, {
-      bbox: cur.meta.bbox || DEFAULT_BBOX, pd: paintStep(cur.meta), palette: FAC_PALETTE,
+      frame: mapFrame(cur.meta), pd: paintStep(cur.meta), palette: FAC_PALETTE,
       existingIds: ids, factionByName: byName, caps: GEO_CAPS
     });
     /* 并入前按**最终产物**过导入闸的量级上限：GEO_CAPS 只管单次转换的输入，与库里已有的加起来超过 validateWorld
@@ -577,7 +587,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       off.width = vw; off.height = vh;
       const g2 = off.getContext("2d")!;
       if (R) g2.drawImage(canvas, 0, 0, vw, vh, 0, 0, vw, vh);   // 只取可见区（画布可更大）
-      else { g2.fillStyle = "#d9d2c0"; g2.fillRect(0, 0, off.width, off.height); }
+      else { g2.fillStyle = PAPER; g2.fillRect(0, 0, off.width, off.height); }
       g2.drawImage(ov, 0, 0, vw, vh, 0, 0, vw, vh);
       /* 图例块（战术·本机偏好可关）：内容自动取图内当刻实际出现的;按 DPR 折回 CSS 像素画右下角。
          让开 se 屏幕角标注（图例不上画布，不让位就会压住画布上摆好的图注）——标注层关掉则无须让。 */

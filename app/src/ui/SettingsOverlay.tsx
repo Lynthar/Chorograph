@@ -504,11 +504,11 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         </div>
       )}
       {!create && (
-        /* 图幅外（app 模式改；随时可改，只动观感）：判据同时供水面高程与图幅外底色两处用 */
+        /* 图幅外（app 模式改；随时可改）：只定碰到图幅边的水体是海还是内陆湖——图廓外一律铺纸，与它无关 */
         <div class="setrow" role="group" aria-labelledby="sw_out_lab"><label id="sw_out_lab">图幅外</label>
           <label><input type="radio" name="sw_out" value="sea" defaultChecked={!inland} /> 海</label>
           <label><input type="radio" name="sw_out" value="land" defaultChecked={inland} /> 陆地</label>
-          <span class="sub">内陆图选「陆地」：碰到图幅边的水体也按内陆湖定水面（不再沉到海平面），图幅外铺纸色而非深海。</span>
+          <span class="sub">内陆图选「陆地」：碰到图幅边的水体也按内陆湖定水面，不再沉到海平面。</span>
         </div>
       )}
       {!create && <ErodeRow cur={erodeMode(m)} />}

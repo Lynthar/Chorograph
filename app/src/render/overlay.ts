@@ -1,9 +1,11 @@
 /* 叠加层编排：按图层开关与世界拷贝循环调度各域绘制（政治 factions / 连线·作战线 edges /
    地点·标签·标注 nodes / 部队 units / 生态·布景 decor），本文件只留 编排 + 画布 chrome
-   （经纬网/比例尺/图名）；拆出的域文件与拾取（pick.ts）经此门面再导出——外部 import 面不变。
+   （经纬网/图廓外的纸与图廓线/比例尺/图名）；拆出的域文件与拾取（pick.ts）经此门面再导出——外部 import 面不变。
    数百要素直绘足够；万级批量与空间索引在 后段定案。 */
 import { LAYERS } from "../core/constants.ts";
 import { project, SCALE_BAR_PX, unproject, visibleWorldCopies, type Camera } from "../core/projection.ts";
+import { frameRectsPx, type FrameRect } from "../core/frame.ts";
+import { PAPER } from "./material.ts";
 import { distKm, kmPerDeg, lonCos, wrapLon } from "../core/geo.ts";
 import { calOf, fmtT, fmtYear } from "../core/calendar.ts";
 import { fmtKm } from "../core/util.ts";
@@ -120,8 +122,13 @@ export function drawOverlay(
       if (on("terrain") && on("contour") && opts.ruleField && opts.grid)   // 等高线注记**最后**占位：让地名、部队与标高点（线由地形渲染器画，故并 terrain 门）
         drawContourLabels(ctx, c2, meta, opts.ruleField, opts.grid, field, opts.contourStep || 0);
     }
-    if (on("graticule")) drawGraticule(ctx, cam, meta);   // 经纬网：拷贝循环外，屏幕空间一次绘制
-    if ((meta || {}).mapKind === "tactical" && (meta || {}).bbox) drawNeatline(ctx, cam, meta!);   // 图廓线：图幅外已铺纸色（terrain 的 paper 裁决），墨框把「图页」缝起来
+    /* 图页：网线先画、图廓外那段随后被纸盖住；纸与图廓线之后才是刻度字与屏幕 chrome（字在图里，不在纸上） */
+    const rects = frameRectsPx(cam, meta);
+    const ticks = on("graticule") ? gridTicks(cam, meta) : null;
+    if (ticks) strokeTicks(ctx, cam, ticks);
+    drawMargin(ctx, cam, rects);
+    drawNeatline(ctx, cam, rects);
+    if (ticks) labelTicks(ctx, cam, ticks, rects);
     if (on("notes")) drawPinnedNotes(ctx, cam, world, yearNow, opts, fcolor);   // 屏幕角标注（帧标题/图注块）
     drawScaleBar(ctx, cam, meta);                          // 图形比例尺（左下，随 PNG 导出）
     drawTitle(ctx, meta, yearNow);                         // 图名 + 纪年（左上，随 PNG 导出）
@@ -131,74 +138,109 @@ export function drawOverlay(
   }
 }
 
+/** 网格的刻度：竖线的屏幕 x 与横线的屏幕 y，各带刻度字 */
+interface Ticks { xs: { p: number; t: string }[]; ys: { p: number; t: string }[] }
+
 /* 经纬网（graticule，faithful port 自旧 drawGraticule）：屏幕空间一次绘制（不入世界拷贝循环），
-   自适应步长（10/5/1°随缩放），经线标注折回本初域经度。ctx 已按 dpr 缩放、CSS 像素坐标系。
+   自适应步长（10/5/1°随缩放），经线标注折回本初域经度。
    战术图分流为公里网（2026-07 特化 P0）：1° 最小步长在 0.24° 宽的战场图上恒 0~1 条线＝失效。 */
-function drawGraticule(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined): void {
-  if ((meta || {}).mapKind === "tactical" && (meta || {}).bbox) { drawKmGrid(ctx, cam, meta!); return; }
+function gridTicks(cam: Camera, meta: Meta | undefined): Ticks {
+  if ((meta || {}).mapKind === "tactical" && (meta || {}).bbox) return kmTicks(cam, meta!);
   const tl = unproject(cam, 0, 0), br = unproject(cam, cam.w, cam.h);
   const step = cam.degPerPx > 0.12 ? 10 : (cam.degPerPx > 0.045 ? 5 : 1);
   const flat = (meta || {}).worldModel === "flat";
-  ctx.save();
-  ctx.strokeStyle = "rgba(40,60,80,.16)"; ctx.fillStyle = "rgba(40,60,80,.6)";
-  ctx.lineWidth = 1; ctx.font = "10px sans-serif";
-  for (let lon = Math.ceil(tl[0] / step) * step; lon <= br[0]; lon += step) {
-    const x = project(cam, lon, cam.lat0)[0];
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, cam.h); ctx.stroke();
-    ctx.fillText(Math.round(wrapLon(lon, flat)) + "°", x + 2, cam.h - 6);   // 环绕后标注归一经度
-  }
-  for (let lat = Math.ceil(br[1] / step) * step; lat <= tl[1]; lat += step) {
-    const y = project(cam, cam.lon0, lat)[1];
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cam.w, y); ctx.stroke();
-    ctx.fillText(Math.round(lat) + "°", 3, y - 3);
-  }
-  ctx.restore();
+  const out: Ticks = { xs: [], ys: [] };
+  for (let lon = Math.ceil(tl[0] / step) * step; lon <= br[0]; lon += step)
+    out.xs.push({ p: project(cam, lon, cam.lat0)[0], t: Math.round(wrapLon(lon, flat)) + "°" });   // 环绕后标注归一经度
+  for (let lat = Math.ceil(br[1] / step) * step; lat <= tl[1]; lat += step)
+    out.ys.push({ p: project(cam, cam.lon0, lat)[1], t: Math.round(lat) + "°" });
+  return out;
 }
 
 /* 战术公里网（方里格）：战场测绘的参考系是公里格不是经纬度。原点锚 meta.bbox 西南角
    ＝图幅原点（不随镜头漂）；步长 1-2-5 档取格宽 ≥64px 的最细档；经向按图幅中央纬度
-   折算（战场尺度曲率可忽略,折算式同火力圈 ringPx）。标注=距图幅原点的东距/北距,
-   图幅外(k<0)只画线不标数。样式与经纬网同（淡青细线,同一图层开关）。 */
-function drawKmGrid(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta): void {
+   折算（战场尺度曲率可忽略,折算式同火力圈 ringPx）。标注=距图幅原点的东距/北距。 */
+function kmTicks(cam: Camera, meta: Meta): Ticks {
   const bb = meta.bbox!;
+  const out: Ticks = { xs: [], ys: [] };
   const dLat = 1 / kmPerDeg(meta);                     // 1km 的纬度跨度
   const dLon = dLat / lonCos(meta, (bb.latMin + bb.latMax) / 2);
   const kmPerPx = cam.degPerPx / dLon;
-  if (!isFinite(kmPerPx) || kmPerPx <= 0) return;
+  if (!isFinite(kmPerPx) || kmPerPx <= 0) return out;
   let stepKm = 5000;
   outer: for (let p = 0.001; p <= 1000; p *= 10) for (const m5 of [1, 2, 5]) {
     if (m5 * p / kmPerPx >= 64) { stepKm = m5 * p; break outer; }
   }
   const lonStep = stepKm * dLon, latStep = stepKm * dLat;
   const tl = unproject(cam, 0, 0), br = unproject(cam, cam.w, cam.h);
-  ctx.save();
-  ctx.strokeStyle = "rgba(40,60,80,.16)"; ctx.fillStyle = "rgba(40,60,80,.6)";
-  ctx.lineWidth = 1; ctx.font = "10px sans-serif";
   const lab = (k: number) => k === 0 ? "0" : fmtKm(k * stepKm);
-  for (let k = Math.ceil((tl[0] - bb.lonMin) / lonStep); k <= Math.floor((br[0] - bb.lonMin) / lonStep); k++) {
-    const x = project(cam, bb.lonMin + k * lonStep, cam.lat0)[0];
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, cam.h); ctx.stroke();
-    if (k >= 0) ctx.fillText(lab(k), x + 2, cam.h - 6);
-  }
-  for (let k = Math.ceil((br[1] - bb.latMin) / latStep); k <= Math.floor((tl[1] - bb.latMin) / latStep); k++) {
-    const y = project(cam, cam.lon0, bb.latMin + k * latStep)[1];
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cam.w, y); ctx.stroke();
-    if (k >= 0) ctx.fillText(lab(k), 3, y - 3);
-  }
+  for (let k = Math.ceil((tl[0] - bb.lonMin) / lonStep); k <= Math.floor((br[0] - bb.lonMin) / lonStep); k++)
+    out.xs.push({ p: project(cam, bb.lonMin + k * lonStep, cam.lat0)[0], t: lab(k) });
+  for (let k = Math.ceil((br[1] - bb.latMin) / latStep); k <= Math.floor((tl[1] - bb.latMin) / latStep); k++)
+    out.ys.push({ p: project(cam, cam.lon0, bb.latMin + k * latStep)[1], t: lab(k) });
+  return out;
+}
+
+const GRID_INK = "rgba(40,60,80,.16)", GRID_TEXT = "rgba(40,60,80,.6)";
+
+/** 网线铺满视口：图廓外那段由随后的纸盖住 */
+function strokeTicks(ctx: CanvasRenderingContext2D, cam: Camera, g: Ticks): void {
+  ctx.save();
+  ctx.strokeStyle = GRID_INK; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (const { p } of g.xs) { ctx.moveTo(p, 0); ctx.lineTo(p, cam.h); }
+  for (const { p } of g.ys) { ctx.moveTo(0, p); ctx.lineTo(cam.w, p); }
+  ctx.stroke();
   ctx.restore();
 }
 
-/* 图廓线（neatline）：战术图幅界的双线墨框（内粗外细=地图集惯例）。随 PNG 导出;战略图不画 */
-function drawNeatline(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta): void {
-  const bb = meta.bbox!;
-  const [x0, y0] = project(cam, bb.lonMin, bb.latMax);
-  const [x1, y1] = project(cam, bb.lonMax, bb.latMin);
-  if (x1 < -8 || y1 < -8 || x0 > cam.w + 8 || y0 > cam.h + 8) return;
+/** 刻度字只标图幅里的线，贴在可见图幅的下沿与左沿内侧——视口边在纸上时字跟着图廓走 */
+function labelTicks(ctx: CanvasRenderingContext2D, cam: Camera, g: Ticks, rects: FrameRect[]): void {
+  const vis = rects.filter(r => r.x1 > 0 && r.x0 < cam.w && r.y1 > 0 && r.y0 < cam.h);
+  if (!vis.length) return;
+  const yT = Math.max(0, vis[0].y0), yB = Math.min(cam.h, vis[0].y1);
+  const xL = Math.max(0, Math.min(...vis.map(r => r.x0)));
   ctx.save();
-  ctx.strokeStyle = "rgba(90,74,38,.62)"; ctx.lineWidth = 1.5;
-  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-  ctx.strokeStyle = "rgba(90,74,38,.28)"; ctx.lineWidth = 1;
-  ctx.strokeRect(x0 - 3.5, y0 - 3.5, (x1 - x0) + 7, (y1 - y0) + 7);
+  ctx.fillStyle = GRID_TEXT; ctx.font = "10px sans-serif";
+  for (const { p, t } of g.xs) if (vis.some(r => p >= r.x0 - 0.5 && p <= r.x1 + 0.5)) ctx.fillText(t, p + 2, yB - 6);
+  for (const { p, t } of g.ys) if (p >= yT - 0.5 && p <= yB + 0.5) ctx.fillText(t, xL + 3, p - 3);
+  ctx.restore();
+}
+
+/** 画布外扩量（CSS 像素）：纸与图廓线画到视口外一点，免得抗锯齿在视口边露出底下的地形 */
+const EDGE_PAD = 8;
+
+/* 图廓外铺纸：视口减各块图幅，一次 even-odd 填充——地形画布与叠加层在图廓外的一切都被它盖住，
+   两个地形渲染器不必各自裁 */
+function drawMargin(ctx: CanvasRenderingContext2D, cam: Camera, rects: FrameRect[]): void {
+  const P = EDGE_PAD;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-P, -P, cam.w + 2 * P, cam.h + 2 * P);
+  for (const r of rects) {
+    const x0 = Math.max(-P, r.x0), x1 = Math.min(cam.w + P, r.x1), y0 = Math.max(-P, r.y0), y1 = Math.min(cam.h + P, r.y1);
+    if (x1 > x0 && y1 > y0) ctx.rect(x0, y0, x1 - x0, y1 - y0);
+  }
+  ctx.fillStyle = PAPER;
+  ctx.fill("evenodd");
+  ctx.restore();
+}
+
+/* 图廓线（neatline）：内粗外细双线（地图集惯例），随 PNG 导出；经跨满 360° 的球面图只有上下两条 */
+function drawNeatline(ctx: CanvasRenderingContext2D, cam: Camera, rects: FrameRect[]): void {
+  const P = EDGE_PAD;
+  const trace = (d: number): void => {
+    ctx.beginPath();
+    for (const r of rects) {
+      if (r.x1 + d < -P || r.x0 - d > cam.w + P || r.y1 + d < -P || r.y0 - d > cam.h + P) continue;
+      if (isFinite(r.x0)) ctx.rect(r.x0 - d, r.y0 - d, r.x1 - r.x0 + 2 * d, r.y1 - r.y0 + 2 * d);
+      else for (const y of [r.y0 - d, r.y1 + d]) { ctx.moveTo(-P, y); ctx.lineTo(cam.w + P, y); }
+    }
+    ctx.stroke();
+  };
+  ctx.save();
+  ctx.strokeStyle = "rgba(90,74,38,.62)"; ctx.lineWidth = 1.5; trace(0);
+  ctx.strokeStyle = "rgba(90,74,38,.28)"; ctx.lineWidth = 1; trace(3.5);
   ctx.restore();
 }
 

@@ -83,7 +83,7 @@ function GeoImportCard({ req }: { req: GeoImportReq }) {
           <label></label>
           <span class="sub">{target === "new"
             ? "按要素范围新开一张图（地形留白，可再自己涂）"
-            : "并进当前地图，算一步撤销；落在图幅外的要素照样收下"}</span>
+            : "并进当前地图，算一步撤销；图幅外的点和整条在图幅外的线不导入"}</span>
         </div>
 
         <div class="mo-sec">字段映射</div>

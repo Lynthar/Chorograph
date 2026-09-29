@@ -2,6 +2,7 @@
    语义对齐旧实现：删地点连带清理其连线与派系 territory 引用；新对象 id 走 core/util.newId；
    数据经度一律折回本初域（平面世界不折）。撤销/广播由调用方经 state.mutateWorld 走管线。 */
 import { wrapLon } from "../core/geo.ts";
+import { clampToFrame, inFrame, mapFrame } from "../core/frame.ts";
 import { DH_MAX_M, elevUnitM } from "../core/elev.ts";
 import { newId, parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
@@ -32,26 +33,56 @@ export function applyEra<T extends { since?: number | null; until?: number | nul
    点/章/线会从光标处跳开半格（高倍下十几像素可见），且粗于移动路径（moveNode/setUnitPoint 本就
    4 位）。四位≈11m，与移动同准。 */
 
+/** 点对象落点：先钳进图幅（拖到图廓就停在图廓上，判据在 core/frame），再折回经度、取四位小数 */
+export function placeLL(meta: Meta | undefined, lon: number, lat: number): [number, number] {
+  const [lo, la] = clampToFrame(mapFrame(meta), lon, lat);
+  return [+dataLon(meta, lo).toFixed(4), +la.toFixed(4)];
+}
+
+/* 旧档或手编档里落在图廓外的点对象：被图廓外的纸盖住、也点不到。只算点（地点、布景、部队航点）——
+   线跨出图廓是常态（河从图边流出去）；缺坐标的地点本就不画，不算在外。 */
+const isOutside = (w: World) => {
+  const f = mapFrame(w.meta);
+  return (o: { lon: number; lat: number }) => isFinite(+o.lon) && isFinite(+o.lat) && !inFrame(f, +o.lon, +o.lat);
+};
+
+/** 图廓外的点对象数：地点、布景各按个数，部队有任一航点在外算一个 */
+export function outsideCount(w: World): number {
+  const out = isOutside(w);
+  return w.nodes.filter(out).length + (w.decor || []).filter(out).length
+    + (w.units || []).filter(u => (u.track || []).some(out)).length;
+}
+
+/** 把 outsideCount 数到的点钳到图廓上（数据只在作者点了才动，一次撤销） */
+export function pullIntoFrame(w: World): void {
+  const out = isOutside(w), f = mapFrame(w.meta);
+  const pull = (o: { lon: number; lat: number }): void => {
+    if (out(o)) { const [lo, la] = clampToFrame(f, +o.lon, +o.lat); o.lon = +lo.toFixed(4); o.lat = +la.toFixed(4); }
+  };
+  w.nodes.forEach(pull); (w.decor || []).forEach(pull);
+  for (const u of w.units || []) (u.track || []).forEach(pull);
+}
+
 /** 新建地点（旧 addNodeAt：缺省 city 起步；柱B 起「地点」子工具类型 chips 可预选 type,类型仍可在表单里改） */
 export function addNode(w: World, 名称: string, lon: number, lat: number, type = "city", id = newNodeId()): WorldNode {
-  const n: WorldNode = { id, 名称, lon: +dataLon(w.meta, lon).toFixed(4), lat: +lat.toFixed(4),
-    type, faction: null, 字段: {}, note: "", link: 名称 };
+  const [plon, plat] = placeLL(w.meta, lon, lat);
+  const n: WorldNode = { id, 名称, lon: plon, lat: plat, type, faction: null, 字段: {}, note: "", link: 名称 };
   w.nodes.push(n);
   return n;
 }
 
 /** 新建标注（v0.15 净新）：自由文本注记——名称即图面文本，字号/屏幕角/派系色在表单里改 */
 export function addLabel(w: World, 文本: string, lon: number, lat: number, id = newNodeId()): WorldNode {
-  const n: WorldNode = { id, 名称: 文本, lon: +dataLon(w.meta, lon).toFixed(4), lat: +lat.toFixed(4),
-    type: "label", faction: null };
+  const [plon, plat] = placeLL(w.meta, lon, lat);
+  const n: WorldNode = { id, 名称: 文本, lon: plon, lat: plat, type: "label", faction: null };
   w.nodes.push(n);
   return n;
 }
 
 /** 在某地点旁新建事件点（旧 addEventAt：偏移 +0.4/+0.3，默认战役、年份=当前年） */
 export function addEventNear(w: World, at: WorldNode, 名称: string, yearNow: number, id = newEventId()): WorldNode {
-  const nd: WorldNode = { id, 名称,
-    lon: +dataLon(w.meta, at.lon + 0.4).toFixed(4), lat: +(at.lat + 0.3).toFixed(4),
+  const [plon, plat] = placeLL(w.meta, at.lon + 0.4, at.lat + 0.3);
+  const nd: WorldNode = { id, 名称, lon: plon, lat: plat,
     type: "event", evtype: "battle", year: yearNow, 字段: {}, note: "", link: 名称 };
   w.nodes.push(nd);
   return nd;
@@ -95,12 +126,11 @@ export function addFreeEdge(w: World, pts: [number, number][], type: "river" | "
 /** 新增一条自由画河道：addFreeEdge 的河流便捷形（旧名保留） */
 export function addRiver(w: World, pts: [number, number][]): Edge { return addFreeEdge(w, pts, "river"); }
 
-/** 移动地点（拖动/微调共用）：经度折回、纬度钳 ±85、四位小数（对齐旧 nudgeSel） */
+/** 移动地点（拖动/微调/表单共用）：钳进图幅、经度折回、四位小数（placeLL） */
 export function moveNode(w: World, id: string, lon: number, lat: number): void {
   const n = w.nodes.find(x => x.id === id);
   if (!n) return;
-  n.lon = +dataLon(w.meta, lon).toFixed(4);
-  n.lat = +Math.max(-85, Math.min(85, lat)).toFixed(4);
+  [n.lon, n.lat] = placeLL(w.meta, lon, lat);
 }
 
 /** 地点表单一次提交（旧 ef_save 语义：空值删键、字段 KV 过滤空值行） */
@@ -378,19 +408,18 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
    迁移,而尺寸/密度自此创建后冻结（设置弹层不再改 bbox）,那条路不存在了。 */
 
 /* —— 手绘布景（decor[]；对齐旧 placeDecor/decorEraseAt）—— */
-/** 落一枚布景印章（经度折回、四位小数） */
+/** 落一枚布景印章（placeLL） */
 export function addDecor(w: World, lon: number, lat: number, kind: string, size: number): Decor {
-  const d: Decor = { id: newId("d"),
-    lon: +dataLon(w.meta, lon).toFixed(4), lat: +lat.toFixed(4), kind, size };
+  const [plon, plat] = placeLL(w.meta, lon, lat);
+  const d: Decor = { id: newId("d"), lon: plon, lat: plat, kind, size };
   (w.decor || (w.decor = [])).push(d);
   return d;
 }
-/** 移一枚布景到新经纬（经度折回、四位小数；单枚拖移与框选整组拖移共用） */
+/** 移一枚布景到新经纬（placeLL；单枚拖移与框选整组拖移共用） */
 export function moveDecor(w: World, id: string, lon: number, lat: number): void {
   const d = (w.decor || []).find(x => x.id === id);
   if (!d) return;
-  d.lon = +dataLon(w.meta, lon).toFixed(4);
-  d.lat = +lat.toFixed(4);
+  [d.lon, d.lat] = placeLL(w.meta, lon, lat);
 }
 /** 删一枚布景（按 id）。World.decor 恒为数组（normalizeWorld 保证），空了留空数组不删键 */
 export function removeDecor(w: World, id: string): boolean {
@@ -471,10 +500,17 @@ export function addUnitUnplaced(w: World, 名称: string, id = newUnitId()): Uni
   return u;
 }
 
+/** 航点坐标钳进图幅（同 placeLL，但航点经度沿用旧约定不折回） */
+const unitLL = (w: World, lon: number, lat: number): [number, number] => {
+  const [lo, la] = clampToFrame(mapFrame(w.meta), +lon, +lat);
+  return [+lo.toFixed(4), +la.toFixed(4)];
+};
+
 /** 新建部队：默认步兵、track 首航点=当日 T（对齐旧 addUnitAt；名称由外壳 prompt 后传入） */
 export function addUnit(w: World, 名称: string, lon: number, lat: number, T: number, id = newUnitId()): Unit {
+  const [plon, plat] = unitLL(w, lon, lat);
   const u: Unit = { id, 名称, faction: null, kind: isModern(w.meta) ? "mcomb" : "linf", arm: "land",
-    track: [{ t: +T, lon: +(+lon).toFixed(4), lat: +(+lat).toFixed(4) }] };
+    track: [{ t: +T, lon: plon, lat: plat }] };
   (w.units || (w.units = [])).push(u);
   return u;
 }
@@ -489,7 +525,7 @@ export function removeUnit(w: World, id: string): boolean {
 export function setUnitWaypoint(w: World, id: string, T: number, lon: number, lat: number): boolean {
   const u = (w.units || []).find(x => x.id === id);
   if (!u) return false;
-  setUnitPoint(u, T, lon, lat);
+  setUnitPoint(u, T, ...unitLL(w, lon, lat));
   return true;
 }
 
@@ -512,7 +548,8 @@ const trackRow = (w: World, id: string, i: number): TrackPt | null => {
 export function setUnitWaypointAt(w: World, id: string, i: number, lon: number, lat: number): boolean {
   const u = (w.units || []).find(x => x.id === id);
   if (!u || !u.track || !trackRow(w, id, i)) return false;
-  u.track[i] = { ...u.track[i], lon: +(+lon).toFixed(4), lat: +(+lat).toFixed(4) };
+  const [plon, plat] = unitLL(w, lon, lat);
+  u.track[i] = { ...u.track[i], lon: plon, lat: plat };
   return true;
 }
 

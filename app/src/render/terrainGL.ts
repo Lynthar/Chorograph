@@ -15,7 +15,7 @@
    - 坡度岩化 + 帐篷差谷影（AO）+ 水域近岸带与静态波纹（无动画，尊重空闲降频）。
    ⚠ 噪声坐标一律用图幅局部坐标（ll-网格原点），深放大高频档才不在 fp32 下失谐；
    ⚠ fwidth 只喂 e/es 两个一致控制流值，材质分支里不得调用。 */
-import { ELEV, terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
+import { terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
 import { climRampGLSL, materialTable, rampGLSL, snowLatGLSL, CLIM_STOPS, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import { SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
@@ -26,8 +26,6 @@ void main(){ vec2 p=vec2(float(gl_VertexID<<1&2), float(gl_VertexID&2)); gl_Posi
 
 const FS = `#version 300 es
 precision highp float; precision highp int;
-const float SEA_E=float(${ELEV.water});                        // 深海高程（构建期注入，与 core 常量同源）
-const float SEA_T=float(${compositeIndex("water")});           // water 复合索引（G 通道）
 uniform sampler2D uGrid;          // RG32F: R=水面高程(海 0/内陆湖岸线高) G=复合索引(lf*5+eco)——均粗格最近取
 uniform sampler2D uField;         // RG32F: R=高程场 G=定向遮蔽 0..1（粗格=coarseField 全零；细分=erode 产出）
 uniform vec4 uGridBB;             // lonMin,latMin,step,wrap中心经度
@@ -48,7 +46,7 @@ uniform vec3 uLight;
 uniform int uMode;                // 0=观感底图 1=推演底图（逐格平色）
 uniform int uContour;
 uniform int uWrap;                // 1=球面经度环绕（把片元经度折回世界本初域），0=平面
-uniform int uPaper;               // 1=图幅外铺宣纸色（战术图；色=出图垫纸色 #d9d2c0 同源）
+uniform int uPaper;               // 1=纸模式（material.paperOf）：画布上图幅外铺纸色、开小水塘
 uniform float uSnowE;             // 雪线抽象高程（图幅中心；material.snowSpec.base；不落雪=1e9）
 uniform float uSnowLat, uSnowRef, uSnowUnit;   // 随纬度：开关 0/1（球面图且设了气候档）、参考曲线在中心纬度的米值、1/elevUnitM
 uniform int uClim, uClimN;        // 气候观感（material.climLook）：开关 0/1、色阶段数（0＝沿用 elevLand）
@@ -181,10 +179,8 @@ vec2 fieldBil(sampler2D fld, ivec2 dim, float st, vec2 rel){
   return top+(bot-top)*t.y;
 }
 vec2 cellAt(vec2 ll){ // (双线性画面场高程, 最近格类型索引)——高程走细分场纹理、类型仍粗格最近取
-  // 网格 bbox 之外=深海（对齐 CPU 兜底先铺深水的行为；用真实跨度而非 cols×step——后者 ceil 多出 <1 格边缘条带）。
-  // 纸模式（战术图）出界改走 clamp 延伸＝CPU elevBilinear 同语义：图幅外没有海。
+  // 出界 clamp 延伸＝CPU elevBilinear 同语义：图廓外由叠加层铺纸，贴边法线不许落进深海画出一圈崖影
   vec2 rel=ll-uGridBB.xy;
-  if(uPaper==0 && outside(rel)) return vec2(SEA_E, SEA_T);
   ivec2 n=clamp(ivec2(floor(rel/uGridBB.z)), ivec2(0), uGridDim-1);
   return vec2(fieldBil(uField,uFDim,uFStep,rel).x, texelFetch(uGrid,n,0).g);
 }
@@ -195,7 +191,6 @@ float occAt(vec2 ll){ // 烘焙遮蔽双线性（画面场 G；粗格全零＝�
 }
 float ruleAt(vec2 ll){ // 规则场（工作档）双线性高程：等高线的唯一采样源；出界语义同 cellAt
   vec2 rel=ll-uGridBB.xy;
-  if(uPaper==0 && outside(rel)) return SEA_E;
   return fieldBil(uRule,uRDim,uRStep,rel).x;
 }
 /* 高程细节场：双线性数据面 + 宏观 fbm4（旧式逐位）+ 微八度；dk=装饰噪声门（判据见 material.decoGate） */
@@ -234,7 +229,7 @@ float contourK(float eh,float itv,float aa,float gsl,float sdp,float bo){
 }
 /* 水面高程（粗格最近取，同类型索引）：海=0，内陆湖=岸线高度，陆格取相邻水体水面
    （core/elev.waterSurface 已晕开一格＝湖岸线随细分场摆动，不被粗格边切成方块）。
-   图幅外恒 0＝按海处理，与 cellAt 出界返 SEA_E 同调。 */
+   图幅外恒 0（那里铺纸，只剩贴边采样会越界）。 */
 float wsAt(vec2 ll){
   vec2 rel=ll-uGridBB.xy;
   if(outside(rel)) return 0.0;
