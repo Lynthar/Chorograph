@@ -6,7 +6,6 @@
    只能靠 effect 内部语句顺序保证。orchestrate.test.ts 以 fake 渲染器计数锁
    「开图批末恰好重建一次」（builtFor 键 + batch 冲刷共同保证）。 */
 import { batch, effect } from "@preact/signals-core";
-import { roadCellSet } from "../core/grid.ts";
 import { worldSig, yearSig, selSig, hoverSig, editVerSig, gridVerSig, isTacSig, unitLegsSig, setWorldState } from "../ui/state.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { Unit, World } from "../core/types.ts";
@@ -34,18 +33,16 @@ export function wireOrchestration(ctx: ShellCtx, host: Pick<Host, "rebuildIfNeed
      140km 战场（196 万格）后，选中多腿部队＝主线程冻数秒，且 editVer 依赖使**拖航点每个 move
      都重算全部腿**＝拖不动（routeClient.legs 的 Worker 通道当时已建成、无人调用）。
      并发形制：LEGS_MS 防抖归并连发（拖拽 move 间隔 8~33ms）＋单飞行闸（shell/singleflight，与侵蚀 / 视域
-     同一份）＋seq 令牌丢过期/丢换选后到货的结果。官道格随单携带（roadCellSet 在主线程算,O(路网
-     格数) 便宜）——对象域编辑（加删路/挪地点）不重建网格,Worker ctx 里那份 roads 是旧的。
-     网格新鲜性由信道次序担保：rebuild 的 setContext 惰性推送恰在下一个 legs 请求前冲刷。
+     同一份）＋seq 令牌丢过期/丢换选后到货的结果。网格与官道格的新鲜性由信道次序担保：rebuild 与
+     编辑后（boot 的 editVer effect）的 setContext 惰性推送恰在下一个 legs 请求前冲刷。
      ⚠ 无部队时**同步清空**（选中态一变立即撤旧账,不等防抖）；⚠ 已知代价：分帧出图是同步流程,
      出图帧里选中部队的超速⚠标记用的是最近一次算好的腿账（原先逐帧同步重算）。 */
   let legsTimer: ReturnType<typeof setTimeout> | undefined;
   let legsSeq = 0;
   const LEGS_MS = 80;
-  const legsFlight = singleFlight((w: World, u: Unit) => {
+  const legsFlight = singleFlight((u: Unit) => {
     const my = ++legsSeq, uid = u.id;
-    const roads = roadCellSet(w.nodes, w.edges, yearSig.peek(), ctx.grid!);
-    return ctx.routeClient.legs(u, roads).then(legs => {
+    return ctx.routeClient.legs(u).then(legs => {
       const cur = selSig.peek();
       if (legs && legsSeq === my && cur && cur.kind === "unit" && cur.id === uid)
         unitLegsSig.value = new Map([[uid, legs]]);
@@ -54,7 +51,7 @@ export function wireOrchestration(ctx: ShellCtx, host: Pick<Host, "rebuildIfNeed
   function fireLegs(): void {
     const w = worldSig.peek(), sel = selSig.peek();
     const u = (w && ctx.grid && isTacSig.peek() && sel && sel.kind === "unit") ? (w.units || []).find(x => x.id === sel.id) : null;
-    if (u) legsFlight.fire(w!, u);                          // 效应体已同步清过 sig；这里只管「还有没有活」
+    if (u) legsFlight.fire(u);                          // 效应体已同步清过 sig；这里只管「还有没有活」
   }
   const dispose = effect(() => {
     const w = worldSig.value;

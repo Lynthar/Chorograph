@@ -269,7 +269,7 @@ export function parseGeoYear(v: unknown): number | null {
 /**
  * Douglas–Peucker 抽稀（迭代式，不递归——真实河网单条能有几万点，递归会爆栈）。
  * @param pts 折线点列
- * @param tol 容差（度）；≤0 原样返回
+ * @param tol 容差（与点同单位：导入时是度，掩膜轮廓是位图像素）；≤0 原样返回
  */
 export function simplifyLine(pts: Pt[], tol: number): Pt[] {
   const n = pts.length;

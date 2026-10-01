@@ -2,22 +2,18 @@
    纯几何——规则场制图面按屏幕子网格取样 → marching squares 链成折线 → 每隔若干像素在曲率最小处定位；
    绘制——恒正立、纸色描边压线、走标签避让场**最后**占位（让地名、部队与标高点）。
    数字＝制图面高程取整＝与光标读数同一个数；线本身也画在同一面上（§9.15），故图内自洽。
-   ⚠ 角态表与 render/maskraster 共用一份（MS_CASES）：maskContour 出的是散段（描 Path2D 够用），
-   注记要按弧长走线、按曲率挑位，故此处把散段链成折线。 */
+   ⚠ 等值线的角态表与链折线只在 render/maskraster（与视线掩膜的轮廓共用一份）。 */
 import { elevSmooth, elevUnitM, waterSurface, type ElevField } from "../core/elev.ts";
 import { project, unproject, type Camera } from "../core/projection.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox, Meta } from "../core/types.ts";
 import type { LabelField } from "./labels.ts";
-import { MS_CASES } from "./maskraster.ts";
+import { tracePolylines, type IsoSurf } from "./maskraster.ts";
 
 /** 采样子网格步长（CSS px）· 同一条线上两枚注记的目标间距 · 短于此不标 · 量直度的跨度（≈数字宽）· 缓存区域每边外扩比例 */
 export const LAB_SAMPLE_PX = 7, LAB_SPACING_PX = 340, LAB_MIN_LEN_PX = 110, LAB_SPAN_PX = 30, LAB_MARGIN = 0.15;
 /** 可见区域内注记等高线的条数上限（超了按整数倍抽稀）· 落点离真等值线的容差（CSS px，超了弃标） */
 export const LAB_MAX_LEVELS = 12, LAB_SNAP_PX = 1.5;
-
-/** 采样面：w×h 个高程样点（抽象单位），行 0 在上；NaN＝水或图幅外，该格不出线（判据同渲染器的等高线门） */
-export interface LabSurf { w: number; h: number; v: Float32Array }
 
 /** 注记的等高距（抽象单位）：默认标计曲线（5×首曲线）；可见区域内不足两条时改标首曲线，过密时按整数倍抽稀。
     ⚠ 三种结果都是首曲线等距的整数倍——注记必须落在**画出来的**线上，否则数字旁边没有线。 */
@@ -28,49 +24,6 @@ export function labStepFor(spanV: number, base: number): number {
   if (spanV / idx < 2) return base;   // 计曲线不足两条＝数不出来，改标首曲线
   const k = Math.ceil(spanV / idx / LAB_MAX_LEVELS);
   return k > 1 ? idx * k : idx;
-}
-
-/** level 等值线的折线集（采样格坐标，每条＝扁平 [x0,y0,x1,y1,…]；闭合环首尾同点）。
-    边编号：横边 (x,y)＝(y·w+x)·2、纵边 (x,y)＝(y·w+x)·2+1——同一条边在两格间是同一个整数键，交点由边与 level 唯一决定。 */
-export function tracePolylines(s: LabSurf, level: number): number[][] {
-  const { w, h, v } = s;
-  const link = new Map<number, number[]>();
-  const add = (a: number, b: number): void => {
-    const la = link.get(a); if (la) la.push(b); else link.set(a, [b]);
-    const lb = link.get(b); if (lb) lb.push(a); else link.set(b, [a]);
-  };
-  for (let y = 0; y + 1 < h; y++) for (let x = 0; x + 1 < w; x++) {
-    const a = v[y * w + x], b = v[y * w + x + 1], c = v[(y + 1) * w + x + 1], d = v[(y + 1) * w + x];
-    if (!(a === a && b === b && c === c && d === d)) continue;   // 任一角 NaN＝此格不出线
-    const segs = MS_CASES[(a >= level ? 8 : 0) | (b >= level ? 4 : 0) | (c >= level ? 2 : 0) | (d >= level ? 1 : 0)];
-    if (!segs.length) continue;
-    const E = [(y * w + x) * 2, (y * w + x + 1) * 2 + 1, ((y + 1) * w + x) * 2, (y * w + x) * 2 + 1];   // 上 右 下 左
-    for (const [p, q] of segs) add(E[p], E[q]);
-  }
-  /* 交点按边解码：角值跨 level 才会有这条边，故除数非零 */
-  const ptOf = (e: number, out: number[]): void => {
-    const i = e >> 1, x = i % w, y = (i - x) / w;
-    if (e & 1) { const p = v[y * w + x], q = v[(y + 1) * w + x]; out.push(x, y + (level - p) / (q - p)); }
-    else { const p = v[y * w + x], q = v[y * w + x + 1]; out.push(x + (level - p) / (q - p), y); }
-  };
-  const seen = new Set<number>();
-  const walk = (start: number): number[] => {
-    const pts: number[] = [];
-    let cur = start, prev = -1;
-    for (;;) {
-      seen.add(cur); ptOf(cur, pts);
-      const nb = link.get(cur)!;
-      let nxt = -1;
-      for (const k of nb) if (k !== prev && !seen.has(k)) { nxt = k; break; }
-      if (nxt < 0) { if (pts.length > 4 && nb.includes(start)) ptOf(start, pts); break; }   // 回到起点＝闭合环
-      prev = cur; cur = nxt;
-    }
-    return pts;
-  };
-  const out: number[][] = [];
-  for (const [k, nb] of link) if (nb.length === 1 && !seen.has(k)) out.push(walk(k));   // 先从开口端走，链才完整
-  for (const k of link.keys()) if (!seen.has(k)) out.push(walk(k));                     // 余下的是闭合环
-  return out.filter(p => p.length >= 4);
 }
 
 /** 折线上的注记锚点（扁平 [x,y,…]，同折线坐标系）：每 spacing 一枚，在目标弧长附近挑**曲率最小**处；
@@ -166,7 +119,7 @@ function build(cam: Camera, meta: Meta | undefined, f: ElevField, grid: Grid, ba
      labStepFor 给出的条数不超过 LAB_MAX_LEVELS+1，封顶取其两倍 */
   const k0 = step > 0 ? Math.ceil(mn / step - 1e-9) : NaN;
   if (Number.isSafeInteger(k0) && mxv > mn) {
-    const surf: LabSurf = { w: sw, h: shh, v };
+    const surf: IsoSurf = { w: sw, h: shh, v };
     const sp = LAB_SPACING_PX / LAB_SAMPLE_PX, ml = LAB_MIN_LEN_PX / LAB_SAMPLE_PX, spn = LAB_SPAN_PX / LAB_SAMPLE_PX;
     for (let n = 0; n <= 2 * LAB_MAX_LEVELS && (k0 + n) * step <= mxv; n++) {
       const level = (k0 + n) * step, m = Math.round(level * U);

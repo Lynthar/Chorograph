@@ -95,9 +95,28 @@ describe("视域编排（shell/viewshed）", () => {
     assert.equal(seen.pushes, 1, "规则场推送一次");
     layersSig.value = { ...layersSig.peek(), vision: false };
     await settle();
-    assert.deepEqual(seen.calls[1].map(o => o.ring), ["fire", "fire", "fire"], "视野层关＝只剩火力单");
+    assert.equal(seen.calls.length, 1, "视野层关：火力圈参数没变＝沿用上一份，不发单");
+    assert.ok([...visMaskSig.peek().unit.values()].every(e => !e.vision), "视野掩膜随层关撤下");
+    assert.ok(visMaskSig.peek().unit.get("both")!.fire![0], "火力掩膜照留");
     layersSig.value = { ...layersSig.peek(), vision: true };
     await settle();
+    assert.deepEqual(seen.calls[1].map(o => o.ring), ["vision", "vision"], "层再开＝只补算视野圈");
+  });
+
+  it("掩膜按单复用：拖一个部队只重算它的圈，其余圈的掩膜对象原样沿用；无关编辑不发单", async () => {
+    open(ctx, TAC([U("a", { vision: 3 }), U("b", { vision: 3, range: 2, fire: "direct" })]));
+    await settle();
+    assert.equal(seen.calls.length, 1);
+    const b0 = visMaskSig.peek().unit.get("b")!;
+    mutateWorld(x => { x.units[0].track[0].lat = 30.6; });
+    await settle();
+    assert.deepEqual(seen.calls[1].map(o => o.id), ["a"], "只发被拖的那一个");
+    const b1 = visMaskSig.peek().unit.get("b")!;
+    assert.ok(b1.vision === b0.vision && b1.fire![0] === b0.fire![0], "没动的圈沿用同一个掩膜对象（栅格缓存按对象命中）");
+    assert.equal(visMaskSig.peek().unit.get("a")!.vision!.bb.latMin, 30.6, "被拖的换新");
+    mutateWorld(x => { x.meta.名称 = "改名"; });
+    await settle();
+    assert.equal(seen.calls.length, 2, "无关编辑不发单");
   });
 
   it("规则场演算中（sig 为 null）不发单、沿用上一份；落定换引用再算且再推送一次", async () => {

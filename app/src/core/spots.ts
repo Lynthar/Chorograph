@@ -104,9 +104,9 @@ export function pickPeaks(t: PeakTable, f: ElevField, o: PickOpts): SpotHeight[]
 }
 
 /** 内陆水体的水面：地貌 water 的粗格四邻连通块一块一枚，位置取离岸最远的格（岸格＝有陆邻或贴图幅边，多源 BFS）。
-    水面 0＝海（碰图幅边）不标、不足 minCells 格的水洼不标；按块大小降序，与已标的同值水面相距 < sepKm 就不再标
-    （水面同值＝同一类型高程，浮点全等）。km＝经/纬向每度公里。 */
-export function waterSpots(grid: Grid, wsurf: Float32Array, km: { kmx: number; kmy: number }, sepKm: number, minCells = 4): SpotHeight[] {
+    判据一律按显示值（取整米，unitM＝米/抽象单位）：为 0 的不标（海与贴着海平面的水体）、不足 minCells 格的水洼不标；
+    按块大小降序，与已标的同显示值水面相距 < sepKm 就不再标。km＝经/纬向每度公里。 */
+export function waterSpots(grid: Grid, wsurf: Float32Array, unitM: number, km: { kmx: number; kmy: number }, sepKm: number, minCells = 4): SpotHeight[] {
   const { cols, rows } = grid, n = cols * rows;
   const water = waterMask(grid);
   const comp = new Int32Array(n).fill(-1), dist = new Int32Array(n).fill(-1), q = new Int32Array(n);
@@ -136,13 +136,14 @@ export function waterSpots(grid: Grid, wsurf: Float32Array, km: { kmx: number; k
     const k = comp[i]; count[k]++;
     if (best[k] < 0 || dist[i] > dist[best[k]]) best[k] = i;
   }
-  const byCount = Array.from({ length: nComp }, (_, k) => k).filter(k => wsurf[best[k]] > 0 && count[k] >= minCells)
+  const shown = (e: number): number => Math.round(e * unitM);
+  const byCount = Array.from({ length: nComp }, (_, k) => k).filter(k => shown(wsurf[best[k]]) > 0 && count[k] >= minCells)
     .sort((a, b) => count[b] - count[a] || a - b);
   const out: SpotHeight[] = [];
   for (const k of byCount) {
     const i = best[k], ws = wsurf[i], c = i % cols, r = (i - c) / cols;
     const lon = grid.bb.lonMin + (c + 0.5) * grid.step, lat = grid.bb.latMin + (r + 0.5) * grid.step;
-    if (out.some(s => s.e === ws && Math.hypot((s.lon - lon) * km.kmx, (s.lat - lat) * km.kmy) < sepKm)) continue;
+    if (out.some(s => shown(s.e) === shown(ws) && Math.hypot((s.lon - lon) * km.kmx, (s.lat - lat) * km.kmy) < sepKm)) continue;
     out.push({ lon, lat, e: ws, kind: "water" });
   }
   return out;

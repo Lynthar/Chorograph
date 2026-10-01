@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { blankWorld, clampWorldBBox, WORLD_KM_PER_DEG, WORLD_RADIUS_KM, type BlankWorldSpec } from "../core/world.ts";
 import { blankTacticalWorld, TAC_DIA_KM, type BlankTacSpec } from "../core/tactical.ts";
+import { GEN_SEED_MAX } from "../core/terrain.ts";
 
 import { calOf, parseYearForm } from "../core/calendar.ts";
 import { DEFAULT_BBOX } from "../core/types.ts";
@@ -26,7 +27,7 @@ import { fmtBytes, requestPersist, storageState, type StorageState } from "../da
 import { useModalFocus } from "./modal.ts";
 import { ERODE_MODES, erodeMode, type ErodeMode } from "../core/erode.ts";
 
-const randSeed = () => Math.floor(Math.random() * 99999) + 1;
+const randSeed = () => Math.floor(Math.random() * GEN_SEED_MAX) + 1;
 
 /** 时代（战术图专有；创建与设置同一行）：现代解锁雷达等近现代账目。普通函数直接返回节点，不是组件（同 KeyRow 之训） */
 function PeriodRow({ modern }: { modern: boolean }) {
@@ -44,7 +45,7 @@ function ErodeRow({ cur }: { cur: ErodeMode }) {
   return (
     <div class="setrow" role="group" aria-labelledby="sw_erode_lab"><label id="sw_erode_lab">侵蚀计算</label>
       {(Object.keys(ERODE_MODES) as ErodeMode[]).map(k => <label key={k}><input type="radio" name="sw_erode" value={k} defaultChecked={cur === k} /> {ERODE_MODES[k].名}</label>)}
-      <span class="sub">底图与涂改＝高程涂改也被侵蚀，松笔后算完落地换成刻出沟谷的真形；仅底图＝高程笔所见即所得、笔落即最终，只有地类底图（含地貌笔的改动）被侵蚀；关闭＝不侵蚀，没有细分、沟谷与烘焙阴影（DEM 导入或纯手工雕刻用）。随时可改。</span>
+      <span class="sub">底图与涂改＝高程涂改也被侵蚀，松笔后算完落地换成刻出沟谷的真形；仅底图＝高程笔所见即所得、笔落即最终，只有地类底图（含地貌笔的改动）被侵蚀；关闭＝不侵蚀，没有细分与沟谷（DEM 导入或纯手工雕刻用）。随时可改。</span>
     </div>
   );
 }
@@ -68,13 +69,18 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
   useModalFocus(box);   // 卡片按 key={token} 每次打开重挂＝进场收焦点、关闭时还原（父件 st 为 null 时整件卸载）
   const fileRef = useRef<HTMLInputElement>(null);
   const geoRef = useRef<HTMLInputElement>(null);
+  /* 新建的图种（柱B）：战略图（世界/疆域，按年）／战术战场（一战，按日与时，**恒平面**） */
+  const [tacNew, setTacNew] = useState(create && !!base && base.mapKind === "tactical");
   /* 地形初稿联动（对齐旧 syncTerrDraftUI）：仅 auto 显示生成参数行；旧初稿只有正用时显形。
      ⚠ 未知/旧 id（如改名前的示例大陆）一律归 "sample"＝与 seedTerrain 的兜底分派同判——
      否则四个单选无一命中，readSettings 落回 "auto"，「打开设置只调起伏点应用」就把整块大陆
      静默换成随机种子的程序化地形（真实存档踩到，同 sw_relief 首项抹值之症） */
-  const [terr, setTerr] = useState<string>(base
+  // 纯新建的缺省随图种：战术战场取空白平原（自动生成按图幅取形，任何战场都是一座环海孤岛）
+  const terrOf = (tac: boolean): string => base
     ? (["auto", "plain", "island", "sample"].includes(base.terrain as string) ? base.terrain as string : "sample")
-    : "auto");
+    : (tac ? "plain" : "auto");
+  const [terr, setTerr] = useState<string>(() => terrOf(tacNew));
+  const pickKind = (tac: boolean): void => { setTacNew(tac); setTerr(terrOf(tac)); };
   /* 纪年历法（双轨）：create 可选 架空自定义/真实地球；既有图锁定（改 kind/月长会错位已存日戳），纪元前缀可改 */
   /* 历法自 2026-08-19 改「选模板」：下拉值＝earth / default（内置 12×30，缺省不落盘）/ 模板 id。
      架空历法的细节在图库页「📅 历法」里编，那里才有月名、逐月月长、一日的时与分这些。 */
@@ -85,8 +91,6 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
   const [calSel, setCalSel] = useState<string>(
     create && base && (base.calendar || {}).kind === "earth" ? "earth" : (baseCalKeep ? "keep" : "default"));
   const calKind = calSel === "earth" ? "earth" : "custom";
-  /* 新建的图种（柱B）：战略图（世界/疆域，按年）／战术战场（一战，按日与时，**恒平面**） */
-  const [tacNew, setTacNew] = useState(create && !!base && base.mapKind === "tactical");
   /* 实时尺度读数的重算扳机（表单非受控,onInput 冒泡到卡片容器时 bump 一下） */
   const [, setRoTick] = useState(0);
   const bumpRo = () => setRoTick(t => t + 1);
@@ -229,7 +233,10 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       if (mm.terrain === "auto") {
         mm.genSeed = Math.max(1, parseInt(q<HTMLInputElement>("#sw_genseed").value, 10) || randSeed());
         mm.genStyle = (q<HTMLSelectElement>("#sw_genstyle").value === "archipelago" ? "archipelago" : "continent") as GenStyle;
-      } else { delete mm.genSeed; delete mm.genStyle; }
+      } else {
+        if (mm.genSeed && mm.reliefSeed == null) mm.reliefSeed = mm.genSeed;   // 离开自动生成时留住起伏种子：不留＝落回种子 1，山整体换一套
+        delete mm.genSeed; delete mm.genStyle;
+      }
       const vault = q<HTMLInputElement>("#sw_vault").value.trim();
       if (vault) mm.vault = vault; else delete mm.vault;
       const relEl = box.current!.querySelector<HTMLSelectElement>("#sw_relief");
@@ -397,8 +404,8 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       {create && (
         <div class="setrow"><label id="sw_mapkind_lab">地图种类</label>
           <div class="seg" role="group" aria-labelledby="sw_mapkind_lab">
-            <button type="button" class={"tbtn" + (tacNew ? "" : " on")} aria-pressed={!tacNew} onClick={() => setTacNew(false)}>🗺 战略图（世界·按年）</button>
-            <button type="button" class={"tbtn" + (tacNew ? " on" : "")} aria-pressed={tacNew} onClick={() => setTacNew(true)}>⚔ 战术战场（一战·按日与时）</button>
+            <button type="button" class={"tbtn" + (tacNew ? "" : " on")} aria-pressed={!tacNew} onClick={() => pickKind(false)}>🗺 战略图（世界·按年）</button>
+            <button type="button" class={"tbtn" + (tacNew ? " on" : "")} aria-pressed={tacNew} onClick={() => pickKind(true)}>⚔ 战术战场（一战·按日与时）</button>
           </div>
           <span class="sub">战场＝以一点为心的<b>平面</b>方图（战场尺度曲率无意义），时间轴细到日与时，兵棋与公里网随之开启；更大的战区请用战略图（20km 起步的笔刷语汇）</span>
         </div>
@@ -444,7 +451,9 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
               onChange={snapNum(-360, 360, 114, "中心经度", "°")} /> ,
             <input type="number" id="sw_clat" aria-label="中心纬度" min={-85} max={85} step={0.001} defaultValue={String(tacPre.clat)} title="中心纬度（北纬为正）"
               onChange={snapNum(-85, 85, 38, "中心纬度", "°")} />
-            <span class="sub">图幅正中那一点的经纬度。它定两件事：地形初稿取自程序化世界的哪一块、本图的经纬度读数与量距基准；与真实地理无关就随手填（战场恒平面，纬度不再影响格子形状）</span></div>
+            <span class="sub">图幅正中那一点的经纬度，定本图的经纬度读数与量距基准；与真实地理无关就随手填（战场恒平面，纬度不再影响格子形状）{
+              terr === "auto" ? "。自动生成按图幅取形，与中心无关"
+                : terr === "sample" || terr === "island" ? "。地形初稿从示例大陆 / 四海环岛的哪一块切出也由它定" : ""}</span></div>
           <div class="setrow"><label for="sw_dia">战场直径 km</label>
             <input type="number" id="sw_dia" min={TAC_DIA_KM[0]} max={TAC_DIA_KM[1]} step={1} defaultValue={String(tacPre.dia)}
               onChange={snapNum(TAC_DIA_KM[0], TAC_DIA_KM[1], 60, "战场直径", " km")} />
@@ -460,13 +469,13 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       )}
       {!create && m.mapKind === "tactical" && <PeriodRow modern={m.period === "modern"} />}
       <div class="setrow" role="group" aria-labelledby="sw_terr_lab"><label id="sw_terr_lab">地形初稿</label>
-        <label><input type="radio" name="sw_terr" value="auto" defaultChecked={terr === "auto"} onChange={() => setTerr("auto")} /> 自动生成</label>
-        <label><input type="radio" name="sw_terr" value="plain" defaultChecked={terr === "plain"} onChange={() => setTerr("plain")} /> 空白平原</label>
-        {terr === "sample" && <label><input type="radio" name="sw_terr" value="sample" defaultChecked onChange={() => setTerr("sample")} /> 示例大陆</label>}
-        {terr === "island" && <label><input type="radio" name="sw_terr" value="island" defaultChecked onChange={() => setTerr("island")} /> 四海环岛</label>}
+        <label><input type="radio" name="sw_terr" value="auto" checked={terr === "auto"} onChange={() => setTerr("auto")} /> 自动生成</label>
+        <label><input type="radio" name="sw_terr" value="plain" checked={terr === "plain"} onChange={() => setTerr("plain")} /> 空白平原</label>
+        {terr === "sample" && <label><input type="radio" name="sw_terr" value="sample" checked onChange={() => setTerr("sample")} /> 示例大陆</label>}
+        {terr === "island" && <label><input type="radio" name="sw_terr" value="island" checked onChange={() => setTerr("island")} /> 四海环岛</label>}
       </div>
       <div class="setrow" id="swGenRow" style={{ display: terr === "auto" ? "flex" : "none" }}><label>生成参数</label>
-        <select id="sw_genstyle" aria-label="生成参数 · 风格" title="大陆=单块居中大陆；群岛=四海散岛" defaultValue={d.genStyle}>
+        <select id="sw_genstyle" aria-label="生成参数 · 风格" title="大陆=单块居中大陆；群岛=碎岸多湾的单块大陆" defaultValue={d.genStyle}>
           <option value="continent" selected={d.genStyle === "continent"}>大陆</option>
           <option value="archipelago" selected={d.genStyle === "archipelago"}>群岛</option>
         </select>

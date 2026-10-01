@@ -21,7 +21,7 @@ const els: Record<string, { dataset: Record<string, string>; value: string }> = 
 /** 可辨认的假细分场：几何按 sx 细分，数据整幅填本单预算——谁读到了哪一档一目了然 */
 const fakeField = (inp: ErodeInput, sx: number): ElevField => ({
   bb: inp.bb, step: inp.step / sx, cols: inp.cols * sx, rows: inp.rows * sx,
-  data: new Float32Array(inp.cols * inp.rows * sx * sx).fill(inp.cap), shadow: null
+  data: new Float32Array(inp.cols * inp.rows * sx * sx).fill(inp.cap), eroded: true
 });
 
 /* holdUltra＝精修单挂起不回（模拟几十秒的在飞单）；cancels 只数撤到了在飞单的那几次（host 每次重建都调，无单时是空操作） */

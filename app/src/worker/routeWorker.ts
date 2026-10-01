@@ -12,6 +12,6 @@ scope.onmessage = e => {
   if (!r) return;
   /* 侵蚀场按 transfer 交回（工作档十余 MB、精修档 70 MB 免一次拷贝）：erodeField 的数组都是独立分配的，
      Worker 侧交出即不再读 */
-  if (r.t === "erode") scope.postMessage(r, r.f.shadow ? [r.f.data.buffer, r.f.shadow.buffer] : [r.f.data.buffer]);
+  if (r.t === "erode") scope.postMessage(r, [r.f.data.buffer]);
   else scope.postMessage(r);
 };

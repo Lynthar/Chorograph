@@ -190,6 +190,7 @@ export function blankWorld(s: BlankWorldSpec, today: string): World {
   };
   if (s.kmPerDeg != null) w.meta.kmPerDeg = s.kmPerDeg;
   if (s.terrain === "auto") { w.meta.genSeed = s.genSeed; w.meta.genStyle = s.genStyle; }
+  else if (s.genSeed) w.meta.reliefSeed = s.genSeed;   // 非自动生成的图也各有一套起伏（缺键＝种子 1，全库同一套山）
   if (s.vault) w.meta.vault = s.vault;
   if (s.calendar) w.meta.calendar = s.calendar;   // 历法创建时定死（改 kind 会重释一切已存日戳）
   if (s.relief != null && s.relief > 0) w.meta.relief = s.relief;

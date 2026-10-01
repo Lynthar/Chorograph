@@ -1,4 +1,4 @@
-/* 寻路 Worker 协议（纯函数）：ctx=一次性上下文（换图/重建网格/换年时重发），
+/* 寻路 Worker 协议（纯函数）：ctx=一次性上下文（网格重建与每次编辑后重发；grid 缺席＝沿用上一份），
    route/legs=按 id 应答；erode=侵蚀重铸（自带全部输入、不依赖 ctx——纯函数直测，
    且程序化预览无 world 时照样可算）；vfield=视线判定用的规则场（规则场落定时推送一次，
    viewshed 单只带观察者，sight 单带观察者 × 飞行目标，peaks 单算这份场的标高点峰表）。协议层不碰 Worker API——node:test 直接测；
@@ -25,11 +25,9 @@ export interface SightReq { obs: VisReq; tgt: string; lon: number; lat: number; 
 export interface SightRes extends VisTag { tgt: string; hit: SightHit | null }
 
 export type RouteRequest =
-  | { t: "ctx"; meta: Meta | undefined; grid: Grid; roads: Set<string> | string[]; world: World; yearNow: number }
+  | { t: "ctx"; meta: Meta | undefined; grid?: Grid; roads: Set<string> | string[]; world: World; yearNow: number }
   | { t: "route"; id: number; A: RoutePoint; B: RoutePoint; arm: Arm }
-  /* legs 可随单带 roads（2026-08 审查批）：官道格随 nodes/edges/年份变，而 ctx 只在网格重建时
-     重发——纯对象域编辑（加删路、挪地点）后按 st.roads 算就是旧路网；带上即以本单为准。 */
-  | { t: "legs"; id: number; unit: Unit; roads?: Set<string> | string[] }
+  | { t: "legs"; id: number; unit: Unit }
   | ({ t: "erode"; id: number } & ErodeInput)
   | { t: "vfield"; field: ViewField }
   | { t: "viewshed"; id: number; obs: VisReq[] }
@@ -46,7 +44,8 @@ export type RouteReply =
 
 export function handleRouteMsg(st: RouteCtx, msg: RouteRequest): RouteReply | null {
   if (msg.t === "ctx") {
-    st.meta = msg.meta; st.grid = msg.grid; st.world = msg.world; st.yearNow = msg.yearNow;
+    st.meta = msg.meta; st.world = msg.world; st.yearNow = msg.yearNow;
+    if (msg.grid) st.grid = msg.grid;
     st.roads = msg.roads instanceof Set ? msg.roads : new Set(msg.roads);
     return null;
   }
@@ -68,6 +67,5 @@ export function handleRouteMsg(st: RouteCtx, msg: RouteRequest): RouteReply | nu
   if (msg.t === "route") {
     return { t: "route", id: msg.id, res: computeRoute(st.meta, st.grid, st.roads, st.world, st.yearNow ?? 0, msg.A, msg.B, msg.arm) };
   }
-  const roads = msg.roads != null ? (msg.roads instanceof Set ? msg.roads : new Set(msg.roads)) : st.roads;
-  return { t: "legs", id: msg.id, legs: unitLegs(st.meta, st.grid, roads, msg.unit) };
+  return { t: "legs", id: msg.id, legs: unitLegs(st.meta, st.grid, st.roads, msg.unit) };
 }

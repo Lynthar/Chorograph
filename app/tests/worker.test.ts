@@ -13,8 +13,8 @@ import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
 import { ERODE_VER, erodeField, erodeGate, erodeInput, erodeKey, erodeMode, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
 import { fbm } from "../src/core/noise.ts";
-import { baseElev, buildElevField, elevBilinear, fieldMix, fieldPlusDelta, LAND_FLOOR, type ElevField } from "../src/core/elev.ts";
-import { makeRelief, mountainness, RELIEF_M } from "../src/core/relief.ts";
+import { baseElev, buildElevField, coarseField, elevBilinear, fieldMix, fieldPlusDelta, waterSurface, LAND_FLOOR, SHORE_E, type ElevField } from "../src/core/elev.ts";
+import { gnoise, makeRelief, mountainness, RELIEF_M } from "../src/core/relief.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
 /* 全平原世界：语义可手推 */
@@ -410,6 +410,44 @@ describe("寻路 Worker 协议", () => {
     assert.deepStrictEqual(handleRouteMsg(st, { t: "legs", id: 8, unit: u }),
       { t: "legs", id: 8, legs: unitLegs(META, grid, roads, u) });
   });
+  it("不带 grid 的 ctx 沿用上一份网格，官道格与世界按本条换新", () => {
+    const st: RouteCtx = {};
+    handleRouteMsg(st, ctxMsg);
+    const noRoad = plainWorld({ nodes: world.nodes, edges: [] });
+    handleRouteMsg(st, { t: "ctx", meta: META, roads: [], world: noRoad, yearNow: 3100 });
+    assert.strictEqual(st.grid, grid);
+    assert.strictEqual(st.world, noRoad);
+    const u: Unit = { id: "u", kind: "cav", track: [{ t: 0, lon: 100.5, lat: 30.5 }, { t: 3, lon: 104.5, lat: 30.5 }] };
+    assert.deepStrictEqual(handleRouteMsg(st, { t: "legs", id: 9, unit: u }),
+      { t: "legs", id: 9, legs: unitLegs(META, grid, new Set(), u) });
+  });
+});
+
+describe("起伏采样（core/relief）", () => {
+  it("球面图东西与南北同为真实公里（R9-#8）：54° 处梯度能量比近 1；按「经度 × 每纬度公里」取样则东西被压扁", () => {
+    const kmd = 174.53, D = Math.PI / 180, h = 0.25;   // 半个中心差分步长 250 m
+    const ratio = (rel: (lon: number, lat: number, m: number) => number): number => {
+      let ex = 0, ny = 0;
+      for (let i = 0; i < 60; i++) for (let j = 0; j < 60; j++) {
+        const lat = 53.4 + i * 0.02, lon = 99 + j * 0.034, dLon = h / (kmd * Math.cos(lat * D)), dLat = h / kmd;
+        ex += (rel(lon + dLon, lat, 1) - rel(lon - dLon, lat, 1)) ** 2;
+        ny += (rel(lon, lat + dLat, 1) - rel(lon, lat - dLat, 1)) ** 2;
+      }
+      return ex / ny;
+    };
+    const iso = ratio(makeRelief(7, 0.5, kmd, [100, 54])), old = ratio(makeRelief(7, 0.5, kmd, null));
+    assert.ok(iso > 0.8 && iso < 1.25, `三维取样东西/南北能量比 ${iso.toFixed(2)}`);
+    assert.ok(old > 2, `对照：二维按度取样在 54° 被压扁，能量比 ${old.toFixed(2)}`);
+  });
+  it("梯度集避开坐标轴（R9-#14）：没有整条格边恒为 0（轴向集约 1/16 的格边是晕渲上的直缝）", () => {
+    let zero = 0;
+    for (let i = 0; i < 120; i++) for (let j = 0; j < 120; j++) {
+      let all = true;
+      for (let t = 1; t < 10 && all; t++) if (Math.abs(gnoise(i + t / 10, j, 7001)) > 1e-12) all = false;
+      if (all) zero++;
+    }
+    assert.strictEqual(zero, 0);
+  });
 });
 
 describe("侵蚀真形（core/erode）", () => {
@@ -422,16 +460,16 @@ describe("侵蚀真形（core/erode）", () => {
       elev0[r * cols + c] = elevCol[c]; water[r * cols + c] = c === 0 ? 1 : 0;
     }
     return { bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 1, cols, rows,
-      elev0, water, amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: hovGrid || new Float32Array(rows * cols),
-      cap: 400_000, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000 };
+      elev0, water, wsurf: new Float32Array(rows * cols), amp: 0.7, seed: 1234, kmx: 96, kmy: 111, hovGrid: hovGrid || new Float32Array(rows * cols),
+      cap: 400_000, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000, sphere: false };
   };
   /* 均质试验场：整幅同一基面高程——山地度自它来，故 0.9=山地档、0.16=平原档 */
   const ELEV_MTN = 0.9, ELEV_PLN = 0.16;
   const flatAt = (e: number): ErodeInput => {
     const cols = 6, rows = 6, n2 = cols * rows;
     return { bb: { lonMin: 100, lonMax: 106, latMin: 30, latMax: 36 }, step: 1, cols, rows,
-      elev0: new Float32Array(n2).fill(e), water: new Uint8Array(n2), amp: 0.7, seed: 1234,
-      kmx: 96, kmy: 111, hovGrid: new Float32Array(n2), cap: 400_000, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000 };
+      elev0: new Float32Array(n2).fill(e), water: new Uint8Array(n2), wsurf: new Float32Array(n2), amp: 0.7, seed: 1234,
+      kmx: 96, kmy: 111, hovGrid: new Float32Array(n2), cap: 400_000, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000, sphere: false };
   };
   const span = (f: { data: Float32Array }): number => {
     const a = Float32Array.from(f.data).sort();
@@ -440,7 +478,6 @@ describe("侵蚀真形（core/erode）", () => {
   it("确定性：同输入两跑逐位同输出（Worker 与主线程回退必须可互换）", () => {
     const a = erodeField(mk()), b = erodeField(mk());
     assert.deepStrictEqual(a.data, b.data);
-    assert.deepStrictEqual(a.shadow, b.shadow);
   });
   it("细分几何：倍率按预算取、场步长=粗步长/倍率、bb 原样", () => {
     const f = erodeField(mk()), sx = upscaleOf(4, 4, 400_000, 8);
@@ -485,7 +522,7 @@ describe("侵蚀真形（core/erode）", () => {
     assert.notDeepStrictEqual(Array.from(c.data), Array.from(a.data), "bandS 必须真接进场里，否则这条归一是摆设");
     assert.notStrictEqual(erodeKey(u), erodeKey({ ...u, bandS: 1 }), "bandS 是内容键的一元（换了值不许命中旧缓存）");
   });
-  it("水域＝基准面（远岸恒 -0.35、近岸随双线性基面，不侵蚀不加噪）；陆地不穿透类型地板", () => {
+  it("水域＝基准面（远岸恒 -0.35、近岸随双线性基面但封在水面 + SHORE_E 以下，不侵蚀不加噪）；陆地不穿透类型地板与水陆判据线", () => {
     const inp = mk(), f = erodeField(inp), sx = f.cols / 4;
     const geo = { bb: inp.bb, step: 1, cols: 4, rows: 4 };
     for (let r = 0; r < f.rows; r++) for (let c = 0; c < f.cols; c++) {
@@ -493,14 +530,14 @@ describe("侵蚀真形（core/erode）", () => {
       const b = elevBilinear(inp.elev0, geo, 100 + (c + 0.5) * f.step, 30 + (r + 0.5) * f.step);
       if (pc === 0) {
         if (c + 0.5 <= sx / 2) assert.strictEqual(h, Math.fround(-0.35), "远岸水面恒定");
-        else assert.ok(Math.abs(h - b) < 1e-6, "近岸水＝双线性基面（旧管线的海岸缓坡）");
+        else assert.ok(Math.abs(h - Math.min(b, SHORE_E)) < 1e-6, "近岸水＝双线性基面，封顶在水面（此处为海 0）+ SHORE_E");
       } else {
         /* 期望有意放宽（批6）：钳制参照系是**域扭曲+羽化后**的基面（台阶圈揉山缘），逐点双线性
            下界不再成立——改用邻域最小（±2 粗格覆盖扭曲 ≤1.8 格 + 羽化 0.6 + 双线性支撑） */
         let bm = Infinity;
         for (let rr = Math.max(0, pr - 2); rr <= Math.min(3, pr + 2); rr++)
           for (let cc = Math.max(0, pc - 2); cc <= Math.min(3, pc + 2); cc++) bm = Math.min(bm, inp.elev0[rr * 4 + cc]);
-        assert.ok(h >= Math.min(LAND_FLOOR, bm) - 1e-6, "陆地地板随（扭过的）基面邻域收敛");
+        assert.ok(h >= Math.max(-0.02, Math.min(LAND_FLOOR, bm)) - 1e-6, "陆地地板随（扭过的）基面邻域收敛，且不低于水陆判据线（此处为海 0 − 0.02）");
       }
     }
   });
@@ -508,12 +545,12 @@ describe("侵蚀真形（core/erode）", () => {
     const inp = mk(), f = erodeField(inp), sx = f.cols / 4;
     /* 神谕＝erodeField 的基座公式（基面 + 起伏），只是不跑侵蚀：山地列右半是双线性纯区，
        基面恒 0.9、山地度＝amp×mountainness(0.9)＝0.7 */
-    const rel = makeRelief(inp.seed, f.step * inp.kmy), rU = RELIEF_M / inp.unitM;
+    const rel = makeRelief(inp.seed, f.step * inp.kmy, inp.kmy, null), rU = RELIEF_M / inp.unitM;
     const m = inp.amp * mountainness(0.9);
     let carved = 0;
     for (let r = 0; r < f.rows; r++) for (let c = Math.ceil(3.5 * sx); c < f.cols; c++) {
       const lon = 100 + (c + 0.5) * f.step, lat = 30 + (r + 0.5) * f.step;
-      const base = 0.9 + rel(lon * inp.kmy, lat * inp.kmy, m) * rU;
+      const base = 0.9 + rel(lon, lat, m) * rU;
       if (f.data[r * f.cols + c] < base - 0.01) carved++;
     }
     assert.ok(carved > 0, "山地列须有真实下切");
@@ -530,13 +567,9 @@ describe("侵蚀真形（core/erode）", () => {
     for (let c = 0; c < f.cols - 1; c++) { const i = ri * f.cols + c; mx = Math.max(mx, Math.abs(f.data[i + 1] - f.data[i])); }
     assert.ok(mx < 0.4, "行内最大相邻差须远小于整章高度：" + mx);
   });
-  it("遮蔽通道：值域 [0,1]、水域恒 0", () => {
-    const f = erodeField(mk()), sx = f.cols / 4;
-    assert.ok(f.shadow, "侵蚀场必带遮蔽通道");
-    for (let i = 0; i < f.shadow!.length; i++) {
-      assert.ok(f.shadow![i] >= 0 && f.shadow![i] <= 1);
-      if (((i % f.cols) / sx | 0) === 0) assert.strictEqual(f.shadow![i], 0, "水域无遮蔽");
-    }
+  it("侵蚀产出标 eroded（渲染端据此给装饰按坡门控）；粗格包装不标", () => {
+    assert.strictEqual(erodeField(mk()).eroded, true);
+    assert.strictEqual(coarseField(mk(), new Float32Array(16)).eroded, false);
   });
   it("山系结构随基面高程渐入（2026-09-02 起山地度由高程给）：山地档的起伏跨度远大于平原档", () => {
     const mtn = span(erodeField(flatAt(ELEV_MTN))), pln = span(erodeField(flatAt(ELEV_PLN)));
@@ -575,7 +608,7 @@ describe("侵蚀真形（core/erode）", () => {
     for (let r = 8; r < 40; r++) for (let c = 8; c < 40; c++) elev0[r * cols + c] = 0.9;
     for (let r = 0; r < rows; r++) { water[r * cols] = 1; elev0[r * cols] = -0.35; }
     return { bb: { lonMin: 100, lonMax: 100.48, latMin: 30, latMax: 30.48 }, step: 0.01, cols, rows,
-      elev0, water, amp: 0.7, seed: 4321, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2), cap, axisMax, acrit: 300, bandS: 1, unitM: 2000 };
+      elev0, water, wsurf: new Float32Array(n2), amp: 0.7, seed: 4321, kmx: 96, kmy: 111, hovGrid: new Float32Array(n2), cap, axisMax, acrit: 300, bandS: 1, unitM: 2000, sphere: false };
   };
   it("多重网格（2026-09-07）：粗级参与的大网格同输入逐位同输出；水域格不被切割", () => {
     const inp = mesa(), a = erodeField(inp), b = erodeField(inp);
@@ -602,7 +635,7 @@ describe("侵蚀真形（core/erode）", () => {
       if (c < 2) { water[i] = 1; elev0[i] = -0.35; } else elev0[i] = c < cols / 3 ? 0.16 : c < cols * 0.62 ? 0.5 : 0.9;
     }
     return { bb: { lonMin: 8, lonMax: 8 + cols * step, latMin: 46, latMax: 46 + rows * step }, step, cols, rows,
-      elev0, water, amp, seed: 777, kmx: 111.19, kmy: 111.19, hovGrid: hovGrid || new Float32Array(n2), cap, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000 };
+      elev0, water, wsurf: new Float32Array(n2), amp, seed: 777, kmx: 111.19, kmy: 111.19, hovGrid: hovGrid || new Float32Array(n2), cap, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000, sphere: false };
   };
   const fieldHash = (f: ElevField): string => {
     let x = 0x811c9dc5 | 0;
@@ -613,12 +646,12 @@ describe("侵蚀真形（core/erode）", () => {
   it("粗级物理扩散只给类型路：起伏滑杆 0 的图（真高程、纯手雕）输出逐位钉死", () => {
     const hov = new Float32Array(24 * 24);
     for (let r = 6; r < 18; r++) for (let c = 6; c < 18; c++) hov[r * 24 + c] = 0.2 + 0.03 * ((r * 7 + c * 3) % 5);
-    /* 哈希取自粗级按格无量纲扩散的实现：变了＝真高程图的地形跟着变了 */
-    assert.strictEqual(fieldHash(erodeField(ramp(24, 0.0024, 0, 40_000, hov))), "1c3l6tv");
+    /* 钉的是现行实现的输出：变了＝真高程与手雕图的地形跟着变了（起伏或侵蚀有意换代时才重钉） */
+    assert.strictEqual(fieldHash(erodeField(ramp(24, 0.0024, 0, 40_000, hov))), "xrlcje");
   });
   it("粗级物理扩散以旧常数为地板：粗格大于约 224 m 的图输出逐位钉死", () => {
     /* 133 m 格 ×8 细分再 ×4 成粗格≈0.8 km＞交界；缺省尺寸以上的战术图与战略图都在这一侧 */
-    assert.strictEqual(fieldHash(erodeField(ramp(24, 0.0072, 0.7, 40_000))), "1j1f4cn");
+    assert.strictEqual(fieldHash(erodeField(ramp(24, 0.0072, 0.7, 40_000))), "4sbbam");
   });
   it("同一世界换细格分辨率（33 m / 17 m），谷网一致：粗级扩散按 km² 计", () => {
     /* 按格无量纲的扩散让谷距跟着网格走（约 5 个粗格一条谷），两档高通相关只有 0.74 */
@@ -649,9 +682,9 @@ describe("侵蚀真形（core/erode）", () => {
     const k0 = erodeKey(mk());
     assert.strictEqual(erodeKey(mk()), k0, "同输入两算必同键");
     assert.ok(k0.startsWith(ERODE_VER + "-"), "键前缀＝算法代号（换代清场的判据）");
-    /* 键的数学钉死（2026-09-21 折叠循环改写时采自旧实现）：字序、双流常数、长度前缀任一变＝用户整库场缓存作废。
+    /* 键的数学钉死：字序、双流常数、长度前缀任一变＝用户整库场缓存作废，只有有意改键（如输入加字段）才更新此值。
        旋钮或 EALGO 变了前缀自然变，此处只钉前缀之后的两段。 */
-    assert.strictEqual(k0.slice(ERODE_VER.length), "-1pwip0q-sigkkn", "内容键与旧实现逐位同");
+    assert.strictEqual(k0.slice(ERODE_VER.length), "-n6kpb0-lzg4pl", "内容键逐位同");
     const vary: [string, (i: ErodeInput) => void][] = [
       ["elev0 单格", i => { i.elev0[7] += 0.001; }],
       ["unitM", i => { i.unitM = 1000; }],
@@ -665,11 +698,31 @@ describe("侵蚀真形（core/erode）", () => {
       ["cap", i => { i.cap = 1_400_000; }],   // 预算分档：同几何不同预算＝不同细分＝必须不同键
       ["axisMax", i => { i.axisMax = 16; }],  // 精修档三键同理（漏键＝按键取回错档分辨率的场）
       ["acrit", i => { i.acrit = 1200; }],
+      ["wsurf 单格", i => { i.wsurf[3] = 0.16; }],
     ];
     for (const [what, v] of vary) {
       const i = mk(); v(i);
       assert.notStrictEqual(erodeKey(i), k0, `${what} 变了键必须变`);
     }
+  });
+  it("内陆湖岸线：侵蚀后每个细格在渲染判据（高程 < 所在格水面 − 0.02 即水）下与地貌一致", () => {
+    /* 基准面若取湖床，岸边陆地被刻到湖面以下显示成水、近岸水格被双线性抬成陆——岸边一圈细水道夹细陆地 */
+    const meta: Meta = { mapKind: "tactical", terrain: "plain", relief: 0.7, gridN: 20, bbox: { lonMin: 8.27, lonMax: 8.29, latMin: 46.82, latMax: 46.84 } };
+    const probe = buildGridCells(meta, [], 0), st = probe.step, mid = probe.cols / 2;
+    const ov = [];
+    for (let r = 0; r < probe.rows; r++) for (let c = 0; c < probe.cols; c++) {
+      const d = Math.hypot(r + 0.5 - mid, c + 0.5 - mid), t = d < mid * 0.45 ? "water" : d < mid * 0.85 ? "hill" : null;
+      if (t) ov.push({ lon: 8.27 + (c + 0.5) * st, lat: 46.82 + (r + 0.5) * st, t, step: st });
+    }
+    const grid = buildGridCells(meta, ov, 0), ws = waterSurface(meta, grid);
+    const inp = erodeInput(meta, [], grid, 0)!, f = erodeField(inp), sx = f.cols / grid.cols;
+    assert.ok(sx > 1 && Math.max(...ws) > 0.1, "前提：细分过、湖在海平面之上");
+    let bad = 0;
+    for (let r = 0; r < f.rows; r++) for (let c = 0; c < f.cols; c++) {
+      const p = Math.min(grid.rows - 1, (r / sx) | 0) * grid.cols + Math.min(grid.cols - 1, (c / sx) | 0);
+      if ((f.data[r * f.cols + c] < ws[p] - 0.02) !== (inp.water[p] === 1)) bad++;
+    }
+    assert.strictEqual(bad, 0, "错判的细格数");
   });
   it("协议：erode 消息不依赖 ctx，未设上下文照样应答且与直调一致", () => {
     const inp = mk();
@@ -854,22 +907,21 @@ describe("A* 开集换堆（2026-08-13 规模引擎批）：弹出序与旧线�
 });
 
 describe("侵蚀落地渐变（core/elev.fieldMix）", () => {
-  const mkF = (cols: number, rows: number, step: number, v: number, shadow?: number): ElevField => ({
+  const mkF = (cols: number, rows: number, step: number, v: number, eroded = false): ElevField => ({
     bb: { lonMin: 100, lonMax: 100 + cols * step, latMin: 30, latMax: 30 + rows * step },
-    step, cols, rows, data: new Float32Array(cols * rows).fill(v),
-    shadow: shadow == null ? null : new Float32Array(cols * rows).fill(shadow)
+    step, cols, rows, data: new Float32Array(cols * rows).fill(v), eroded
   });
   it("t≥1 返回 to 本身（末帧＝真场引用，与硬切逐位一致）", () => {
     const a = mkF(4, 4, 1, 0.2), b = mkF(4, 4, 1, 0.6);
     assert.strictEqual(fieldMix(a, b, 1), b);
   });
   it("同几何中点插值；两场相同处恒不动（渐变只发生在真变了的区域）", () => {
-    const a = mkF(4, 4, 1, 0.2), b = mkF(4, 4, 1, 0.6, 0.4);
+    const a = mkF(4, 4, 1, 0.2), b = mkF(4, 4, 1, 0.6, true);
     a.data[5] = 0.6;   // 此格 from===to＝远处不动
     const m = fieldMix(a, b, 0.5);
     assert.strictEqual(m.data[0], Math.fround(0.4));
     assert.strictEqual(m.data[5], Math.fround(0.6), "两场同值处逐位稳定");
-    assert.strictEqual(m.shadow![0], Math.fround(0.2), "from 无遮蔽＝烘焙阴影按 t 淡入");
+    assert.strictEqual(m.eroded, true, "过渡帧取 to 的侵蚀标记");
     assert.notStrictEqual(m, b);
   });
   it("几何不同（首次落地粗→细）按 to 细格中心双线性重采样再插", () => {
@@ -883,16 +935,16 @@ describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
   /* 4×4 粗格 × 5 倍细分（k 取奇数＝细格中心能恰落粗格中心，「章心恰抬 dh」可整验） */
   const geom = { bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 1, cols: 4, rows: 4 };
   const mkFine = (): ElevField => {
-    const cols = 20, rows = 20, data = new Float32Array(rows * cols), shadow = new Float32Array(rows * cols);
-    for (let i = 0; i < rows * cols; i++) { data[i] = Math.fround(0.1 + (i % 7) * 0.03); shadow[i] = (i % 5) * 0.1; }
-    return { bb: geom.bb, step: 0.2, cols, rows, data, shadow };
+    const cols = 20, rows = 20, data = new Float32Array(rows * cols);
+    for (let i = 0; i < rows * cols; i++) data[i] = Math.fround(0.1 + (i % 7) * 0.03);
+    return { bb: geom.bb, step: 0.2, cols, rows, data, eroded: true };
   };
   it("零增量＝返回原场引用（帧指纹不动、渲染零重传）", () => {
     const fine = mkFine(), base = new Float32Array(16), now = new Float32Array(16);
     base[5] = now[5] = 0.4;   // 同值≠增量
     assert.strictEqual(fieldPlusDelta(fine, base, now, geom), fine);
   });
-  it("补丁窗与全量暴力合成逐位一致（含边角章的支撑域钳制）；纯函数、shadow 引用透传", () => {
+  it("补丁窗与全量暴力合成逐位一致（含边角章的支撑域钳制）；纯函数、侵蚀标记透传", () => {
     for (const [r, c] of [[1, 2], [0, 0], [3, 3]] as const) {
       const fine = mkFine(), keep = fine.data.slice();
       const base = new Float32Array(16), now = new Float32Array(16);
@@ -905,7 +957,7 @@ describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
         want[fr * 20 + fc] += elevBilinear(diff, geom, 100 + (fc + 0.5) * 0.2, 30 + (fr + 0.5) * 0.2);
       assert.deepStrictEqual(out.data, want, `章(${r},${c})：补丁窗裁掉了支撑域`);
       assert.deepStrictEqual(fine.data, keep, "纯函数：原场不被改写");
-      assert.strictEqual(out.shadow, fine.shadow, "遮蔽通道引用透传（等待窗沿用旧烘焙）");
+      assert.strictEqual(out.eroded, fine.eroded, "侵蚀标记透传");
       assert.notStrictEqual(out, fine);
     }
   });
@@ -926,7 +978,7 @@ describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
     const cells = [["plain", "water"]];
     const base = Float32Array.of(0.16, 0.13);                    // 湖床＝水面 0.16 下切 SHORE_E
     const now = Float32Array.of(0.60, 0.13);                     // 笔在 c0 抬了地；湖床不动
-    const fine: ElevField = { bb: geom.bb, step: 0.5, cols: 4, rows: 2, data: new Float32Array(8), shadow: null };
+    const fine: ElevField = { bb: geom.bb, step: 0.5, cols: 4, rows: 2, data: new Float32Array(8), eroded: false };
     for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++) fine.data[r * 4 + c] = c < 2 ? 0.16 : 0.13;
     const out = fieldPlusDelta(fine, base, now, geom, cells);
     assert.ok(out.data[2] > -0.02, "湖格不被按到海平面以下（旧式取类型表 −0.35 之病）：" + out.data[2]);
@@ -940,7 +992,7 @@ describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
     const base = Float32Array.of(2.5, 0.16, 0.16, 0.16);         // 旧粗格：c0 是雕出的高山
     const now = Float32Array.of(0.16, 0.16, 0.16, -0.35);
     const colV = [0.6, 0.6, 0.2, 0.2, 0.01, 0.01, 0.5, 0.5];     // c2 上 0.01＝海岸坡合法低于类型地板
-    const fine: ElevField = { bb: g2.bb, step: 0.5, cols: 8, rows: 2, data: new Float32Array(16), shadow: null };
+    const fine: ElevField = { bb: g2.bb, step: 0.5, cols: 8, rows: 2, data: new Float32Array(16), eroded: false };
     for (let r = 0; r < 2; r++) for (let c = 0; c < 8; c++) fine.data[r * 8 + c] = colV[c];
     const naive = fieldPlusDelta(fine, base, now, g2);           // 旧语义（不传格表）＝病根复现
     const out = fieldPlusDelta(fine, base, now, g2, cells);

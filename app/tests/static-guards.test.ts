@@ -50,6 +50,9 @@ describe("静态守卫：单一真源", () => {
   it("相机经向压缩只有 core/projection.viewCosK 一份", () => {
     assert.deepStrictEqual(hitsOutside(/\? 1 : Math\.cos\(\w+\.lat0 \* Math\.PI \/ 180\)/, []), [], "相机 cos 又被内联了一份——走 viewCosK(cam)");
   });
+  it("晕渲光向只有 render/material.SUN 一份", () => {
+    assert.deepStrictEqual(hitsOutside(/-?0\.6,\s*-?0\.6,\s*0\.9/, []), [], "光向又写成了字面量——两个渲染器读 material.SHADE_LIGHT");
+  });
   it("单飞行闸只有 shell/singleflight 一份", () => {
     assert.deepStrictEqual(hitsOutside(/\b\w*(busy|Busy|eroding)\s*=\s*true\b/, ["shell/singleflight.ts"]), [], "又手写了一份 busy/dirty 闸——走 singleFlight(run, refire)");
   });

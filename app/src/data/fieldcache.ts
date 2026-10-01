@@ -83,7 +83,7 @@ export async function fieldCacheGet(key: string): Promise<ElevField | null> {
         await txDone(t);
       } catch { /* touch 失败＝LRU 次序略旧，无碍 */ }
     })();
-    return { data: e.data, shadow: e.shadow, cols: e.cols, rows: e.rows, step: e.step, bb: e.bb };
+    return { data: e.data, eroded: true, cols: e.cols, rows: e.rows, step: e.step, bb: e.bb };   // 只存侵蚀产出
   } catch (e) { moan(e); return null; }
 }
 
@@ -93,7 +93,7 @@ export async function fieldCachePut(key: string, f: ElevField, now = Date.now())
   if (!db) return;
   try {
     const t = db.transaction(STORES, "readwrite");
-    t.objectStore("fields").put({ key, data: f.data, shadow: f.shadow, cols: f.cols, rows: f.rows, step: f.step, bb: f.bb });
+    t.objectStore("fields").put({ key, data: f.data, cols: f.cols, rows: f.rows, step: f.step, bb: f.bb });
     t.objectStore("touch").put({ key, t: now });
     await txDone(t);
     const t2 = db.transaction(STORES, "readwrite");

@@ -5,8 +5,9 @@
 import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/projection.ts";
 import { kmPerDeg, lonCos } from "../core/geo.ts";
 import { fmtStrength, footCornersLL, isModern, arcDegOf, nodeVisionKm, rangeDirect, unitFacingAt, unitFireDirect, unitFireKm, unitFootKm, unitKind, unitPos, radarKmOf, unitStatusAt, unitStrengthAt, type Leg, type UnitPos } from "../core/units.ts";
-import { maskContour, maskCoverage } from "./maskraster.ts";
-import { pointInPoly } from "../core/geometry.ts";
+import { maskCoverage, maskOutline } from "./maskraster.ts";
+import { pointInPoly, type Pt } from "../core/geometry.ts";
+import { simplifyLine } from "../core/geojson.ts";
 import { UNIT_STATUS } from "../core/constants.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { hexA, hexRGB, tget } from "../core/util.ts";
@@ -325,9 +326,9 @@ export interface RangesOpts {
   focusNodes?: ReadonlySet<string>; // 选中的带火力圈的地点 id：同 focus（两者任一非空即进焦点态）
 }
 
-/* 掩膜的屏幕栅格（位图 + 等值线路径），按 (掩膜, 缩放档, 派系色) 缓存：缩放档＝每格像素数取半倍频程阶梯，
+/* 掩膜的屏幕栅格（位图 + 可达区域的轮廓环），按 (掩膜, 缩放档, 派系色) 缓存：缩放档＝每格像素数取半倍频程阶梯，
    连续缩放不逐帧重建；≥1 一档＝逐格。派系色烙进位图、覆盖率进 alpha，透明度画时给。 */
-interface MaskRaster { key: number; col: string; w: number; h: number; img: HTMLCanvasElement; path: Path2D }
+interface MaskRaster { key: number; col: string; w: number; h: number; img: HTMLCanvasElement; rings: Pt[][]; paths: Map<number, Path2D> }
 const RASTER = new WeakMap<VisMask, MaskRaster>();
 const scaleKey = (s: number): number => s >= 1 ? 1 : Math.pow(2, Math.round(Math.log2(s) * 2) / 2);
 function maskRaster(mask: VisMask, col: string, s: number): MaskRaster | null {
@@ -345,11 +346,27 @@ function maskRaster(mask: VisMask, col: string, s: number): MaskRaster | null {
     px[o] = rgb[0]; px[o + 1] = rgb[1]; px[o + 2] = rgb[2]; px[o + 3] = Math.round(255 * cv.cov[i]);
   }
   g.putImageData(id, 0, 0);
-  const seg = maskContour(cv), path = new Path2D();
-  for (let i = 0; i < seg.length; i += 4) { path.moveTo(seg[i], seg[i + 1]); path.lineTo(seg[i + 2], seg[i + 3]); }
-  const r = { key, col, w: cv.w, h: cv.h, img, path };
+  const rings = maskOutline(cv).map(p => { const q: Pt[] = []; for (let i = 0; i < p.length; i += 2) q.push([p[i], p[i + 1]]); return q; });
+  const r = { key, col, w: cv.w, h: cv.h, img, rings, paths: new Map<number, Path2D>() };
   RASTER.set(mask, r);
   return r;
+}
+/* 轮廓按屏幕像素抽稀（容差 OUTLINE_TOL_PX，亚像素＝看不出）：顶点少了逐帧描边才跟手。逐格档（一格 ≥1 像素）的位图
+   在屏上放大倍数不定，路径按放大倍数的半倍频程分档各存一份，容差折回位图像素。 */
+const OUTLINE_TOL_PX = 0.5;
+function outlinePath(ras: MaskRaster, pxPer: number): Path2D {
+  const k = pxPer > 1 ? Math.pow(2, Math.round(Math.log2(pxPer) * 2) / 2) : 1;
+  let path = ras.paths.get(k);
+  if (path) return path;
+  path = new Path2D();
+  for (const ring of ras.rings) {
+    const q = simplifyLine(ring, OUTLINE_TOL_PX / k);
+    path.moveTo(q[0][0], q[0][1]);
+    for (let i = 1; i < q.length - 1; i++) path.lineTo(q[i][0], q[i][1]);
+    path.closePath();
+  }
+  ras.paths.set(k, path);
+  return path;
 }
 
 /* 斜纹（焦点态）：屏幕空间 7 px 一道、1.3 px 粗，纹向按焦点序轮换（多选时分得开）；经掩膜位图
@@ -433,10 +450,10 @@ export function drawRanges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Met
         ctx.restore();
       }
       const p = new Path2D();
-      p.addPath(ras.path, new DOMMatrix([(x1 - x0) / ras.w, 0, 0, (y1 - y0) / ras.h, x0, y0]));
+      p.addPath(outlinePath(ras, (x1 - x0) / ras.w), new DOMMatrix([(x1 - x0) / ras.w, 0, 0, (y1 - y0) / ras.h, x0, y0]));
       ctx.save();
       ctx.beginPath(); ctx.ellipse(cx, cy, Math.max(1, rx - 2), Math.max(1, ry - 2), 0, 0, 7); ctx.clip();
-      ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.lineJoin = "bevel";   // 环都闭合、无线帽；圆角连接逐帧描边贵一截，细线上看不出差别
       ctx.lineWidth = role ? 1.6 : role === false ? 1 : kind === "fire" ? 1.3 : 1.1;
       ctx.strokeStyle = hexA(col, role ? 1 : role === false ? LINE[kind] * .6 : LINE[kind]);
       ctx.stroke(p);

@@ -1,6 +1,6 @@
 /* 侵蚀真形（渲染层数据源，2026-08 批二）：把「ELEV[类型] + 起伏噪声」的示意高程场重铸成有
    真实谷网与连通山脊的场——上采样细分格 → 水力侵蚀（stream-power，Braun-Willett 2013 单遍
-   隐式解）→ 坡面扩散 → 定向天光遮蔽烘焙。纯函数、确定性（同输入逐位同输出），Worker 与
+   隐式解）→ 坡面扩散。纯函数、确定性（同输入逐位同输出），Worker 与
    主线程回退共用；黄金基准零接触（分类/寻路不读本场）。
    ⚠ 调用门在 erodeInput：「relief=0 且无高程涂改」返 null＝旧 buildElevField 粗格路径逐位不变；
      heightOverrides 栅到粗格后**并入侵蚀基座**（随水系被切割、自带微地形）——手涂高程是雕刻，
@@ -9,9 +9,9 @@
      谷线走，旧档（relief>0）读数会移动；战略图与其战术烘焙在同一位置的起伏也从逐位一致降为
      近似一致（侵蚀依赖网格分辨率，噪声输入仍同锚）。 */
 import { hash2 as sinHash2 } from "./noise.ts";
-import { baseElev, dhOf, elevBilinear, elevUnitM, waterMask, LAND_FLOOR, WATER_CEIL, type ElevField } from "./elev.ts";
+import { baseElev, dhOf, elevBilinear, elevUnitM, waterMask, waterSurface, LAND_FLOOR, SHORE_E, WATER_CEIL, WATER_EPS, type ElevField } from "./elev.ts";
 import { gnoise, makeRelief, mountainness, type ReliefSampler, RELIEF_CARVE_K, RELIEF_GATE_HI, RELIEF_GATE_LO, RELIEF_LAMBDA_KM, RELIEF_M,
-  RELIEF_ROUGH_HI, RELIEF_ROUGH_LO, RELIEF_STRIKE, RELIEF_W, RELIEF_E0, RELIEF_E1, RIDGED_MEAN } from "./relief.ts";
+  RELIEF_ROUGH_HI, RELIEF_ROUGH_LO, RELIEF_STRIKE, RELIEF_W, RELIEF_E0, RELIEF_E1, RIDGED_MEAN, RIDGED_MEAN3, reliefSeedOf } from "./relief.ts";
 import { kmPerDegXY } from "./geo.ts";
 import { activeAt } from "./time.ts";
 import { stampRect, type Grid } from "./grid.ts";
@@ -34,9 +34,13 @@ export interface ErodeInput {
   /** 粗格水域掩码（1=地貌轴为水；水面高程恒定＝侵蚀基准面）。⚠ 只认 lf==="water"：沿海与沼泽是陆地，
       要起伏也要被侵蚀；terrainProps.water 是水军通行语义，不是这里的掩码 */
   water: Uint8Array;
+  /** 粗格水面高程（core/elev.waterSurface）：水陆判据线（水面 − WATER_EPS）是侵蚀基准面与陆格下限，近岸水格的细格床面
+      封在水面 + SHORE_E 以下——取床面当基准面，岸边陆地被刻到线下渲染成水、近岸水格被双线性抬成陆，岸边一圈细陆地夹细水道 */
+  wsurf: Float32Array;
   /** meta.relief（0..1；纯涂改图可为 0——涂改自带微地形，见 hovGrid） */
   amp: number;
-  seed: number;
+  /** 起伏种子（core/relief.reliefSeedOf）；sphere＝球面图（起伏按三维取样） */
+  seed: number; sphere: boolean;
   /** 细分格预算（战略 40 万 / 战术 140 万，erodeInput 按 mapKind 定；4K 静置精修经 ultraInput
       提到主机给的精修预算）——随输入走＝Worker 不看 ctx、erodeKey 自然分流；必填（可选+兜底
       会盖住缺省分支，同 upscaleOf cap 之训） */
@@ -61,7 +65,7 @@ export interface ErodeInput {
       后者曾把手涂的山渲成一堆糊边方块（2026-08-08 河洛实证）；代价＝读数是「侵蚀后」的值，
       峰顶略低于所涂 dh，属雕刻工具的预期语义 */
   hovGrid: Float32Array;
-  /** 米/抽象单位（遮蔽烘焙把高差换算成真实坡度用；erodeInput 取 elevUnitM(meta)） */
+  /** 米/抽象单位（起伏幅度按米换算用；erodeInput 取 elevUnitM(meta)） */
   unitM: number;
 }
 
@@ -123,10 +127,6 @@ const COARSE_MIN = 24;      // 粗级任一轴少于此格数不做（夹具级�
    ⚠ 只给类型路（起伏滑杆 > 0 且类型山地度 ≥ 雕体山地度）＋地板：真高程、手雕图与粗格图逐位不变 */
 const COARSE_D_KM2 = 7.5e-4;
 const DIFF_MONO = 0.5;      // 显式 4 邻扩散的单调上限：逐格系数超过它就拆子步（超 0.5 出棋盘振荡、超 1 发散）
-/* 遮蔽烘焙：高差按真实坡度换算再乘 SHADOW_EXAG（着色器夸张 E∈[exagLo,exagHi] 的中值——烘焙不知道
-   当前缩放，取中值两头各差一倍）；日高 tan=|Lz|/|Lxy|=0.9/0.8485。采样步距渐增＝近处硬阴影、远处软阴影 */
-const SHADOW_EXAG = 6, TAN_SUN = 1.0607, OCC_GAIN = 1.15;
-const SHADOW_STEPS = [1, 2, 3, 5, 8, 12, 17, 24];
 
 /** 细分倍率：总格数不超预算 cap、单轴不超 axisMax（48×32 战略@40万,8→8×；140×94 战术@140万,8→8×、
     280×188 战术@140万,8→5×；精修档 axisMax=16：240×161@1050万→16×＝3840×2576）。
@@ -142,12 +142,13 @@ export function upscaleOf(cols: number, rows: number, cap: number, axisMax: numb
    年份免去 1~2s 重算，「先粗后细」的可见换场（用户实报读感像「还在施工/出错了」）就不再发生。
    指纹自动涵盖上方全部旋钮值；⚠ 改**公式/流程**而不动旋钮的数值行为变更须 EALGO+1，
    否则旧缓存会以旧观感还魂。 */
-const EALGO = 8;   // 8=粗级扩散按 km²（只给类型路）；7=多重网格（粗级先长谷网）；6=起伏改公里锚定的异质多尺度脊线场（core/relief），5=连续基底，4=细带归一，3=4K 精修
+/** 陆地的下限与侵蚀基准面（相对所在格水面）：落在水陆判据线上，抬 1e-4 免 Float32 舍入落到线下显示成水 */
+const SHORE_LAND = -WATER_EPS + 1e-4;
+const EALGO = 12;   // 12=起伏球面按三维取样、梯度集避开坐标轴、起伏种子分存；11=不再烘焙投影阴影（只留晕渲）；10=投影阴影光向改西北；9=侵蚀基准面与陆格下限取水陆判据线；8=粗级扩散按 km²（只给类型路）；7=多重网格（粗级先长谷网）；6=起伏改公里锚定的异质多尺度脊线场（core/relief），5=连续基底，4=细带归一，3=4K 精修
 const KNOB_FP = [EALGO, MAX_FINE, MAX_FINE_TAC, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF, COARSE_K, COARSE_ITERS, COARSE_DIFF, COARSE_MIN, COARSE_D_KM2, DIFF_MONO,
   WARP1, WARP2, TYPE_FEATHER, DETAIL_AMP, DETAIL_SLOPE_K, DETAIL_SLOPE_CAP, EPS,
   RELIEF_M, RELIEF_LAMBDA_KM, RELIEF_W, RELIEF_GATE_LO, RELIEF_GATE_HI, RELIEF_ROUGH_LO, RELIEF_ROUGH_HI,
-  RELIEF_STRIKE, RELIEF_E0, RELIEF_E1, RELIEF_CARVE_K, RIDGED_MEAN,
-  SHADOW_EXAG, TAN_SUN, OCC_GAIN, SHADOW_STEPS].join("|");
+  RELIEF_STRIKE, RELIEF_E0, RELIEF_E1, RELIEF_CARVE_K, RIDGED_MEAN, RIDGED_MEAN3].join("|");
 
 /** 算法代号（指纹的 36 进制缩写）：erodeKey 的前缀；fieldcache 开库时清掉不同代的存货 */
 export const ERODE_VER: string = (() => {
@@ -173,11 +174,12 @@ export function erodeKey(inp: ErodeInput): string {
     a = la; b = lb;
   };
   const head = new Float64Array([inp.bb.lonMin, inp.bb.latMin, inp.bb.lonMax, inp.bb.latMax,
-    inp.step, inp.cols, inp.rows, inp.amp, inp.seed, inp.kmx, inp.kmy, inp.cap, inp.axisMax, inp.acrit, inp.bandS, inp.unitM]);
+    inp.step, inp.cols, inp.rows, inp.amp, inp.seed, inp.kmx, inp.kmy, inp.cap, inp.axisMax, inp.acrit, inp.bandS, inp.unitM, inp.sphere ? 1 : 0]);
   mixA(new Uint32Array(head.buffer));
   mixA(new Uint32Array(inp.elev0.buffer, inp.elev0.byteOffset, inp.elev0.length));   // 整段独立分配＝偏移恒 4 对齐
   mixA(inp.water);
   mixA(new Uint32Array(inp.hovGrid.buffer, inp.hovGrid.byteOffset, inp.hovGrid.length));
+  mixA(new Uint32Array(inp.wsurf.buffer, inp.wsurf.byteOffset, inp.wsurf.length));
   return ERODE_VER + "-" + (a >>> 0).toString(36) + "-" + (b >>> 0).toString(36);
 }
 
@@ -219,10 +221,10 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
     hasHov = true;
   }
   if (amp <= 0 && !hasHov) return null;
-  const elev0 = baseElev(m, grid), water = waterMask(grid);   // 两份都是按 Grid 记忆的共享只读数组（postMessage 克隆）
+  const elev0 = baseElev(m, grid), water = waterMask(grid);   // 三份（含 wsurf）都是按 Grid 记忆的共享只读数组（postMessage 克隆）
   const { kmx, kmy } = kmPerDegXY(m, bb);
   const cap = m.mapKind === "tactical" ? MAX_FINE_TAC : MAX_FINE;
-  return { bb, step, cols, rows, elev0, water, amp, seed: ((m.genSeed as number) | 0) || 1, kmx, kmy, hovGrid,
+  return { bb, step, cols, rows, elev0, water, wsurf: waterSurface(m, grid), amp, seed: reliefSeedOf(m), sphere: m.worldModel !== "flat", kmx, kmy, hovGrid,
     cap, axisMax: 8, acrit: ACRIT_CELLS, bandS: 1, unitM: elevUnitM(m) };
 }
 
@@ -441,9 +443,9 @@ function streamPower(L: Level, iters: number, diff: number, postDiff: number, mf
 
 /** 侵蚀重铸：细分基础场（类型基面域扭曲揉台阶圈＋雕痕＋按山地度渐入的起伏）
     → 粗级 COARSE_ITERS 轮长谷网、切割量铺回细格 → 细级 ITERS 轮（填洼/受水者/汇流面积/隐式下切/扩散）
-    → 侵蚀后表面细节 → 类型钳制 → 遮蔽烘焙。 */
+    → 侵蚀后表面细节 → 类型钳制。 */
 export function erodeField(inp: ErodeInput): ElevField {
-  const { bb, step, cols, rows, elev0, water, amp, seed, kmx, kmy } = inp;
+  const { bb, step, cols, rows, elev0, water, wsurf, amp, seed, kmx, kmy } = inp;
   const sx = upscaleOf(cols, rows, inp.cap, inp.axisMax);
   const FC = cols * sx, FR = rows * sx, n = FC * FR, fstep = step / sx;
   /* 参照细格边＝工作档的细格（精修档 bandS>1 时把它撑回去，见 ErodeInput.bandS）。凡「锚定细格」
@@ -468,7 +470,7 @@ export function erodeField(inp: ErodeInput): ElevField {
       雕痕不扭＝落在用户画的地方）＋雕痕＋起伏，写入 dstB/dstH[i]。山地度两路取大：类型路＝基面高程
       （含雕体）× meta.relief；雕体路＝|dh| 自带（与 meta.relief 解耦＝纯手雕图 relief=0 也有真形）。
       dstT 有则逐格记「类型路主导」（粗级物理扩散的门）。 */
-  const initInto = (dstB: Float32Array, dstH: Float32Array, i: number, lon: number, lat: number, isWater: boolean, relief: ReliefSampler,
+  const initInto = (dstB: Float32Array, dstH: Float32Array, i: number, lon: number, lat: number, isWater: boolean, ws: number, relief: ReliefSampler,
     dstT: Uint8Array | null): void => {
     let b: number;
     if (!isWater) {
@@ -476,25 +478,26 @@ export function erodeField(inp: ErodeInput): ElevField {
       const sa = lat + wA1 * gnoise(lon * fw1 + 53.7, lat * fw1 + 17.3, seed + 202) + wA2 * gnoise(lon * fw2 + 11.9, lat * fw2 + 41.2, seed + 404);
       b = 0.25 * (elevBilinear(elev0, geo, sl - ft, sa - ft) + elevBilinear(elev0, geo, sl + ft, sa - ft)
         + elevBilinear(elev0, geo, sl - ft, sa + ft) + elevBilinear(elev0, geo, sl + ft, sa + ft));
-    } else b = elevBilinear(elev0, geo, lon, lat);
+    } else b = Math.min(elevBilinear(elev0, geo, lon, lat), ws + SHORE_E);   // 双线性会把岸上的陆地值插进来
     const hb = noHov ? 0 : elevBilinear(inp.hovGrid, geo, lon, lat);
     let e = b + hb;
     if (!isWater) {
       const mT = amp > 0 ? amp * mountainness(e) : 0, mC = Math.min(1, Math.abs(hb) * RELIEF_CARVE_K), m = Math.max(mT, mC);
-      if (m > 0) e += relief(lon * kmy, lat * kmy, m) * reliefU;
+      if (m > 0) e += relief(lon, lat, m) * reliefU;
       if (dstT) dstT[i] = amp > 0 && mT >= mC ? 1 : 0;
     }
     dstB[i] = b; dstH[i] = e;
   };
   /* 起伏场（core/relief）：波长按公里定、坐标按经纬×每度公里锚定、逐带按参照细格防混叠。
      ⚠ 参照细格用 rstep（含 bandS）＝精修档不许比工作档多长出一条带（换档换地貌之训）。 */
-  const relief = makeRelief(seed, rstep * kmy);
+  const sc = inp.sphere ? [(bb.lonMin + bb.lonMax) / 2, (bb.latMin + bb.latMax) / 2] as const : null;   // 球面图的图幅中心（走向轴的切平面）
+  const relief = makeRelief(seed, rstep * kmy, kmy, sc);
   for (let r = 0; r < FR; r++) {
     const pr = Math.min(rows - 1, (r / sx) | 0), lat = bb.latMin + (r + 0.5) * fstep;
     for (let c = 0; c < FC; c++) {
       const pc = Math.min(cols - 1, (c / sx) | 0), i = r * FC + c;
       wat[i] = water[pr * cols + pc];
-      initInto(base, h, i, bb.lonMin + (c + 0.5) * fstep, lat, wat[i] === 1, relief, null);
+      initInto(base, h, i, bb.lonMin + (c + 0.5) * fstep, lat, wat[i] === 1, wsurf[pr * cols + pc], relief, null);
     }
   }
 
@@ -507,13 +510,14 @@ export function erodeField(inp: ErodeInput): ElevField {
   if (CC >= COARSE_MIN && CR >= COARSE_MIN) {
     const nc = CC * CR, hc = new Float32Array(nc), h0 = new Float32Array(nc), bc = new Float32Array(nc), wc = new Uint8Array(nc);
     const tc = new Uint8Array(nc);
-    const reliefC = makeRelief(seed, cstep * kmy);
+    const reliefC = makeRelief(seed, cstep * kmy, kmy, sc);
     for (let r = 0; r < CR; r++) {
       const lat = bb.latMin + (r + 0.5) * cstep, pr = Math.max(0, Math.min(rows - 1, Math.floor((lat - bb.latMin) / step)));
       for (let c = 0; c < CC; c++) {
         const lon = bb.lonMin + (c + 0.5) * cstep, pc = Math.max(0, Math.min(cols - 1, Math.floor((lon - bb.lonMin) / step))), i = r * CC + c;
         wc[i] = water[pr * cols + pc];
-        initInto(bc, hc, i, lon, lat, wc[i] === 1, reliefC, tc);
+        initInto(bc, hc, i, lon, lat, wc[i] === 1, wsurf[pr * cols + pc], reliefC, tc);
+        if (wc[i]) hc[i] = wsurf[pr * cols + pc] + SHORE_LAND;   // 基准面＝渲染端的水陆判据线；切割量在水格恒 0
       }
     }
     h0.set(hc);
@@ -532,7 +536,16 @@ export function erodeField(inp: ErodeInput): ElevField {
     }
   }
 
+  const bed = new Float32Array(n);   // 细级同理：侵蚀期间水格站在判据线上，收尾换回床面
+  for (let r = 0; r < FR; r++) {
+    const pr = Math.min(rows - 1, (r / sx) | 0);
+    for (let c = 0; c < FC; c++) {
+      const i = r * FC + c;
+      if (wat[i]) { bed[i] = h[i]; h[i] = wsurf[pr * cols + Math.min(cols - 1, (c / sx) | 0)] + SHORE_LAND; }
+    }
+  }
   streamPower({ h, wat, FC, FR, fstep, kmx, kmy, acritKm2 }, ITERS, DIFF, POST_DIFF, false);
+  for (let i = 0; i < n; i++) if (wat[i]) h[i] = bed[i];
   const h2 = new Float32Array(n);
 
   /* 侵蚀后表面细节（批6）：λ≈3 细格的收尾质感，放在扩散**之后**＝不会被磨掉（批5 的 POST_DIFF=8
@@ -557,35 +570,16 @@ export function erodeField(inp: ErodeInput): ElevField {
     }
   }
 
-  /* 类型钳制（同 buildElevField 的地板/天花语义，参照系换成连续基面——细分后「类型基础值」
-     在格间是插值坡，按最近父格钳会把海岸缓坡重新削成台阶；⚠ 参照恒为**类型基面**（不含涂改）
-     ＝挖地仍不穿类型地板，与旧粗格路径同规） */
-  for (let i = 0; i < n; i++) {
-    h[i] = wat[i] ? Math.min(Math.max(WATER_CEIL, base[i]), h[i]) : Math.max(Math.min(LAND_FLOOR, base[i]), h[i]);
-  }
-
-  /* 定向天光遮蔽（朝光源西南向行进采样；量纲与着色器屏幕坡度一致）——帧时零成本的投影阴影 */
-  const shadow = new Float32Array(n);
-  const dirC = -0.7071, dirR = -0.7071;
-  /* 逐步距常量外提（同式同值：乘积/被除数逐位同，除法照旧是除法——换成乘倒数会漂位）。
-     步距同样按 bandS 撑回**参照细格**：不撑则精修档的光线只走到工作档 1/bandS 的距离处
-     （井陉 480m→170m），山投下的影子当场短一截＝换档又换了张皮（工作档 ×1＝逐位不变）。 */
-  const sstep = SHADOW_STEPS.map(s => s * inp.bandS);
-  const offC = sstep.map(s => dirC * s), offR = sstep.map(s => dirR * s);
-  const dKm = sstep.map(s => s * fstep * Math.hypot(kmx, kmy));   // 对角步距 km（经向已折 cos）
-  const kE = inp.unitM / 1000 * SHADOW_EXAG;                        // 抽象高差 → 米 → 真实 tan × 夸张
-  for (let r = 0; r < FR; r++) for (let c = 0; c < FC; c++) {
-    const i = r * FC + c;
-    if (wat[i]) continue;
-    let occ = 0;
-    for (let k = 0; k < SHADOW_STEPS.length; k++) {
-      const sc = Math.max(0, Math.min(FC - 1, Math.round(c + offC[k])));
-      const sr = Math.max(0, Math.min(FR - 1, Math.round(r + offR[k])));
-      const t = (h[sr * FC + sc] - h[i]) / dKm[k] * kE - TAN_SUN;
-      if (t > occ) occ = t;
+  /* 类型钳制（地板/天花同 buildElevField；参照＝连续类型基面、不含涂改：按最近父格钳会把海岸缓坡削回台阶，挖地不穿类型地板）。
+     陆格另不低于所在粗格的水陆判据线：低于它就在渲染端判成水，岸边出现细水道与孤立的细陆地。 */
+  for (let r = 0; r < FR; r++) {
+    const pr = Math.min(rows - 1, (r / sx) | 0);
+    for (let c = 0; c < FC; c++) {
+      const i = r * FC + c;
+      h[i] = wat[i] ? Math.min(Math.max(WATER_CEIL, base[i]), h[i])
+        : Math.max(Math.min(LAND_FLOOR, base[i]), wsurf[pr * cols + Math.min(cols - 1, (c / sx) | 0)] + SHORE_LAND, h[i]);
     }
-    shadow[i] = Math.min(1, occ * OCC_GAIN);
   }
 
-  return { data: h, shadow, cols: FC, rows: FR, step: fstep, bb };
+  return { data: h, eroded: true, cols: FC, rows: FR, step: fstep, bb };
 }

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { calOf, fmtDayTime, fmtMD, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearForm, fromT, monthLabel, monthsOf, parseYMD, parseYearForm, tacT, yearMonthOf, yearMonthT, yearSpanT, ymdOverflow } from "../src/core/calendar.ts";
 import { COS_LAT_FLOOR, distKm, haversine, kmPerDeg, kmPerDegXY, lonCos, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
-import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, seedTerrain } from "../src/core/terrain.ts";
+import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, GEN_SEED_MAX, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
 import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, type Grid } from "../src/core/grid.ts";
@@ -26,11 +26,12 @@ import { changedBox, coastInk, planTile, sameGeom, tileCovers, unionBB, wrapCopi
 import { drawFactions, type LoopBudget } from "../src/render/factions.ts";
 import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, WORLD_KM_PER_DEG, WORLD_RADIUS_KM } from "../src/core/world.ts";
 import { BAKE_CAP, blankTacticalWorld, createTacticalWorld } from "../src/core/tactical.ts";
+import { reliefSeedOf } from "../src/core/relief.ts";
 import { MAX_RUN_DIM, eachPaintCenter, paintCellSet, paintDims, paintStep, resamplePaintRuns, runsDims, territoryLoops } from "../src/core/territory.ts";
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
-import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, decoGate, exagFor, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, shadeGain, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
+import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, beachOf, decoGate, exagFor, marshGate, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, SHADE_LIGHT, shadeGain, slopeKOf, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
 import { terrainOpts, contourStepOf } from "../src/render/renderer.ts";
 import { CLIMATE, CLIMATE_ORDER, allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/ui/stamps.ts";
@@ -406,7 +407,7 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     assert.strictEqual(paperOf({}), false, "战略图缺省仍是深海");
   });
   it("分层设色 ELEV_RAMP（2026-09-07 CMP-2）：滩带 <180 m、绿到 800 m、褐到 2500 m、3600 m 近白；GL 与 CPU 同一张表", () => {
-    const m = (meters: number) => rampColor(meters / 2000);   // 出厂标定 1 单位＝2000 m
+    const m = (meters: number) => rampColor(meters / 2000, true);   // 出厂标定 1 单位＝2000 m；战术图（有滩带）
     assert.deepStrictEqual(m(100), [214, 205, 168], "滩带恒色");
     for (const h of [200, 400, 600, 750]) { const [r, g] = m(h); assert.ok(g > r, `${h} m 仍是绿主导（绿转褐曾早在 600 m）：${m(h)}`); }
     { const [r, g] = m(900); assert.ok(r > g, `900 m 起转黄褐：${m(900)}`); }
@@ -417,8 +418,19 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     for (let i = 1; i < ELEV_RAMP.length; i++) assert.ok(ELEV_RAMP[i][0] >= ELEV_RAMP[i - 1][0], "档位按高程升序（同高程＝台阶）");
     const g = rampGLSL();
     const segs = ELEV_RAMP.filter((s, i) => i > 0 && s[0] !== ELEV_RAMP[i - 1][0]).length;
-    assert.strictEqual((g.match(/mix\(/g) || []).length, segs, "GLSL 段数＝非退化档对数（同高程台阶不成段）");
+    assert.strictEqual((g.match(/mix\(/g) || []).length, 2 * segs + 1, "GLSL 段数＝非退化档对数（同高程台阶不成段）；elevLow 多海平面到 180 m 一段");
     assert.ok(!/NaN|Infinity|undefined/.test(g) && g.includes("e<1.800000"), "GLSL 与表同一份数字");
+  });
+  it("战略图无滩带（2026-10-01 作者拍板）：0–180 m 是绿色系、与 180 m 以上连续；战术图滩带照旧", () => {
+    const s = (m: number) => rampColor(m / 2000, false), t = (m: number) => rampColor(m / 2000, true);
+    const d = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    for (const h of [-50, 0, 60, 120, 179]) { const [r, g, b] = s(h); assert.ok(g > r && g > b, `${h} m 绿主导：${s(h)}`); }
+    assert.ok(d(s(179.9), s(180.1)) < 1, "180 m 处无台阶");
+    for (let h = 0; h < 800; h += 20) assert.ok(d(s(h), s(h + 20)) < 8, `相邻 20 m 色差有上限（${h} m）`);
+    for (const h of [200, 800, 2000, 3600]) assert.deepStrictEqual(s(h), t(h), `180 m 以上两种图同色（${h} m）`);
+    assert.deepStrictEqual(t(100), [214, 205, 168], "战术图滩带照旧");
+    assert.strictEqual(beachOf({ mapKind: "tactical" }), true);
+    assert.strictEqual(beachOf({}), false, "战略图（缺键）无滩带");
   });
   it("elevFromGenH：分段线性、各地貌带端点与类型值对齐、海面侧 ≤ SHORE_E", () => {
     const M = { genStyle: "continent" as const }, sea = genSeaLevel(M);
@@ -472,7 +484,7 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     const grid = { bb, step: 0.01, cols, rows, cells: [] } as unknown as Grid;
     const data = new Float32Array(cols * rows);
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) data[r * cols + c] = 0.1 + c * 0.01;   // 东西向坡 10 m/km＝0.01
-    const f: ElevField = { bb, step: 0.01, cols, rows, data, shadow: null };
+    const f: ElevField = { bb, step: 0.01, cols, rows, data, eroded: false };
     const s = contourStats(f, grid, new Float32Array(cols * rows), F);
     assert.ok(Math.abs(s.slope75 - 0.01) < 1e-6, "坡度 " + s.slope75);
     assert.ok(Math.abs(s.rangeM - 190) < 1e-3, "范围 " + s.rangeM);   // 100～290 m
@@ -670,6 +682,25 @@ describe("程序化地形", () => {
     for (let lat = 23; lat < 54; lat += 2.3) for (let lon = 83; lon < 130; lon += 2.9)
       if (genTerrainAt({ ...meta, genSeed: 1234 }, lon, lat) !== genTerrainAt({ ...meta, genSeed: 5678 }, lon, lat)) diff++;
     assert.ok(diff > 20, `差异格数 ${diff} 应 > 20`);
+  });
+  it("种子相位以 GEN_SEED_MAX 为周期：s 与 s+周期地类逐格相同，周期内的相邻种子不同", () => {
+    let same = 0, next = 0, n = 0;
+    for (let lat = 23; lat < 54; lat += 2.3) for (let lon = 83; lon < 130; lon += 2.9, n++) {
+      const t = genTerrainAt({ ...meta, genSeed: 1234 }, lon, lat);
+      if (t === genTerrainAt({ ...meta, genSeed: 1234 + GEN_SEED_MAX }, lon, lat)) same++;
+      if (t !== genTerrainAt({ ...meta, genSeed: 1235 }, lon, lat)) next++;
+    }
+    assert.strictEqual(same, n, "孪生种子＝同一块大陆：随机种子取到周期之外只是重复");
+    assert.ok(next > 20, `相邻种子差异格数 ${next} 应 > 20`);
+  });
+  it("起伏种子（R9-#12）：缺键回落生成器种子再回落 1；非自动生成的新图各写一份，自动生成的随 genSeed", () => {
+    assert.strictEqual(reliefSeedOf(undefined), 1);
+    assert.strictEqual(reliefSeedOf({ genSeed: 5 }), 5);
+    assert.strictEqual(reliefSeedOf({ genSeed: 5, reliefSeed: 9 }), 9);
+    const bb = { lonMin: 100, lonMax: 110, latMin: 30, latMax: 40 };
+    assert.strictEqual(blankWorld({ 名称: "甲", worldModel: "sphere", terrain: "plain", genSeed: 77, bbox: bb }, "d").meta.reliefSeed, 77);
+    assert.strictEqual(blankWorld({ 名称: "乙", worldModel: "sphere", terrain: "auto", genSeed: 77, bbox: bb }, "d").meta.reliefSeed, undefined, "自动生成的图起伏跟着换一换走");
+    assert.strictEqual(blankTacticalWorld({ 名称: "丙", lon: 114, lat: 38, diaKm: 20, battleYear: 1, genSeed: 88 }, "d").meta.reliefSeed, 88);
   });
   it("plain 模式恒为平原", () => assert.strictEqual(seedTerrain({ terrain: "plain" }, 100, 30), "plain"));
   it("genHeightAt 与 genTerrainAt 同一份 h（2026-09-02）：按 h 推的地貌轴与分类器逐点一致", () => {
@@ -1326,6 +1357,7 @@ describe("新建战术战场 blankTacticalWorld（柱B）", () => {
     for (const k of ["calendar", "contourM", "genSeed", "parent", "planetRadiusKm"]) assert.ok(!(k in m), `${k} 缺省不该落盘`);
     // 2026-08-08 改判：新战场起伏缺省 0.6——没有起伏＝类型与手雕高程都渲成光滑圆包（河洛实证）；显式 0＝有意全平仍不落盘
     assert.strictEqual(m.relief, 0.6, "起伏缺省 0.6 落盘");
+    assert.strictEqual(m.terrain, "plain", "地形初稿缺省空白平原（自动生成在任何战场都是一座环海孤岛）");
     assert.ok(!("relief" in blankTacticalWorld({ ...S, relief: 0 }, "d").meta), "显式 0＝有意全平，不落盘");
     assert.strictEqual(blankTacticalWorld({ ...S, relief: 0.3 }, "d").meta.relief, 0.3, "显式值原样");
     const e = blankTacticalWorld({ ...S, calendar: { kind: "earth" }, contourM: 100, battleYear: -204 }, "d").meta;
@@ -1672,7 +1704,7 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     assert.strictEqual(a.dpr, 1); assert.strictEqual(terrainOpts(meta, 0.001, {}, 1, "shaded", 2.5, [800, 600], 0.05).dpr, 2.5, "设备像素比原样进渲染选项（等高线像素量据此锚 CSS 像素）");
     assert.deepStrictEqual(a.px, [800, 600], "可见区物理像素原样进渲染选项（画布可大于可见区，渲染器只画这一块）");
     assert.strictEqual(a.gain, shadeGain(meta, 0.001) * 1.5, "增益＝shadeGain × 本机地形立体感");
-    assert.strictEqual(a.paper, paperOf(meta)); assert.deepStrictEqual(a.snow, snowSpec(meta)); assert.deepStrictEqual(a.clim, climLook(meta));
+    assert.strictEqual(a.paper, paperOf(meta)); assert.strictEqual(a.beach, beachOf(meta)); assert.strictEqual(a.slopeK, slopeKOf(meta)); assert.deepStrictEqual(a.snow, snowSpec(meta)); assert.deepStrictEqual(a.clim, climLook(meta));
     assert.strictEqual(a.cStep, 0.05, "等距原样进渲染选项（调用方经 contourStepOf 取档）");
     assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded", 1, [800, 600], 0.05).wrap, false, "平面世界不环绕");
   });
@@ -1860,6 +1892,8 @@ describe("战术图生成（快照烘焙）", () => {
     assert.deepStrictEqual(w.meta.parent, { map: "m1", mapName: "母图", event: "evHL", eventName: "会战" });
     assert.strictEqual(w.meta.climate, undefined, "母图没设气候档＝子图也不写");
     assert.strictEqual(createTacticalWorld({ ...srcWorld(), meta: { ...srcWorld().meta, climate: "arid" } }, ev, 200, {}).meta.climate, "arid", "气候档随图继承");
+    assert.strictEqual(w.meta.reliefSeed, reliefSeedOf(srcWorld().meta), "起伏种子随图继承（物化后子图没有 genSeed）");
+    assert.strictEqual(createTacticalWorld({ ...srcWorld(), meta: { ...srcWorld().meta, reliefSeed: 4242 } }, ev, 200, {}).meta.reliefSeed, 4242);
     /* 平面化三处：worldModel 恒 flat；kmPerDeg＝母图每纬度里程（球面母图按半径换算,原样携带的
        旧 kmPerDeg 111 只对平面母图有意义）；星球半径不携带（平面无半径） */
     assert.strictEqual(w.meta.worldModel, "flat");
@@ -2136,8 +2170,25 @@ describe("渲染材质表", () => {
     assert.deepStrictEqual(materialFor("forest"), materialFor("plain/forest"));
     assert.deepStrictEqual(materialFor("__proto__"), materialFor("plain"));
   });
+  it("沼泽按坡淡出（R9-#6）：宏观坡 2° 以下照画、3° 以上不画；slopeK 按本图米/度换算，0＝不门控", () => {
+    const tac: Meta = { mapKind: "tactical", worldModel: "flat", kmPerDeg: 111.19 };
+    const k = slopeKOf(tac), smacAt = (deg: number): number => Math.tan(deg * Math.PI / 180) / k;
+    close(k, 2000 / 111190, 12);
+    assert.strictEqual(marshGate(smacAt(1.9), k), 1);
+    assert.strictEqual(marshGate(smacAt(3.1), k), 0);
+    const mid = marshGate(smacAt(2.5), k);
+    assert.ok(mid > 0.3 && mid < 0.7, `2.5° 处半淡：${mid}`);
+    assert.strictEqual(marshGate(1e6, 0), 1, "slopeK 缺省 0＝旧行为");
+    assert.ok(slopeKOf({ worldModel: "sphere", planetRadiusKm: 10000 }) < k, "球面每度更长＝同一 smac 坡更缓");
+  });
   it("materialTable 与 allComposites 同序同长（GL uniform 数组按 compositeIndex 对齐）", () => {
     assert.strictEqual(materialTable().length, allComposites().length);
+  });
+  it("晕渲光自西北：朝西北的坡比朝东南的亮（法线按渲染器的 (左−右, 上−下, 1) 取）", () => {
+    const lit = (nx: number, ny: number): number => { const l = Math.hypot(nx, ny, 1); return (nx * SHADE_LIGHT[0] + ny * SHADE_LIGHT[1] + SHADE_LIGHT[2]) / l; };
+    assert.ok(lit(-1, -1) > lit(1, 1) + 0.5, "西北坡（西低东高、北低南高）应受光");
+    assert.ok(Math.abs(lit(-1, 1) - lit(1, -1)) < 1e-12, "东北坡与西南坡同为侧光");
+    close(Math.hypot(...SHADE_LIGHT), 1, 12);
   });
   it("晕渲夸张（2026-09-02 拍板：战术 8→4 随缩放；格越粗越大）：exagFor 格边档×缩放档；shadeGain 把旧式每度法线换算成 E 倍真实坡度", () => {
     // 战术 100 m 格：一格 ≥5 px（放大）16 倍，≤0.5 px（整幅）8 倍，之间单调
@@ -2228,7 +2279,11 @@ describe("渲染材质表", () => {
       if (k === "temperate") continue;
       assert.ok(L.n >= 3 && L.n <= CLIM_STOPS, `${k}：段数 ${L.n}`);
       for (let i = 1; i < L.n; i++) assert.ok(L.ramp[i * 4] >= L.ramp[(i - 1) * 4], `${k}：色阶高程须不降`);
-      assert.ok(Math.abs(L.ramp[0] - 180 / 2000) < 1e-7, `${k}：滩带到 180 m`);
+      assert.ok(L.ramp[0] === 0 && Math.abs(L.ramp[4] - 180 / 2000) < 1e-7, `${k}：战略图自海平面起、180 m 接本档低地色`);
+      const T = climLook({ climate: k, mapKind: "tactical" })!;
+      assert.ok(Math.abs(T.ramp[0] - 180 / 2000) < 1e-7 && T.ramp[0] === T.ramp[4], `${k}：战术图滩带到 180 m、其上一道台阶`);
+      assert.deepStrictEqual(Array.from(T.ramp.slice(8)), Array.from(L.ramp.slice(8)), `${k}：180 m 以上两种图同一色阶`);
+      assert.notStrictEqual(T.key, L.key, `${k}：渲染缓存键分得开两种图`);
       assert.ok(Math.abs(L.ramp[(L.n - 2) * 4] - CLIMATE[k].snowM / 2000) < 1e-6, `${k}：岩灰落在雪线`);
       const px = (i: number): number[] => [1, 2, 3].map(j => L.ramp[i * 4 + j] * 255);
       for (let i = 1; i < L.n; i++) if (L.ramp[i * 4] > L.ramp[(i - 1) * 4]) {
@@ -2238,7 +2293,7 @@ describe("渲染材质表", () => {
       assert.deepStrictEqual(climRampColor(L, -1), px(0), "低于首档取首档");
       assert.deepStrictEqual(climRampColor(L, 99), px(L.n - 1), "高于末档取末档");
     }
-    const bor = climLook({ climate: "boreal" })!, b0 = bor.ramp[0];
+    const bor = climLook({ climate: "boreal", mapKind: "tactical" })!, b0 = bor.ramp[0];
     assert.deepStrictEqual(climRampColor(bor, b0 + 0.01, 0.7), climRampColor(bor, b0), "纬度改正不把滩带上方的低地刷回滩色（宽纬跨球面图的低纬一侧）");
     assert.deepStrictEqual(climRampColor(bor, b0 - 0.01, 0.7), climRampColor(bor, b0 - 0.01), "滩带本身不随纬度移");
     assert.deepStrictEqual(climRampColor(bor, 0.5, -0.125), climRampColor(bor, 0.625), "改正为负＝按更高处取色（高纬一侧气候带下移）");
@@ -2290,7 +2345,7 @@ describe("标高点 core/spots：真山顶按突出度、水面按连通块", ()
   for (let r = 26; r < rows; r++) for (let c = 50; c < cols; c++) data[r * cols + c] = Math.max(data[r * cols + c], 0.16 + (c - 50) * 0.01);   // 贴东边的坡
   for (const [c0, r0, w, h] of [[40, 10, 8, 6], [52, 24, 3, 2], [4, 30, 3, 2]]) for (let r = r0; r < r0 + h; r++) for (let c = c0; c < c0 + w; c++) data[r * cols + c] = 0;   // 湖床
   for (let r = 0; r < 4; r++) for (let c = 0; c < 10; c++) data[r * cols + c] = -0.3;
-  const f: SpotField = { bb, step, cols, rows, data, shadow: null };
+  const f: SpotField = { bb, step, cols, rows, data, eroded: false };
   const vf = { ...f, wsurf, gstep: step, gcols: cols, grows: rows };
   const at = (i: number): string => `${i % cols},${Math.floor(i / cols)}`;
   it("峰表只收真山顶：最高者突出度无穷、矮峰＝顶高减关键鞍部；平台一座、贴边的坡与湖岸平地不成峰", () => {
@@ -2318,11 +2373,18 @@ describe("标高点 core/spots：真山顶按突出度、水面按连通块", ()
   });
   it("水面：连通块一块一枚、在湖心；海不标；同值且相近只标大的，异值或相远都标", () => {
     const km = { kmx: 100, kmy: 100 };   // 每格 0.1 km：两块同值湖的标点相距 1～2 km
-    const w = waterSpots(grid, wsurf, km, 0);
+    const w = waterSpots(grid, wsurf, 2000, km, 0);
     assert.deepStrictEqual(w.map(s => Math.round(s.e * 2000)), [300, 300, 400], "按块大小降序；贴图幅边的海（水面 0）不标");
     assert.ok(w[0].lon > 100.042 && w[0].lon < 100.046 && w[0].lat > 30.012 && w[0].lat < 30.014, `应在湖心一带，实得 ${w[0].lon},${w[0].lat}`);
-    assert.deepStrictEqual(waterSpots(grid, wsurf, km, 2).map(s => Math.round(s.e * 2000)), [300, 400], "同值 2 km 内只标大湖，异值照标");
-    assert.deepStrictEqual(waterSpots(grid, wsurf, km, 1).map(s => Math.round(s.e * 2000)), [300, 300, 400], "同值但相距超过合并距离＝都标");
+    assert.deepStrictEqual(waterSpots(grid, wsurf, 2000, km, 2).map(s => Math.round(s.e * 2000)), [300, 400], "同值 2 km 内只标大湖，异值照标");
+    assert.deepStrictEqual(waterSpots(grid, wsurf, 2000, km, 1).map(s => Math.round(s.e * 2000)), [300, 300, 400], "同值但相距超过合并距离＝都标");
+  });
+  it("水面按显示值判：取整为 0 的不标，取整相同即同值（连续值的湖面不靠浮点全等）", () => {
+    const km = { kmx: 100, kmy: 100 }, ws = new Float32Array(cols * rows);
+    const put = (c0: number, r0: number, w: number, h: number, v: number): void => { for (let r = r0; r < r0 + h; r++) for (let c = c0; c < c0 + w; c++) ws[r * cols + c] = v; };
+    put(40, 10, 8, 6, 0.0004); put(52, 24, 3, 2, 0.0006); put(4, 30, 3, 2, 0.0002);   // 0.8 m、1.2 m、0.4 m
+    assert.deepStrictEqual(waterSpots(grid, ws, 2000, km, 2).map(s => Math.round(s.e * 2000)), [1], "0.8 与 1.2 都显示 1＝同值只标大块；0.4 显示 0＝不标");
+    assert.deepStrictEqual(waterSpots(grid, ws, 2000, km, 0).map(s => Math.round(s.e * 2000)), [1, 1], "不合并时两块各一枚，显示 0 的仍不标");
   });
 });
 

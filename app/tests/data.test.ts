@@ -569,7 +569,7 @@ import type { ElevField } from "../src/core/elev.ts";
 describe("侵蚀场缓存（data/fieldcache）", () => {
   const mkField = (tag: number): ElevField => ({
     bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 0.25, cols: 16, rows: 16,
-    data: new Float32Array(256).fill(tag), shadow: new Float32Array(256).fill(tag / 2)
+    data: new Float32Array(256).fill(tag), eroded: true
   });
 
   /* ⚠ 本测须最先触碰缓存模块（open 是模块级记忆化，换代清场只在首开时跑一次）：
@@ -589,14 +589,14 @@ describe("侵蚀场缓存（data/fieldcache）", () => {
     assert.strictEqual(await fieldCacheGet("e旧代-xx-yy"), null, "旧算法代的场绝不可再命中（观感还魂）");
   });
 
-  it("存取往返：场逐位一致（数据/遮蔽/几何），未命中＝null", async () => {
+  it("存取往返：场逐位一致（数据/几何），读出的恒是侵蚀场；未命中＝null", async () => {
     const f = mkField(3);
-    f.data[5] = 0.123; f.shadow![9] = 0.9;
+    f.data[5] = 0.123;
     await fieldCachePut(ERODE_VER + "-rt", f);
     const got = await fieldCacheGet(ERODE_VER + "-rt");
     assert.ok(got);
     assert.deepStrictEqual(got!.data, f.data);
-    assert.deepStrictEqual(got!.shadow, f.shadow);
+    assert.strictEqual(got!.eroded, true);
     assert.deepStrictEqual([got!.cols, got!.rows, got!.step, got!.bb], [f.cols, f.rows, f.step, f.bb]);
     assert.strictEqual(await fieldCacheGet(ERODE_VER + "-没存过"), null);
   });

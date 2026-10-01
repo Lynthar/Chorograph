@@ -1,12 +1,13 @@
 /* 等高线注记的纯几何（render/contourlab）：注记等高距的取法、等值线链成折线、按曲率定位。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { LAB_MAX_LEVELS, drawContourLabels, labStepFor, placeLabels, tracePolylines, type LabSurf } from "../src/render/contourlab.ts";
+import { LAB_MAX_LEVELS, drawContourLabels, labStepFor, placeLabels } from "../src/render/contourlab.ts";
+import { tracePolylines, type IsoSurf } from "../src/render/maskraster.ts";
 import { buildGridCells } from "../src/core/grid.ts";
 import { coarseField } from "../src/core/elev.ts";
 
 /** 采样面：行 0 在上，v(x,y) 给值（NaN＝不出线） */
-function surf(w: number, h: number, v: (x: number, y: number) => number): LabSurf {
+function surf(w: number, h: number, v: (x: number, y: number) => number): IsoSurf {
   const a = new Float32Array(w * h);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) a[y * w + x] = v(x, y);
   return { w, h, v: a };

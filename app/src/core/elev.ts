@@ -8,7 +8,7 @@
 import { kmPerDeg, kmPerDegXY, lonCos } from "./geo.ts";
 import { terrainProps } from "./constants.ts";
 import { GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, genHeightAt, genLandformOf, genSeaLevel } from "./terrain.ts";
-import { makeRelief, mountainness, RELIEF_M } from "./relief.ts";
+import { makeRelief, mountainness, reliefSeedOf, RELIEF_M } from "./relief.ts";
 import { activeAt } from "./time.ts";
 import { stampRect, type Grid } from "./grid.ts";
 import type { BBox, HeightOverride, Meta } from "./types.ts";
@@ -22,36 +22,32 @@ export const LAND_FLOOR = 0.10, WATER_CEIL = -0.06;
 /** 场几何（采样只需这四样——Grid 与细分 ElevField 都满足，结构子型） */
 export interface FieldGeom { bb: BBox; step: number; cols: number; rows: number }
 /** 高程场（含几何）：粗格=coarseField 包装 buildElevField 产出；细分=core/erode.erodeField。
-    shadow=定向天光遮蔽 0..1（烘焙产物，粗格恒 null；只进光照，不进色阶/等高线/读数）。 */
-export interface ElevField extends FieldGeom { data: Float32Array; shadow: Float32Array | null }
+    eroded＝经侵蚀的细分场（粗格恒 false）：渲染端据此给装饰按坡门控、宏观纹理降档。 */
+export interface ElevField extends FieldGeom { data: Float32Array; eroded: boolean }
 /** 粗格场包装（旧 buildElevField 产出 + 网格几何；relief=0 契约路径） */
 export function coarseField(grid: FieldGeom, data: Float32Array): ElevField {
-  return { bb: grid.bb, step: grid.step, cols: grid.cols, rows: grid.rows, data, shadow: null };
+  return { bb: grid.bb, step: grid.step, cols: grid.cols, rows: grid.rows, data, eroded: false };
 }
 
 /** 侵蚀落地渐变的一帧：display = from + (to − from)·t，几何不同（首次落地：粗格→细分）时
     from 先按 to 的细格中心双线性重采样。落地若一帧硬切，笔下区域从平滑预演跳成刻好的真形，
     读感像「出错了自己纠正」（用户实报「不可靠感」）——渐变把结算变成有意的「沉降定形」。
     远处两场逐位相同＝渐变只发生在真正变了的区域；**t≥1 返回 to 本身**（末帧＝真场引用，
-    与直接换场逐位一致）。shadow 同插（from 无 shadow 按 0＝烘焙阴影淡入）。 */
+    与直接换场逐位一致）。eroded 取 to 的。 */
 export function fieldMix(from: ElevField, to: ElevField, t: number): ElevField {
   if (t >= 1) return to;
   const n = to.cols * to.rows;
   const same = from.cols === to.cols && from.rows === to.rows && from.step === to.step;
-  const data = new Float32Array(n), shadow = to.shadow ? new Float32Array(n) : null;
+  const data = new Float32Array(n);
   for (let r = 0; r < to.rows; r++) {
     const lat = to.bb.latMin + (r + 0.5) * to.step;
     for (let c = 0; c < to.cols; c++) {
       const i = r * to.cols + c;
       const f0 = same ? from.data[i] : elevBilinear(from.data, from, to.bb.lonMin + (c + 0.5) * to.step, lat);
       data[i] = f0 + (to.data[i] - f0) * t;
-      if (shadow) {
-        const s0 = !from.shadow ? 0 : same ? from.shadow[i] : elevBilinear(from.shadow, from, to.bb.lonMin + (c + 0.5) * to.step, lat);
-        shadow[i] = s0 + (to.shadow![i] - s0) * t;
-      }
     }
   }
-  return { bb: to.bb, step: to.step, cols: to.cols, rows: to.rows, data, shadow };
+  return { bb: to.bb, step: to.step, cols: to.cols, rows: to.rows, data, eroded: to.eroded };
 }
 
 /** 侵蚀等待窗的显示合成：细分场 + 粗格增量（now − base）按细格中心双线性上采样叠加。
@@ -106,7 +102,7 @@ export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32
       data[i] = v;
     }
   }
-  return { bb: fine.bb, step: fine.step, cols: fine.cols, rows: fine.rows, data, shadow: fine.shadow };
+  return { bb: fine.bb, step: fine.step, cols: fine.cols, rows: fine.rows, data, eroded: fine.eroded };
 }
 
 /** 默认高程标定：1 抽象单位 = 2000 米（雪线 0.82≈1640m、示意山 0.9≈1800m 的合理观感） */
@@ -256,6 +252,8 @@ export const SUP_LO_PX = 28, SUP_HI_PX = 56, SUP_DASH_PX = 16;
       （见 waterSurfaceOf）：海的水面是 0＝逐位同旧式，内陆湖的水面在岸线高度上。
    ⚠ 只改基底不改分类；水格恒 ≤ 水面 + SHORE_E＝渲染端「低于水面即水」的判据成立。 */
 export const BASE_SLOPE_DEG = 15, SEABED_SLOPE_DEG = 3, SHORE_E = -0.03, BASE_BLUR_KM = 0.6;
+/** 水陆判据：高程低于所在格水面 − WATER_EPS 即水（视线判定与侵蚀的陆地下限读它；着色器与 CPU 瓦片写的是字面 0.02，要改一起改） */
+export const WATER_EPS = 0.02;
 /** 生成器连续高程 h → 抽象高程：分段线性，各地貌带的均值落回类型值（平原 0.16 / 丘陵 0.5 / 山地 0.9） */
 export function elevFromGenH(h: number, meta: Meta | undefined): number {
   const sea = genSeaLevel(meta);
@@ -443,18 +441,19 @@ function reliefField(m: Meta, grid: Grid): Float32Array {
   const hit = reliefMemo.get(grid);
   if (hit) return hit;
   const amp = Math.max(0, Math.min(1, +(m.relief as number) || 0));
-  const seed = ((m.genSeed as number) | 0) || 1;
+  const seed = reliefSeedOf(m);
   const { bb, step, cols, rows } = grid;
   const base = baseElev(m, grid), water = waterMask(grid);
   const kmd = kmPerDeg(m);
-  const relief = makeRelief(seed, step * kmd), reliefU = RELIEF_M / elevUnitM(m);
+  const sc = m.worldModel !== "flat" ? [(bb.lonMin + bb.lonMax) / 2, (bb.latMin + bb.latMax) / 2] as const : null;
+  const relief = makeRelief(seed, step * kmd, kmd, sc), reliefU = RELIEF_M / elevUnitM(m);
   const f = new Float32Array(rows * cols);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     const i = r * cols + c;
     let e: number = base[i];
     if (amp > 0 && !water[i]) {
       const mm = amp * mountainness(e);
-      if (mm > 0) e += relief((bb.lonMin + (c + 0.5) * step) * kmd, (bb.latMin + (r + 0.5) * step) * kmd, mm) * reliefU;
+      if (mm > 0) e += relief(bb.lonMin + (c + 0.5) * step, bb.latMin + (r + 0.5) * step, mm) * reliefU;
     }
     f[i] = e;
   }

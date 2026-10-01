@@ -18,6 +18,7 @@ import { activeAt, ownerAt, paintLayersAt } from "./time.ts";
 import { paintStep, resamplePaintRuns } from "./territory.ts";
 import { calOf, fmtYear, yearSpanT } from "./calendar.ts";
 import { erodeMode, type ErodeMode } from "./erode.ts";
+import { reliefSeedOf } from "./relief.ts";
 import type { CalendarCfg, GenStyle, Meta, PaintLayer, TerrainMode, TerrainOverride, World, WorldNode } from "./types.ts";
 
 const clone = <T>(o: T): T => JSON.parse(JSON.stringify(o));
@@ -75,6 +76,7 @@ export function blankTacticalWorld(s: BlankTacSpec, today: string): World {
   };
   if (s.calendar) meta.calendar = s.calendar;             // 历法创建时定死（改 kind 会重释一切已存日戳）
   if (s.terrain === "auto") { meta.genSeed = s.genSeed; meta.genStyle = s.genStyle; }
+  else if (s.genSeed) meta.reliefSeed = s.genSeed;   // 同 blankWorld
   /* 起伏缺省 0.6：新战场没有起伏＝类型与手雕高程都渲成光滑圆包（2026-08-08 实证——侵蚀与
      微地形全系于此系数；三张示例战术图均取 0.7 同档）。显式给 0 仍尊重＝有意全平,不落盘 */
   const relief = s.relief ?? 0.6;
@@ -200,6 +202,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
     bbox, 版本: "0.6", 更新: opts.today || ""
   };
   if (m.relief != null) meta.relief = m.relief;           // 地势起伏与高程标定随图继承
+  meta.reliefSeed = reliefSeedOf(m);                      // 起伏种子随图继承（物化后子图没有 genSeed，不带就落回种子 1）
   if (m.elevUnitM != null) meta.elevUnitM = m.elevUnitM;
   if (m.contourM != null) meta.contourM = m.contourM;
   if (m.climate) meta.climate = m.climate;                // 气候档随图继承（子图恒平面＝只取档值，不随纬度）

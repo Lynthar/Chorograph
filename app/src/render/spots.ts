@@ -44,7 +44,7 @@ export function drawSpotHeights(ctx: CanvasRenderingContext2D, cam: Camera, meta
     }
   }
   let water = waterCache.get(grid);
-  if (!water) waterCache.set(grid, water = waterSpots(grid, waterSurface(meta, grid), kmPerDegXY(meta, grid.bb), SPOT_WATER_SEP_KM));
+  if (!water) waterCache.set(grid, water = waterSpots(grid, waterSurface(meta, grid), U, kmPerDegXY(meta, grid.bb), SPOT_WATER_SEP_KM));
   ctx.save();
   ctx.textBaseline = "middle"; ctx.textAlign = "left";
   ctx.lineJoin = "round"; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(246,239,220,.85)";

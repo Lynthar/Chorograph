@@ -10,7 +10,7 @@
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps } from "../core/constants.ts";
 import { elevBilinear, elevSmooth, coarseField, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
-import { climRampColor, materialFor, octaveGate, decoGate, rampColor, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, type ClimLook } from "./material.ts";
+import { climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, type ClimLook } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
 import type { TerrainRenderer, TerrainRenderOpts } from "./renderer.ts";
@@ -189,10 +189,10 @@ const cw = (eh: number, itv: number, ad: number, w0: number, w1: number): number
 };
 const oddK = (eh: number, itv: number): number => Math.round(eh / itv) % 2 === 0 ? 0 : 1;
 
-function elevRamp(e: number, ws: number, clim?: ClimLook, dl = 0): [number, number, number] {
+function elevRamp(e: number, ws: number, beach: boolean, clim?: ClimLook, dl = 0): [number, number, number] {
   if (e < ws - 0.02) { const t = Math.max(0, Math.min(1, (e - ws + 0.35) / 0.33)); return [40 + t * 60, 90 + t * 70, 132 + t * 66]; }
   if (clim && clim.n > 0) return climRampColor(clim, e, dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移；同 GL）
-  return rampColor(e);   // 陆地分层设色＝material.ELEV_RAMP 一张表（GL 同源）
+  return rampColor(e, beach);   // 陆地分层设色（GL 同源）
 }
 
 export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
@@ -360,15 +360,14 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const gain = opts.gain ?? 1;   // 晕渲增益（material.shadeGain；趟一的谷影与趟二的法线共用）
     const microOn = octaveGate(pxpd, MICRO_F0) > 0;   // 整幅视角＝全部新增细节为零，趟一退化为旧管线成本
     const texW0 = FX.texW / pxpd;   // 纹理疏密逐像素乘，故基值在外
-    const eroded = field!.shadow ? 1 : 0;   // 场经侵蚀（同 GL uEroded）：装饰按坡门控、宏观 fbm4 降到 1/4
+    const eroded = field!.eroded ? 1 : 0;   // 场经侵蚀（同 GL uEroded）：装饰按坡门控、宏观 fbm4 降到 1/4
     const fine = field!.step < grid!.step * 0.999 || eroded ? 1 : 0;   // 装饰噪声门只在细分/侵蚀场生效（粗格=旧图逐位契约）
     const elev = new Float32Array(W * H), esh = new Float32Array(W * H), ed = new Float32Array(W * H), cav = new Float32Array(W * H);
     const wsv = new Float32Array(W * H);   // 逐像素水面（同 GL：与晕渲高程同取扭曲后坐标）
     const mgx = new Float32Array(W * H), mgy = new Float32Array(W * H);   // 宏观场坡（±1 格、无噪声；同 GL mn）
-    const occ = new Float32Array(W * H);   // 烘焙遮蔽（侵蚀场 shadow 通道；粗格恒 0）
     /* 球面图气候带的纬度改正（同 GL dLat：雪线、林线、色阶同一个），只随纬度＝逐行一个值；
        林线淡出按未扭曲点的双线性画面场高程判（同 GL cd.x），趟一算好趟二复用 */
-    const clim = opts.clim, snow = opts.snow, rowShift = new Float64Array(H);
+    const clim = opts.clim, snow = opts.snow, beach = opts.beach !== false, slopeK = opts.slopeK ?? 0, rowShift = new Float64Array(H);
     if (snow && snow.lat) for (let y = 0; y < H; y++) rowShift[y] = (snowLatM(Math.abs(L2P(0, y)[1])) - snow.refM) / snow.unitM;
     const tfade = clim ? new Float32Array(W * H) : null;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
@@ -400,13 +399,12 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const texW = texW0 * (FX.texPatchLo + (FX.texPatchHi - FX.texPatchLo) * sstep(0.32, 0.68, pn));
       if (tfade) { const t = clim!.treeE + rowShift[y]; tfade[i] = sstep(t, t + clim!.band, elevBil(p[0], p[1])); }
       const twc = tfade ? MT.c * (1 - tfade[i]) : MT.c;   // 林线以上林冠纹理淡出（同 GL）
-      esh[i] = microOn ? e + texAt(rx, ry, twc, MT.d, twrEff, MT.m, pxpd) * texW : e;
+      esh[i] = microOn ? e + texAt(rx, ry, twc, MT.d, twrEff, MT.m * marshGate(smac, slopeK), pxpd) * texW : e;
       const es = elevSmooth(field!.data, field!, p[0], p[1]);
       ed[i] = rule === field ? es : elevSmooth(rule!.data, rule!, p[0], p[1]);   // 画面场为精修档时线不跟画面
       cav[i] = Math.max(-0.10, Math.min(0.16, (es - elevBil(p[0], p[1])) / field!.step * gain * 2 * NRM0 * (1 + FX.macroW) * FX.cavAmp));   // 同 GL：按真实坡度并随夸张走
-      occ[i] = field!.shadow ? elevBilinear(field!.shadow, field!, lonW, latW) : 0;   // 烘焙遮蔽（同 GL occAt(llw)）
     }
-    const light = [-0.6, -0.6, 0.9], ll = Math.hypot(...light); light[0] /= ll; light[1] /= ll; light[2] /= ll;
+    const light = SHADE_LIGHT;
     const nrm = 4.5 * (pxpd / 14) * gain;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = y * W + x, e = elev[i], ws = wsv[i], p = L2P(x, y);
@@ -423,10 +421,10 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       if (sl > 1e-6) { n2x *= slc / sl; n2y *= slc / sl; }
       const nl = Math.hypot(n2x, n2y, 1);
       const dn = (n2x / nl) * light[0] + (n2y / nl) * light[1] + (1 / nl) * light[2];
-      const lt = sstep(FX.shadeKnee, 1, dn) * (1 - occ[i] * FX.shadowK);   // 投影阴影连同暖冷响应一起压暗（同 GL）
+      const lt = sstep(FX.shadeKnee, 1, dn);
       const sh = FX.shadeLo + (FX.shadeHi - FX.shadeLo) * lt;
       const shR = FX.cool[0] + (FX.warm[0] - FX.cool[0]) * lt, shG = FX.cool[1] + (FX.warm[1] - FX.cool[1]) * lt, shB = FX.cool[2] + (FX.warm[2] - FX.cool[2]) * lt;
-      let col = elevRamp(e, ws, clim, rowShift[y]);
+      let col = elevRamp(e, ws, beach, clim, rowShift[y]);
       if (e >= ws - 0.02) {
         matAt(rx, ry);   // 趟二重取材质（色调/反照率/岩化）——省四条逐像素缓存数组的内存
         if (MT.tintW > 0) {
@@ -441,13 +439,15 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
           const a = MT.d * FX.sandMix;
           col = [col[0] * (1 - a) + FX.sandC[0] * 255 * a, col[1] * (1 - a) + FX.sandC[1] * 255 * a, col[2] * (1 - a) + FX.sandC[2] * 255 * a];
         }
-        if (MT.m > 0.003) {
-          const a = MT.m * FX.marshMix;
+        const mw0 = MT.m > 0.003 ? MT.m * marshGate(Math.hypot(mgx[i], mgy[i]) / (2 * step), slopeK) : 0;   // 沼泽按坡淡出（同 GL）
+        if (mw0 > 0.003) {
+          const a = mw0 * FX.marshMix;
           col = [col[0] * (1 - a) + FX.marshC[0] * 255 * a, col[1] * (1 - a) + FX.marshC[1] * 255 * a, col[2] * (1 - a) + FX.marshC[2] * 255 * a];
-          const pg = sstep(FX.poolLo, FX.poolHi, pxpd * step) * MT.m * (opts.paper ? 1 : 0);   // px/格；只在战术图（同 GL）
+          const pg = sstep(FX.poolLo, FX.poolHi, pxpd * step) * mw0 * (opts.paper ? 1 : 0);   // px/格；只在战术图（同 GL）
           if (pg > 0.003) {
             const pf = FX.poolF / (grid ? grid.step : 1);
-            const pn = 0.65 * vnoise(rx * pf + 7.3, ry * pf + 3.9) + 0.35 * vnoise(rx * pf * 2.7 + 51.3, ry * pf * 2.7 + 17.9);   // 两八度（同 GL）
+            const qx = rx * pf, qy = ry * pf, [c1, s1, c2, s2] = POOL_ROT;   // 两八度梯度噪声各转一角（同 GL）
+            const pn = 0.5 + FX.poolK * (0.65 * gnoise(qx * c1 - qy * s1 + 7.3, qx * s1 + qy * c1 + 3.9) + 0.35 * gnoise(2.7 * (qx * c2 - qy * s2) + 51.3, 2.7 * (qx * s2 + qy * c2) + 17.9));
             const pw = sstep(0.58, 0.68, pn);
             const mw = sstep(0.40, 0.58, pn) * (1 - pw) * pg * FX.mudMix;
             col = [col[0] * (1 - mw) + FX.mudC[0] * 255 * mw, col[1] * (1 - mw) + FX.mudC[1] * 255 * mw, col[2] * (1 - mw) + FX.mudC[2] * 255 * mw];
@@ -511,9 +511,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     };
     for (const [a, b] of p.r === p.f && r === f ? [[p.f, f]] : [[p.f, f], [p.r, r]]) {
       if (a === b) continue;
-      if (!sameGeom(a, b) || !a.shadow !== !b.shadow) return "all";
+      if (!sameGeom(a, b) || a.eroded !== b.eroded) return "all";
       add(changedBox(a.data, b.data, b.cols, b.rows), b);
-      if (a.shadow && a.shadow !== b.shadow) add(changedBox(a.shadow, b.shadow!, b.cols, b.rows), b);
     }
     if (p.ws !== cellWS) add(changedBox(p.ws, cellWS!, g.cols, g.rows), g);
     if (p.mat !== cellMat) {
@@ -571,7 +570,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const copies = wrapCopies(viewBB, grid.bb, !!opts.wrap);
       /* 键须罩住瓦片读到的每个选项（增益随缩放变）：数据不变时瓦片留用，漏一项＝改那项设置后画面不动 */
       const S = opts.snow;
-      const key = `g${(opts.gain ?? 1).toFixed(2)}d${opts.dpr ?? 1}` + (opts.contour ? `c${opts.cStep || 0.12}` : "") + (opts.paper ? "p" : "")
+      const key = `g${(opts.gain ?? 1).toFixed(2)}d${opts.dpr ?? 1}` + (opts.contour ? `c${opts.cStep || 0.12}` : "") + (opts.paper ? "p" : "") + (opts.beach !== false ? "b" : "") + `m${opts.slopeK ?? 0}`
         + (S ? `s${S.base},${S.lat ? 1 : 0},${S.refM},${S.unitM}` : "") + (opts.clim ? `k${opts.clim.key}` : "");
       const next: Tile[] = [];
       for (const c of copies) {

@@ -11,12 +11,16 @@ import { DEFAULT_BBOX, type Landform, type Meta, type TerrainId } from "./types.
 export const GEN_COAST_BAND = 0.035, GEN_HILL = 0.61, GEN_MOUNTAIN = 0.77;
 export const genSeaLevel = (meta: Meta | undefined): number => (meta && meta.genStyle) === "archipelago" ? 0.44 : 0.40;
 
+const SEED_PH = 233;
+/** 种子相位的周期：种子 s 与 s + GEN_SEED_MAX 的海岸与地类逐格相同，随机取种子只在 1..GEN_SEED_MAX 里取 */
+export const GEN_SEED_MAX = SEED_PH * SEED_PH;
+
 interface GenFrame { u: number; v: number; sx: number; sy: number; isle: boolean }
 function genFrame(meta: Meta | undefined, lon: number, lat: number): GenFrame {
   const m = meta || {}, bb = m.bbox || DEFAULT_BBOX;
   const seed = ((m.genSeed as number) | 0) || 1, isle = m.genStyle === "archipelago";
   // seed → 噪声采样相位偏移（错开不同世界的噪声，实现"换一块大陆"）
-  const sx = (seed % 233) * 0.371 + 13.7, sy = (Math.floor(seed / 233) % 233) * 0.531 + 7.13;
+  const sx = (seed % SEED_PH) * 0.371 + 13.7, sy = (Math.floor(seed / SEED_PH) % SEED_PH) * 0.531 + 7.13;
   const u = (lon - bb.lonMin) / ((bb.lonMax - bb.lonMin) || 1), v = (lat - bb.latMin) / ((bb.latMax - bb.latMin) || 1);
   return { u, v, sx, sy, isle };
 }

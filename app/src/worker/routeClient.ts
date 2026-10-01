@@ -18,8 +18,7 @@ export interface RouteClient {
   readonly usingWorker: boolean;
   setContext(ctx: RouteContext): void;
   route(A: RoutePoint, B: RoutePoint, arm: Arm): Promise<ComputedRoute | null>;
-  /** roads=本单专用官道格（对象域编辑后 ctx 里那份可能陈旧，见 routeProto legs 注）；缺省用 ctx 的 */
-  legs(unit: Unit, roads?: Set<string>): Promise<Leg[] | null>;
+  legs(unit: Unit): Promise<Leg[] | null>;
   /** 侵蚀重铸（自带输入不依赖 setContext；Worker 挂掉时返 null——调用方保持粗格） */
   erode(input: ErodeInput): Promise<ElevField | null>;
   /** 4K 静置精修（第三车道，懒建）：几十秒的精修单不许挤占工作档侵蚀车道。
@@ -120,11 +119,17 @@ export function createRouteClient(): RouteClient {
      结构化克隆整个 grid.cells——196 万格字符串数组一次克隆上百 ms,连笔＝每 move 白扔一次。
      故 setContext 只同步镜像到回退态（存引用,零克隆）并**记下待送件**,真正 postMessage 推迟到
      下一个 route/legs 请求之前（flushCtx）——查询永远先于自己看到最新上下文（同信道保序），
-     没有查询的连笔一次都不用克隆。 */
-  let ctxMsg: RouteRequest | null = null, vfMsg: RouteRequest | null = null, vfCur: ViewField | null = null;
+     没有查询的连笔一次都不用克隆。
+     网格是不可变实例：与 Worker 手里那份同一实例就不随 ctx 再送（1400² 一次序列化主线程约 65 ms）。 */
+  let ctxMsg: (RouteRequest & { t: "ctx" }) | null = null, vfMsg: RouteRequest | null = null, vfCur: ViewField | null = null;
+  let sentGrid: Grid | undefined;
   const flushCtx = () => {
     if (!w) return;
-    if (ctxMsg) { w.postMessage(ctxMsg); ctxMsg = null; }
+    if (ctxMsg) {
+      const { grid, ...rest } = ctxMsg;
+      w.postMessage(grid === sentGrid ? rest : ctxMsg);
+      sentGrid = grid; ctxMsg = null;
+    }
     if (vfMsg) { w.postMessage(vfMsg); vfMsg = null; }
   };
   function ask(msg: RouteRequest & { id: number }): Promise<RouteReply> {
@@ -135,7 +140,7 @@ export function createRouteClient(): RouteClient {
   return {
     get usingWorker() { return !!w; },
     setContext(ctx) {
-      const msg: RouteRequest = { t: "ctx", meta: ctx.meta, grid: ctx.grid, roads: ctx.roads, world: ctx.world, yearNow: ctx.yearNow };
+      const msg = { t: "ctx" as const, meta: ctx.meta, grid: ctx.grid, roads: ctx.roads, world: ctx.world, yearNow: ctx.yearNow };
       handleRouteMsg(fallback, msg);          // 镜像到回退态（引用赋值,便宜;Worker 侧见 flushCtx）
       if (w) ctxMsg = msg;
     },
@@ -143,8 +148,8 @@ export function createRouteClient(): RouteClient {
       const r = await ask({ t: "route", id: ++seq, A, B, arm });
       return r.t === "route" ? r.res : null;
     },
-    async legs(unit, roads) {
-      const r = await ask(roads ? { t: "legs", id: ++seq, unit, roads } : { t: "legs", id: ++seq, unit });
+    async legs(unit) {
+      const r = await ask({ t: "legs", id: ++seq, unit });
       return r.t === "legs" ? r.legs : null;
     },
     setViewField(field) {

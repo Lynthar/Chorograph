@@ -8,13 +8,13 @@ import { kmPerDeg, kmPerDegXY } from "../core/geo.ts";
 import { elevUnitM, waterSurface, type ElevField } from "../core/elev.ts";
 import { isModern, arcDegOf, nodeEyeM, nodeVisionKm, rangeDirect, unitAltAt, unitArm, unitEyeM, unitFireDirect, unitFireKm, unitPos, radarKmOf, radarMOf, radarTgtMOf, unitVantageM } from "../core/units.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
-import { REFRACT_OPTICAL, REFRACT_RADAR, TARGET_M, noMasks, type ViewField } from "../core/viewshed.ts";
+import { REFRACT_OPTICAL, REFRACT_RADAR, TARGET_M, noMasks, type ViewField, type VisMask } from "../core/viewshed.ts";
 import { VANTAGE_GAIN_M, VANTAGE_M } from "../core/constants.ts";
 import { layerOn } from "../render/overlay.ts";
 import { worldSig, yearSig, editVerSig, layersSig, isTacSig, ruleFieldSig, visMaskSig, detectSig, visFailSig, showToast } from "../ui/state.ts";
 import { errText } from "../core/util.ts";
 import { singleFlight } from "./singleflight.ts";
-import type { SightReq, SightRes, VisReq, VisTag } from "../worker/routeProto.ts";
+import type { SightReq, SightRes, VisReq, VisRes, VisTag } from "../worker/routeProto.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Meta, World } from "../core/types.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -100,6 +100,9 @@ export function viewFieldOf(meta: Meta, f: ElevField, grid: Grid): ViewField {
 export function wireViewshed(ctx: ShellCtx): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let seq = 0, pushed: ElevField | null = null, lineage: Meta | undefined;
+  /* 掩膜按单复用：视线判定对（规则场, 观察者参数）是纯函数，两者都没变的圈沿用上一份掩膜对象（屏幕栅格缓存随之命中），
+     只发变了的圈——否则拖一个部队或改一处无关对象，所有圈都要重算、重建栅格。换规则场或换图即清空。 */
+  let memo: { f: ElevField; masks: Map<string, VisMask | null> } | null = null;
   /* 失败只在转入失败态时响一次（拖动连发不刷屏）；读数的「未算出 / 沿用上次结果」由卡片读 visFailSig */
   const failed = (why: string): void => {
     if (!visFailSig.peek()) showToast(`视域计算失败（${why}）　图上可达区未更新`, { err: true });
@@ -108,20 +111,29 @@ export function wireViewshed(ctx: ShellCtx): () => void {
   const flight = singleFlight((meta: Meta, f: ElevField, grid: Grid, obs: VisReq[], sights: SightReq[]) => {
     const my = ++seq;
     if (pushed !== f) { ctx.routeClient.setViewField(viewFieldOf(meta, f, grid)); pushed = f; }
+    if (!memo || memo.f !== f) memo = { f, masks: new Map() };
+    const have = memo.masks, keys = obs.map(o => JSON.stringify(o)), need: VisReq[] = [], needKeys: string[] = [];
+    obs.forEach((o, i) => { if (!have.has(keys[i])) { need.push(o); needKeys.push(keys[i]); } });
+    const vp: Promise<VisRes[] | null> = need.length ? ctx.routeClient.viewshed(need) : Promise.resolve([]);
     const sp: Promise<SightRes[] | null> = sights.length ? ctx.routeClient.sight(sights) : Promise.resolve([]);
-    return Promise.all([ctx.routeClient.viewshed(obs), sp]).then(([res, sres]) => {
+    return Promise.all([vp, sp]).then(([res, sres]) => {
       if (seq !== my) return;
       if (!res || !sres) failed("计算线程不可用");
       else if (visFailSig.peek()) visFailSig.value = false;
       if (res) {
-        const m = noMasks();
-        for (const r of res) {
-          if (!r.mask) continue;
-          const tab = m[r.owner], e = tab.get(r.id) || {};
-          if (r.ring === "fire") (e.fire || (e.fire = []))[r.idx] = r.mask;
-          else e[r.ring] = r.mask;
-          tab.set(r.id, e);
-        }
+        const fresh = new Map<string, VisMask | null>();
+        needKeys.forEach((k, i) => fresh.set(k, res[i] ? res[i].mask : null));   // 应答与单同序
+        const next = new Map<string, VisMask | null>(), m = noMasks();
+        obs.forEach((o, i) => {
+          const mask = (fresh.has(keys[i]) ? fresh.get(keys[i]) : have.get(keys[i])) ?? null;
+          next.set(keys[i], mask);
+          if (!mask) return;
+          const tab = m[o.owner], e = tab.get(o.id) || {};
+          if (o.ring === "fire") (e.fire || (e.fire = []))[o.idx] = mask;
+          else e[o.ring] = mask;
+          tab.set(o.id, e);
+        });
+        if (memo && memo.f === f) memo.masks = next;          // 只留这一批：拖动途经的位置不累积
         visMaskSig.value = m;
       }
       if (sres) {
@@ -143,7 +155,7 @@ export function wireViewshed(ctx: ShellCtx): () => void {
     clearTimeout(timer);
     /* 换图与撤销重做换 meta 对象、同图编辑不换：换了就作废在飞的单——结果按 id 落表，别的图里同 id 的对象会接走它。
        同图编辑不作废：拖动期间照样落中间结果 */
-    if (w && w.meta !== lineage) { lineage = w.meta; seq++; }
+    if (w && w.meta !== lineage) { lineage = w.meta; seq++; memo = null; }
     const want = !!w && tac && visObservers(w, T, L, w.meta || {}).length > 0;
     if (!want) {
       seq++; flight.clearDirty();                           // 令牌作废＝换图/清圈后到货的旧结果不落 sig，也不为它补发

@@ -4,7 +4,7 @@
    下沉 d²/2R′。两种判据：视线（沿线记最大仰角切线）；曲射弹道（固定射角 θ 的真空抛物线——目标在 d 处
    可达 ⇔ q(d)＝(z₀+tanθ·d−z_t)/d² 非负且不大于沿线之前每格的 q，一趟运行最小值即判完）。纯函数、同输入逐位同输出。
    sightTo 是点对点的同一判据（飞行部队被谁看见）：眼位与地面取样和掩膜共用。 */
-import { elevBilinear, type FieldGeom } from "./elev.ts";
+import { elevBilinear, WATER_EPS, type FieldGeom } from "./elev.ts";
 import type { BBox } from "./types.ts";
 
 /** 视线判定的场：规则场数据 + 粗格水面（水格抬到水面再判——湖上的船不在湖底）+ 物理标定 */
@@ -42,8 +42,6 @@ export const TARGET_M = 2;
 export const REFRACT_OPTICAL = 1 / 7;
 /** 雷达的大气折射系数（4/3 地球半径） */
 export const REFRACT_RADAR = 1 / 4;
-/** 水陆判据与渲染端同式（e < ws − 0.02 为水） */
-const WATER_EPS = 0.02;
 
 /** 规则场上的地面取样：surface＝格 (c,r) 里高程 e 处的地面（米），水格抬到水面——观察者与目标同一判据，
     船在湖面上、不在湖底；bil＝细格坐标 (px,py) 的格心双线性高程——观察者与沿线采样同一张面 */

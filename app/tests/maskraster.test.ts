@@ -1,7 +1,7 @@
-/* 掩膜屏幕栅格（render/maskraster）：逐格翻行、面积平均缩小守恒、等值线几何。 */
+/* 掩膜屏幕栅格（render/maskraster）：逐格翻行、面积平均缩小守恒、轮廓环几何。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { maskContour, maskCoverage, type Coverage } from "../src/render/maskraster.ts";
+import { maskCoverage, maskOutline, type Coverage } from "../src/render/maskraster.ts";
 import type { VisMask } from "../src/core/viewshed.ts";
 
 /** 掩膜：on(c, r) 为真的格可达，行 0 在南 */
@@ -38,25 +38,29 @@ describe("掩膜屏幕栅格（render/maskraster）", () => {
     }
   });
 
-  it("等值线：6×6 位图里 3×3 实心块的 0.5 等值线＝8 条直边 + 4 条切角，总长 8+2√2，全在块外扩半像素之内", () => {
+  /** 环的总长与点列（扁平 [x,y,…]） */
+  const ringLen = (p: number[]): number => { let s = 0; for (let i = 2; i < p.length; i += 2) s += Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1]); return s; };
+
+  it("轮廓：6×6 位图里 3×3 实心块的 0.5 等值线＝一条闭合环（8 条直边 + 4 条切角，总长 8+2√2），全在块外扩半像素之内", () => {
     const cov = new Float32Array(36);
     for (let y = 2; y <= 4; y++) for (let x = 2; x <= 4; x++) cov[y * 6 + x] = 1;
-    const seg = maskContour({ w: 6, h: 6, cov } as Coverage);
-    assert.equal(seg.length / 4, 12);
-    let len = 0;
-    for (let i = 0; i < seg.length; i += 4) {
-      len += Math.hypot(seg[i + 2] - seg[i], seg[i + 3] - seg[i + 1]);
-      for (const k of [0, 1, 2, 3]) assert.ok(seg[i + k] >= 2 && seg[i + k] <= 5, `端点 ${seg[i + k]} 出框`);
-    }
-    assert.ok(Math.abs(len - (8 + 2 * Math.SQRT2)) < 1e-6, `总长 ${len}`);
+    const rings = maskOutline({ w: 6, h: 6, cov } as Coverage);
+    assert.equal(rings.length, 1, "一块＝一环（描边不再是一堆各带线帽的散段）");
+    const p = rings[0];
+    assert.deepEqual([p[0], p[1]], [p[p.length - 2], p[p.length - 1]], "首尾同点");
+    assert.equal(p.length / 2 - 1, 12, "12 段");
+    for (const v of p) assert.ok(v >= 2 && v <= 5, `点 ${v} 出框`);
+    assert.ok(Math.abs(ringLen(p) - (8 + 2 * Math.SQRT2)) < 1e-6, `总长 ${ringLen(p)}`);
   });
 
-  it("等值线：半覆盖像素按线性插值定交点位置；全空或全满无线段", () => {
+  it("轮廓：半覆盖像素按线性插值定交点位置；全空无环、全满只有外框一环", () => {
     const cov = Float32Array.from([0, 0, 0, 0, 0.75, 0, 0, 0, 0]);   // 3×3 中央 0.75
-    const seg = maskContour({ w: 3, h: 3, cov } as Coverage);
-    assert.equal(seg.length / 4, 4, "一个像素四条切角");
-    for (let i = 0; i < seg.length; i++) assert.ok(Math.abs(seg[i] - 1.5) <= 1 / 3 + 1e-6, `交点 ${seg[i]} 应在中心 ±1/3`);   // 线段数组是 Float32
-    assert.equal(maskContour({ w: 2, h: 2, cov: new Float32Array(4) } as Coverage).length, 0);
-    assert.equal(maskContour({ w: 2, h: 2, cov: new Float32Array(4).fill(1) } as Coverage).length, 4 * 8, "全满＝只有外框（位图外视为 0）");
+    const rings = maskOutline({ w: 3, h: 3, cov } as Coverage);
+    assert.equal(rings.length, 1); assert.equal(rings[0].length / 2 - 1, 4, "一个像素四条切角");
+    for (const v of rings[0]) assert.ok(Math.abs(v - 1.5) <= 1 / 3 + 1e-6, `交点 ${v} 应在中心 ±1/3`);
+    assert.equal(maskOutline({ w: 2, h: 2, cov: new Float32Array(4) } as Coverage).length, 0);
+    const full = maskOutline({ w: 2, h: 2, cov: new Float32Array(4).fill(1) } as Coverage);
+    assert.equal(full.length, 1, "位图外视为 0＝外框一环");
+    assert.equal(full[0].length / 2 - 1, 8, "外框 8 段");
   });
 });

@@ -131,7 +131,7 @@ export function stampRect(o: { lon: number; lat: number; step?: number }, g: Pic
 
 /** 官道降低沿途寻路代价：当年生效的道路连线按 40 段插值标记所经格（"r,c"） */
 export function roadCellSet(nodes: WorldNode[], edges: Edge[], yearNow: number, grid: Grid): Set<string> {
-  /* ⚠ 建索引而非 `nodes.find`：本函数在**每次网格重建与每次拨年**都跑（boot/host/orchestrate 三个调用点），
+  /* ⚠ 建索引而非 `nodes.find`：本函数在**每次网格重建、拨年与编辑**后都跑（host 与 boot 两个调用点），
      原先每条 road 边查两次、每次 O(N)——几千地点 + 上千官道即每次拨年千万次字符串比较，拖时间轴直接卡住。
      ⚠ **必须首个命中优先**（`has` 后才 `set`）：`nodes.find` 取的是第一个同 id 者，而 `new Map(nodes.map(…))`
      是后者覆盖前者——重复 id 的档上两者结果不同，这里是平价锁定模块，不能换语义。 */

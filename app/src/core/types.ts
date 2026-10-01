@@ -49,6 +49,7 @@ export interface Meta {
   bbox?: BBox;
   terrain?: TerrainMode;
   genSeed?: number;
+  reliefSeed?: number;        // 起伏种子（core/relief.reliefSeedOf）：缺键＝genSeed，再缺＝1
   genStyle?: GenStyle;
   vault?: string;
   mapKind?: "tactical";
