@@ -10,7 +10,7 @@ import { initCalTemplates } from "../ui/CalendarOverlay.tsx";
 import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
   modeSig, armSig, routePtsSig, routeResSig, routeBusySig, setMode,
   editSubSig, editVerSig, isTacSig, linkTypeSig, tacReqSig,
-  paintFactionSig, flyReqSig, helpOpenSig, openSettings, selectOp,
+  paintFactionSig, flyReqSig, helpOpenSig, prefsOpenSig, importOpenSig, openSettings, selectOp,
   analysisSubSig, uiPrefsSig, RELIEF_STEPS, subDaySig, readOnlySig, libActionsSig, terrainStyleSig,
   selNode, selEdge, selUnit, selFaction,
   type EditSub }
@@ -65,6 +65,8 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   if (dl.wantOvl === "help") helpOpenSig.value = true;
   else if (dl.wantOvl === "settings") openSettings("app");
   else if (dl.wantOvl === "create") openSettings("create");
+  else if (dl.wantOvl === "prefs") prefsOpenSig.value = true;
+  else if (dl.wantOvl === "import") importOpenSig.value = true;
   if (dl.wantDrawer === "layers") layersOpenSig.value = true;   // 截图/演示：直开抽屉「层」面
   if (dl.wantBase) terrainStyleSig.value = dl.wantBase;          // #base=flat：直开推演底图
   if (dl.wantGrain === "hour" && isTacSig.peek()) subDaySig.value = true;    // #grain=hour：战术图直开「时」粒度（时轨展开）

@@ -4,11 +4,13 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
+import { regenRivers } from "../src/ui/editops.ts";
 import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, outsideCount, pullIntoFrame, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
 import { DH_MAX_M } from "../src/core/elev.ts";
+import { blankWorld, genRiverKey } from "../src/core/world.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive, setTerrainStyle, terrainStyleSig,
   modeSig, paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, railToolOf, readOnlySig, redoWorld, revealLayersFor, selMembers, selSig, setRailTool, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
@@ -203,6 +205,31 @@ describe("编辑操作内核", () => {
     e.reverse = true;
     applyEdgeForm(e, { 名称: "", note: "", kv: "", since: "", until: "" });
     assert.strictEqual(e.reverse, true, "未传 reverse 不动既有值");
+  });
+  it("生成器的河：建图写进带标记的河；改生成参数只换带标记的，表单改过的与手画的归用户；离开自动生成只撤不画", () => {
+    const w = blankWorld({ 名称: "甲", worldModel: "sphere", planetRadiusKm: 10000, terrain: "auto", genVer: 2, genStyle: "mono", genSeed: 2,
+      bbox: { lonMin: 100, lonMax: 112, latMin: 28, latMax: 37 } }, "2026-10-03");
+    const n0 = w.edges.length;
+    assert.ok(n0 > 20 && w.edges.every(e => e.gen === true && e.type === "river" && e.pts!.length >= 2 && e.widthM! > 0), `建图画了 ${n0} 段`);
+    const kept = w.edges[0];
+    applyEdgeForm(kept, { 名称: "甲河", note: "", kv: "", since: "", until: "", widthM: String(kept.widthM) });
+    assert.ok(!("gen" in kept), "表单一改就去标记");
+    const mine = addRiver(w, [[101, 30], [101.5, 30.2]]);
+    const k0 = genRiverKey(w.meta);
+    w.meta.名称 = "乙"; w.meta.relief = 0.35;
+    assert.strictEqual(genRiverKey(w.meta), k0, "与河无关的设置不该触发重画（重画会让删掉的河复活）");
+    w.meta.genSeed = 3;
+    assert.notStrictEqual(genRiverKey(w.meta), k0);
+    const r = regenRivers(w);
+    assert.strictEqual(r.removed, n0 - 1);
+    assert.ok(w.edges.includes(kept) && w.edges.includes(mine), "改过的与手画的河原样留着");
+    assert.strictEqual(w.edges.filter(e => e.gen).length, r.added);
+    const g0 = w.edges.filter(e => e.gen), wmax = (es: typeof g0) => Math.max(...es.map(e => e.widthM!));
+    w.meta.genWater = 1;
+    assert.ok(regenRivers(w).added > g0.length && wmax(w.edges.filter(e => e.gen)) > wmax(g0), "水量拉满：河更多、最宽的更宽");
+    w.meta.terrain = "plain";
+    assert.deepStrictEqual(regenRivers(w).added, 0);
+    assert.deepStrictEqual(w.edges, [kept, mine]);
   });
   it("addAsset/removeAsset：幂等内嵌 + 连带删落章、空了删键", () => {
     const w = mkWorld({});

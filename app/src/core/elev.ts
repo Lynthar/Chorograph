@@ -11,6 +11,8 @@ import { GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, genHeightAt, genLandformOf, gen
 import { makeRelief, mountainness, reliefSeedOf, RELIEF_M } from "./relief.ts";
 import { activeAt } from "./time.ts";
 import { stampRect, type Grid } from "./grid.ts";
+import { gen2Fine, isGen2 } from "./gen2.ts";
+import { LANDFORM_ORDER } from "./constants.ts";
 import type { BBox, HeightOverride, Meta } from "./types.ts";
 
 /* 起伏/涂改后的钳制：陆地不跌成海滩之下、水面不浮出海（类型才是真源，观感须与类型自洽）。
@@ -318,12 +320,12 @@ function boxBlur3(f: Float32Array, cols: number, rows: number, r: number): void 
 }
 
 /* —— 水面高程（粗格）——
-   连通水体（4 邻）逐个定水面：碰到图幅边的算海、恒钉在海平面 0（既有海图逐位不变）；
+   连通水体（4 邻）逐个定水面：碰到图幅边、或含生成器定为海的格（seaSeed）的算海，恒钉在海平面 0（既有海图逐位不变）；
    其余算内陆湖，水面取岸线最低陆地类型高程——水从最低处溢走，站不到比它更高的位置。
    meta.outside==="land"（图幅外是陆地）时无海可言，被图幅切开的湖也按湖算。
    ⚠ 陆格也记一份（相邻水体水面取最小、无水邻＝0）：渲染端按格最近取，湖面不晕开一格则
      湖岸线被粗格边切成方块；取最小＝夹在高低两湖之间的陆地不被高的那个淹掉。 */
-function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: number, inland: boolean): Float32Array {
+function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: number, inland: boolean, seaSeed: Uint8Array | null): Float32Array {
   const n = cols * rows, lab = new Int32Array(n).fill(-1), surf: number[] = [], st: number[] = [];
   const DR = [0, 0, 1, -1], DC = [1, -1, 0, 0];
   for (let s0 = 0; s0 < n; s0++) {
@@ -333,7 +335,7 @@ function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: 
     lab[s0] = id; st.push(s0);
     while (st.length) {
       const i = st.pop()!, r = (i / cols) | 0, c = i % cols;
-      if (!inland && (r === 0 || c === 0 || r === rows - 1 || c === cols - 1)) sea = true;
+      if ((!inland && (r === 0 || c === 0 || r === rows - 1 || c === cols - 1)) || (seaSeed && seaSeed[i])) sea = true;
       for (let k = 0; k < 4; k++) {
         const nr = r + DR[k], nc = c + DC[k];
         if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;
@@ -390,14 +392,18 @@ function baseFields(meta: Meta | undefined, grid: Grid): { base: Float32Array; w
   const U = elevUnitM(m);
   const gLand = Math.tan(BASE_SLOPE_DEG * Math.PI / 180) * 1000 / U;   // 抽象/km
   const gSea = Math.tan(SEABED_SLOPE_DEG * Math.PI / 180) * 1000 / U;
-  const gen = m.terrain === "auto" ? genHField(m, grid) : null;
+  const v2 = isGen2(m) ? gen2Fine(m, grid) : null;
+  const gen = m.terrain === "auto" && !v2 ? genHField(m, grid) : null;
   const t = new Float32Array(n), water = waterMask(grid);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     const i = r * cols + c, p = terrainProps(cells[r][c]);
     t[i] = p.elev;
     if (gen && genLandformOf(gen[i], m) === p.lf) t[i] = elevFromGenH(gen[i], m);
+    else if (v2 && LANDFORM_ORDER[v2.lf[i]] === p.lf) t[i] = v2.base[i];   // 没被涂过（现类型＝v2 派生类型）取 v2 基底
   }
-  const ws = waterSurfaceOf(t, water, cols, rows, m.outside === "land");
+  let seed: Uint8Array | null = null;   // v2：生成器的海格（没被涂成别的）作海的种子——整球图与「图幅外＝陆地」下碰图幅边判不出海
+  if (v2) { seed = new Uint8Array(n); for (let i = 0; i < n; i++) if (v2.sea[i] && water[i]) seed[i] = 1; }
+  const ws = waterSurfaceOf(t, water, cols, rows, m.outside === "land", seed);
   const b = new Float32Array(n), d = new Float32Array(n);
   for (let i = 0; i < n; i++) { b[i] = water[i] ? ws[i] : t[i]; d[i] = water[i] ? Infinity : 0; }
   chamferMin(b, cols, rows, gLand * dxKm, gLand * dyKm, gLand * ddKm);   // 陆地：水格作源（海=0，湖=湖面），坡不超山前坡

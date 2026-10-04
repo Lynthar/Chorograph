@@ -63,12 +63,12 @@ export interface DeepLink {
 /** 编辑子工具白名单＝ui/state.EditSub 的全部取值（此处另写一份，免深链把类型层的自由度当运行时许可） */
 const SUBS = ["select", "add", "link", "paint", "terrain", "decor", "label", "unit", "delete"];
 const ANALYSIS = ["measure", "route", "edit"];
-const OVLS = ["help", "settings", "create"];
+const OVLS = ["help", "settings", "create", "prefs", "import"];
 const DRAWERS = ["layers"];
 const BASES = ["shaded", "flat"];
 const GRAINS = ["hour", "month"];
 const FORCES = ["cpu", "webgl2"];
-const STYLES = ["continent", "archipelago"];
+const STYLES = ["continent", "archipelago", "mono", "multi", "isles"];
 
 /** 纯解析：hash 串（可带或不带前导 #）→ DeepLink。无副作用、不碰 DOM，供 deeplink.test.ts 逐条锁语义 */
 export function parseHash(hash: string): DeepLink {
@@ -97,7 +97,7 @@ export function parseHash(hash: string): DeepLink {
     if (k === "d" && v !== "") dl.wantData = v;   // 分享载荷：base64url 不含 & 与 =，无须解码
     if (k === "ro") dl.wantRo = v !== "0";       // 只读态（只管 #map= 开本机图那条；带数据的分享恒只读）
     if (k === "lib") dl.wantLib = true;   // 启动即进开始界面（截图/演示用）
-    if (k === "ovl") dl.wantOvl = oneOf(OVLS, v);         // help|settings|create：启动即开对应弹层（截图/演示用）
+    if (k === "ovl") dl.wantOvl = oneOf(OVLS, v);         // help|settings|create|prefs|import：启动即开对应弹层（截图/演示用）
     if (k === "drawer") dl.wantDrawer = oneOf(DRAWERS, v);   // layers：启动即开抽屉「层」面（截图/演示用）
     if (k === "base") dl.wantBase = oneOf(BASES, v) as TerrainStyle | null;   // 底图样式：flat＝推演底图
     if (k === "grain") dl.wantGrain = oneOf(GRAINS, v);      // hour=战术「时」/ month=战略「月」（截图/分享用）
@@ -125,7 +125,10 @@ export function parseDeepLink(ctx: ShellCtx): DeepLink {
      再由 host.rebuild 从 DOM 读回覆盖 ctx.meta——那两个元素恒 display:none、用户够不着，
      纯属让 DOM 当中间人转一道手。 */
   if (dl.seed != null) ctx.meta.genSeed = dl.seed;
-  if (dl.style) ctx.meta.genStyle = dl.style;
+  if (dl.style) {
+    ctx.meta.genStyle = dl.style;
+    if (dl.style === "mono" || dl.style === "multi" || dl.style === "isles") ctx.meta.genVer = 2; else delete ctx.meta.genVer;   // 三档只有 v2 认
+  }
   if (dl.year != null) yearSig.value = dl.year;
   if (dl.arm) armSig.value = dl.arm;
   if (dl.lon != null) ctx.view.lon0 = dl.lon;

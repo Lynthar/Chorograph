@@ -17,6 +17,7 @@
    ⚠ fwidth 只喂 e/es 两个一致控制流值，材质分支里不得调用。 */
 import { terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
 import { climRampGLSL, materialTable, rampGLSL, snowLatGLSL, CLIM_STOPS, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, POOL_ROT, SHADE_LIGHT } from "./material.ts";
+import { zoneGLSL, zoneLookTexels, ZLOOK_W, ZONE_N, type ZoneWeights } from "./zones.ts";
 import type { Grid } from "../core/grid.ts";
 import { SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
 import type { BBox } from "../core/types.ts";
@@ -26,7 +27,7 @@ void main(){ vec2 p=vec2(float(gl_VertexID<<1&2), float(gl_VertexID&2)); gl_Posi
 
 const FS = `#version 300 es
 precision highp float; precision highp int;
-uniform sampler2D uGrid;          // RG32F: R=水面高程(海 0/内陆湖岸线高) G=复合索引(lf*5+eco)——均粗格最近取
+uniform sampler2D uGrid;          // RG32F: R=水面高程(海 0/内陆湖岸线高) G=复合索引(地貌×生态数+生态)——均粗格最近取
 uniform sampler2D uField;         // R32F 高程场（粗格=coarseField；细分=erode 产出）
 uniform vec4 uGridBB;             // lonMin,latMin,step,wrap中心经度
 uniform ivec2 uGridDim;           // cols,rows（类型粗格）
@@ -54,10 +55,14 @@ uniform int uClim, uClimN;        // 气候观感（material.climLook）：开�
 uniform vec4 uClimRamp[${CLIM_STOPS}];
 uniform float uTreeE, uTreeBand;  // 林线抽象高程与淡出带宽
 uniform vec3 uMeadow;             // 林线以上森林染色换成的高山草甸色
+uniform int uZone;                // 1＝气候分区在场（render/zones）：各档结果按权重混
+uniform sampler2D uZW0, uZW1;     // 各档权重 RGBA8（档 0..3 / 4..6）
+uniform sampler2D uZLook;         // 每档观感 RGBA32F（zones.zoneLookTexels）
+uniform vec4 uZoneBB;             // 权重纹理覆盖范围：lonMin,latMin,经跨,纬跨
 uniform float uGain;              // 晕渲法线增益（material.shadeGain：夸张 E∈[4,8] 倍真实坡度）
 uniform float uSlopeK;            // 宏观坡 → 坡角正切（material.slopeKOf；0＝沼泽不按坡门控）
 uniform float uEroded;            // 1=场经侵蚀（ElevField.eroded）：装饰噪声按坡门控、宏观 fbm4 降到四分之一——真形自己带起伏
-uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合平色＝terrainProps.color（推演底图用；G=lf*5+eco 索引）
+uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合平色＝terrainProps.color（推演底图用；G 通道即复合索引）
 uniform vec3 uTint[${COMPOSITE_COUNT}];     // 各复合生态色调（无=vec3(-1)）
 uniform vec4 uMatA[${COMPOSITE_COUNT}];     // 材质纹理权重(canopy,dune,ridge,marsh)——render/material.ts 真源
 uniform vec4 uMatB[${COMPOSITE_COUNT}];     // (微起伏rough, 反照率抖动albVar, 岩化rock, 0)
@@ -236,6 +241,7 @@ float wsAt(vec2 ll){
 ${rampGLSL()}
 ${snowLatGLSL()}
 ${climRampGLSL()}
+${zoneGLSL()}
 vec3 elevRamp(float e,float ws,float dl){
   if(e<ws-0.02){ float t=clamp((e-ws+0.35)/0.33,0.0,1.0); return vec3(40.0+t*60.0,90.0+t*70.0,132.0+t*66.0)/255.0; }
   if(uClimN>0) return climRamp(e,dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移）
@@ -279,6 +285,8 @@ void main(){
   float roughEff=max(mt.rough, min(float(${FX.slopeRoughMax}), smac*float(${FX.slopeRough})));
   vec4 twEff=vec4(mt.tw.xy, max(mt.tw.z, min(1.0, smac*float(${FX.slopeRidge}))), mt.tw.w);
   float ftc=uClim==1 ? smoothstep(uTreeE+dLat,uTreeE+dLat+uTreeBand,cd.x) : 0.0;   // 林线以上森林淡出
+  vec3 mead=uMeadow;
+  if(uZone==1){ zoneW(ll); zoneTree(cd.x,dLat,ftc,mead); }   // 气候分区：各档林线按权重混
   float fk=ftc*clamp(mt.tw.x/float(${FOREST_CANOPY}),0.0,1.0);
   twEff.x*=1.0-ftc;
   // 屏幕锚定纹理的幅度按 1/像素密度折算（明暗对比恒定不随缩放）；陡坡增纹已删（见 FX.texW 注）
@@ -319,8 +327,10 @@ void main(){
   vec3 shT=mix(vec3(${FX.cool.join(",")}),vec3(${FX.warm.join(",")}),lt);
   float cav=clamp((es-cd.x)/uFStep*uGain*float(${2 * NRM0 * (1 + FX.macroW)})*float(${FX.cavAmp}), -0.10, 0.16);   // 帐篷差按真实坡度并随夸张走：谷暗脊明（廉价 AO）
   col=elevRamp(e,ws,dLat);   // 赋外层 col（此处若写 vec3 col 即遮蔽＝观感底图整幅黑）
+  float zsn=0.0;
   if(e>=ws-0.02){
-    if(mt.tintW>0.0) col=mix(col, fk>0.0 ? mix(mt.tint,uMeadow,fk) : mt.tint, 0.45*mt.tintW);   // 软过渡；林线以上的森林换草甸色
+    if(uZone==1) zoneCol(e,dLat,col,zsn);   // 气候分区：各档色阶与雪盖按权重混
+    if(mt.tintW>0.0) col=mix(col, fk>0.0 ? mix(mt.tint,mead,fk) : mt.tint, 0.45*mt.tintW);   // 软过渡；林线以上的森林换草甸色
     // 生态辨识度：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重 tw.y/tw.w，详见 material.ts）
     col=mix(col, vec3(${FX.sandC.join(",")}), mt.tw.y*float(${FX.sandMix}));
     if(mt.tw.w>0.003){
@@ -345,7 +355,7 @@ void main(){
     col=mix(col, rockC, rk*float(${FX.rockMix}));
     // 雪按米落（material.snowSpec 同式：气候档基准 + 球面图随纬度；陡坡挂不住雪打六折）——色阶顶带只剩灰岩，白色归雪
     float snE=max(0.0, uSnowE+dLat);
-    float sn=smoothstep(snE,snE+float(${FX.snowBand}),e)*(1.0-0.6*smoothstep(float(${FX.snowSlopeLo}),float(${FX.snowSlopeHi}),slp));
+    float sn=(uZone==1 ? zsn : smoothstep(snE,snE+float(${FX.snowBand}),e))*(1.0-0.6*smoothstep(float(${FX.snowSlopeLo}),float(${FX.snowSlopeHi}),slp));
     col=mix(col, vec3(0.93,0.94,0.965), sn);
     col=mix(col, vec3(${FX.airC.join(",")}), smoothstep(float(${FX.airLo}),float(${FX.airHi}),e)*float(${FX.airMix}));   // 空气透视
     col*=sh*shT*(1.0-cav);
@@ -452,6 +462,25 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
      悬停、点选、拖部队这些只动叠加层的交互曾让地形着色器每帧全幅重跑（核显 DPR 1.5 每帧 22～35 ms）。
      上传或上下文恢复即清空（画布内容已换）。 */
   let lastKey: string | null = null;
+  /* 气候分区纹理（3/4＝权重、5＝观感表）：无分区时绑 1×1 占位，采样器恒完整 */
+  let zw0: WebGLTexture | null = null, zw1: WebGLTexture | null = null, zlook: WebGLTexture | null = null;
+  let zwFor: ZoneWeights | null = null, zlKey: string | null = null;
+  function zoneTex(unit: number, t: WebGLTexture | null, w: number, h: number, data: ArrayBufferView, float: boolean): WebGLTexture | null {
+    if (t) gl.deleteTexture(t);
+    const nt = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, nt);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (float) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, data);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    const flt = float ? gl.NEAREST : gl.LINEAR;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, flt);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, flt);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE0);
+    return nt;
+  }
   const U = (n: string) => gl.getUniformLocation(pr!, n);
 
   /* 建程序 + 设常量 uniform（创建时 + webglcontextrestored 后重跑）。 */
@@ -462,6 +491,9 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform1i(U("uGrid"), 0);
     gl.uniform1i(U("uField"), 1);
     gl.uniform1i(U("uRule"), 2);
+    gl.uniform1i(U("uZW0"), 3); gl.uniform1i(U("uZW1"), 4); gl.uniform1i(U("uZLook"), 5);
+    zw0 = zoneTex(3, null, 1, 1, new Uint8Array(4), false); zw1 = zoneTex(4, null, 1, 1, new Uint8Array(4), false);
+    zlook = zoneTex(5, null, 1, 1, new Float32Array(4), true); zwFor = null; zlKey = null;
     gl.uniform3f(U("uLight"), SHADE_LIGHT[0], SHADE_LIGHT[1], SHADE_LIGHT[2]);
     const comps = allComposites();   // 30 个复合，顺序与 compositeIndex 对齐（旧 8 类落在各自复合上、色/tint 逐位复现）
     gl.uniform3fv(U("uTColor[0]"), comps.flatMap(cc => hexV(terrainProps(cc).color)));
@@ -522,7 +554,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     if (!pr) return;
     const field = fieldFits(fieldIn) ? fieldIn : undefined;
     const rule = ruleIn === fieldIn ? field : fieldFits(ruleIn) ? ruleIn : undefined;
-    /* 类型粗格纹理：R=水面高程（core/elev.waterSurface）G=复合索引 lf*5+eco。
+    /* 类型粗格纹理：R=水面高程（core/elev.waterSurface）G=复合索引（core/constants.compositeIndex）。
        同一 Grid 实例配同一份水面（两者都按 Grid 记忆）＝只动了高程的重建，纹理原样留用不重传 */
     if (!(tex && grid === texFor && wsurf === texWS)) {
       if (tex) gl.deleteTexture(tex);
@@ -564,7 +596,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   };
   let name = queryName();
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
+  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; zw0 = zw1 = zlook = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
@@ -577,9 +609,9 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
       const f = opts.flat ? fRule : fDisp;
       if (!g || !pr || !f || !fRule) return;
-      const S = opts.snow, H = canvas.height, [vw, vh] = opts.px ?? [canvas.width, H];
+      const S = opts.snow, Z = opts.zones, H = canvas.height, [vw, vh] = opts.px ?? [canvas.width, H];
       const key = `${viewBB.lonMin},${viewBB.latMin},${viewBB.lonMax},${viewBB.latMax}|${vw}x${vh}/${H}|${+!!opts.flat}${+!!opts.contour}${+!!opts.wrap}${+!!opts.paper}${+(opts.beach !== false)}`
-        + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${opts.slopeK ?? 0}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}|${opts.clim ? opts.clim.key : ""}`;
+        + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${opts.slopeK ?? 0}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}|${opts.clim ? opts.clim.key : ""}|${Z ? `${Z.wt.id}:${Z.looks.key}` : ""}`;
       if (key === lastKey) return;   // 画布上已是这一帧
       lastKey = key;
       gl.viewport(0, H - vh, vw, vh);   // 可见区贴画布顶；GL 原点在左下
@@ -609,6 +641,15 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
         gl.uniform1f(U("uTreeE"), C.treeE); gl.uniform1f(U("uTreeBand"), C.band);
         gl.uniform3f(U("uMeadow"), C.meadow[0] / 255, C.meadow[1] / 255, C.meadow[2] / 255);
       }
+      gl.uniform1i(U("uZone"), Z ? 1 : 0);
+      if (Z) {
+        if (Z.wt !== zwFor) {
+          zw0 = zoneTex(3, zw0, Z.wt.cols, Z.wt.rows, Z.wt.tex0, false); zw1 = zoneTex(4, zw1, Z.wt.cols, Z.wt.rows, Z.wt.tex1, false);
+          zwFor = Z.wt;
+        }
+        if (Z.looks.key !== zlKey) { zlook = zoneTex(5, zlook, ZLOOK_W, ZONE_N, zoneLookTexels(Z.looks), true); zlKey = Z.looks.key; }
+        gl.uniform4f(U("uZoneBB"), Z.wt.bb.lonMin, Z.wt.bb.latMin, Z.wt.cols * Z.wt.pd, Z.wt.rows * Z.wt.pd);
+      }
       gl.uniform1f(U("uGain"), opts.gain ?? 1);
       gl.uniform1f(U("uSlopeK"), opts.slopeK ?? 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -622,6 +663,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);
       if (tex) gl.deleteTexture(tex);
+      for (const t of [zw0, zw1, zlook]) if (t) gl.deleteTexture(t);
       dropFieldTex();
       if (pr) gl.deleteProgram(pr);
     }

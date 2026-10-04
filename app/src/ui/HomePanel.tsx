@@ -1,8 +1,7 @@
 /* 开始界面 · 图库（UI 1:1 还原 v0.14 #home/renderHome）：全屏墨蓝底 + 宣纸 .mapcard 网格。
    视图走 libViewSig（来源/条目/当前图），动作经 libActionsSig 回外壳（开图/删除/导入/链接文件夹）；
    「🆕 新建地图」开设置弹层的 create 模式（对齐旧 hmNew→toggleSettings(true,"create")）。 */
-import { useRef } from "preact/hooks";
-import { calOverlaySig, libActionsSig, libViewSig, openSettings } from "./state.ts";
+import { calOverlaySig, importOpenSig, libActionsSig, libViewSig, openSettings, prefsOpenSig } from "./state.ts";
 
 function fmtTime(ts?: number): string {
   if (!ts) return "—";
@@ -13,8 +12,6 @@ function fmtTime(ts?: number): string {
 export function HomePanel() {
   const v = libViewSig.value;
   const acts = libActionsSig.value;
-  const fileRef = useRef<HTMLInputElement>(null);
-  const geoRef = useRef<HTMLInputElement>(null);
   if (!v.open) return null;
   return (
     <div id="home" style={{ display: "block" }}>
@@ -27,28 +24,12 @@ export function HomePanel() {
         </div>
         <div class="hm-actions">
           <button type="button" class="hm-new" onClick={() => openSettings("create")}>🆕 新建地图</button>
-          <button type="button" class="tbtn" title="选择一个导出过的 .json，作为一张新地图加入图库" onClick={() => fileRef.current?.click()}>📂 导入 JSON 为新图</button>
-          <button type="button" class="tbtn" title="导入 GeoJSON：点落成地点、线落成连线、面落成派系涂域或边界；可新建一张图，也可并入当前地图" onClick={() => geoRef.current?.click()}>🗺 导入 GeoJSON</button>
-          <button type="button" class="tbtn" title="以内置示例大陆新开一张地图" onClick={() => acts?.newFromSample()}>📜 从内置示例新建</button>
+          <button type="button" class="tbtn" title="把舆图导出的 .json 存档作为新图加入，或导入 GeoJSON 地理数据" onClick={() => { importOpenSig.value = true; }}>📥 导入</button>
           <button type="button" class="tbtn" title="自定义架空历法（月名/月长/每日时数）并命名存下，新建地图时可直接选用" onClick={() => { calOverlaySig.value = true; }}>📅 历法</button>
+          <button type="button" class="tbtn" title="主题、密度、山影深浅与出图清晰度（本机偏好，不入存档）" onClick={() => { prefsOpenSig.value = true; }}>⚙ 界面偏好</button>
           {v.fsSupported && v.source !== "folder" && (
             <button type="button" class="tbtn" title="链接一个本地文件夹作为图库，直接读写其中的 .json（需浏览器支持读写本地文件夹，如 Edge / Chrome）" onClick={() => acts?.linkFolder()}>📁 链接文件夹</button>
           )}
-          {/* GeoJSON 一次只收一个：字段映射弹层是逐文件一份，多选会排出一串弹层 */}
-          <input ref={geoRef} type="file" accept=".geojson,.json,application/geo+json,application/json" style={{ display: "none" }}
-            onChange={e => {
-              const el = e.currentTarget as HTMLInputElement;
-              const f = el.files && el.files[0];
-              el.value = "";
-              if (f) acts?.importGeoFile(f, "lib");
-            }} />
-          <input ref={fileRef} type="file" accept="application/json" multiple style={{ display: "none" }}
-            onChange={e => {
-              const el = e.currentTarget as HTMLInputElement;
-              const fs = Array.from(el.files || []);
-              if (fs.length) acts?.importFiles(fs);
-              el.value = "";
-            }} />
         </div>
         <div class="hm-source">
           {v.source === "folder"

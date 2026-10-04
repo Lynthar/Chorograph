@@ -4,6 +4,7 @@
    名义不足一格即退化成单格。读数一律报 brushActualKm 的**实际**涂宽 + 格数——滑杆推不动时
    看得见是为什么（战略图地形格恒 1°≈111km，前十余档必然同落一格，是数据粒度使然不是缺陷；
    战术图 112m/格 时 32 档给得出 ~31 个不同尺寸）。名义值除了定档位之外不喂任何消费点。 */
+import { zoneStep } from "./climzone.ts";
 import { kmPerDeg } from "./geo.ts";
 import { gridStepDeg } from "./grid.ts";
 import { paintStep } from "./territory.ts";
@@ -30,9 +31,9 @@ export function brushNominalKm(meta: Meta | undefined, notch: number): number {
   return lo + (hi - lo) * (n - 1) / (BRUSH_NOTCHES - 1);
 }
 
-/** 笔刷所在网格的格边度数：涂域笔走 paintStep（涂域自有更细网格），地形笔走地形网格步长 */
+/** 笔刷所在网格的格边度数：涂域笔走 paintStep，气候笔走分区格（core/climzone），地形笔走地形网格步长 */
 export function brushStepDeg(meta: Meta | undefined, sub: string): number {
-  return sub === "paint" ? paintStep(meta) : gridStepDeg(meta);
+  return sub === "paint" ? paintStep(meta) : sub === "clim" ? zoneStep(meta) : gridStepDeg(meta);
 }
 
 /* 圆盘半径上限：涂改逐 dab 是 O((2R+1)²)，而 `meta.kmPerDeg` 是存档里的自由数值——一个

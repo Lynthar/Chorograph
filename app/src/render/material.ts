@@ -50,10 +50,11 @@ export function materialFor(cell: string): Material {
   if (eco === "grassland") { b.albVar = 0.09; }
   if (eco === "marsh") { b.marsh = 0.75; b.ridge = 0; b.rough = 0.02; b.rock = 0; }
   if (eco === "desert") { b.dune = 0.8; b.ridge *= 0.4; b.rough = 0.05; b.albVar = 0.09; b.rock = 0; }   // albVar 抬档＝沙面明暗斑驳
+  if (eco === "salt") { b.ridge = 0; b.rough = 0.01; b.albVar = 0.03; b.rock = 0; }   // 盐壳：平而亮，几乎没有纹理
   return b;
 }
 
-/** 全 30 复合的材质，顺序与 compositeIndex 对齐（GL 填 uniform 数组用） */
+/** 全部复合（地貌 × 生态）的材质，顺序与 compositeIndex 对齐（GL 填 uniform 数组用） */
 export function materialTable(): Material[] { return allComposites().map(materialFor); }
 
 /** 雪的起始海拔（米）出厂值。雪线按真实米数经 elevUnitM 折算成抽象高程（渲染端 uSnowE）——
@@ -132,7 +133,7 @@ export function climLook(meta: Meta | undefined): ClimLook | undefined {
 }
 /** 气候色阶取色（CPU，0..255；GL 走 climRampGLSL 同式、读同一份 ramp）。dl＝纬度改正：滩带不移（按 e 判），其上按 e−dl 取且不落回滩带——
     否则宽纬跨球面图的低纬一侧（dl 可达 +0.7）整片低地被刷成滩色 */
-export function climRampColor(L: ClimLook, e0: number, dl = 0): [number, number, number] {
+export function climRampColor(L: Pick<ClimLook, "n" | "ramp">, e0: number, dl = 0): [number, number, number] {
   const r = L.ramp, n = L.n;
   if (e0 < r[0]) return [r[1] * 255, r[2] * 255, r[3] * 255];
   const e = Math.max(r[0], e0 - dl);
@@ -236,7 +237,7 @@ export function paperOf(meta: Meta | undefined): boolean {
    是纯分层设色（用户实报「地形层次完全没有了」）。
    缩放档 zoomK：一格在屏上 ≥ zoomPxHi 像素（放大看细节）×1，≤ zoomPxLo 像素（整幅）× zoomKLo，对数插值。
    ⚠ 用户拍板的「8 或 4」是在软膝 bug（膝下微坡一律拉到膝点）之下看的图；bug 修掉后 8 倍偏淡（用户实报
-   「不如之前」），锚点按 ×2 取，再由本机偏好「地形立体感」乘 0.5～2 供用户自调。
+   「不如之前」），锚点按 ×2 取，再由本机偏好「山影深浅」乘 0.5～2 供用户自调。
    ⚠ 格边取 gridStepDeg(meta)＝地形粗格，不取细分场格：精修落地不许换夸张。
    ⚠ 旧式法线 nrm=4.5·uPXPD/14 的量纲是「每(抽象/度)」，在战术图上等于 64 倍夸张、且不随比例尺变——
    增益必须由三个 render 调用点按 shadeGain 传入。 —— */

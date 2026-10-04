@@ -7,7 +7,7 @@
    不是视觉回归（不比截图），只按格采样。兜底路径四条：CPU 观感底图连笔补画＝整幅重画（逐字节）、WebGL 上下文丢失后恢复、
    嵌套形状坏掉的存档不崩、file:// 双击冷启动。先 npm run build 再跑。浏览器可用 E2E_BROWSER 指定。 */
 import { createServer } from "node:http";
-import { readFileSync, existsSync, mkdtempSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -59,8 +59,19 @@ const br = spawn(bin, [
   "--no-first-run", "--no-default-browser-check", "--no-sandbox", "--window-size=1280,800",
   "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "about:blank"
 ], { stdio: ["ignore", "ignore", "pipe"] });
-const cleanup = () => { try { br.kill(); } catch { /* 已退出 */ } server.close(); };
+/* 临时 profile 要在杀浏览器之后删：Windows 上子进程退出前文件还被占着，立刻删是 EPERM（maxRetries 不重试这种），
+   所以同步等 50 ms 重试；exit 事件里不能 await。删不掉只报不抛，抛了会盖掉冒烟本身的退出码 */
+const rmProfileSync = (dir) => {
+  const t0 = Date.now(), cell = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try { rmSync(dir, { recursive: true, force: true }); return; }
+    catch (e) { if (Date.now() - t0 > 10_000) { console.error(`临时 profile 没删掉：${dir}（${e.code}）`); return; } Atomics.wait(cell, 0, 0, 50); }
+  }
+};
+const cleanup = () => { try { br.kill(); } catch { /* 已退出 */ } server.close(); rmProfileSync(prof); };
 process.on("exit", cleanup);
+// Ctrl+C、关窗与 CI 取消默认直接终止、不触发 exit 事件，转成 process.exit 才会清理
+for (const [sig, n] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGHUP", 1]]) process.on(sig, () => process.exit(128 + n));
 const wsUrl = await new Promise((res, rej) => {
   let buf = "";
   br.stderr.on("data", d => { buf += d; const m = buf.match(/DevTools listening on (ws:\/\/\S+)/); if (m) res(m[1]); });
@@ -113,7 +124,9 @@ const until = async (label, expr) => {
 /* —— 走查本体 —— */
 await send("Page.navigate", { url: `${origin}/?b=${Math.random().toString(36).slice(2)}` });   // 独一 buster：同 URL 导航是 same-document
 await until("启动落到图库", `!!document.querySelector('#home .hm-actions')`);
-await evalJs(`document.querySelector('#home .hm-actions button[title^="以内置示例"]').click()`);
+await evalJs(`document.querySelector('#home .hm-new').click()`);
+await until("新建弹层", `!!document.querySelector('#settings button[title^="以内置示例"]')`);
+await evalJs(`document.querySelector('#settings button[title^="以内置示例"]').click()`);
 await until("示例图建成并打开（顶栏出图名）", `(t => t && t !== '—')(document.getElementById('crumbName')?.textContent)`);
 await until("画布有尺寸", `(c => c && c.width > 0 && c.height > 0)(document.getElementById('map'))`);
 /* —— 推演底图逐格一致：像素颜色＝底栏读数那一格。撒点合成 pointermove 读 #ftCoord 的地貌名，
@@ -146,7 +159,7 @@ for (const [label, extra] of [["GL", ""], ["CPU 兜底", "&force=cpu"]]) {
   if (bad.length) errors.push(`推演底图（${label}）${bad.length}/${rows.length} 个采样点的颜色不是读数那一格的（如 ${bad[0].n} 期望 ${nameColor.get(bad[0].n)} 实得 rgb(${bad[0].c})）`);
 }
 /* —— CPU 兜底的观感底图连笔：笔刷只补画变了的那片，补画结果须与同一输入的整幅重画逐字节相同。
-   整幅重画靠拨「地形立体感」逼出（增益进瓦片键），拨回原档再比；两次拨动都要看到画面真变了，否则比对不成立 —— */
+   整幅重画靠拨「山影深浅」逼出（增益进瓦片键），拨回原档再比；两次拨动都要看到画面真变了，否则比对不成立 —— */
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const MAP_PIX = `(() => { const m = document.getElementById('map'), r = document.getElementById('canvasWrap').getBoundingClientRect();
   const w = Math.round(r.width * devicePixelRatio), h = Math.round(r.height * devicePixelRatio), c = document.createElement('canvas');
@@ -193,7 +206,9 @@ await erodeQuiet("连笔后落定");
 if (await pixHash() === hPre) errors.push("CPU 观感底图连笔后画面没变（笔刷没落下或补画没上屏）");
 await evalJs(`window.__patched = ${MAP_PIX}; 1`);
 await evalJs(`document.getElementById('btnSettings').click()`);
-await until("设置弹层", `document.querySelectorAll('[aria-labelledby="sw_shade_lab"] button').length > 1`);
+await until("设置弹层", `!!document.getElementById('sw_prefs')`);
+await evalJs(`document.getElementById('sw_prefs').click()`);
+await until("界面偏好弹层", `document.querySelectorAll('[aria-labelledby="sw_shade_lab"] button').length > 1`);
 const shade = (label) => evalJs(`[...document.querySelectorAll('[aria-labelledby="sw_shade_lab"] button')].find(b => b.textContent.startsWith(${JSON.stringify(label)})).click()`);
 const h1 = await pixHash(); await shade("×1.5"); await waitRepaint("拨到 ×1.5", h1);
 const h2 = await pixHash(); await shade("×1 默认"); await waitRepaint("拨回 ×1", h2);
@@ -279,7 +294,9 @@ if (!await evalJs(`/只读/.test(document.getElementById('ftData')?.textContent 
 }
 await send("Page.navigate", { url: pathToFileURL(path.join(DIST, "index.html")).href + `?b=${Math.random().toString(36).slice(2)}` });
 await until("file:// 启动落到图库", `!!document.querySelector('#home .hm-actions')`);
-await evalJs(`document.querySelector('#home .hm-actions button[title^="以内置示例"]').click()`);
+await evalJs(`document.querySelector('#home .hm-new').click()`);
+await until("新建弹层", `!!document.querySelector('#settings button[title^="以内置示例"]')`);
+await evalJs(`document.querySelector('#settings button[title^="以内置示例"]').click()`);
 await until("file:// 示例建图并打开", `(t => t && t !== '—')(document.getElementById('crumbName')?.textContent) && (c => c && c.width > 0)(document.getElementById('map'))`);
 
 const err = await evalJs(`document.getElementById('err')?.textContent || ''`);

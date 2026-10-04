@@ -57,3 +57,24 @@ describe("静态守卫：单一真源", () => {
     assert.deepStrictEqual(hitsOutside(/\b\w*(busy|Busy|eroding)\s*=\s*true\b/, ["shell/singleflight.ts"]), [], "又手写了一份 busy/dirty 闸——走 singleFlight(run, refire)");
   });
 });
+
+/* 生成器 v2 的跨引擎确定性：流向树会把 1 ULP 放大成整片流域翻转，而 Math.sin / exp / pow 这类函数各引擎可差 1 ULP——
+   单测在 Node 里永远绿，只有在另一个浏览器上才翻，所以靠正则守住纪律。 */
+describe("静态守卫：生成器 v2 只用四则、开方与整数哈希", () => {
+  /* 生成链两个文件与各自许引的运行时模块（noise / relief / geo 内部都用 Math.sin 或 Math.cos，一个都不许进） */
+  const FILES: [string, string[]][] = [["core/gen2.ts", ["./constants.ts", "./gen2mesh.ts", "./types.ts"]], ["core/gen2mesh.ts", []]];
+  for (const [f, allowed] of FILES) {
+    const src = readFileSync(path.join(SRC, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    it(`${f} 不调超越函数`, () => {
+      const hits = src.match(/\bMath\.(sin|cos|tan|asin|acos|atan2?|sinh|cosh|tanh|exp|expm1|log|log1p|log2|log10|pow|hypot|cbrt)\s*\(/g) || [];
+      assert.deepStrictEqual(hits, [], `${f} 用了各引擎结果可差 1 ULP 的函数——正余弦走 sinR/cosD 多项式`);
+    });
+    it(`${f} 不用 ** 运算符（等同 Math.pow）`, () => {
+      assert.deepStrictEqual(src.match(/[\w)\]]\s*\*\*=?\s*[\w(+-]/g) || [], [], `${f} 出现了 ** 或 **=——整数次幂写成连乘`);
+    });
+    it(`${f} 运行时只引 ${allowed.join("、") || "（无）"}`, () => {
+      const mods = [...src.matchAll(/^import\s+(?!type\b)[^;]*?from\s+"([^"]+)"/gm)].map(m => m[1]).sort();
+      assert.deepStrictEqual(mods, allowed);
+    });
+  }
+});

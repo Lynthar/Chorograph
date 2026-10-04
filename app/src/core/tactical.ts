@@ -13,6 +13,7 @@
    （对角线 198km），140 同时是工程甜点：1400×1400=196 万格恰保住全域 4K 精修 ≥2×。 */
 import { kmPerDeg, lonCos } from "./geo.ts";
 import { segIntersectsRect } from "./geometry.ts";
+import { climateAt } from "./climzone.ts";
 import { autoGridN, buildGridCells } from "./grid.ts";
 import { activeAt, ownerAt, paintLayersAt } from "./time.ts";
 import { paintStep, resamplePaintRuns } from "./territory.ts";
@@ -147,6 +148,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
       : (!!e.from && !!e.to && ids.has(e.from) && ids.has(e.to))
   )).map(e => {
     const c = strip(clone(e));
+    delete c.gen;   // 战术图不重新生成河，带进来的就是普通的河
     if (Array.isArray(c.pts)) c.pts = c.pts.map(p => [tx(p[0]), p[1]] as [number, number]);
     return c;
   });
@@ -205,7 +207,8 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   meta.reliefSeed = reliefSeedOf(m);                      // 起伏种子随图继承（物化后子图没有 genSeed，不带就落回种子 1）
   if (m.elevUnitM != null) meta.elevUnitM = m.elevUnitM;
   if (m.contourM != null) meta.contourM = m.contourM;
-  if (m.climate) meta.climate = m.climate;                // 气候档随图继承（子图恒平面＝只取档值，不随纬度）
+  const clim = climateAt(src, ev.lon, ev.lat);
+  if (clim) meta.climate = clim;                          // 气候档继承母图在战场中心处那一档（涂的分区 > v2 派生 > 母图档；子图恒平面＝只取档值）
   if (m.period === "modern") meta.period = "modern";      // 时代随图继承（母图一般没有；设置里可改）
   if (m.outside === "land") meta.outside = "land";        // 图幅外随图继承：母图声明内陆，切边的湖在子图仍是湖（不继承＝水面沉回 0）
   const er = opts.erode ?? erodeMode(m);

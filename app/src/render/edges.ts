@@ -11,11 +11,12 @@ import type { LabelField } from "./labels.ts";
 import type { Edge, Meta, Op, World, WorldNode } from "../core/types.ts";
 
 /* —— 河流描边（经典曲流河 + 自由画河共用）：三层描边（选中红晕/白衬底/河蓝） ——
-   riverWpx：widthM 米→像素（放大自然变宽、缩小退回样式底宽 2.6px；无 widthM 时三层宽度与旧值 9/5/2.6 逐位一致）；
-   导出供 pickEdge 拾取走廊同源（宽河点在河面即可选中）。 */
+   riverWpx：widthM 米→像素，放大自然变宽；真宽不足底宽时按水面宽分档（10 m 以下 1px、1000 m 以上 2.6px，对数插值），
+   缩小的图上大河仍比支流粗；无 widthM 时三层宽度与旧值 9/5/2.6 逐位一致。导出供 pickEdge 拾取走廊同源。 */
 export function riverWpx(meta: Meta | undefined, cam: Camera, e: Edge): number {
   const wm = +(e.widthM as number) || 0;
-  return wm > 0 ? Math.max(2.6, (wm / 1000) / kmPerDeg(meta) / cam.degPerPx) : 2.6;
+  if (!(wm > 0)) return 2.6;
+  return Math.max(1 + 1.6 * Math.min(1, Math.max(0, Math.log10(wm / 10) / 2)), (wm / 1000) / kmPerDeg(meta) / cam.degPerPx);
 }
 function strokeRiver(ctx: CanvasRenderingContext2D, pts: [number, number][], wpx: number, selected: boolean, dash?: number[] | null): void {
   const stroke = (w: number, col: string) => {
@@ -23,7 +24,7 @@ function strokeRiver(ctx: CanvasRenderingContext2D, pts: [number, number][], wpx
     ctx.lineWidth = w; ctx.strokeStyle = col; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke();
   };
   if (selected) stroke(wpx + 6.4, "rgba(192,57,43,.35)");
-  stroke(wpx + 2.4, "rgba(255,255,255,.5)");
+  stroke(wpx + Math.min(2.4, wpx), "rgba(255,255,255,.5)");   // 细河的白衬底跟着收：一像素的线配满宽衬底只剩一道白边
   if (dash) ctx.setLineDash(dash);    // 可靠性：只断主线，衬底照画（柱B）
   stroke(wpx, "#3f7fc4");
   ctx.setLineDash([]);

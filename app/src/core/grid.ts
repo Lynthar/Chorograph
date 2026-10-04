@@ -2,9 +2,11 @@
    语义与旧实现逐位一致（黄金基准锁定，密度由夹具显式写死）：格边由 gridStepDeg 一处定，
    涂改可带时段（地形纪元）与块尺寸（战术图继承的战略图涂改=1°粗块盖章）。 */
 import { seedTerrain } from "./terrain.ts";
+import { gen2Fine, isGen2 } from "./gen2.ts";
 import { canonComposite } from "./constants.ts";
 import { activeAt } from "./time.ts";
 import { kmPerDeg } from "./geo.ts";
+import type { FieldGeom } from "./elev.ts";
 import { DEFAULT_BBOX, type BBox, type Edge, type Meta, type TerrainOverride, type WorldNode } from "./types.ts";
 
 /* cells 存**复合串**（"地貌" 或 "地貌/生态"；旧 8 类 id 是其兼容子集）。seedTerrain 产 canonical 复合、
@@ -78,7 +80,8 @@ export function autoGridN(meta: Meta | undefined): number {
    命中输出与不 memo 逐位一致(黄金基准即神谕)。 */
 let seedMemo: { key: string; base: string[][] } | null = null;
 
-export function buildGridCells(meta: Meta | undefined, overrides: TerrainOverride[] | undefined, yearNow: number): Grid {
+/** 地形网格的几何（图幅、格边度数与行列数）：建格与生成器的河共用这一份，另算一份入海口就对不上岸线 */
+export function gridGeom(meta: Meta | undefined): FieldGeom {
   const m = meta || {};
   const bb = m.bbox || DEFAULT_BBOX;
   const step = gridStepDeg(m);
@@ -88,10 +91,20 @@ export function buildGridCells(meta: Meta | undefined, overrides: TerrainOverrid
      ceil 出**整整一行**贴边细条（读数报 1400×1400 而实得 1400×1401，2026-08-13 CDP 揪出）。
      容差 1e-9 远大于千级格数的浮点误差（~5e-13）、又远小于任何真实的分数行。 */
   const cols = Math.min(2048, Math.max(1, Math.ceil((bb.lonMax - bb.lonMin) / step - 1e-9))), rows = Math.min(2048, Math.max(1, Math.ceil((bb.latMax - bb.latMin) / step - 1e-9)));
-  const mk = `${bb.lonMin},${bb.latMin},${bb.lonMax},${bb.latMax}|${step}|${cols}x${rows}|${m.terrain || ""}|${(m.genSeed as number) ?? ""}|${m.genStyle || ""}`;
+  return { bb, step, cols, rows };
+}
+
+export function buildGridCells(meta: Meta | undefined, overrides: TerrainOverride[] | undefined, yearNow: number): Grid {
+  const m = meta || {};
+  const { bb, step, cols, rows } = gridGeom(m);
+  const mk = `${bb.lonMin},${bb.latMin},${bb.lonMax},${bb.latMax}|${step}|${cols}x${rows}|${m.terrain || ""}|${(m.genSeed as number) ?? ""}|${m.genStyle || ""}|${m.genVer ?? ""}|${m.genLand ?? ""}|${m.genMtn ?? ""}|${m.genIsl ?? ""}|${m.worldModel || ""}|${m.planetRadiusKm ?? ""}|${m.kmPerDeg ?? ""}`;
   let cells: string[][];
   if (seedMemo && seedMemo.key === mk) {
     cells = seedMemo.base.map(row => row.slice());
+  } else if (isGen2(m)) {
+    const base = gen2Fine(m, { bb, step, cols, rows }).cells;   // v2：流域是全局量，整场算完再逐格取
+    seedMemo = { key: mk, base };
+    cells = base.map(row => row.slice());
   } else {
     const base: string[][] = [];
     for (let r = 0; r < rows; r++) {

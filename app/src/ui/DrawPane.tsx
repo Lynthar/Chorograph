@@ -2,15 +2,17 @@
    未选子工具＝选择态（editSubSig="select"），再点当前子工具＝退回选择（Shift+1~6 同序同语义）；
    各子工具上下文（涂域派系/时段层、地形生态/高程、布景印章、连线类型、⏳新对象时段）
    语义自旧编辑面板原样转写；笔刷数值与画布上方 fprops 浮条同信号联动。 */
-import { DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, nodeCatOf, parseComposite } from "../core/constants.ts";
+import { CLIMATE_SWATCH } from "../core/climzone.ts";
+import { isGen2 } from "../core/gen2.ts";
+import { CLIMATE, CLIMATE_ORDER, DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, nodeCatOf, parseComposite } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhen, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
 import { HEIGHT_STEPS_STRAT, HEIGHT_STEPS_TAC, heightStepM } from "../core/elev.ts";
 import { useLayoutEffect } from "preact/hooks";
 import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
-import { addTypeSig, brushEraseSig, canRedoSig, canUndoSig, decorKindSig, editSubSig, eraNewSig, heightStepMSig, isTacSig, linkFromSig, linkTypeSig,
-  mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, parseWhenInput, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisSig, undoWorld, worldSig,
+import { addTypeSig, brushEraseSig, canRedoSig, canUndoSig, climPaintSig, decorKindSig, editSubSig, eraNewSig, heightStepMSig, isTacSig, linkFromSig, linkTypeSig,
+  mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, parseWhenInput, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisOf, terrainAxisSig, undoWorld, worldSig,
   type EditSub } from "./state.ts";
 
 const SUBS: { s: EditSub; g: string; n: string }[] = [
@@ -108,10 +110,10 @@ function PaintCtx() {
   );
 }
 
-/** 地形（形）：三轴独立笔刷——地貌 / 生态(改地面+落真实印章) / ⛰高程抬升下切 */
+/** 地形（形）：四页独立笔刷——地貌 / 生态(改地面+落真实印章) / ⛰高程抬升下切 / 气候分区（只战略图） */
 function TerrainCtx() {
   const [lf, eco] = parseComposite(paintTerrainSig.value);   // 当前笔刷复合串 → 地貌/生态
-  const axis = terrainAxisSig.value;
+  const tac = isTacSig.value, axis = terrainAxisOf(terrainAxisSig.value, tac);
   const meta = worldSig.value?.meta || {};
   const stepM = heightStepM(meta, heightStepMSig.value);   // 生效的每笔米数（0=自动档）
   const setLf = (id: Landform) => { paintTerrainSig.value = eco === "none" ? id : id + "/" + eco; };
@@ -122,6 +124,7 @@ function TerrainCtx() {
         <button aria-pressed={axis === "lf"} title="只改地貌（平原/丘陵/山地…），生态保留；涂到之处的手雕高程一并复位" onClick={() => { terrainAxisSig.value = "lf"; }}>地貌</button>
         <button aria-pressed={axis === "eco"} title="只改生态：地面色调/寻路代价 + 随笔落下真实布景印章（可单独选中调整）" onClick={() => { terrainAxisSig.value = "eco"; }}>生态</button>
         <button aria-pressed={axis === "height"} title="抬升/下切地势：等高线、读数与视域随之变，地貌与寻路不变" onClick={() => { terrainAxisSig.value = "height"; }}>⛰ 高程</button>
+        {!tac && <button aria-pressed={axis === "clim"} title="把一片涂成某种气候：配色、林线与雪线随之变，地貌、生态与寻路不变" onClick={() => { terrainAxisSig.value = "clim"; }}>气候</button>}
       </div>
       {axis === "lf" ? (
         <>
@@ -134,6 +137,18 @@ function TerrainCtx() {
             ))}
           </div>
           <div class="hint">只涂地貌基底（平原/丘陵/山地/高山/水域/沿海），格内生态保留——如给森林格换地貌＝<b>森林覆盖的丘陵</b>；涂到之处的<b>手雕高程一并复位</b>（涂平原＝真的变平）。<kbd>E</kbd>切橡皮＝恢复初稿 · <kbd>Alt</kbd>+点取样该格</div>
+        </>
+      ) : axis === "clim" ? (
+        <>
+          <div class="sec" style={{ marginTop: "4px" }}>气候分区<span class="mini">只改配色、林线与雪线</span></div>
+          <div class="chips">
+            {CLIMATE_ORDER.map(c => (
+              <button key={c} class="ch tr" aria-pressed={!brushEraseSig.value && climPaintSig.value === c} onClick={() => { climPaintSig.value = c; brushEraseSig.value = false; }}>
+                <span class="sw" style={{ background: CLIMATE_SWATCH[c] }} />{CLIMATE[c].名}
+              </button>
+            ))}
+          </div>
+          <div class="hint">按住拖＝把这一片涂成所选气候：陆地配色、林线与雪线随之变，相邻气候之间渐变过渡；地貌、生态与寻路不变。未涂处取{isGen2(meta) ? <>生成器按纬度与干湿派生的初稿（图上浅色），再往下取</> : null}设置里的「气候」档。<kbd>E</kbd>切橡皮＝擦回未涂 · <kbd>Alt</kbd>+点取样 · <kbd>[ ]</kbd>调大小</div>
         </>
       ) : axis === "eco" ? (
         <>
@@ -297,7 +312,7 @@ export function DrawPane() {
         {sub === "add" && <>先选类型、点空白落点（缺省城市）；改名/归属/沿革在检查器表单（事件点＝落点后类型下拉换「事件」，标注走「注」子工具）</>}
         {sub === "label" && <>点空白＝落自由文本标注（钟点/风向/兵力/争议注记…），检查器改 多行文本/字号/派系色/屏幕角固定，可配 ⏳时段分相位显示</>}
         {sub === "unit" && <>兵棋部队：军面板<b>「＋ 新增部队」</b>先入列表（未入场），按住列表项<b>拖入地图放置</b>；按住图上部队<b>拖动＝记录当日位置</b>（先把时间轴拖到目标日）；同日重拖＝改写航点；<b>Shift+拖</b>＝框选；<kbd>Delete</kbd>＝删部队</>}
-        {sub === "terrain" && <>三轴分开涂：🗺地貌／🌿生态（随笔落布景印章）／⛰高程＝抬升·下切（<kbd>E</kbd> 换向）</>}
+        {sub === "terrain" && <>各页分开涂：🗺地貌／🌿生态（随笔落布景印章）／⛰高程＝抬升·下切（<kbd>E</kbd> 换向）{isTacSig.value ? null : <>／气候（只改配色、林线与雪线）</>}</>}
         {sub === "link" && <>选类型：河流/工事＝自由画线（拖动，不必锚地点）· 道路/商路＝地点连地点</>}
         {sub === "paint" && <>笔刷直涂派系疆域（优先于据点凸包）· 橡皮＝反涂 · 开涂自动建层</>}
         {sub === "decor" && <>9 印章 · 点放或按住播撒 · 右键删单个 · <kbd>Alt</kbd>+点取样</>}

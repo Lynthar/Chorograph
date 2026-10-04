@@ -21,7 +21,7 @@ const isNum = (x: unknown): x is number => typeof x === "number" && isFinite(x);
 
 /** 校验一份外部 JSON 是否能作为世界打开；不修改入参。 */
 /** 顶层数组的量级上限（校验闸）。往当前图并入 GeoJSON 也按它预算——能保存出的档必须能再导入。 */
-const WORLD_CAPS: Record<string, number> = { factions: 20000, terrainOverrides: 4000000, heightOverrides: 4000000 };
+const WORLD_CAPS: Record<string, number> = { factions: 20000, terrainOverrides: 4000000, heightOverrides: 4000000, climateZones: 64 };
 export const worldCap = (k: string): number => WORLD_CAPS[k] ?? 200000;
 
 export function validateWorld(w: unknown): ValidateResult {
@@ -221,6 +221,24 @@ export function validateWorld(w: unknown): ValidateResult {
     else if (Math.abs(h.dh as number) * unitM > DH_MAX_M) W(`${p}.dh`, `高程涂改幅度超出 ±${DH_MAX_M / 1000} km，按 ±${DH_MAX_M / 1000} km 计`);
     checkTimed(p, h);
   });
+
+  /* —— 气候分区（战略图专有；每档一份 runs，形状同涂域层）—— */
+  const cz = o.climateZones;
+  if (cz != null && !Array.isArray(cz)) W("climateZones", "气候分区不是数组，打开时将被丢弃");
+  else if (Array.isArray(cz)) {
+    if (cz.length > worldCap("climateZones")) F("climateZones", `气候分区含 ${cz.length} 层，超出可处理上限（疑损坏或恶意档）`);
+    else if (meta.mapKind === "tactical" && cz.length) W("climateZones", "战术图不用气候分区（继承母图在战场中心处那一档），该键不生效");
+    cz.slice(0, worldCap("climateZones")).forEach((L, k) => {
+      const p = `climateZones[${k}]`;
+      if (!isObj(L)) { W(p, "气候分区成员不是对象，打开时将被剔除"); return; }
+      if (!tget(CLIMATE, L.climate as string)) W(`${p}.climate`, `未知气候档 ${JSON.stringify(L.climate)}，该层不生效`);
+      const R = L.runs as { pd?: unknown; d?: unknown } | null | undefined;
+      if (!(R != null && typeof R === "object" && +(R.pd as number) > 0 && Array.isArray(R.d) && (R.d as unknown[]).length % 3 === 0))
+        W(`${p}.runs`, "气候分区行程编码形状无效（pd>0 且 d 为三元组数组），该层将按空处理");
+      else if ((R.d as unknown[]).length > 12000000) F(`${p}.runs`, "气候分区行程编码过大（疑损坏或恶意档）");
+      else if (!runsDims(R as PaintRuns, bbox)) F(`${p}.runs`, `气候分区行程编码的格边 pd 把图幅切成超过 ${MAX_RUN_DIM} 格（疑损坏或恶意档）`);
+    });
+  }
 
   /* —— 旧版事件表（打开时迁成事件点）：箭头成员不是对象的，迁移时丢弃 —— */
   (Array.isArray(o.events) ? (o.events as Record<string, unknown>[]) : []).forEach((ev, i) => {

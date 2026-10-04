@@ -2,10 +2,11 @@
    normalizeWorld 是"单点迁移"哲学的载体：外部导入/旧存档缺什么补什么、旧字段就地升级，
    改这里的任何分支都是行为变更——旧档打开后的内容会跟着变，先想兼容。 */
 import { ALL_KINDS, LEGACY_KIND, LEGACY_TYPE, EVENT_TYPES, UNIT_KINDS } from "./constants.ts";
-import { autoGridN } from "./grid.ts";
+import { autoGridN, gridGeom } from "./grid.ts";
+import { gen2Params, gen2Rivers, isGen2 } from "./gen2.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
-import type { BBox, CalendarCfg, Climate, GenStyle, TerrainMode, World, WorldModel } from "./types.ts";
+import type { BBox, CalendarCfg, Climate, Edge, GenStyle, Meta, TerrainMode, World, WorldModel } from "./types.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- 入参是任意外部 JSON，宽松索引即语义 */
 
@@ -45,6 +46,11 @@ export function normalizeWorld(w: unknown): World {
   if (o.heightOverrides != null) {
     if (Array.isArray(o.heightOverrides)) o.heightOverrides = o.heightOverrides.filter(isRec);
     else delete o.heightOverrides;
+  }
+  // climateZones（气候分区）同「缺键不落盘」：非数组删键、剔非对象成员（档名与 runs 的坏值由解码端跳过）
+  if (o.climateZones != null) {
+    if (Array.isArray(o.climateZones)) o.climateZones = o.climateZones.filter(isRec);
+    if (!Array.isArray(o.climateZones) || !o.climateZones.length) delete o.climateZones;
   }
   // assets（自定义印章资产）同「缺键不落盘」：保 {id,src} 合法记录，空/非数组删键
   if (o.assets != null) {
@@ -139,6 +145,9 @@ export interface BlankWorldSpec {
   kmPerDeg?: number | null;
   genSeed?: number;
   genStyle?: GenStyle;
+  genVer?: number;          // 生成器版本：2＝core/gen2（风格取 mono/multi/isles）；缺省＝v1
+  genLand?: number; genMtn?: number; genIsl?: number;   // v2 三个滑杆 0..1
+  genRiv?: number; genWater?: number;                   // v2「河流多少」「水量」0..1（只定画进 edges 的河）
   vault?: string;
   calendar?: CalendarCfg;   // 纪年历法：缺省不落盘（=custom SE 12×30）；earth/自定义纪元才写 meta
   relief?: number;          // 程序化地势起伏幅度 0..1：>0 才写 meta（缺省=无，旧图渲染不变）
@@ -189,7 +198,13 @@ export function blankWorld(s: BlankWorldSpec, today: string): World {
     factions: [], nodes: [], edges: [], decor: [], terrainOverrides: []
   };
   if (s.kmPerDeg != null) w.meta.kmPerDeg = s.kmPerDeg;
-  if (s.terrain === "auto") { w.meta.genSeed = s.genSeed; w.meta.genStyle = s.genStyle; }
+  if (s.terrain === "auto") {
+    w.meta.genSeed = s.genSeed; w.meta.genStyle = s.genStyle;
+    if (s.genVer === 2) {
+      w.meta.genVer = 2; if (s.genLand != null) w.meta.genLand = s.genLand; if (s.genMtn != null) w.meta.genMtn = s.genMtn; if (s.genIsl != null) w.meta.genIsl = s.genIsl;
+      if (s.genRiv != null) w.meta.genRiv = s.genRiv; if (s.genWater != null) w.meta.genWater = s.genWater;
+    }
+  }
   else if (s.genSeed) w.meta.reliefSeed = s.genSeed;   // 非自动生成的图也各有一套起伏（缺键＝种子 1，全库同一套山）
   if (s.vault) w.meta.vault = s.vault;
   if (s.calendar) w.meta.calendar = s.calendar;   // 历法创建时定死（改 kind 会重释一切已存日戳）
@@ -200,7 +215,18 @@ export function blankWorld(s: BlankWorldSpec, today: string): World {
      kmPerDeg/半径）创建后冻结,公式却会演进;盖章后旧图永远按建图当天的格边打开,法则常数
      此后只影响新图。⚠ 对黄金基准属 sanctioned 附加键：parity 比对时剥掉此键另断言其值。 */
   w.meta.gridN = autoGridN(w.meta);
+  w.edges = genRiverEdges(w.meta);   // 网格几何要等 gridN 盖章
   return w as World;
+}
+
+/** 生成器画的河，成 edges 条目（带 gen 标记）；不是 v2 自动生成的图＝空 */
+export function genRiverEdges(meta: Meta): Edge[] {
+  if (!isGen2(meta)) return [];
+  return gen2Rivers(meta, gridGeom(meta)).map(r => ({ type: "river", pts: r.pts, widthM: r.widthM, gen: true }));
+}
+/** 生成器的河由哪些参数定：两次取值相同就不必重画（重画会让用户删掉的河复活）；不是 v2 自动生成的图＝空串 */
+export function genRiverKey(meta: Meta): string {
+  return isGen2(meta) ? JSON.stringify([gen2Params(meta), meta.gridN, meta.genRiv ?? null, meta.genWater ?? null]) : "";
 }
 
 /** 图库卡片统计（地点/战役/派系；战术图另记部队数与 ⚔ 徽标） */

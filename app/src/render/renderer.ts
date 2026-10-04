@@ -5,6 +5,9 @@ import type { Grid } from "../core/grid.ts";
 import { contourStats, contourStepFor, waterSurface, type ContourStep, type ElevField, type FieldRect } from "../core/elev.ts";
 import type { BBox, Meta } from "../core/types.ts";
 import { beachOf, climLook, paperOf, shadeGain, slopeKOf, snowSpec, type ClimLook, type SnowSpec } from "./material.ts";
+import { zoneLooks, zoneWeights, type ZoneLooks, type ZoneWeights } from "./zones.ts";
+import { kmPerDeg } from "../core/geo.ts";
+import type { ZoneField } from "../core/climzone.ts";
 import { createTerrainGL } from "./terrainGL.ts";
 import { createTerrainCPU } from "./terrainCPU.ts";
 
@@ -17,16 +20,20 @@ export type TerrainStyle = "shaded" | "flat";
     paper=地形画布的纸模式（material.paperOf：画布上图幅外的底色与小水塘；屏上看得见的纸由叠加层一律铺上）；
     beach=画 <180 m 滩带（material.beachOf：只战术图；缺省＝画）；slopeK=宏观坡换坡角正切（material.slopeKOf；缺省 0＝沼泽不按坡淡出）；
     snow=雪线参数（material.snowSpec：气候档基准 + 球面图随纬度；缺省=不落雪）；clim=气候配色与林线（material.climLook；缺省＝出厂色阶、无林线）；
+    zones=气候分区（render/zones：各档权重 + 观感表；缺省＝无分区，两端走 snow/clim 的旧路径，逐位不变）；
     gain=晕渲法线增益（material.shadeGain 按 meta 与 degPerPx 算；缺省 1＝旧式 64 倍夸张，调用点必须传）；
     dpr=设备像素比：等高线的线宽、挤线门、间曲线浮现门与虚线节距按 CSS 像素锚定（缺省 1＝物理像素；出图放大随 composeFrame 的临时 DPR 同变）；
     px=可见区物理像素 [宽, 高]（缺省整幅画布）：画布后备存储可大于可见区（host.resize 只增不减），只画左上这一块，viewBB 就是它的取景。 */
-export interface TerrainRenderOpts { flat?: boolean; contour?: boolean; wrap?: boolean; cStep?: number; paper?: boolean; beach?: boolean; slopeK?: number; snow?: SnowSpec; clim?: ClimLook; gain?: number; dpr?: number; px?: [number, number] }
+export interface TerrainRenderOpts { flat?: boolean; contour?: boolean; wrap?: boolean; cStep?: number; paper?: boolean; beach?: boolean; slopeK?: number; snow?: SnowSpec; clim?: ClimLook; zones?: TerrainZones; gain?: number; dpr?: number; px?: [number, number] }
+/** 气候分区的渲染输入：wt 随分区栅格换代（CPU 按它补画变了的那片），looks 随 meta（key 进两端的跳帧指纹与瓦片键） */
+export interface TerrainZones { wt: ZoneWeights; looks: ZoneLooks }
 
-/** 渲染选项唯一装配点（帧循环 / 高清出图 / 缩略图三处共用）：等高距＝调用方经 contourStepOf 取的那一档（抽象单位）、纸色与雪线按 meta、
-    增益＝shadeGain × 本机「地形立体感」、flat 按底图样式、dpr＝画布当前设备像素比、px＝可见区物理像素（host.pxSize）。等高线仍是独立图层，推演底图不替它做主。 */
-export function terrainOpts(meta: Meta, degPerPx: number, layers: Record<string, boolean>, relief: number, style: TerrainStyle, dpr: number, px: [number, number], cStep: number): TerrainRenderOpts {
+/** 渲染选项唯一装配点（帧循环 / 高清出图 / 缩略图三处共用）：等高距＝调用方经 contourStepOf 取的那一档（抽象单位）、纸色与雪线按 meta、气候分区＝core/climzone.zoneField、
+    增益＝shadeGain × 本机「山影深浅」、flat 按底图样式、dpr＝画布当前设备像素比、px＝可见区物理像素（host.pxSize）。等高线仍是独立图层，推演底图不替它做主。 */
+export function terrainOpts(meta: Meta, degPerPx: number, layers: Record<string, boolean>, relief: number, style: TerrainStyle, dpr: number, px: [number, number], cStep: number, zones: ZoneField | null): TerrainRenderOpts {
   return { flat: style === "flat", contour: layers.contour, cStep, wrap: meta.worldModel !== "flat",
-    paper: paperOf(meta), beach: beachOf(meta), slopeK: slopeKOf(meta), snow: snowSpec(meta), clim: climLook(meta), gain: shadeGain(meta, degPerPx) * relief, dpr, px };
+    paper: paperOf(meta), beach: beachOf(meta), slopeK: slopeKOf(meta), snow: snowSpec(meta), clim: climLook(meta),
+    zones: zones ? { wt: zoneWeights(zones, kmPerDeg(meta)), looks: zoneLooks(meta) } : undefined, gain: shadeGain(meta, degPerPx) * relief, dpr, px };
 }
 /** 等距的取场与取档：三个渲染调用点与注记都经此，等距才不会「落笔即变、落地又变」，注记也才与线同一档。
     场＝落定的规则场优先（演算中沿用上一份），没有就用当前规则场；坡度按**视口窗**统计（放大进山不再按整图的 75 分位算＝线距不随放大变密），

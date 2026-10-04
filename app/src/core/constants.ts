@@ -385,7 +385,8 @@ export const ECO: Record<Ecotype, { 名: string; color: string | null; tint: [nu
   forest:    { 名: "森林", color: "#9fbf8e", tint: [110, 150, 96],  costMul: 1.8,  elevBias: 0,     scatter: [{ k: "tree", p: 0.85, s: 4.6 }, { k: "tree", p: 0.55, s: 3.8, dx: 0.3, dy: -0.22 }, { k: "pine", p: 0.4, s: 5, dx: -0.32, dy: 0.18 }] },
   grassland: { 名: "草原", color: "#d2d69a", tint: [190, 190, 118], costMul: 1.05, elevBias: 0,     scatter: [{ k: "shrub", p: 0.14, s: 2.4 }, { k: "shrub", p: 0.07, s: 2.0, dx: 0.3, dy: -0.2 }] },
   marsh:     { 名: "沼泽", color: "#a9ccc4", tint: [150, 186, 170], costMul: 2.4,  elevBias: -0.13, scatter: [{ k: "reed", p: 0.5, s: 4.5 }, { k: "reed", p: 0.28, s: 3.6, dx: 0.35, dy: 0.2 }] },
-  desert:    { 名: "荒漠", color: "#e6d9ad", tint: [224, 206, 150], costMul: 1.4,  elevBias: 0,     scatter: [{ k: "dune", p: 0.34, s: 6 }, { k: "rock", p: 0.08, s: 3.5, dx: 0.3, dy: 0.3 }] }
+  desert:    { 名: "荒漠", color: "#e6d9ad", tint: [224, 206, 150], costMul: 1.4,  elevBias: 0,     scatter: [{ k: "dune", p: 0.34, s: 6 }, { k: "rock", p: 0.08, s: 3.5, dx: 0.3, dy: 0.3 }] },
+  salt:      { 名: "盐滩", color: "#ece8dc", tint: [232, 228, 214], costMul: 1.1,  elevBias: 0,     scatter: [] }
 };
 /** 旧 TerrainId → canonical 复合串（分类器重贴标签 + 旧档迁移用） */
 export const LEGACY_TO_COMPOSITE: Record<TerrainId, string> = {
@@ -443,9 +444,9 @@ export function terrainProps(cell: string): TerrainProps {
   return p;
 }
 
-/* GPU G 通道编码：复合 → 整数索引 lf*5+eco（0–24），shader 据此查 uTColor/uTint（25 项）。 */
+/* GPU G 通道编码：复合 → 整数索引 地貌序 × 生态数 + 生态序，shader 据此查 uTColor/uTint（共 COMPOSITE_COUNT 项）。 */
 export const LANDFORM_ORDER: Landform[] = ["plain", "coast", "hill", "mountain", "alpine", "water"];
-export const ECO_ORDER: Ecotype[] = ["none", "forest", "grassland", "marsh", "desert"];
+export const ECO_ORDER: Ecotype[] = ["none", "forest", "grassland", "marsh", "desert", "salt"];
 
 /** 气候档 → 林线 treeM 与雪线 snowM（米，图幅中心纬度处；只进观感，不进规则；treeM null＝无林）。取地球各带实测量级：
     瑞典北部林线 650 / 冰川平衡线 1400～1500、阿尔卑斯 2200 / 不到 3000、南北纬 30°～20° 林线 3500～4000、尼泊尔南坡雪线约 5000、
@@ -463,7 +464,7 @@ export const CLIMATE_ORDER: Climate[] = ["polar", "boreal", "temperate", "subtro
 /** 全部生态散布 kind 的并集（生态笔替换语义的清扫范围：刷别的生态时扫掉这些；
     手放的山峰/丘/自定义图章不在并集里＝永不被生态笔扫掉）。派生量、不动平价表。 */
 export const ECO_SCATTER_KINDS: ReadonlySet<string> = new Set(Object.values(ECO).flatMap(e => e.scatter.map(s => s.k)));
-export const COMPOSITE_COUNT = LANDFORM_ORDER.length * ECO_ORDER.length;   // 30
+export const COMPOSITE_COUNT = LANDFORM_ORDER.length * ECO_ORDER.length;   // 36
 const CIDX_CACHE = new Map<string, number>();   // 逐格上传时按串查（同 terrainProps 的 PROPS_CACHE）：不缓存＝196 万格每次重传解析 80ms
 export function compositeIndex(cell: string): number {
   let i = CIDX_CACHE.get(cell);

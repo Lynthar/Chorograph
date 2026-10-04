@@ -1697,16 +1697,16 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
      推演底图不替等高线做主（等高线仍是独立图层），也不改纸色/雪线/增益的来源。 */
   it("terrainOpts：推演底图只翻 flat，等高线仍随图层开关，其余项与观感底图逐位相同", () => {
     const meta = { mapKind: "tactical", elevUnitM: 2000, bbox: { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 } } as Meta;
-    const a = terrainOpts(meta, 0.001, { contour: true }, 1.5, "shaded", 1, [800, 600], 0.05), b = terrainOpts(meta, 0.001, { contour: true }, 1.5, "flat", 1, [800, 600], 0.05);
+    const a = terrainOpts(meta, 0.001, { contour: true }, 1.5, "shaded", 1, [800, 600], 0.05, null), b = terrainOpts(meta, 0.001, { contour: true }, 1.5, "flat", 1, [800, 600], 0.05, null);
     assert.strictEqual(a.flat, false); assert.strictEqual(b.flat, true);
     assert.deepStrictEqual({ ...a, flat: null }, { ...b, flat: null }, "样式之外的项逐位相同");
-    assert.strictEqual(terrainOpts(meta, 0.001, { contour: false }, 1, "flat", 1, [800, 600], 0.05).contour, false, "推演底图不强开等高线");
-    assert.strictEqual(a.dpr, 1); assert.strictEqual(terrainOpts(meta, 0.001, {}, 1, "shaded", 2.5, [800, 600], 0.05).dpr, 2.5, "设备像素比原样进渲染选项（等高线像素量据此锚 CSS 像素）");
+    assert.strictEqual(terrainOpts(meta, 0.001, { contour: false }, 1, "flat", 1, [800, 600], 0.05, null).contour, false, "推演底图不强开等高线");
+    assert.strictEqual(a.dpr, 1); assert.strictEqual(terrainOpts(meta, 0.001, {}, 1, "shaded", 2.5, [800, 600], 0.05, null).dpr, 2.5, "设备像素比原样进渲染选项（等高线像素量据此锚 CSS 像素）");
     assert.deepStrictEqual(a.px, [800, 600], "可见区物理像素原样进渲染选项（画布可大于可见区，渲染器只画这一块）");
-    assert.strictEqual(a.gain, shadeGain(meta, 0.001) * 1.5, "增益＝shadeGain × 本机地形立体感");
+    assert.strictEqual(a.gain, shadeGain(meta, 0.001) * 1.5, "增益＝shadeGain × 本机山影深浅");
     assert.strictEqual(a.paper, paperOf(meta)); assert.strictEqual(a.beach, beachOf(meta)); assert.strictEqual(a.slopeK, slopeKOf(meta)); assert.deepStrictEqual(a.snow, snowSpec(meta)); assert.deepStrictEqual(a.clim, climLook(meta));
     assert.strictEqual(a.cStep, 0.05, "等距原样进渲染选项（调用方经 contourStepOf 取档）");
-    assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded", 1, [800, 600], 0.05).wrap, false, "平面世界不环绕");
+    assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded", 1, [800, 600], 0.05, null).wrap, false, "平面世界不环绕");
   });
   it("contourStepOf：坡度按视口窗统计（放大进山不按整图 75 分位）、范围按全场；整幅视角＝全场统计；上一档按 meta 记忆", () => {
     // 64×16 的 1 km 格：西半幅缓坡 0.002、东半幅陡坡 0.5；100 m/px 下东半幅下限 600 m → 1000，西半幅 2.4 m → 地板 10
@@ -1883,6 +1883,12 @@ describe("战术图生成（快照烘焙）", () => {
   });
   const ev = { id: "evHL", 名称: "会战", type: "event", evtype: "battle", lon: 112.0, lat: 34.5, year: 3107 } as WorldNode;
 
+  it("生成器画的河带进战术图后是普通的河：去掉 gen 标记，水面宽照留", () => {
+    const src = srcWorld();
+    src.edges.push({ type: "river", pts: [[111.5, 34.5], [112.5, 34.52]], widthM: 120, gen: true });
+    const e = createTacticalWorld(src, ev, 200, {}).edges.find(x => x.type === "river")!;
+    assert.ok(e && !("gen" in e) && e.widthM === 120);
+  });
   it("meta：mapKind/battleYear/tacSpan/parent/名称/继承字段/view；子图恒平面+盖章（⚠ 期望有意翻转,2026-08-13 平面化）", () => {
     const w = createTacticalWorld(srcWorld(), ev, 200, { parentMapId: "m1", today: "2026-07-05" });
     assert.strictEqual(w.meta.mapKind, "tactical");

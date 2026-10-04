@@ -13,6 +13,7 @@ import { normalizeWorld } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
 import { removeDecor, removeEdgeAt, removeFaction, removeNode, removeUnit } from "./editops.ts";
 import type { CalTemplate } from "../data/calstore.ts";
+import type { Climate } from "../core/types.ts";
 import type { GeoMapping, GeoScan } from "../core/geojson.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
@@ -160,6 +161,9 @@ export const helpOpenSig = signal(false);
 /* 历法弹层与本机模板（2026-08-19）：模板是建图时的模具，存 localStorage，见 data/calstore 头注 */
 export const calOverlaySig = signal(false);
 export const calTemplatesSig = signal<CalTemplate[]>([]);
+/** 界面偏好弹层（本机偏好，图库页与图内设置两处进）与图库页的导入弹层 */
+export const prefsOpenSig = signal(false);
+export const importOpenSig = signal(false);
 /* GeoJSON 导入弹层：扫描结果与字段映射在弹层里定，转换与入库全留外壳。
    外部历史地理数据多禁再分发——只在本机转换，一个字节都不进仓库。 */
 export interface GeoImportReq {
@@ -500,7 +504,7 @@ export function pickLinkType(tp: Edge["type"]): void {
 }
 
 /* —— 界面偏好：主题（亮·素笺默认/暗·漆）×密度（浏览·松/兵棋·紧）两轴 + 出图图例开关
-   + 出图清晰度（像素密度倍数 1–4，取景不变）+ 地形立体感（晕渲夸张倍率 RELIEF_STEPS，乘在
+   + 出图清晰度（像素密度倍数 1–4，取景不变）+ 山影深浅（晕渲夸张倍率 RELIEF_STEPS，乘在
    material.shadeGain 之上；屏幕与出图同用）。本机 localStorage 持久化、不入存档；
    boot 读写存储并把 data-theme/data-den 落到 #app。 —— */
 export const RELIEF_STEPS = [0.5, 1, 1.5, 2] as const;
@@ -597,7 +601,11 @@ export const brushSmoothSig = signal(2);                      // 涂域边界平
 /** 「⏳ 新对象时间段」（编辑左栏）：勾选后新画的地点/连线/布景/地形涂改带 since/until（对齐旧 eraNew） */
 export const eraNewSig = signal<{ on: boolean; since: number | null; until: number | null }>({ on: false, since: null, until: null });
 export const paintTerrainSig = signal<string>("water");       // 地形涂改：当前笔刷复合串（"地貌"/"地貌/生态"；两轴）
-export const terrainAxisSig = signal<"lf" | "eco" | "height">("lf");   // 地形子工具三轴：地貌 / 生态(改地面+落真实印章) / 高程起伏
+export type TerrainAxis = "lf" | "eco" | "height" | "clim";
+export const terrainAxisSig = signal<TerrainAxis>("lf");   // 地形子工具四页：地貌 / 生态(改地面+落真实印章) / 高程起伏 / 气候分区
+/** 生效的地形页：气候分区只在战略图，战术图上停在「气候」页时按地貌页处理 */
+export const terrainAxisOf = (a: TerrainAxis, tac: boolean): TerrainAxis => a === "clim" && tac ? "lf" : a;
+export const climPaintSig = signal<Climate>("temperate");      // 气候笔：当前档
 export const heightStepMSig = signal(0);                      // 高程笔幅度 米/笔；0=自动（战术 10/战略 50），生效值走 core/elev.heightStepM
 export const addTypeSig = signal<string>("city");             // 地点：落点预选类型（柱B——同布景选印章之例；缺省城市=旧行为）
 export const decorKindSig = signal<string>("tree");           // 布景：当前印章种类

@@ -9,13 +9,14 @@ import { drawOverlay, drawOp, type LoopBudget } from "../render/overlay.ts";
 import type { ElevField } from "../core/elev.ts";
 import { contourStepOf, terrainOpts } from "../render/renderer.ts";
 import { drawAnalysis } from "../render/analysis.ts";
-import { drawPaintCells, drawBrushRing, drawSelectBox } from "../render/editHud.ts";
+import { drawPaintCells, drawBrushRing, drawSelectBox, drawClimZones } from "../render/editHud.ts";
 import { paintStep } from "../core/territory.ts";
+import { zoneField, zoneStep } from "../core/climzone.ts";
 import { brushRadiusCells } from "../core/brush.ts";
 import { dataLon } from "../ui/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
-  paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig,
+  paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig, terrainAxisSig, terrainAxisOf, isTacSig,
   routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, readOnlySig, uiPrefsSig, terrainStyleSig }
   from "../ui/state.ts";
 import { $ } from "./dom.ts";
@@ -45,7 +46,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
     const rf = ruleFieldSig.value; if (rf) ruleLanded = rf;
     const cstep = layers.terrain ? contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleLanded, ctx.ruleField, viewBB()).v : 0;   // 等距：渲染器与注记同吃一档
-    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, pxSize(), cstep));
+    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, pxSize(), cstep, zoneField(world)));
     if (world) {
       const octx = ov.getContext("2d")!;
       const selIdForOps = (selSig.value && selSig.value.kind === "node") ? selSig.value.id : null;
@@ -69,9 +70,14 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
         if (ptr.mxy) drawBrushRing(octx, cam(), ptr.mxy[0], ptr.mxy[1],
           (brushRadiusCells(ctx.meta, "paint", brushSizeSig.value) + 0.5) * paintStep(ctx.meta), brushEraseSig.value, ctx.DPR);
       }
-      if (m === "edit" && editSubSig.value === "terrain" && ptr.mxy && ctx.grid) {   // 地形笔刷环（按 grid.step 定径）
-        drawBrushRing(octx, cam(), ptr.mxy[0], ptr.mxy[1],
-          (brushRadiusCells(ctx.meta, "terrain", brushSizeSig.value) + 0.5) * ctx.grid.step, brushEraseSig.value, ctx.DPR);
+      const climAxis = terrainAxisOf(terrainAxisSig.value, isTacSig.value) === "clim";
+      if (m === "edit" && editSubSig.value === "terrain" && climAxis) {   // 气候页：分区示意（涂的与派生的）
+        const zf = zoneField(world);
+        if (zf) drawClimZones(octx, cam(), zf, ctx.DPR);
+      }
+      if (m === "edit" && editSubSig.value === "terrain" && ptr.mxy && ctx.grid) {   // 地形笔刷环（按 grid.step 定径；气候页按分区格）
+        drawBrushRing(octx, cam(), ptr.mxy[0], ptr.mxy[1], climAxis ? (brushRadiusCells(ctx.meta, "clim", brushSizeSig.value) + 0.5) * zoneStep(ctx.meta)
+          : (brushRadiusCells(ctx.meta, "terrain", brushSizeSig.value) + 0.5) * ctx.grid.step, brushEraseSig.value, ctx.DPR);
       }
       const od = opDrawSig.value;
       if (m === "edit" && od && ptr.opStroke && ptr.opStroke.pts.length) {   // 画线预览：已采点 + 橡皮筋到光标
@@ -143,7 +149,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       // 选中/悬停/工具态
       selSig.value, hoverSig.value, modeSig.value, editSubSig.value, opSelSig.value,
       opDrawSig.value, linkTypeSig.value, linkFromSig.value,
-      paintFactionSig.value, paintLayerSig.value,
+      paintFactionSig.value, paintLayerSig.value, terrainAxisSig.value,
       brushSizeSig.value, brushEraseSig.value, brushSmoothSig.value,
       routePtsSig.value, routeResSig.value, unitLegsSig.value, visMaskSig.value, detectSig.value, ruleFieldSig.value, spotTableSig.value,
       // 外壳可变态（非 signal，只能逐帧比）；elevField/ruleField=侵蚀细化异步换入（引用比较有效；推演底图画规则场）
@@ -156,7 +162,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       // 顶栏保存态文案的来源（同样不是 signal，漏了就会「已保存」迟迟不上屏）
       autosave.pending, ctx.savedAt, ctx.saveErr, ctx.bootNote, ctx.mapId, ctx.source, ctx.lib,
       saveConflictSig.value, erodePhaseSig.value, readOnlySig.value,
-      uiPrefsSig.value.relief,   // 地形立体感（本机偏好）进晕渲增益：改了必须重画
+      uiPrefsSig.value.relief,   // 山影深浅（本机偏好）进晕渲增益：改了必须重画
       terrainStyleSig.value,     // 底图样式（观感/推演）
       terrPass                   // 涂域环分帧首算未完（见 TERR_FRAME_MS）
     ];

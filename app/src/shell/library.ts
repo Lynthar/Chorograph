@@ -12,6 +12,7 @@ import { isStaleError, staleError, type StaleInfo } from "../data/guard.ts";
 import { blankWorld, clampWorldBBox, countsOf, normalizeWorld } from "../core/world.ts";
 import { convertGeoJSON, GEO_CAPS, padBBox, scanGeoJSON, type GeoMapping, type GeoResult, type GeoScan } from "../core/geojson.ts";
 import { paintStep } from "../core/territory.ts";
+import { zoneField } from "../core/climzone.ts";
 import { mapFrame } from "../core/frame.ts";
 import { FAC_PALETTE, outsideCount, pullIntoFrame } from "../ui/editops.ts";
 import { phasesOf, yearRangeOf } from "../core/time.ts";
@@ -582,7 +583,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       if (ctx.repaint) ctx.repaint(true);   // 叠加层按当前 DPR 重画且涂域一次算全（屏上那帧可能还在分帧首算）；地形随即再渲一次，同帧幂等
       const [vw, vh] = host.pxSize();
       const R = layersSig.peek().terrain ? ctx.R : null;
-      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v));
+      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v, zoneField(worldSig.peek())));
       const off = document.createElement("canvas");
       off.width = vw; off.height = vh;
       const g2 = off.getContext("2d")!;
@@ -816,7 +817,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     try {
       const [vw, vh] = host.pxSize();   // 可见区（画布可更大）
       if (!vw || !vh) return null;
-      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v));
+      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v, zoneField(worldSig.peek())));
       const tw = 280, th = 175, off = document.createElement("canvas");
       off.width = tw; off.height = th;
       const g2 = off.getContext("2d")!;

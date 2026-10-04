@@ -473,6 +473,13 @@ select.fld,button.fld{cursor:pointer}
 .mo-body td{padding:3px 10px 3px 0;font-size:var(--fs-sm);vertical-align:top;color:var(--q-tx)}
 .mo-body td:first-child{color:var(--q-dim);white-space:nowrap;font-weight:600}
 .mo-body .sub{color:var(--q-faint)}
+/* 导入弹层的入口卡：整卡是按钮；悬停描朱＝动作色 */
+.imp-cards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:2px 0 4px}
+.imp-card{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:16px;text-align:left;font:inherit;color:var(--q-tx);background:var(--q-in);border:1px solid var(--q-ln2);border-radius:var(--r);cursor:pointer}
+.imp-card:hover{border-color:var(--q-zhu)}
+.imp-card .ic{font-size:26px;line-height:1}
+.imp-card .t{font-weight:700;font-size:var(--fs)}
+.imp-card .s{font-size:var(--fs-sm);color:var(--q-dim);line-height:1.7}
 
 /* ── toast ── */
 /* ⚠ 隐藏态须 visibility:hidden（同 .drawer.closed 之法）：pointer-events 不拦键盘焦点，

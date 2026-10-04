@@ -18,6 +18,8 @@ import { SettingsOverlay } from "./SettingsOverlay.tsx";
 import { SaveConflictOverlay } from "./SaveConflictOverlay.tsx";
 import { CalendarOverlay } from "./CalendarOverlay.tsx";
 import { GeoImportOverlay } from "./GeoImportOverlay.tsx";
+import { PrefsOverlay } from "./PrefsOverlay.tsx";
+import { ImportOverlay } from "./ImportOverlay.tsx";
 import { Guard } from "./Guard.tsx";
 
 export function mountUI(): void {
@@ -44,5 +46,5 @@ export function mountUI(): void {
   const hm = document.getElementById("homeMount");
   if (hm) render(<Guard name="图库"><HomePanel /></Guard>, hm);
   const ovl = document.getElementById("ovlMount");
-  if (ovl) render(<><Guard name="帮助"><HelpOverlay /></Guard><Guard name="设置"><SettingsOverlay /></Guard><Guard name="冲突处置"><SaveConflictOverlay /></Guard><Guard name="历法"><CalendarOverlay /></Guard><Guard name="GeoJSON 导入"><GeoImportOverlay /></Guard></>, ovl);
+  if (ovl) render(<><Guard name="帮助"><HelpOverlay /></Guard><Guard name="设置"><SettingsOverlay /></Guard><Guard name="冲突处置"><SaveConflictOverlay /></Guard><Guard name="历法"><CalendarOverlay /></Guard><Guard name="GeoJSON 导入"><GeoImportOverlay /></Guard><Guard name="界面偏好"><PrefsOverlay /></Guard><Guard name="导入"><ImportOverlay /></Guard></>, ovl);
 }

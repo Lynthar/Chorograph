@@ -5,18 +5,19 @@ import { runsDims } from "../core/territory.ts";
 import { project, viewCosK, type Camera } from "../core/projection.ts";
 import { hexA } from "../core/util.ts";
 import { DEFAULT_BBOX } from "../core/types.ts";
+import { CLIMATE_SWATCH, zoneClimate, type ZoneField } from "../core/climzone.ts";
 import type { BBox, PaintLayer } from "../core/types.ts";
 
 /** 当前编辑层的格底纹（对齐旧 drawPolitics 编辑态分支）。cells=逐格方块（旧档）;
     runs=按行程整条画（×1 后满涂层逐格画每帧几十万矩形画不动,行程数只随边界复杂度）。
     bb=图幅原点（runs 的行列相对它;2026-08-13 加参,frame 传 meta.bbox）。 */
-export function drawPaintCells(ctx: CanvasRenderingContext2D, cam: Camera, layer: PaintLayer, color: string, dpr: number, pd = PD, bb: BBox = DEFAULT_BBOX): void {
+export function drawPaintCells(ctx: CanvasRenderingContext2D, cam: Camera, layer: PaintLayer, color: string, dpr: number, pd = PD, bb: BBox = DEFAULT_BBOX, alpha = 0.15): void {
   const cells = layer.cells || [];
   const R = layer.runs;
   if (!cells.length && !R) return;
   ctx.save();
   ctx.scale(dpr, dpr);
-  ctx.fillStyle = hexA(color, 0.15);
+  ctx.fillStyle = hexA(color, alpha);
   for (const [lon, lat] of cells) {
     const a = project(cam, lon - pd / 2, lat + pd / 2), b = project(cam, lon + pd / 2, lat - pd / 2);
     ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
@@ -34,6 +35,32 @@ export function drawPaintCells(ctx: CanvasRenderingContext2D, cam: Camera, layer
     }
   }
   ctx.restore();
+}
+
+/* 分区示意的行程层按 ZoneField 记忆：涂的与派生的各一组（每档一层） */
+const zoneLayerMemo = new WeakMap<ZoneField, { color: string; L: PaintLayer; painted: boolean }[]>();
+function zoneLayers(f: ZoneField): { color: string; L: PaintLayer; painted: boolean }[] {
+  const hit = zoneLayerMemo.get(f);
+  if (hit) return hit;
+  const out: { color: string; L: PaintLayer; painted: boolean }[] = [], P = f.painted ? f.painted.z : null, D = f.derivedLand;
+  for (const painted of [false, true]) for (let k = 1; k <= 6; k++) {
+    const d: number[] = [];
+    for (let j = 0; j < f.rows; j++) {
+      let run = -1;
+      for (let i = 0; i <= f.cols; i++) {
+        const q = j * f.cols + i, own = P ? !!P[q] : false;
+        const on = i < f.cols && f.z[q] === k && own === painted && (painted || !D || !!D[q]);   // 派生只画陆上
+        if (on && run < 0) run = i; else if (!on && run >= 0) { d.push(j, run, i - run); run = -1; }
+      }
+    }
+    if (d.length) out.push({ color: CLIMATE_SWATCH[zoneClimate(k)!], L: { runs: { pd: f.pd, d } }, painted });
+  }
+  zoneLayerMemo.set(f, out);
+  return out;
+}
+/** 气候分区示意（地形工具「气候」页）：涂的分区色重、派生的初稿色浅（只画陆上），未涂处不画 */
+export function drawClimZones(ctx: CanvasRenderingContext2D, cam: Camera, f: ZoneField, dpr: number): void {
+  for (const z of zoneLayers(f)) drawPaintCells(ctx, cam, z.L, z.color, dpr, f.pd, f.bb, z.painted ? 0.32 : 0.14);
 }
 
 /** 笔刷光圈：rDeg=盘半径（度）＝(R+0.5)×格边度数，由调用方经 core/brush 折算（2026-08-12 起

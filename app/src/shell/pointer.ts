@@ -6,6 +6,7 @@ import { unproject, minDppFor, zoomAtView, panByView, viewCosK } from "../core/p
 import { frameRectsPx, inFrame, mapFrame } from "../core/frame.ts";
 import { ALL_KINDS, CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite, terrainProps } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
+import { climateAt, zoneIndex, zoneStep } from "../core/climzone.ts";
 import { BRUSH_NOTCHES, brushRadiusCells, brushDabStepDeg, interpolatePath } from "../core/brush.ts";
 import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
@@ -19,16 +20,16 @@ import { bearingDeg, fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStren
 import { pickDecor, decorIdsInRadius, decorsInBox, ecoForeignIdsInDisc } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit, selMembers,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
-  inspEditSig, settingsSig, closeSettings, helpOpenSig, calOverlaySig, geoImportSig, saveConflictSig, togglePlay, stopPlay,
+  inspEditSig, settingsSig, closeSettings, helpOpenSig, calOverlaySig, geoImportSig, prefsOpenSig, importOpenSig, saveConflictSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
-  addTypeSig, paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, decorKindSig, decorSizeSig,
+  addTypeSig, paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, terrainAxisOf, climPaintSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, decorEraseSig, eraNewSig, heightStepMSig,
   mutateWorld, mutateWorldLive, pushHistoryOnce, beginStroke, endStroke, undoWorld, redoWorld,
   deleteNodeAt, deleteUnitAt, deleteEdgeIdx, deleteDecorAt,
   type EditSub, type Sel }
   from "../ui/state.ts";
 import { addNode, addEdge, addFreeEdge, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
-  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setUnitFacing, setNodeRangeKm, setNodeVision, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath }
+  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setUnitFacing, setNodeRangeKm, setNodeVision, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath, paintClimatePath }
   from "../ui/editops.ts";
 import { poolGet } from "../ui/stamps.ts";
 import { paintDims, maskFromLayer, brushMask, runsFromMask, ensurePaintLayer, type PaintMask } from "../ui/paint.ts";
@@ -271,7 +272,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (!grid) return;
     let changed = false;
     // 返回 changed 给 mutateWorldLive：空笔（涂同地形/无变化）不广播、不 editVer++（不留空撤销、不空触发自动保存）
-    const axis = terrainAxisSig.peek();   // 三轴：lf 地貌 / eco 生态(改地面) / height 高程
+    const axis = terrainAxisOf(terrainAxisSig.peek(), isTacSig.peek());   // 四页：lf 地貌 / eco 生态(改地面) / height 高程 / clim 气候分区
     // 高程笔米制分档（2026-08-10）：每笔 dh＝所选米数/elevUnitM（原硬编码 ±0.02＝40m@2000 无档位）
     const dhAbs = heightStepM(ctx.meta, heightStepMSig.peek()) / elevUnitM(ctx.meta);
     const R = brushRadiusCells(ctx.meta, "terrain", brushSizeSig.value);   // 同 paintPath：档位在 core/brush 折成格半径
@@ -279,6 +280,11 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       const ll = unproject(cam(), x, y);
       return [dataLon(ctx.meta, ll[0]), ll[1]] as [number, number];
     });
+    if (axis === "clim") {   // 气候分区只进观感：不重建网格
+      const Rz = brushRadiusCells(ctx.meta, "clim", brushSizeSig.value), k = brushEraseSig.peek() ? 0 : zoneIndex(climPaintSig.peek());
+      mutateWorldLive(w => paintClimatePath(w, path, k, Rz));
+      return;
+    }
     mutateWorldLive(w => {
       changed = axis === "height"
         ? paintHeightPath(w, grid, path, brushEraseSig.peek() ? -dhAbs : dhAbs, R + 1, eraNewSig.peek())
@@ -371,6 +377,11 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     const sub = editSubSig.peek();
     const ll = unproject(cam(), x, y);
     const lon = dataLon(ctx.meta, ll[0]);
+    if (sub === "terrain" && world && terrainAxisOf(terrainAxisSig.peek(), isTacSig.peek()) === "clim") {   // 取样该点生效的气候档（涂的 > 派生 > 设置）
+      const c = climateAt(world, lon, ll[1]);
+      if (c) { climPaintSig.value = c; brushEraseSig.value = false; }
+      return;
+    }
     if (sub === "terrain" && ctx.grid) {
       const c = Math.floor((lon - ctx.grid.bb.lonMin) / ctx.grid.step), r = Math.floor((ll[1] - ctx.grid.bb.latMin) / ctx.grid.step);
       const t = ctx.grid.cells[r] && ctx.grid.cells[r][c];
@@ -699,8 +710,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     if (terrainStroke) {
-      const R = brushRadiusCells(ctx.meta, "terrain", brushSizeSig.value);
-      terrainPath(strokePath(e, terrainStroke.lastX, terrainStroke.lastY, dabStepPx(ctx.grid ? ctx.grid.step : 1, R)));
+      const clim = terrainAxisOf(terrainAxisSig.peek(), isTacSig.peek()) === "clim";
+      const R = brushRadiusCells(ctx.meta, clim ? "clim" : "terrain", brushSizeSig.value);
+      terrainPath(strokePath(e, terrainStroke.lastX, terrainStroke.lastY, dabStepPx(clim ? zoneStep(ctx.meta) : ctx.grid ? ctx.grid.step : 1, R)));
       terrainStroke.lastX = e.offsetX; terrainStroke.lastY = e.offsetY;
       return;
     }
@@ -968,7 +980,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     /* ⌘K / Ctrl+K：聚焦顶栏搜索框。
        须在输入框守卫之前（正在打字也能召唤）；弹层/图库打开时让位（焦点别落进被盖住的顶栏）。 */
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "k" || e.key === "K")
-      && !settingsSig.peek() && !helpOpenSig.peek() && !calOverlaySig.peek() && !geoImportSig.peek() && !saveConflictSig.peek() && !ctx.libOpen) {
+      && !settingsSig.peek() && !helpOpenSig.peek() && !calOverlaySig.peek() && !geoImportSig.peek() && !prefsOpenSig.peek() && !importOpenSig.peek() && !saveConflictSig.peek() && !ctx.libOpen) {
       e.preventDefault();
       const sb = document.getElementById("searchBox") as HTMLInputElement | null;
       if (sb) { sb.focus(); sb.select(); }
@@ -983,9 +995,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
        ⚠ 冲突弹层**有意不给 Esc**——待决断的数据完整性事件，关掉只会让人以为没事（见弹层头注）；
        但仍在此整段让位，免得快捷键穿透到被遮罩盖住的地图上。 */
     if (saveConflictSig.peek()) return;
-    if (settingsSig.peek()) { if (e.key === "Escape") closeSettings(); return; }
-    if (calOverlaySig.peek()) { if (e.key === "Escape") calOverlaySig.value = false; return; }
+    /* 叠放次序＝ui/mount 的挂载次序（后挂在上）：下面按逆序判，Esc 先关最上面那层 */
+    if (importOpenSig.peek()) { if (e.key === "Escape") importOpenSig.value = false; return; }
+    if (prefsOpenSig.peek()) { if (e.key === "Escape") prefsOpenSig.value = false; return; }
     if (geoImportSig.peek()) { if (e.key === "Escape") geoImportSig.value = null; return; }
+    if (calOverlaySig.peek()) { if (e.key === "Escape") calOverlaySig.value = false; return; }
+    if (settingsSig.peek()) { if (e.key === "Escape") closeSettings(); return; }
     if (helpOpenSig.peek()) { if (e.key === "Escape" || e.key === "?") helpOpenSig.value = false; return; }
     if (ctx.libOpen) {   // 开始界面可见：屏蔽地图快捷键；Esc=回当前图（v0.14 homeVisible 分支）
       if (e.key === "Escape" && ctx.mapId) hideHome();

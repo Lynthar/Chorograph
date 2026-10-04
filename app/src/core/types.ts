@@ -3,7 +3,7 @@
 
 export type WorldModel = "sphere" | "flat";
 export type TerrainMode = "auto" | "plain" | "island" | "sample";
-export type GenStyle = "continent" | "archipelago";
+export type GenStyle = "continent" | "archipelago" | "mono" | "multi" | "isles";
 /** 气候档（meta.climate）：定陆地配色、林线与雪线（constants.CLIMATE · render/material.climLook），缺键＝出厂配色与雪线、无林线、不随纬度 */
 export type Climate = "polar" | "boreal" | "temperate" | "subtropical" | "tropical" | "arid";
 export type TerrainId =
@@ -12,7 +12,7 @@ export type TerrainId =
 /* 两轴地形（重构 A）：地貌 × 生态。grid.cells / terrainOverrides.t 存复合串
    "地貌" 或 "地貌/生态"（生态=none 时省略）。旧 8 元 TerrainId 是兼容子集，迁移/派生见 constants.ts。 */
 export type Landform = "plain" | "coast" | "hill" | "mountain" | "alpine" | "water";
-export type Ecotype = "none" | "forest" | "grassland" | "marsh" | "desert";
+export type Ecotype = "none" | "forest" | "grassland" | "marsh" | "desert" | "salt";
 /** 复合地形串（如 "plain" / "hill/forest" / "plain/marsh"）；旧 TerrainId 亦为合法复合串 */
 export type Composite = string;
 export type Arm = "land" | "water" | "air";
@@ -51,6 +51,12 @@ export interface Meta {
   genSeed?: number;
   reliefSeed?: number;        // 起伏种子（core/relief.reliefSeedOf）：缺键＝genSeed，再缺＝1
   genStyle?: GenStyle;
+  genVer?: number;            // 生成器版本（缺键＝v1；2＝core/gen2，风格取 mono/multi/isles）
+  genLand?: number;           // v2「陆地占比」滑杆 0..1（在所选风格的区间内取；缺键＝中值）
+  genMtn?: number;            // v2「山地多少」滑杆 0..1（抬升带的条数与强度；缺键＝中值）
+  genIsl?: number;            // v2「近岸岛多少」滑杆 0..1（单块、多块大陆外的近岸岛带强度，群岛不读；缺键＝中值）
+  genRiv?: number;            // v2「河流多少」滑杆 0..1（起画水量；只定建图时画进 edges 的河，不进地形键；缺键＝中值）
+  genWater?: number;          // v2「水量」滑杆 0..1（河宽按水量乘的倍数；同上）
   vault?: string;
   mapKind?: "tactical";
   outside?: "land";           // 图幅外是陆地：碰到图幅边的水体也按内陆湖定水面，图幅外铺纸色（缺键=海）
@@ -84,6 +90,9 @@ export interface Owner extends Timed { faction?: string | null }
 export interface PaintRuns { pd: number; d: number[] }
 
 export interface PaintLayer extends Timed { cells?: [number, number][]; runs?: PaintRuns }
+
+/** 气候分区的一档（world.climateZones，战略图专有）：runs 照涂域行程编码；一格只属一档、不带时段 */
+export interface ClimateZone { climate: Climate; runs: PaintRuns }
 
 export interface Faction extends Timed {
   id: string; 名称?: string; color?: string; 阵营?: string;
@@ -137,6 +146,7 @@ export interface Edge extends Timed {
   type: "road" | "river" | "trade" | "wall";   // wall=工事（2026-07 特化柱B，additive）：壁垒/长城/堑壕/岸线，寻路不吃
   名称?: string;
   widthM?: number;            // 河流真实水面宽（米）：按地理尺度渲染线宽（缺省=样式底宽 2.6px）
+  gen?: true;                 // 生成器画的河：改了生成参数时只替换带它的；用户一改就删（改过的河归用户）
   reverse?: boolean;          // 工事齿面翻转：缺省齿在画线方向左侧（同作战线防线齿之例；岸线惯例＝齿朝水）
   certainty?: Certainty;      // 可靠性（柱B）：缺键=确证；推断/传说走虚线+淡显（同地点之规）
   字段?: Record<string, string>;
@@ -215,6 +225,7 @@ export interface World {
   heightOverrides?: HeightOverride[];   // 可选（不入 normalizeWorld 数组清单——旧档形状不变）
   units: Unit[];
   assets?: Asset[];                     // 自定义印章资产（可选键，缺省不落盘——同 heightOverrides）
+  climateZones?: ClimateZone[];         // 气候分区（core/climzone；可选键，缺省不落盘；只进观感）
   [k: string]: unknown;
 }
 

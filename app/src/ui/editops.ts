@@ -4,8 +4,10 @@
 import { wrapLon } from "../core/geo.ts";
 import { clampToFrame, inFrame, mapFrame } from "../core/frame.ts";
 import { DH_MAX_M, elevUnitM } from "../core/elev.ts";
+import { brushZones, encodeZones, paintedZones, zoneGeom } from "../core/climzone.ts";
 import { newId, parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
+import { genRiverEdges } from "../core/world.ts";
 import { TRACK_OK, isModern, setUnitPoint, unitKind, unitPos, type TrackKey } from "../core/units.ts";
 import { ALL_KINDS, CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
@@ -123,6 +125,13 @@ export function addFreeEdge(w: World, pts: [number, number][], type: "river" | "
   w.edges.push(e);
   return e;
 }
+/** 按当前生成参数重画生成器的河：只换带 gen 标记的，用户改过（标记已删）的不动；不是 v2 自动生成的图只撤不画 */
+export function regenRivers(w: World): { removed: number; added: number } {
+  const keep = w.edges.filter(e => !(e.gen === true && e.type === "river")), add = genRiverEdges(w.meta);
+  const removed = w.edges.length - keep.length;
+  w.edges = keep.concat(add);
+  return { removed, added: add.length };
+}
 /** 新增一条自由画河道：addFreeEdge 的河流便捷形（旧名保留） */
 export function addRiver(w: World, pts: [number, number][]): Edge { return addFreeEdge(w, pts, "river"); }
 
@@ -179,6 +188,7 @@ export function applyNodeForm(n: WorldNode, v: NodeFormValues): void {
     reverse=工事齿面翻转（柱B），真存假删——缺省齿在画线方向左侧不落盘 */
 export interface EdgeFormValues { 名称: string; note: string; kv: string; since: string; until: string; widthM?: string; reverse?: boolean; certainty?: string }
 export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
+  delete e.gen;   // 改过的河归用户：重新生成时不再替换
   const nm = v.名称.trim(); if (nm) e.名称 = nm; else delete e.名称;
   const nt = v.note.trim(); if (nt) e.note = nt; else delete e.note;
   const kv = parseKV(v.kv);
@@ -402,6 +412,20 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
   }
   if (dead.size) w.heightOverrides = ovs.filter(o => !dead.has(o));
   return changed;
+}
+
+/** 气候分区一笔（路径版）：k＝CLIMATE_ORDER 序号 +1，0＝擦回未涂；R＝分区格半径。一格只属一档（涂 X 即抹掉它档）；
+    改了就换新数组（分区栅格按数组引用记忆），擦空则删键。返回是否有变化。 */
+export function paintClimatePath(w: World, path: readonly (readonly [number, number])[], k: number, R: number): boolean {
+  if (w.meta && w.meta.mapKind === "tactical") return false;   // 战术图不用分区（继承母图那一档）
+  const cur = paintedZones(w.meta, w.climateZones), geo = zoneGeom(w.meta);
+  const g = { ...geo, z: cur ? cur.z.slice() : new Uint8Array(geo.cols * geo.rows) };
+  let changed = false;
+  for (const [lon, lat] of path) if (brushZones(g, lon, lat, R, k)) changed = true;
+  if (!changed) return false;
+  const enc = encodeZones(g);
+  if (enc.length) w.climateZones = enc; else delete w.climateZones;
+  return true;
 }
 
 /* 2026-08-13 冻结批：splitOverridesToStep 已删——它唯一的存在理由是「改图幅=改格边」的涂改

@@ -78,7 +78,7 @@ describe("两轴地形 · 新组合按 LANDFORM×ECO 计算", () => {
 describe("两轴地形 · 表完整性", () => {
   it("每个 Ecotype 与 Landform 都有条目", () => {
     for (const k of ["plain", "coast", "hill", "mountain", "alpine", "water"] as const) assert.ok(LANDFORM[k], `LANDFORM.${k}`);
-    for (const k of ["none", "forest", "grassland", "marsh", "desert"] as const) assert.ok(ECO[k], `ECO.${k}`);
+    for (const k of ["none", "forest", "grassland", "marsh", "desert", "salt"] as const) assert.ok(ECO[k], `ECO.${k}`);
   });
   it("LEGACY_TO_COMPOSITE 覆盖全部旧 8 类", () => {
     for (const t of TERRAIN_ORDER as TerrainId[]) assert.ok(LEGACY_TO_COMPOSITE[t], t);
@@ -115,9 +115,9 @@ describe("两轴地形 · 高山档（2026-09-07）", () => {
     assert.strictEqual(TERRAIN_ORDER.length, 8);
     assert.ok(!("alpine" in ELEV));
   });
-  it("复合索引：高山紧随山地、水域仍在末位；allComposites 30 项与 compositeIndex 对齐", () => {
+  it("复合索引：高山紧随山地、水域仍在末位；allComposites 36 项（6 地貌 × 6 生态）与 compositeIndex 对齐", () => {
     const all = allComposites();
-    assert.strictEqual(all.length, 30);
+    assert.strictEqual(all.length, 36);
     assert.strictEqual(compositeIndex("alpine"), compositeIndex("mountain") + ECO_ORDER.length);
     assert.strictEqual(all[all.length - ECO_ORDER.length], "water");
     assert.ok(all.every((c, i) => compositeIndex(c) === i));

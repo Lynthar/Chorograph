@@ -10,6 +10,7 @@
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps } from "../core/constants.ts";
 import { elevBilinear, elevSmooth, coarseField, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
+import { zoneColMix, zoneTreeMix, zoneWeightsAt, ZONE_N, type ZoneWeights } from "./zones.ts";
 import { climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, type ClimLook } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
@@ -203,6 +204,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   type Tile = { cv: HTMLCanvasElement; bb: BBox; pxpd: number; key: string; rp: number; o: TerrainRenderOpts };   // rp/o＝实际渲染分辨率与选项（补画照用）
   let tiles: Tile[] = [];   // 每份露出网格的世界拷贝一张（常态一张，跨环绕缝时两张）
   let dirty: BBox[] = [];   // 自上次 render 以来数据变了的经纬矩形（已外扩到取样半径），render 时补进留用的瓦片
+  let lastZW: ZoneWeights | null = null;   // 上一帧的分区权重：同几何换代＝只补画权重变了的那片
   /* 逐格材质/色调（uploadGrid 预算；7 浮点=canopy,dune,ridge,marsh,rough,albVar,rock + tint 3 通道与有无） */
   let cellMat: Float32Array | null = null;
   let cellTint: Float32Array | null = null;
@@ -369,7 +371,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
        林线淡出按未扭曲点的双线性画面场高程判（同 GL cd.x），趟一算好趟二复用 */
     const clim = opts.clim, snow = opts.snow, beach = opts.beach !== false, slopeK = opts.slopeK ?? 0, rowShift = new Float64Array(H);
     if (snow && snow.lat) for (let y = 0; y < H; y++) rowShift[y] = (snowLatM(Math.abs(L2P(0, y)[1])) - snow.refM) / snow.unitM;
-    const tfade = clim ? new Float32Array(W * H) : null;
+    const tfade = clim || opts.zones ? new Float32Array(W * H) : null;
+    const Z = opts.zones, zw = new Float32Array(ZONE_N), zt = new Float32Array(4), zc = new Float32Array(4);   // 气候分区（同 GL：各档结果按权重混）
+    const tmead = Z ? new Float32Array(W * H * 3) : null;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = y * W + x, p = L2P(x, y);
       const rx = p[0] - lonMin, ry = p[1] - latMin;
@@ -397,7 +401,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const pf = FX.texPatchF / step;
       const pn = 0.65 * vnoise(rx * pf + 19.3, ry * pf + 5.7) + 0.35 * vnoise(rx * pf * 2.7 + 63.1, ry * pf * 2.7 + 28.9);
       const texW = texW0 * (FX.texPatchLo + (FX.texPatchHi - FX.texPatchLo) * sstep(0.32, 0.68, pn));
-      if (tfade) { const t = clim!.treeE + rowShift[y]; tfade[i] = sstep(t, t + clim!.band, elevBil(p[0], p[1])); }
+      if (Z) { zoneTreeMix(Z.looks, zoneWeightsAt(Z.wt, p[0], p[1], zw), elevBil(p[0], p[1]), rowShift[y], zt); tfade![i] = zt[0]; tmead![i * 3] = zt[1]; tmead![i * 3 + 1] = zt[2]; tmead![i * 3 + 2] = zt[3]; }
+      else if (tfade) { const t = clim!.treeE + rowShift[y]; tfade[i] = sstep(t, t + clim!.band, elevBil(p[0], p[1])); }
       const twc = tfade ? MT.c * (1 - tfade[i]) : MT.c;   // 林线以上林冠纹理淡出（同 GL）
       esh[i] = microOn ? e + texAt(rx, ry, twc, MT.d, twrEff, MT.m * marshGate(smac, slopeK), pxpd) * texW : e;
       const es = elevSmooth(field!.data, field!, p[0], p[1]);
@@ -424,14 +429,18 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const lt = sstep(FX.shadeKnee, 1, dn);
       const sh = FX.shadeLo + (FX.shadeHi - FX.shadeLo) * lt;
       const shR = FX.cool[0] + (FX.warm[0] - FX.cool[0]) * lt, shG = FX.cool[1] + (FX.warm[1] - FX.cool[1]) * lt, shB = FX.cool[2] + (FX.warm[2] - FX.cool[2]) * lt;
-      let col = elevRamp(e, ws, beach, clim, rowShift[y]);
+      let col = elevRamp(e, ws, beach, clim, rowShift[y]), zsn = 0;
       if (e >= ws - 0.02) {
+        if (Z) { zoneColMix(Z.looks, zoneWeightsAt(Z.wt, p[0], p[1], zw), e, rowShift[y], beach, zc); col = [zc[0], zc[1], zc[2]]; zsn = zc[3]; }
         matAt(rx, ry);   // 趟二重取材质（色调/反照率/岩化）——省四条逐像素缓存数组的内存
         if (MT.tintW > 0) {
           const a = 0.45 * MT.tintW;
           let tr = MT.tr, tg = MT.tg, tb = MT.tb;
           const fk = tfade ? tfade[i] * Math.max(0, Math.min(1, MT.c / FOREST_CANOPY)) : 0;
-          if (fk > 0) { tr += (clim!.meadow[0] - tr) * fk; tg += (clim!.meadow[1] - tg) * fk; tb += (clim!.meadow[2] - tb) * fk; }   // 林线以上的森林换草甸色（同 GL）
+          if (fk > 0) {   // 林线以上的森林换草甸色（同 GL）
+            const mr = tmead ? tmead[i * 3] : clim!.meadow[0], mg = tmead ? tmead[i * 3 + 1] : clim!.meadow[1], mb = tmead ? tmead[i * 3 + 2] : clim!.meadow[2];
+            tr += (mr - tr) * fk; tg += (mg - tg) * fk; tb += (mb - tb) * fk;
+          }
           col = [col[0] * (1 - a) + tr * a, col[1] * (1 - a) + tg * a, col[2] * (1 - a) + tb * a];
         }
         // 生态辨识度（同 GL）：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重）
@@ -472,7 +481,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         }
         const S = opts.snow;   // 雪按米落（同 GL：material.snowSpec 同式，随纬度只在球面图且设了气候档；陡坡挂不住雪打六折）
         const snE = S ? Math.max(0, S.base + rowShift[y]) : 1e9;
-        const sn = sstep(snE, snE + FX.snowBand, e) * (1 - 0.6 * sstep(FX.snowSlopeLo, FX.snowSlopeHi, slp));
+        const sn = (Z ? zsn : sstep(snE, snE + FX.snowBand, e)) * (1 - 0.6 * sstep(FX.snowSlopeLo, FX.snowSlopeHi, slp));
         if (sn > 0) col = [col[0] + (237.15 - col[0]) * sn, col[1] + (239.7 - col[1]) * sn, col[2] + (246.075 - col[2]) * sn];
         const ak = sstep(FX.airLo, FX.airHi, e) * FX.airMix;   // 空气透视（同 GL）
         if (ak > 0) col = [col[0] + (FX.airC[0] * 255 - col[0]) * ak, col[1] + (FX.airC[1] * 255 - col[1]) * ak, col[2] + (FX.airC[2] * 255 - col[2]) * ak];
@@ -569,13 +578,20 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       // 球面环绕：视口按每份拷贝平移 c 折回网格所在域做瓦片判定/重建，贴图时再按拷贝偏移回来
       const copies = wrapCopies(viewBB, grid.bb, !!opts.wrap);
       /* 键须罩住瓦片读到的每个选项（增益随缩放变）：数据不变时瓦片留用，漏一项＝改那项设置后画面不动 */
-      const S = opts.snow;
+      const S = opts.snow, Z = opts.zones;
       const key = `g${(opts.gain ?? 1).toFixed(2)}d${opts.dpr ?? 1}` + (opts.contour ? `c${opts.cStep || 0.12}` : "") + (opts.paper ? "p" : "") + (opts.beach !== false ? "b" : "") + `m${opts.slopeK ?? 0}`
-        + (S ? `s${S.base},${S.lat ? 1 : 0},${S.refM},${S.unitM}` : "") + (opts.clim ? `k${opts.clim.key}` : "");
+        + (S ? `s${S.base},${S.lat ? 1 : 0},${S.refM},${S.unitM}` : "") + (opts.clim ? `k${opts.clim.key}` : "")
+        + (Z ? `z${Z.looks.key}@${Z.wt.cols}x${Z.wt.rows},${Z.wt.pd},${Z.wt.bb.lonMin},${Z.wt.bb.latMin}` : "");   // 权重换代不进键：同几何走下面的补画
+      if (Z && lastZW && Z.wt !== lastZW && Z.wt.cols === lastZW.cols && Z.wt.rows === lastZW.rows && Z.wt.pd === lastZW.pd) {
+        const b = changedBox(lastZW.w, Z.wt.w, Z.wt.cols, Z.wt.rows, ZONE_N), wb = Z.wt.bb, pd = Z.wt.pd;
+        if (b) dirty.push({ lonMin: wb.lonMin + (b[0] - 1) * pd, lonMax: wb.lonMin + (b[2] + 2) * pd, latMin: wb.latMin + (b[1] - 1) * pd, latMax: wb.latMin + (b[3] + 2) * pd });
+      }
+      lastZW = Z ? Z.wt : null;
       const next: Tile[] = [];
       for (const c of copies) {
         const vb: BBox = c ? { lonMin: viewBB.lonMin + c, lonMax: viewBB.lonMax + c, latMin: viewBB.latMin, latMax: viewBB.latMax } : viewBB;
         let t = next.concat(tiles).find(x => planTile(x, key, vb, pxpd, grid!.bb) === "keep");   // 视口宽过一份世界时几份拷贝要的是同一片
+        if (t && Z && t.o.zones !== Z) t.o = { ...t.o, zones: Z };   // 补画照新权重画（其余选项与键同）
         if (t && dirty.length && !next.includes(t) && !patchTile(t, dirty)) { const stale = t; tiles = tiles.filter(x => x !== stale); t = undefined; }
         if (!t) {
           const plan = planTile(null, key, vb, pxpd, grid.bb);
@@ -606,6 +622,6 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     },
     maxDim() { return 16384; },   // Canvas2D 各主流实现的稳妥边长
     rendererName() { return "CPU 瓦片（Canvas2D 兜底）"; },
-    dispose() { tiles = []; dirty = []; grid = null; field = null; cellMat = null; cellTint = null; cellTintHas = null; cellWS = null; }
+    dispose() { tiles = []; dirty = []; lastZW = null; grid = null; field = null; cellMat = null; cellTint = null; cellTintHas = null; cellWS = null; }
   };
 }
