@@ -17,7 +17,7 @@ import { dataLon } from "../ui/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig, terrainAxisSig, terrainAxisOf, isTacSig,
-  routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, readOnlySig, uiPrefsSig, terrainStyleSig }
+  routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, tilesDownSig, readOnlySig, uiPrefsSig, terrainStyleSig }
   from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -45,6 +45,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     const tp = performance.now();
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
     const rf = ruleFieldSig.value; if (rf) ruleLanded = rf;
+    host.syncTiles();   // 分块精修：按本帧视口排先算哪几块、视口里的块齐了才上屏
     const cstep = layers.terrain ? contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleLanded, ctx.ruleField, viewBB()).v : 0;   // 等距：渲染器与注记同吃一档
     if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, pxSize(), cstep, zoneField(world)));
     if (world) {
@@ -153,7 +154,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       brushSizeSig.value, brushEraseSig.value, brushSmoothSig.value,
       routePtsSig.value, routeResSig.value, unitLegsSig.value, visMaskSig.value, detectSig.value, ruleFieldSig.value, spotTableSig.value,
       // 外壳可变态（非 signal，只能逐帧比）；elevField/ruleField=侵蚀细化异步换入（引用比较有效；推演底图画规则场）
-      ctx.grid, ctx.elevField, ctx.ruleField, ctx.R, ctx.DPR, ctx.canvas.width, ctx.canvas.height, cw, ch,
+      ctx.grid, ctx.elevField, ctx.ruleField, ctx.tileLayer, ctx.R, ctx.DPR, ctx.canvas.width, ctx.canvas.height, cw, ch,
       v.lon0, v.lat0, v.degPerPx,
       // 指针瞬态（画线笔迹/框选/光标位）
       m ? m[0] : -1, m ? m[1] : -1,
@@ -161,7 +162,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       bs ? bs.x1 : -1, bs ? bs.y1 : -1, bs ? bs.moved : false,
       // 顶栏保存态文案的来源（同样不是 signal，漏了就会「已保存」迟迟不上屏）
       autosave.pending, ctx.savedAt, ctx.saveErr, ctx.bootNote, ctx.mapId, ctx.source, ctx.lib,
-      saveConflictSig.value, erodePhaseSig.value, readOnlySig.value,
+      saveConflictSig.value, erodePhaseSig.value, tilesDownSig.value, readOnlySig.value,
       uiPrefsSig.value.relief,   // 山影深浅（本机偏好）进晕渲增益：改了必须重画
       terrainStyleSig.value,     // 底图样式（观感/推演）
       terrPass                   // 涂域环分帧首算未完（见 TERR_FRAME_MS）
@@ -193,7 +194,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
        落定后的换场自此有预告。告警态（冲突/保存失败）在场时让位，警报优先。 */
     const ep = erodePhaseSig.value;
     const epTxt = saveConflictSig.value || ctx.saveErr ? ""
-      : ep === "work" ? "⛰ 侵蚀计算中… · " : ep === "ultra" ? "⛰ 侵蚀精修中… · " : ep === "done" ? "✓ 侵蚀已完成 · " : "";
+      : ep === "work" ? "⛰ 侵蚀计算中… · " : ep === "ultra" ? "⛰ 侵蚀精修中… · " : ep === "done" ? "✓ 侵蚀已完成 · " : tilesDownSig.value ? "⚠ 侵蚀精修不可用 · " : "";
     /* ⚠ 冲突自成一档，不能并进「自动保存失败」那句——那句尾巴写着「随下次改动重试」，
        而冲突态恰恰**不会**重试（守卫短路着，等用户在弹层里决断），并进去就是在说假话。 */
     const ftTxt = epTxt + (readOnlySig.value

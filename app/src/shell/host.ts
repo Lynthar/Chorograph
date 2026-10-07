@@ -2,9 +2,12 @@
    全部经 ctx 共享态工作；rebuild 同步把寻路上下文送进 Worker（官道格按当年连线重算）。 */
 import { buildGridCells, roadCellSet, type Grid } from "../core/grid.ts";
 import { buildElevField, coarseField, fieldMix, fieldPlusDelta, waterSurface, type ElevField } from "../core/elev.ts";
-import { erodeGate, erodeInput, erodeKey, ultraInput, type ErodeInput, erodeMode } from "../core/erode.ts";
+import { erodeGate, erodeInput, erodeKey, ultraInput, upscaleOf, type ErodeInput, erodeMode } from "../core/erode.ts";
+import { tilePlan } from "../core/tiles.ts";
 import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
-import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig } from "../ui/state.ts";
+import { tileCacheGet, tileCachePut } from "../data/tilecache.ts";
+import { createTileManager } from "./tiles.ts";
+import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig, tilesDownSig } from "../ui/state.ts";
 import { terrMetaKey } from "../ui/history.ts";
 import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
@@ -32,6 +35,8 @@ export interface Host {
   rebuild(): void;
   /** 年份/换图/地形版本变化时才重建（builtFor 去重键） */
   rebuildIfNeeded(): void;
+  /** 把当前视口与缩放交给分块精修（帧循环每帧调，没变就不动）：决定先算哪几块、视口里的块齐了没有 */
+  syncTiles(): void;
 }
 
 export function createHost(ctx: ShellCtx): Host {
@@ -102,6 +107,7 @@ export function createHost(ctx: ShellCtx): Host {
   let ultra: ElevField | null = null;   // 在屏精修场（本次构建）
   let gridKey = "", gridOv: TerrainOverride[] | null = null;   // 当前 ctx.grid 建自哪份（meta 键+年份+图 id, 涂改数组引用），见 rebuild 注
   let lastBuiltKey = "", coarseAt = 0;   // 上次重建的几何键（换几何＝免防抖立即发单）+ 本几何粗格首帧时刻（缓存「早到」判据）
+  let builtYear = NaN;   // 上次重建的年份（离散换场查最近落地只在年份没变时）
   /* —— 4K 静置精修（2026-08-11）：交互档手感零变化——工作档落定且 ULTRA_IDLE_MS 无新改动后，
      后台第三车道按精修预算重算一遍，好了**硬换**入屏（只增细节的换场读作「对上焦/加载完成」，
      与缓存早到硬换同一先例；且 fieldMix 在 990 万格上一帧 ~40ms×6＝渐变本身就是卡顿）。
@@ -124,6 +130,25 @@ export function createHost(ctx: ShellCtx): Host {
     }
   };
   const dropPhase = (): void => { if (erodePhaseSig.peek() === "work" || erodePhaseSig.peek() === "ultra") erodePhaseSig.value = "idle"; };
+  /* —— 分块精修（战略图，core/tiles）：工作档落地后按块算 TILE 倍的画面细节，只进画面。预算按本机内存分档（同 ULTRA_CAP），
+     定的是块倍率，不碰规则场。胶囊只在「当前缩放用得上块、视口里还有块没到」时亮——整幅视图下块看不见，后台算着也不报。 —— */
+  const TILE_BUDGET = (dm ?? 0) >= 8 ? 48_000_000 : 20_000_000;
+  let ultraRunning = false, tilesBusy = false;
+  let doneOwed = false;   // 工作档或精修真算过、而视口里的块还没换完：「已完成」留到块齐了再报
+  const tiles = createTileManager({
+    client: ctx.routeClient, cacheGet: tileCacheGet, cachePut: (k, a) => { void tileCachePut(k, a); },
+    onLayer: L => { ctx.tileLayer = L; ctx.R?.uploadTiles(L); if (ctx.repaint) ctx.repaint(); },
+    onBusy: (b, computed) => {
+      tilesBusy = b;
+      if (b) { if (erodePhaseSig.peek() !== "work") setPhase("ultra"); }
+      else {
+        if (erodePhaseSig.peek() === "ultra" && !ultraRunning) { if (computed || doneOwed) setPhase("done"); else dropPhase(); }
+        doneOwed = false;
+      }
+    },
+    onDown: dn => { tilesDownSig.value = dn; }
+  }, TILE_BUDGET * 4 * 1.3);
+  const tilesOn = (): boolean => ctx.meta.mapKind !== "tactical" && ctx.routeClient.tileLanes > 0;
   /** 规则场落定（ruleFieldSig 独写点）：门关的粗格、落地的工作档、算不出时当下那份；rebuild 起演算即置 null */
   const settleRule = (): void => { ruleFieldSig.value = ctx.ruleField; };
   const geomKey = (g: Grid): string =>
@@ -176,25 +201,28 @@ export function createHost(ctx: ShellCtx): Host {
   /* 工作档单走单飞行闸（飞行中再来只记 dirty，落地后再过一遍 fireErode 的门）。延迟组装放在闸**内**、每 buildN 至多一次：
      原料是 rebuild 同拍记下的 grid/hovs/year 快照（任何世界/年份变化都先走 rebuild 刷新它们，结算时组装与同拍组装逐位同单）；
      放到闸外＝飞行期每笔 move 白组装一份 ~26MB 的单。 */
+  /** 按 rebuild 同拍记下的原料组装这一轮的侵蚀单（每 buildN 至多一次） */
+  function assemble(): void {
+    if (pendInp) return;
+    pendInp = erodeInput(ctx.meta, pendHovs, ctx.grid!, pendYear);
+    /* 2026-09-02 起战略图同享精修档，但**预算减半**：大陆级图（105 万粗格）在全额预算下取 3×＝
+       950 万细格、单次要跑一两分钟；减半后恰取 2×＝420 万，几秒可得，内存也只要一半。 */
+    pendUInp = pendInp ? ultraInput(pendInp, ctx.meta.mapKind === "tactical" ? ULTRA_CAP : ULTRA_CAP / 2) : null;
+  }
   const erodeFlight = singleFlight(() => {
     const grid = ctx.grid!;
-    if (!pendInp) {
-      pendInp = erodeInput(ctx.meta, pendHovs, grid, pendYear);
-      /* 2026-09-02 起战略图同享精修档，但**预算减半**：大陆级图（105 万粗格）在全额预算下取 3×＝
-         950 万细格、单次要跑一两分钟；减半后恰取 2×＝420 万，几秒可得，内存也只要一半。 */
-      pendUInp = pendInp ? ultraInput(pendInp, ctx.meta.mapKind === "tactical" ? ULTRA_CAP : ULTRA_CAP / 2) : null;
-    }
+    assemble();
     if (!pendInp) { dropPhase(); settleRule(); return Promise.resolve(); }   // 门与组装理论上同判（erodeGate 锁）；防御留一手
     const token = buildN, baseC = pendCoarse!, key = geomKey(grid), inp = pendInp, uinp = pendUInp;
     const ck = erodeKey(inp);
     return Promise.all([uinp ? fieldCacheGet(erodeKey(uinp)) : null, fieldCacheGet(ck)]).then(([uhit, hit]) => {
       if (buildN !== token || !ctx.grid) return;   // 其间已重建＝这单作废（新单已在防抖/dirty 里）
       if (uhit) landUltra(uhit, false);   // 画面先上最锐形态；规则场仍等工作档
-      if (hit) { landWork(hit, baseC, key, false); return; }
+      if (hit) { landWork(hit, baseC, key, false, inp, uinp, ck); return; }
       if (!ultra) setPhase("work");   // 精修在屏时工作档的补算是幕后事，胶囊不报
       return ctx.routeClient.erode(inp).then(f => {
         if (f) void fieldCachePut(ck, f);   // 过期结果也入缓存——内容寻址＝对它的输入恒真，撤销/重做正好吃到
-        if (f && buildN === token && ctx.grid) landWork(f, baseC, key, true);   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
+        if (f && buildN === token && ctx.grid) landWork(f, baseC, key, true, inp, uinp, ck);   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
         else if (buildN === token) { dropPhase(); settleRule(); }   // 算不出＝这一轮就此落定在粗格（读数也读它）；过期（含被撤）＝新单接管相位与落定，胶囊不闪
       }, e => {   // 拒绝也要落定（闸自会放闸并补发）——否则胶囊悬在「侵蚀计算中」、读数无人落定
         dropPhase();
@@ -212,16 +240,47 @@ export function createHost(ctx: ShellCtx): Host {
       开图/改图幅，窗只防「IDB 罕见卡死数秒后才命中」时硬换用户已看熟的粗帧；真机磁盘上取 3MB 条目
       偶尔要几百 ms，300ms 的窗曾让这类命中退化成渐变＝仍有一次可见换场（初版踩过）。
       computed＝真算过（缓存命中静默、不闪「已定形」）。 */
-  function landWork(f: ElevField, baseC: Float32Array, key: string, computed: boolean): void {
+  function landWork(f: ElevField, baseC: Float32Array, key: string, computed: boolean, inp: ErodeInput, uinp: ErodeInput | null, ck: string): void {
     const early = !computed && !work && performance.now() - coarseAt < 1000;
     work = f; workBase = baseC; workKey = key;
+    keep({ key, base: baseC, f, ck });
     ctx.ruleField = withDelta(f, baseC);
     settleRule();
     if (ultra) upload();
     else if (early) { clearTimeout(fadeTimer); ctx.elevField = ctx.ruleField; upload(); if (ctx.repaint) ctx.repaint(); }
     else startFade(f, baseC);
-    if (computed && !ultra) setPhase("done");
     if (!ultra) scheduleUltra();   // 精修已在屏（缓存命中）＝无需再排
+    /* 分块：画面场已有的倍率（精修档或工作档）不比块细才分块；计划为空＝本图不分块 */
+    if (tilesOn()) {
+      const plan = tilePlan(inp, TILE_BUDGET, uinp ? upscaleOf(uinp.cols, uinp.rows, uinp.cap, uinp.axisMax) : upscaleOf(inp.cols, inp.rows, inp.cap, inp.axisMax));
+      if (plan) tiles.setInput(inp, plan, baseC, ck); else tiles.reset();
+    }
+    /* 胶囊在块编排之后定：视口里的块没换完，「已完成」欠着、块齐了再报；缓存命中静默，前一单被撤时亮着的「计算中」也收掉 */
+    if (ultra) return;
+    if (tilesBusy) { if (computed) doneOwed = true; setPhase("ultra"); }
+    else if (computed) setPhase("done");
+    else dropPhase();
+  }
+  /* 撤销 / 重做这类同年的离散换场常回到刚落地过的地形：最近几份工作档留在内存，内容键对上就同步换上，
+     不走等待窗合成——合成＝定形场减去未侵蚀的满高增量，撤一笔大幅雕刻会合成出一圈坑和土垒 */
+  const RECENT = 4;
+  let recent: { key: string; base: Float32Array; f: ElevField; ck: string }[] = [];
+  function keep(e: { key: string; base: Float32Array; f: ElevField; ck: string }): void {
+    recent = [e, ...recent.filter(x => x.key === e.key && x.ck !== e.ck)].slice(0, RECENT);   // 只留当前几何的
+  }
+  const sameArr = (a: Float32Array, b: Float32Array): boolean => {
+    if (a === b) return true;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  };
+  /** 粗格基准相同的才组装侵蚀单比内容键（组装与求键要几十毫秒，只在候选上付） */
+  function recall(key: string, coarse: Float32Array): { f: ElevField; ck: string } | null {
+    const cand = recent.filter(e => e.key === key && sameArr(e.base, coarse));
+    if (!cand.length) return null;
+    assemble();
+    const ck = pendInp ? erodeKey(pendInp) : "";
+    return cand.find(e => e.ck === ck) ?? null;
   }
   /* —— 静置精修：工作档落定后 ULTRA_IDLE_MS 无新改动才发单；单飞行闸 + buildN 令牌作废过期结果。
      dirty 补发走 scheduleUltra **重新等静置窗**而不是立即发——立即发会在用户刚落笔后烧一单半分钟的精修。
@@ -237,13 +296,15 @@ export function createHost(ctx: ShellCtx): Host {
     return fieldCacheGet(ck).then(hit => {
       if (buildN !== token || !ctx.grid) return;
       if (hit) { landUltra(hit, false); return; }
-      setPhase("ultra");
+      setPhase("ultra"); ultraRunning = true;
       return ctx.routeClient.erodeUltra(uinp).then(f => {
+        ultraRunning = false;
         if (f) void fieldCachePut(ck, f);   // 半分钟的功不许白费：过期的精修对它的输入仍恒真（撤销即命中）
         if (f && buildN === token && ctx.grid) landUltra(f, true);
-        else dropPhase();   // 过期/车道不可用＝撤胶囊；下个静置窗自会重排
+        else if (!tilesBusy) dropPhase();   // 过期/车道不可用＝撤胶囊；下个静置窗自会重排
       }, e => {   // 拒绝也要落定（闸自会放闸并重排）——否则胶囊悬在「精修中」
-        dropPhase();
+        ultraRunning = false;
+        if (!tilesBusy) dropPhase();
         console.warn("静置精修失败（保持工作档）：", e);
       });
     });
@@ -259,6 +320,7 @@ export function createHost(ctx: ShellCtx): Host {
     ctx.elevField = withDelta(f, pendCoarse!);   // 这一单的基准＝组装它的那次重建的 pendCoarse
     upload();
     if (ctx.repaint) ctx.repaint();
+    if (tilesBusy) { if (computed) doneOwed = true; return; }   // 视口里还有块在算：胶囊留给分块收尾
     if (computed) setPhase("done"); else dropPhase();
   }
 
@@ -270,9 +332,12 @@ export function createHost(ctx: ShellCtx): Host {
     // 寻路上下文随网格重建同步进 Worker（官道格按当年连线重算）
     if (w) ctx.routeClient.setContext({ meta: ctx.meta, grid: ctx.grid!, roads: roadCellSet(w.nodes, w.edges, yearSig.value, ctx.grid!), world: w, yearNow: yearSig.value });
   }
-  function rebuild(): void {
+  /** recallOk＝离散换场（经 rebuildIfNeeded）：年份没变时先查最近落地过的工作档；笔刷每个 move 不查 */
+  function rebuild(recallOk = false): void {
     const w = worldSig.value;
     const t0 = performance.now();
+    const sameYear = yearSig.value === builtYear;
+    builtYear = yearSig.value;
     /* 无世界（程序化预览）时的 genSeed/genStyle 直接用 ctx.meta——它有出厂默认
        （createShellCtx: auto/1234/continent），深链 #seed=/#style= 也已落在同一处。 */
     /* 类型网格按实例复用：只动 heightOverrides 的重建（高程笔每个 move）传同一个 Grid，基底与水面、起伏场、
@@ -290,6 +355,7 @@ export function createHost(ctx: ShellCtx): Host {
        高程笔「笔落即最终」的落点就在这里。关闭档从无工作档，走不到这一支。 */
     if (mode !== "all" && reuse && work && workBase) {
       pendCoarseNow = coarseNow;
+      tiles.setCoarse(coarseNow, ctx.grid!);
       ctx.ruleField = withDelta(work, workBase);
       ctx.elevField = ultra ? withDelta(ultra, workBase) : ctx.ruleField;
       settleRule();
@@ -309,10 +375,23 @@ export function createHost(ctx: ShellCtx): Host {
     pendGate = erodeGate(ctx.meta, erodeHovs, ctx.grid!, pendYear);   // 门同拍判定（轻）；数组组装延迟到 fireErode 结算（见并发闸头注）
     pendInp = null; pendUInp = null;
     pendCoarse = coarse; pendCoarseNow = coarseNow;
+    doneOwed = false;
+    const key = geomKey(ctx.grid!);
+    if (!pendGate || key !== lastBuiltKey || !tilesOn()) tiles.reset();   // 换几何、门关或换成战术图＝旧块作废；同几何的编辑留着旧块叠增量
+    tiles.setCoarse(coarseNow, ctx.grid!);
     /* 等待窗显示（见并发闸头注）：同几何工作档在手＝粗格增量羽化叠上去；否则粗格场
        （开图先出粗帧、门关的旧契约路径、换图/改图幅弃场）。规则场与画面此刻同一份。 */
-    const key = geomKey(ctx.grid!);
     if (!pendGate || workKey !== key) { work = null; workBase = null; workKey = ""; }
+    /* 年份变了不查：播放与拨年每步都换 Grid、地形又多半不随年变，每步组装求键＝每帧白付几十毫秒 */
+    const back = recallOk && sameYear && pendGate && key === lastBuiltKey ? recall(key, coarse) : null;
+    if (back) {   // 内容对上＝这就是该落定的场，不发单
+      clearTimeout(erodeTimer);
+      settleBuild(t0, w);
+      if (back.f !== work) { landWork(back.f, coarse, key, false, pendInp!, pendUInp, back.ck); return; }   // 换回别的一步：渐变换场、块按它重排
+      ctx.ruleField = ctx.elevField = withDelta(work!, workBase!);   // 就是在屏那份：只落定，块的输入也没变
+      settleRule(); upload(); dropPhase(); scheduleUltra();
+      return;
+    }
     ctx.ruleField = work && workBase ? fieldPlusDelta(work, workBase, coarseNow, ctx.grid!, ctx.grid!.cells) : coarseField(ctx.grid!, coarseNow);
     ctx.elevField = ctx.ruleField;
     ruleFieldSig.value = pendGate ? null : ctx.ruleField;   // 门开＝落地前是过渡合成，规则消费者沿用上一份；门关＝粗格即终态
@@ -329,7 +408,7 @@ export function createHost(ctx: ShellCtx): Host {
   }
   function rebuildIfNeeded(): void {
     if (!ctx.R) return;
-    if (ctx.mapId + "@" + yearSig.value + "@" + gridVerSig.value !== ctx.builtFor) rebuild();
+    if (ctx.mapId + "@" + yearSig.value + "@" + gridVerSig.value !== ctx.builtFor) rebuild(true);
   }
   function cam(): Camera {
     const [w, h] = cssSize();
@@ -341,5 +420,6 @@ export function createHost(ctx: ShellCtx): Host {
     const c = frameView({ ...clampView(v, ctx.meta), degPerPx }, ctx.meta, w, h);
     ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = degPerPx;
   }
-  return { resize, cssSize, pxSize, viewBB, cosk, cam, setView, rebuild, rebuildIfNeeded };
+  function syncTiles(): void { tiles.setView(viewBB(), ctx.view.degPerPx); }
+  return { resize, cssSize, pxSize, viewBB, cosk, cam, setView, rebuild: () => rebuild(), rebuildIfNeeded, syncTiles };
 }

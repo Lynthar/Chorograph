@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createHost } from "../src/shell/host.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
-import { erodePhaseSig, mutateWorld, ruleFieldSig, yearSig } from "../src/ui/state.ts";
+import { erodePhaseSig, mutateWorld, redoWorld, ruleFieldSig, undoWorld, yearSig } from "../src/ui/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import type { ElevField } from "../src/core/elev.ts";
 import type { ErodeInput } from "../src/core/erode.ts";
@@ -45,7 +45,7 @@ function mkCtx(): { ctx: ShellCtx; seen: Seen } {
     },
     DPR: 1, meta: {}, view: { lon0: 100.05, lat0: 30.05, degPerPx: 0.001 },
     grid: null, elevField: null, ruleField: null,
-    R: { uploadGrid: (_g: unknown, _ws: unknown, field: ElevField, rule: ElevField) => { seen.field = field; seen.rule = rule; } },
+    R: { uploadGrid: (_g: unknown, _ws: unknown, field: ElevField, rule: ElevField) => { seen.field = field; seen.rule = rule; }, uploadTiles: () => {} },
     builtFor: null, repaint: null,
     lib: null, mapId: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
@@ -253,5 +253,117 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(na.seen.ultraCap, lo.seen.ultraCap, "测不出内存＝低档预算");
     assert.deepEqual(hiWork.data, loWork.data, "规则场逐位相同＝读数与规则不随机器变");
     assert.notEqual(hi.ctx.elevField!.data[0], lo.ctx.elevField!.data[0], "画面随预算变（精修只进画面）");
+  });
+
+  it("撤销只动高程的一笔：沿用同一个 Grid（仅底图档照旧走早退支、不发单）；撤销对象编辑之后的一笔也照旧", async () => {
+    const { ctx, seen } = mkCtx();
+    const host = createHost(ctx);
+    landWorld(ctx, W({ erode: "base" }), "t1", 3050);
+    host.rebuildIfNeeded();
+    await flush();
+    await tick(240, 6);
+    const grid0 = ctx.grid, erodes0 = seen.erodes;
+    mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
+    host.rebuildIfNeeded();
+    const sculpted = ctx.ruleField;
+    undoWorld();
+    host.rebuildIfNeeded();
+    assert.equal(ctx.grid, grid0, "撤销：涂改数组沿用＝同一 Grid 实例");
+    assert.notEqual(ctx.ruleField, sculpted, "高程回到落笔前");
+    assert.equal(ruleFieldSig.value, ctx.ruleField, "早退支：立即落定");
+    mutateWorld(w => { w.nodes.push({ id: "n1", 名称: "城", type: "city", lon: 100.02, lat: 30.02 } as unknown as World["nodes"][number]); });
+    undoWorld();
+    host.rebuildIfNeeded();
+    mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
+    host.rebuildIfNeeded();
+    await tick(500);
+    assert.equal(ctx.grid, grid0, "撤销对象编辑之后的一笔仍沿用 Grid");
+    assert.equal(seen.erodes, erodes0, "全程没有再发侵蚀单");
+  });
+
+  it("撤销 / 重做回到落地过的地形：同步换上那份工作档、同拍落定，不合成也不发单", async () => {
+    const { ctx, seen } = mkCtx();
+    const host = createHost(ctx);
+    landWorld(ctx, W(), "t1", 3050);
+    host.rebuildIfNeeded();
+    await flush();
+    const work0 = ctx.ruleField!;
+    await tick(240, 6);
+    mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
+    host.rebuildIfNeeded();
+    assert.equal(ruleFieldSig.value, null, "前置：新的一笔走等待窗");
+    await tick(60);
+    const work1 = ctx.ruleField!;
+    assert.notEqual(work1, work0);
+    assert.equal(ruleFieldSig.value, work1, "前置：那一笔落地");
+    await tick(240, 6);
+    const erodes = seen.erodes;
+    undoWorld();
+    host.rebuildIfNeeded();
+    assert.equal(ctx.ruleField, work0, "撤销：规则场就是开图落地的那份，不是合成");
+    assert.equal(ruleFieldSig.value, work0, "同拍落定");
+    redoWorld();
+    host.rebuildIfNeeded();
+    assert.equal(ctx.ruleField, work1, "重做：换回那一笔落地的那份");
+    await tick(500);
+    assert.equal(seen.erodes, erodes, "没有再发侵蚀单");
+    await tick(240, 6);
+    assert.equal(ctx.elevField, work1, "画面渐变到同一份");
+  });
+
+  it("离散换场落到在屏那一份（侵蚀单一字不变的设置改动）：只落定，不渐变、不发单；拨年照旧走等待窗", async () => {
+    const { ctx, seen } = mkCtx();
+    const host = createHost(ctx);
+    landWorld(ctx, W(), "t1", 3050);
+    host.rebuildIfNeeded();
+    await flush();
+    const work0 = ctx.ruleField!;
+    await tick(240, 6);
+    const erodes = seen.erodes;
+    mutateWorld(w => { w.meta.erode = "base"; }, { grid: true });   // 没有高程涂改：两档的侵蚀单逐位相同
+    host.rebuildIfNeeded();
+    assert.equal(ctx.ruleField, work0, "规则场就是在屏那份");
+    assert.equal(ctx.elevField, work0, "画面不走渐变");
+    assert.equal(ruleFieldSig.value, work0, "同拍落定");
+    await tick(500);
+    assert.equal(seen.erodes, erodes, "没有发单");
+    yearSig.value = 3051;
+    host.rebuildIfNeeded();
+    assert.equal(ruleFieldSig.value, null, "拨年不查最近落地：照旧进演算、等防抖后的那一单（播放每步不付组装求键的账）");
+  });
+
+  it("放大编辑（分块精修）：「已完成」等视口里的块换成新的才报", async () => {
+    const { ctx } = mkCtx();
+    const held: (() => void)[] = [];
+    Object.assign(ctx.routeClient, {
+      tileLanes: 1,
+      erodeCarve: async (inp: ErodeInput) => ({ data: new Float32Array(inp.cols * inp.rows), geo: { bb: inp.bb, step: inp.step, cols: inp.cols, rows: inp.rows } }),
+      erodeTile: (inp: ErodeInput) => new Promise<ElevField>(res => {
+        const sx = inp.axisMax;
+        held.push(() => res({ bb: inp.bb, step: inp.step / sx, cols: inp.cols * sx, rows: inp.rows * sx, data: new Float32Array(inp.cols * inp.rows * sx * sx), eroded: true }));
+      })
+    });
+    els.canvasWrap = { dataset: {}, value: "", clientWidth: 200, clientHeight: 150 } as never;
+    const host = createHost(ctx);
+    /* 5 万格的战略图：工作档 6×、精修 7×，块 8×（15 块） */
+    landWorld(ctx, normalizeWorld({ meta: { 名称: "陆", worldModel: "sphere", terrain: "plain", relief: 0.5, gridN: 280,
+      bbox: { lonMin: 100, lonMax: 115, latMin: 30, latMax: 40 } } }), "s1", 3050);
+    host.rebuildIfNeeded();
+    const g = ctx.grid!, lon = g.bb.lonMin + 96 * g.step, lat = g.bb.latMin + 96 * g.step;
+    Object.assign(ctx.view, { lon0: lon, lat0: lat, degPerPx: g.step / 8 });   // 块 6（第二行第二列）中央，一个块格一个 CSS 像素
+    host.syncTiles();
+    await flush();
+    assert.equal(erodePhaseSig.value, "ultra", "工作档算完、视口里的块还没到：报精修中");
+    held.shift()!(); await flush();
+    assert.equal(erodePhaseSig.value, "done", "视口里那块到了才报完成");
+    assert.ok(ctx.tileLayer?.tiles.has(6));
+    mutateWorld(w => { (w.heightOverrides ||= []).push({ lon, lat, dh: 0.2 }); }, { grid: true });
+    host.rebuildIfNeeded();
+    const old6 = ctx.tileLayer!.tiles.get(6);
+    await tick(60);
+    assert.equal(erodePhaseSig.value, "ultra", "工作档落地时视口里的块还是旧的：不报完成");
+    while (held.length && erodePhaseSig.value !== "done") { held.shift()!(); await flush(); }
+    assert.equal(erodePhaseSig.value, "done");
+    assert.notEqual(ctx.tileLayer!.tiles.get(6), old6, "报完成时视口里的块已换成新的");
   });
 });

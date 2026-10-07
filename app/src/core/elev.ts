@@ -69,6 +69,12 @@ export function fieldMix(from: ElevField, to: ElevField, t: number): ElevField {
     水域格天花=max(WATER_CEIL, 本次粗格场该格值)——涂水后残留的陆高须压进水面，否则新画的
     水面上浮着旧地形的干斑；取粗格场而非类型表，内陆湖才不会在等待窗里被按回海平面。 */
 export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][]): ElevField {
+  const d = deltaOf(base, now, geom);
+  return d ? applyDelta(fine, d, now, geom, cells) : fine;
+}
+/** 粗格增量 now − base 与它的变化范围（粗格闭区间）；两份逐位相同＝null */
+export interface CoarseDelta { diff: Float32Array; c0: number; r0: number; c1: number; r1: number }
+export function deltaOf(base: Float32Array, now: Float32Array, geom: FieldGeom): CoarseDelta | null {
   const { cols, rows } = geom;
   let c0 = cols, c1 = -1, r0 = rows, r1 = -1;
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
@@ -77,14 +83,22 @@ export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32
       if (r < r0) r0 = r; if (r > r1) r1 = r;
     }
   }
-  if (c1 < 0) return fine;
+  if (c1 < 0) return null;
   const diff = new Float32Array(rows * cols);
   for (let i = 0; i < rows * cols; i++) diff[i] = now[i] - base[i];
+  return { diff, c0, r0, c1, r1 };
+}
+/** 把一份粗格增量羽化进细场 fine（语义见 fieldPlusDelta）。fine 可以只是图幅的一块（分块精修），原点须落在细格网上；
+    补丁窗碰不到这块＝返回 fine 本身（引用不变） */
+export function applyDelta(fine: ElevField, d: CoarseDelta, now: Float32Array, geom: FieldGeom, cells?: string[][]): ElevField {
+  const { cols, rows } = geom, { diff, c0, r0, c1, r1 } = d;
   /* 补丁窗＝变化粗格 [c0..c1]×[r0..r1] 的双线性支撑域折到细格（k=粗细步长比），外留 1 格余量；
-     出界钳到边缘格＝边缘章的支撑域自然含边界细格 */
+     出界钳到边缘格＝边缘章的支撑域自然含边界细格。oc/or＝fine 原点在全图细格网上的偏移（整幅场为 0） */
   const k = geom.step / fine.step;
-  const fc0 = Math.max(0, Math.floor(k * (c0 - 0.5) - 0.5) - 1), fc1 = Math.min(fine.cols - 1, Math.ceil(k * (c1 + 1.5) - 0.5) + 1);
-  const fr0 = Math.max(0, Math.floor(k * (r0 - 0.5) - 0.5) - 1), fr1 = Math.min(fine.rows - 1, Math.ceil(k * (r1 + 1.5) - 0.5) + 1);
+  const oc = Math.round((fine.bb.lonMin - geom.bb.lonMin) / fine.step), or = Math.round((fine.bb.latMin - geom.bb.latMin) / fine.step);
+  const fc0 = Math.max(0, Math.floor(k * (c0 - 0.5) - 0.5) - 1 - oc), fc1 = Math.min(fine.cols - 1, Math.ceil(k * (c1 + 1.5) - 0.5) + 1 - oc);
+  const fr0 = Math.max(0, Math.floor(k * (r0 - 0.5) - 0.5) - 1 - or), fr1 = Math.min(fine.rows - 1, Math.ceil(k * (r1 + 1.5) - 0.5) + 1 - or);
+  if (fc1 < fc0 || fr1 < fr0) return fine;
   const data = fine.data.slice();
   for (let r = fr0; r <= fr1; r++) {
     const lat = fine.bb.latMin + (r + 0.5) * fine.step;

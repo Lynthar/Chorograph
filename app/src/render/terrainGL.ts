@@ -16,11 +16,12 @@
    ⚠ 噪声坐标一律用图幅局部坐标（ll-网格原点），深放大高频档才不在 fp32 下失谐；
    ⚠ fwidth 只喂 e/es 两个一致控制流值，材质分支里不得调用。 */
 import { terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
-import { climRampGLSL, materialTable, rampGLSL, snowLatGLSL, CLIM_STOPS, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, POOL_ROT, SHADE_LIGHT } from "./material.ts";
+import { climRampGLSL, materialTable, rampGLSL, snowLatGLSL, ALB_ROT, CLIM_STOPS, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, POOL_ROT, SHADE_LIGHT } from "./material.ts";
 import { zoneGLSL, zoneLookTexels, ZLOOK_W, ZONE_N, type ZoneWeights } from "./zones.ts";
 import type { Grid } from "../core/grid.ts";
 import { SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
 import type { BBox } from "../core/types.ts";
+import { tilesInView, tileWeight, type TileLayer } from "../core/tiles.ts";
 
 const VS = `#version 300 es
 void main(){ vec2 p=vec2(float(gl_VertexID<<1&2), float(gl_VertexID&2)); gl_Position=vec4(p*2.0-1.0,0.0,1.0); }`;
@@ -62,6 +63,12 @@ uniform vec4 uZoneBB;             // 权重纹理覆盖范围：lonMin,latMin,�
 uniform float uGain;              // 晕渲法线增益（material.shadeGain：夸张 E∈[4,8] 倍真实坡度）
 uniform float uSlopeK;            // 宏观坡 → 坡角正切（material.slopeKOf；0＝沼泽不按坡门控）
 uniform float uEroded;            // 1=场经侵蚀（ElevField.eroded）：装饰噪声按坡门控、宏观 fbm4 降到四分之一——真形自己带起伏
+uniform highp sampler2DArray uTAtlas;   // 分块精修的块（R32F，一块一层；core/tiles）
+uniform highp isampler2D uTPage;  // 块号 → 层号（R32I，-1＝不在显存）
+uniform float uTW;                // 块的缩放权重（core/tiles.tileWeight；0＝不用块）
+uniform float uTStep;             // 度/块格
+uniform ivec2 uTDim;              // 全图块格维度
+uniform int uTK;                  // 一块的块格边长
 uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合平色＝terrainProps.color（推演底图用；G 通道即复合索引）
 uniform vec3 uTint[${COMPOSITE_COUNT}];     // 各复合生态色调（无=vec3(-1)）
 uniform vec4 uMatA[${COMPOSITE_COUNT}];     // 材质纹理权重(canopy,dune,ridge,marsh)——render/material.ts 真源
@@ -185,11 +192,30 @@ float fieldBil(sampler2D fld, ivec2 dim, float st, vec2 rel){
   float top=s00+(s10-s00)*t.x, bot=s01+(s11-s01)*t.x;
   return top+(bot-top)*t.y;
 }
+/* 块层双线性（core/tiles.tileElevAt 同式）：四个取样格逐个查页表，有一个不在显存＝false（调用方退回画面场） */
+float tileTexel(ivec2 g, inout bool ok){
+  ivec2 t=g/uTK; int s=texelFetch(uTPage,t,0).r;
+  if(s<0){ ok=false; return 0.0; }
+  return texelFetch(uTAtlas,ivec3(g-t*uTK,s),0).r;
+}
+bool tileBil(vec2 rel, out float e){
+  vec2 f=rel/uTStep-0.5;
+  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uTDim-1);
+  ivec2 c1=min(c0+1, uTDim-1);
+  vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
+  bool ok=true;
+  float s00=tileTexel(c0,ok), s10=tileTexel(ivec2(c1.x,c0.y),ok), s01=tileTexel(ivec2(c0.x,c1.y),ok), s11=tileTexel(c1,ok);
+  float top=s00+(s10-s00)*t.x, bot=s01+(s11-s01)*t.x;
+  e=top+(bot-top)*t.y;
+  return ok;
+}
 vec2 cellAt(vec2 ll){ // (双线性画面场高程, 最近格类型索引)——高程走细分场纹理、类型仍粗格最近取
   // 出界 clamp 延伸＝CPU elevBilinear 同语义：图廓外由叠加层铺纸，贴边法线不许落进深海画出一圈崖影
   vec2 rel=ll-uGridBB.xy;
   ivec2 n=clamp(ivec2(floor(rel/uGridBB.z)), ivec2(0), uGridDim-1);
-  return vec2(fieldBil(uField,uFDim,uFStep,rel), texelFetch(uGrid,n,0).g);
+  float e=fieldBil(uField,uFDim,uFStep,rel), te;
+  if(uTW>0.0 && tileBil(rel,te)) e=mix(e,te,uTW);   // 块按缩放权重混入（块只进画面，规则场不走这里）
+  return vec2(e, texelFetch(uGrid,n,0).g);
 }
 float ruleAt(vec2 ll){ // 规则场（工作档）双线性高程：等高线的唯一采样源；出界语义同 cellAt
   vec2 rel=ll-uGridBB.xy;
@@ -198,6 +224,7 @@ float ruleAt(vec2 ll){ // 规则场（工作档）双线性高程：等高线的
 /* 高程细节场：双线性数据面 + 宏观 fbm4（旧式逐位）+ 微八度；dk=装饰噪声门（判据见 material.decoGate） */
 float eAt(vec2 ll, float mrough, float dk){
   float e=cellAt(ll).x;
+  if(dk<=0.0) return e;   // 门关（平地或块权重满）＝噪声两项恒零，免算
   float rough=(e>0.4?0.24:(e>0.2?0.08:0.025))*mix(1.0,0.25,uEroded);
   e+=(fbm4(ll*1.1)-0.5)*rough*2.0*dk;
   return e+micro(ll-uGridBB.xy)*mrough*float(${FX.microAmp})*dk;
@@ -300,6 +327,7 @@ void main(){
   float dk0=max(smoothstep(float(${FX.decoSlopeLo}),float(${FX.decoSlopeHi}),smac),
                 smoothstep(float(${FX.decoRoughLo}),float(${FX.decoRoughHi}),mt.rough)*(1.0-uEroded));
   float decoK=1.0+(dk0-1.0)*smoothstep(ws-0.02,ws+0.02,cd.x)*fine;
+  float tb; if(uTW>0.0 && tileBil(llw-uGridBB.xy,tb)) decoK*=1.0-uTW;   // 块里的起伏是真算的：装饰噪声随块退场，否则同一波段画两遍
   e=eAt(llw, roughEff, decoK);
   float eL=eAt(llw+vec2(-px,0.0),roughEff,decoK)+texAt(rel+vec2(-px,0.0),twEff)*texW;
   float eR=eAt(llw+vec2( px,0.0),roughEff,decoK)+texAt(rel+vec2( px,0.0),twEff)*texW;
@@ -347,7 +375,8 @@ void main(){
       }
     }
     vec3 LA=lodF(float(${FX.albPx}));   // 反照率抖动：屏幕锚定低频，打破平色（整幅视角下门控为零）
-    float av=mix(vnoise2(rel*LA.x+vec2(19.9,7.1)), vnoise2(rel*LA.y+vec2(2.3,27.9)), LA.z)-0.5;
+    float av=mix(gnoise2(mat2(${ALB_ROT[0]},${ALB_ROT[1]},${-ALB_ROT[1]},${ALB_ROT[0]})*rel*LA.x+vec2(19.9,7.1)),   // 两档梯度噪声各转一角（同 CPU；material.ALB_ROT）
+                 gnoise2(mat2(${ALB_ROT[2]},${ALB_ROT[3]},${-ALB_ROT[3]},${ALB_ROT[2]})*rel*LA.y+vec2(2.3,27.9)), LA.z);
     col*=1.0+av*mt.albVar*float(${FX.albAmp})*gate(LA.x);
     float slp=length(nv.xy);    // 缩放无关坡度：陡处露岩（微八度让坡度随放大长细节，岩斑自然斑驳）
     float rk=smoothstep(float(${FX.rockSlopeLo}),float(${FX.rockSlopeHi}),slp)*mt.rock;
@@ -482,6 +511,71 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     return nt;
   }
   const U = (n: string) => gl.getUniformLocation(pr!, n);
+  /* 分块精修（core/tiles）：块放进纹理数组（6 号单元，一块一层），页表（7 号，R32I）记块号 → 层号；层按 LRU 复用，只给视口里的块。
+     没有块层时绑 1×1 占位（采样器恒完整）。块数组当不可变快照：层里存的数组与块层里的不是同一个＝要重传 */
+  const TILE_SLOTS = 64;
+  let tLayer: TileLayer | null = null, tVer = 0;
+  let atlas: WebGLTexture | null = null, page: WebGLTexture | null = null, atlasFor: string | null = null;
+  let slotTile: number[] = [], slotArr: (Float32Array | null)[] = [], slotUse: number[] = [], useTick = 0;
+  function placeTileTex(K: number, N: number, nx: number, ny: number): void {
+    if (atlas) gl.deleteTexture(atlas);
+    if (page) gl.deleteTexture(page);
+    atlas = gl.createTexture(); page = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, atlas);
+    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.R32F, K, K, N);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.activeTexture(gl.TEXTURE7);
+    gl.bindTexture(gl.TEXTURE_2D, page);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32I, nx, ny, 0, gl.RED_INTEGER, gl.INT, new Int32Array(nx * ny).fill(-1));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.activeTexture(gl.TEXTURE0);
+    slotTile = new Array(N).fill(-1); slotArr = new Array(N).fill(null); slotUse = new Array(N).fill(0);
+  }
+  /** 视口里的块搬进显存（缺的占空层或最久没用、且不在视口里的层），并重写页表；层不够＝多出的块这一帧退回画面场 */
+  function residentTiles(L: TileLayer, view: BBox): void {
+    const g = L.geom, K = g.P * g.sx, FC = g.cols * g.sx, FR = g.rows * g.sx;
+    const key = `${K}|${g.nx}x${g.ny}`;
+    if (atlasFor !== key) { placeTileTex(K, TILE_SLOTS, g.nx, g.ny); atlasFor = key; }
+    const want = tilesInView(g, L.tiles.keys(), view), wantSet = new Set(want);
+    let dirty = false;
+    useTick++;
+    for (let s = 0; s < slotTile.length; s++) {
+      const t = slotTile[s];
+      if (t >= 0 && L.tiles.get(t) !== slotArr[s]) { slotTile[s] = -1; slotArr[s] = null; dirty = true; }   // 块换了或没了
+    }
+    for (const i of want) {
+      const a = L.tiles.get(i)!;
+      let s = slotTile.indexOf(i);
+      if (s < 0) {
+        s = slotTile.indexOf(-1);
+        if (s < 0) {
+          let best = -1;
+          for (let k = 0; k < slotTile.length; k++) if (!wantSet.has(slotTile[k]) && (best < 0 || slotUse[k] < slotUse[best])) best = k;
+          if (best < 0) continue;
+          s = best;
+        }
+        const tx = i % g.nx, ty = (i / g.nx) | 0, w = Math.min(K, FC - tx * K), h = Math.min(K, FR - ty * K);
+        gl.activeTexture(gl.TEXTURE6);
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, atlas);
+        gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, s, w, h, 1, gl.RED, gl.FLOAT, a);
+        gl.activeTexture(gl.TEXTURE0);
+        slotTile[s] = i; slotArr[s] = a; dirty = true;
+      }
+      slotUse[s] = useTick;
+    }
+    if (dirty) {
+      const pg = new Int32Array(g.nx * g.ny).fill(-1);
+      for (let s = 0; s < slotTile.length; s++) if (slotTile[s] >= 0) pg[slotTile[s]] = s;
+      gl.activeTexture(gl.TEXTURE7);
+      gl.bindTexture(gl.TEXTURE_2D, page);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, g.nx, g.ny, gl.RED_INTEGER, gl.INT, pg);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+  }
 
   /* 建程序 + 设常量 uniform（创建时 + webglcontextrestored 后重跑）。 */
   function initProgram(): boolean {
@@ -492,6 +586,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform1i(U("uField"), 1);
     gl.uniform1i(U("uRule"), 2);
     gl.uniform1i(U("uZW0"), 3); gl.uniform1i(U("uZW1"), 4); gl.uniform1i(U("uZLook"), 5);
+    gl.uniform1i(U("uTAtlas"), 6); gl.uniform1i(U("uTPage"), 7);
+    placeTileTex(1, 1, 1, 1); atlasFor = null;   // 占位；块层来了按它的几何重建
     zw0 = zoneTex(3, null, 1, 1, new Uint8Array(4), false); zw1 = zoneTex(4, null, 1, 1, new Uint8Array(4), false);
     zlook = zoneTex(5, null, 1, 1, new Float32Array(4), true); zwFor = null; zlKey = null;
     gl.uniform3f(U("uLight"), SHADE_LIGHT[0], SHADE_LIGHT[1], SHADE_LIGHT[2]);
@@ -596,7 +692,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   };
   let name = queryName();
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; zw0 = zw1 = zlook = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
+  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; zw0 = zw1 = zlook = null; atlas = page = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
@@ -606,12 +702,14 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       g = grid; lastWS = wsurf; lastField = field; lastRule = rule || field;
       doUpload(grid, wsurf, field, lastRule);
     },
+    uploadTiles(layer: TileLayer | null) { tLayer = layer; tVer++; lastKey = null; },
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
       const f = opts.flat ? fRule : fDisp;
       if (!g || !pr || !f || !fRule) return;
       const S = opts.snow, Z = opts.zones, H = canvas.height, [vw, vh] = opts.px ?? [canvas.width, H];
+      const TL = opts.flat ? null : tLayer, tw = TL ? tileWeight(TL.geom.step * vh / (viewBB.latMax - viewBB.latMin) / (opts.dpr ?? 1)) : 0;
       const key = `${viewBB.lonMin},${viewBB.latMin},${viewBB.lonMax},${viewBB.latMax}|${vw}x${vh}/${H}|${+!!opts.flat}${+!!opts.contour}${+!!opts.wrap}${+!!opts.paper}${+(opts.beach !== false)}`
-        + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${opts.slopeK ?? 0}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}|${opts.clim ? opts.clim.key : ""}|${Z ? `${Z.wt.id}:${Z.looks.key}` : ""}`;
+        + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${opts.slopeK ?? 0}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}|${opts.clim ? opts.clim.key : ""}|${Z ? `${Z.wt.id}:${Z.looks.key}` : ""}|${tw > 0 ? `${tVer}:${tw}` : ""}`;
       if (key === lastKey) return;   // 画布上已是这一帧
       lastKey = key;
       gl.viewport(0, H - vh, vw, vh);   // 可见区贴画布顶；GL 原点在左下
@@ -650,6 +748,14 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
         if (Z.looks.key !== zlKey) { zlook = zoneTex(5, zlook, ZLOOK_W, ZONE_N, zoneLookTexels(Z.looks), true); zlKey = Z.looks.key; }
         gl.uniform4f(U("uZoneBB"), Z.wt.bb.lonMin, Z.wt.bb.latMin, Z.wt.cols * Z.wt.pd, Z.wt.rows * Z.wt.pd);
       }
+      gl.uniform1f(U("uTW"), tw);
+      if (TL && tw > 0) {
+        residentTiles(TL, viewBB);
+        const tg = TL.geom;
+        gl.uniform1f(U("uTStep"), tg.step);
+        gl.uniform2i(U("uTDim"), tg.cols * tg.sx, tg.rows * tg.sx);
+        gl.uniform1i(U("uTK"), tg.P * tg.sx);
+      }
       gl.uniform1f(U("uGain"), opts.gain ?? 1);
       gl.uniform1f(U("uSlopeK"), opts.slopeK ?? 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -663,7 +769,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);
       if (tex) gl.deleteTexture(tex);
-      for (const t of [zw0, zw1, zlook]) if (t) gl.deleteTexture(t);
+      for (const t of [zw0, zw1, zlook, atlas, page]) if (t) gl.deleteTexture(t);
       dropFieldTex();
       if (pr) gl.deleteProgram(pr);
     }

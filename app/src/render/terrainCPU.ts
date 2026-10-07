@@ -11,9 +11,10 @@ import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps } from "../core/constants.ts";
 import { elevBilinear, elevSmooth, coarseField, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
 import { zoneColMix, zoneTreeMix, zoneWeightsAt, ZONE_N, type ZoneWeights } from "./zones.ts";
-import { climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, type ClimLook } from "./material.ts";
+import { climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, ALB_ROT, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, type ClimLook } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
+import { tileCells, tileElevAt, tileWeight, type TileLayer } from "../core/tiles.ts";
 import type { TerrainRenderer, TerrainRenderOpts } from "./renderer.ts";
 
 const MAX_TILE_PX = 2_400_000;   // 瓦片总像素预算（与旧版一致）
@@ -120,15 +121,24 @@ export function unionBB(bs: BBox[]): BBox {
 const sstep = (a: number, b: number, x: number): number => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 /* —— 与 GL 版同构的观感函数（sin-hash 域；逐行对齐 terrainGL 的 GLSL 同名函数）—— */
-/* 梯度噪声（±0.7）：棱脊/沙丘的 ridged 变换用——值噪声 ridged 后是迷宫纹（同 GL gnoise2） */
+/* 梯度噪声（±0.7）：棱脊/沙丘的 ridged 变换与反照率用——值噪声 ridged 后是迷宫纹（同 GL gnoise2）。
+   四角梯度按 (xi,yi) 精确比中记忆（同 core/noise.vnoise）：命中返回同一批 double＝输出逐位不变；
+   不记忆则每像素多十几次 sin/cos，反照率一项就让整块瓦片重画慢一成多 */
+const GC = 2048;
+const gcK = new Float64Array(GC * 2).fill(NaN), gcV = new Float64Array(GC * 8);   // [xi,yi] 键 · 四角 (cos, sin)
 function gnoise(x: number, y: number): number {
   const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
   const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
-  const g = (ix: number, iy: number, dx: number, dy: number): number => {
-    const a = hash2(ix, iy) * 6.2831853; return Math.cos(a) * dx + Math.sin(a) * dy;
-  };
-  const a = g(xi, yi, xf, yf), b = g(xi + 1, yi, xf - 1, yf);
-  const c = g(xi, yi + 1, xf, yf - 1), d = g(xi + 1, yi + 1, xf - 1, yf - 1);
+  const s = ((Math.imul(xi | 0, 0x9e3779b1) ^ Math.imul(yi | 0, 0x85ebca77)) >>> 0) & (GC - 1), o = s * 8;
+  if (gcK[s * 2] !== xi || gcK[s * 2 + 1] !== yi) {
+    const t0 = hash2(xi, yi) * 6.2831853, t1 = hash2(xi + 1, yi) * 6.2831853;
+    const t2 = hash2(xi, yi + 1) * 6.2831853, t3 = hash2(xi + 1, yi + 1) * 6.2831853;
+    gcV[o] = Math.cos(t0); gcV[o + 1] = Math.sin(t0); gcV[o + 2] = Math.cos(t1); gcV[o + 3] = Math.sin(t1);
+    gcV[o + 4] = Math.cos(t2); gcV[o + 5] = Math.sin(t2); gcV[o + 6] = Math.cos(t3); gcV[o + 7] = Math.sin(t3);
+    gcK[s * 2] = xi; gcK[s * 2 + 1] = yi;
+  }
+  const a = gcV[o] * xf + gcV[o + 1] * yf, b = gcV[o + 2] * (xf - 1) + gcV[o + 3] * yf;
+  const c = gcV[o + 4] * xf + gcV[o + 5] * (yf - 1), d = gcV[o + 6] * (xf - 1) + gcV[o + 7] * (yf - 1);
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
 const rgd = (n: number): number => 1 - Math.min(1, Math.abs(n) * 1.9);   // 梯度噪声 → 脊形（同 GL rg）
@@ -217,7 +227,18 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) f[r * g.cols + c] = terrainProps(g.cells[r][c]).elev;
     return f;
   };
-  const elevBil = (lon: number, lat: number): number => elevBilinear(field!.data, field!, lon, lat);
+  /* 画面场取样（同 GL cellAt）：块层按缩放权重 tw 混入（tw 由 render 按本帧缩放定，进瓦片键）；块所在处 tHere 给装饰噪声退场用 */
+  let tLayer: TileLayer | null = null, tw = 0;
+  const elevBil = (lon: number, lat: number): number => {
+    const e = elevBilinear(field!.data, field!, lon, lat);
+    if (tw > 0) { const t = tileElevAt(tLayer!, lon, lat); if (t === t) return e + (t - e) * tw; }
+    return e;
+  };
+  const tHere = (lon: number, lat: number): number => { if (tw <= 0) return 0; const t = tileElevAt(tLayer!, lon, lat); return t === t ? tw : 0; };
+  const dispSmooth = (lon: number, lat: number): number => {   // core/elev.elevSmooth 同式，取样走 elevBil（带块）
+    const h = field!.step * 0.5;
+    return 0.25 * (elevBil(lon - h, lat - h) + elevBil(lon + h, lat - h) + elevBil(lon - h, lat + h) + elevBil(lon + h, lat + h));
+  };
   function nearestT(lon: number, lat: number) {
     const g = grid!;
     const r = Math.max(0, Math.min(g.rows - 1, Math.floor((lat - g.bb.latMin) / g.step)));
@@ -393,9 +414,12 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const rough = (e0 > 0.4 ? 0.24 : (e0 > 0.2 ? 0.08 : 0.025)) * (eroded ? 0.25 : 1);
       /* 装饰噪声门（同 GL：material.decoGate 单一真源）：平坦低地不再画假起伏；侵蚀场上只按坡门控（类型兜底不再算数） */
       wsv[i] = wsAt(lonW, latW);
-      const decoK = decoGate(smac, eroded ? 0 : MT.rough, sstep(wsv[i] - 0.02, wsv[i] + 0.02, e0), fine);
-      let e = e0 + (fbm(lonW * 1.1, latW * 1.1) - 0.5) * rough * 2 * decoK;
-      if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp * decoK;
+      const decoK = decoGate(smac, eroded ? 0 : MT.rough, sstep(wsv[i] - 0.02, wsv[i] + 0.02, e0), fine) * (1 - tHere(lonW, latW));   // 块里的起伏是真算的（同 GL）
+      let e = e0;
+      if (decoK > 0) {   // 门关（平地或块权重满）＝噪声两项恒零，免算（同 GL）
+        e += (fbm(lonW * 1.1, latW * 1.1) - 0.5) * rough * 2 * decoK;
+        if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp * decoK;
+      }
       elev[i] = e;
       /* 纹理疏密（同 GL；见 FX.texPatchF 头注）：世界锚定两八度低频调制，同一片林/沼/山有疏有密 */
       const pf = FX.texPatchF / step;
@@ -405,8 +429,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       else if (tfade) { const t = clim!.treeE + rowShift[y]; tfade[i] = sstep(t, t + clim!.band, elevBil(p[0], p[1])); }
       const twc = tfade ? MT.c * (1 - tfade[i]) : MT.c;   // 林线以上林冠纹理淡出（同 GL）
       esh[i] = microOn ? e + texAt(rx, ry, twc, MT.d, twrEff, MT.m * marshGate(smac, slopeK), pxpd) * texW : e;
-      const es = elevSmooth(field!.data, field!, p[0], p[1]);
-      ed[i] = rule === field ? es : elevSmooth(rule!.data, rule!, p[0], p[1]);   // 画面场为精修档时线不跟画面
+      const es = tw > 0 ? dispSmooth(p[0], p[1]) : elevSmooth(field!.data, field!, p[0], p[1]);
+      ed[i] = rule === field && tw === 0 ? es : elevSmooth(rule!.data, rule!, p[0], p[1]);   // 线只跟规则场：画面场为精修档或带块时都不跟画面
       cav[i] = Math.max(-0.10, Math.min(0.16, (es - elevBil(p[0], p[1])) / field!.step * gain * 2 * NRM0 * (1 + FX.macroW) * FX.cavAmp));   // 同 GL：按真实坡度并随夸张走
     }
     const light = SHADE_LIGHT;
@@ -467,7 +491,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         if (microOn && MT.albVar > 0) {   // 反照率抖动（同 GL：屏幕锚定低频 × 门控）
           const [f1, f2, fr] = lodF(pxpd, FX.albPx), g = octaveGate(pxpd, f1);
           if (g > 0) {
-            const av = vnoise(rx * f1 + 19.9, ry * f1 + 7.1) * (1 - fr) + vnoise(rx * f2 + 2.3, ry * f2 + 27.9) * fr - 0.5;
+            const [c1, s1, c2, s2] = ALB_ROT;   // 两档梯度噪声各转一角（同 GL）
+            const av = gnoise((c1 * rx - s1 * ry) * f1 + 19.9, (s1 * rx + c1 * ry) * f1 + 7.1) * (1 - fr) + gnoise((c2 * rx - s2 * ry) * f2 + 2.3, (s2 * rx + c2 * ry) * f2 + 27.9) * fr;
             const m = 1 + av * MT.albVar * FX.albAmp * g;
             col = [col[0] * m, col[1] * m, col[2] * m];
           }
@@ -570,10 +595,25 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       if (d === "all") { tiles = []; dirty = []; }
       else if (d.length) dirty = dirty.length + d.length > 16 ? [unionBB(dirty.concat(d))] : dirty.concat(d);   // 攒多了并成一块，免得逐块重算外缘
     },
+    uploadTiles(layer: TileLayer | null) {
+      /* 块换了的那片要补画：只在上一帧用着块时（tw>0）——用不着块的瓦片里块不影响任何像素 */
+      if (tw > 0 && grid && field && tiles.length) {
+        const prev = tLayer, m = grid.step * 3 + field.step * 2, ids = new Set([...(prev ? prev.tiles.keys() : []), ...(layer ? layer.tiles.keys() : [])]);
+        const g = (layer || prev)!.geom;
+        for (const i of ids) {
+          if (prev?.tiles.get(i) === layer?.tiles.get(i)) continue;
+          const { c0, r0, c1, r1 } = tileCells(g, i);
+          dirty.push({ lonMin: g.lonMin + c0 * g.pstep - m, lonMax: g.lonMin + c1 * g.pstep + m, latMin: g.latMin + r0 * g.pstep - m, latMax: g.latMin + r1 * g.pstep + m });
+        }
+        if (dirty.length > 16) dirty = [unionBB(dirty)];
+      }
+      tLayer = layer;
+    },
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {
       if (!grid) return;
       if (opts.flat) { renderFlat(viewBB, opts); return; }
       const [W, H] = opts.px ?? [canvas.width, canvas.height];   // 可见区（画布可更大，只画左上这一块）
+      tw = tLayer ? +tileWeight(tLayer.geom.step * H / (viewBB.latMax - viewBB.latMin) / (opts.dpr ?? 1)).toFixed(3) : 0;   // 同 GL；取三位进瓦片键
       const pxpd = W / (viewBB.lonMax - viewBB.lonMin);
       // 球面环绕：视口按每份拷贝平移 c 折回网格所在域做瓦片判定/重建，贴图时再按拷贝偏移回来
       const copies = wrapCopies(viewBB, grid.bb, !!opts.wrap);
@@ -581,7 +621,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const S = opts.snow, Z = opts.zones;
       const key = `g${(opts.gain ?? 1).toFixed(2)}d${opts.dpr ?? 1}` + (opts.contour ? `c${opts.cStep || 0.12}` : "") + (opts.paper ? "p" : "") + (opts.beach !== false ? "b" : "") + `m${opts.slopeK ?? 0}`
         + (S ? `s${S.base},${S.lat ? 1 : 0},${S.refM},${S.unitM}` : "") + (opts.clim ? `k${opts.clim.key}` : "")
-        + (Z ? `z${Z.looks.key}@${Z.wt.cols}x${Z.wt.rows},${Z.wt.pd},${Z.wt.bb.lonMin},${Z.wt.bb.latMin}` : "");   // 权重换代不进键：同几何走下面的补画
+        + (Z ? `z${Z.looks.key}@${Z.wt.cols}x${Z.wt.rows},${Z.wt.pd},${Z.wt.bb.lonMin},${Z.wt.bb.latMin}` : "") + (tw > 0 ? `t${tw}` : "");   // 权重换代不进键：同几何走下面的补画
       if (Z && lastZW && Z.wt !== lastZW && Z.wt.cols === lastZW.cols && Z.wt.rows === lastZW.rows && Z.wt.pd === lastZW.pd) {
         const b = changedBox(lastZW.w, Z.wt.w, Z.wt.cols, Z.wt.rows, ZONE_N), wb = Z.wt.bb, pd = Z.wt.pd;
         if (b) dirty.push({ lonMin: wb.lonMin + (b[0] - 1) * pd, lonMax: wb.lonMin + (b[2] + 2) * pd, latMin: wb.latMin + (b[1] - 1) * pd, latMax: wb.latMin + (b[3] + 2) * pd });
@@ -622,6 +662,6 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     },
     maxDim() { return 16384; },   // Canvas2D 各主流实现的稳妥边长
     rendererName() { return "CPU 瓦片（Canvas2D 兜底）"; },
-    dispose() { tiles = []; dirty = []; lastZW = null; grid = null; field = null; cellMat = null; cellTint = null; cellTintHas = null; cellWS = null; }
+    dispose() { tiles = []; dirty = []; lastZW = null; grid = null; field = null; tLayer = null; cellMat = null; cellTint = null; cellTintHas = null; cellWS = null; }
   };
 }

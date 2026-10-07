@@ -2,6 +2,7 @@
    优先 WebGL2——PoC 实测连 SwiftShader 纯软渲都比旧 CPU 瓦片快 6×，故**凡能建出
    WebGL2 上下文（含软渲）一律走 GPU**；仅上下文创建/着色器编译失败才退 CPU 瓦片。 */
 import type { Grid } from "../core/grid.ts";
+import type { TileLayer } from "../core/tiles.ts";
 import { contourStats, contourStepFor, waterSurface, type ContourStep, type ElevField, type FieldRect } from "../core/elev.ts";
 import type { BBox, Meta } from "../core/types.ts";
 import { beachOf, climLook, paperOf, shadeGain, slopeKOf, snowSpec, type ClimLook, type SnowSpec } from "./material.ts";
@@ -74,6 +75,9 @@ export interface TerrainRenderer {
       水陆判据与深浅色都以它为基准，必传——漏了内陆湖会静默沉回海平面。
       传入的数组一律当不可变快照：内容变了就换新数组——CPU 渲染器按引用判「这份没变」、只补画变了的那片，原地改写的内容不会上屏。 */
   uploadGrid(grid: Grid, wsurf: Float32Array, field?: ElevField, rule?: ElevField): void;
+  /** 分块精修的块层（core/tiles；null＝没有块）：只进观感底图的晕渲高程，按缩放连续过渡（tileWeight），块所在处的装饰噪声随之退场——
+      块里的起伏是真算出来的，再叠噪声就是同一波段画两遍。块数组同 uploadGrid 之约当不可变快照，按引用判要不要重传 */
+  uploadTiles(layer: TileLayer | null): void;
   render(viewBB: BBox, opts?: TerrainRenderOpts): void;
   /** 单帧可渲染的最大画布边长 px（高清出图按此钳倍数；超限 GL 会静默给黑帧或裁切） */
   maxDim(): number;

@@ -9,6 +9,7 @@ import type { ViewState } from "../core/projection.ts";
 import type { TerrainRenderer } from "../render/renderer.ts";
 import type { Library } from "../data/library.ts";
 import type { DirHandleLike, FolderCache } from "../data/folder.ts";
+import type { TileLayer } from "../core/tiles.ts";
 import type { RouteClient } from "../worker/routeClient.ts";
 
 /** File System Access 目录句柄（权限方法 TS lib.dom 未收录，结构化补声明；实体来自
@@ -36,6 +37,8 @@ export interface ShellCtx {
       任何时刻同值），落地前为粗格场。精修档只进 elevField、永不进它：精修预算随本机内存分档，
       读它＝读数随机器变，规则引擎建不到它上面。 */
   ruleField: ElevField | null;
+  /** 分块精修的块层（只进画面，同 elevField 的精修档；规则场与读数不读它）：host 的分块管理器独写，null＝没有块 */
+  tileLayer: TileLayer | null;
   /** 地形渲染器（boot 创建；无 WebGL2 自动退 CPU 瓦片） */
   R: TerrainRenderer | null;
   /** `${mapId}@${year}@${gridVer}`——年份/换图/地形改动重建网格的去重键 */
@@ -68,7 +71,7 @@ export function createShellCtx(canvas: HTMLCanvasElement, ov: HTMLCanvasElement,
     DPR: Math.max(1, devicePixelRatio || 1),
     meta: { terrain: "auto", genSeed: 1234, genStyle: "continent" },
     view: { lon0: 106, lat0: 38, degPerPx: 0.06 },
-    grid: null, elevField: null, ruleField: null, R: null, builtFor: null, repaint: null,
+    grid: null, elevField: null, ruleField: null, tileLayer: null, R: null, builtFor: null, repaint: null,
     lib: null, mapId: null, baseVer: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
   };

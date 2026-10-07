@@ -301,6 +301,7 @@ export const FX = {
      ＋陡坡软压把大幅度一起压平，同批5「光滑其实是 dot 饱和剪裁」之训）；0.3~1.3 才有 15.8 的差。
      ⚠ 与「均匀降幅到 0.8」实拍相差 10.4（接近有无纹理的量级）＝疏密确实带来了均匀降幅给不了的东西。 */
   albPx: 44,    albAmp: 2.0,      // 反照率抖动（×材质 albVar）
+  albRot: [0.61, -1.03],          // 反照率两档梯度噪声各转一角：值噪声的格点平台沿屏幕轴排成方格（草地与荒漠满屏棋盘）
   wavePx: 38,   waveAmp: 0.07,    // 水面静态波纹
   shoreMix: 0.28,   // 近岸浅水带混入
   rockMix: 0.55,    // 坡度岩化最大混入
@@ -381,3 +382,5 @@ export function marshGate(smac: number, slopeK: number): number {
 }
 /** 水洼噪声两八度的旋转（cos, sin）：GL 与 CPU 同取 */
 export const POOL_ROT: readonly [number, number, number, number] = [Math.cos(FX.poolRot[0]), Math.sin(FX.poolRot[0]), Math.cos(FX.poolRot[1]), Math.sin(FX.poolRot[1])];
+/** 反照率噪声两档的坐标变换＝旋转 × ½（cos, sin）：梯度噪声的斑块约半个格距，格距加倍才与旧值噪声同尺寸；GL 与 CPU 同取 */
+export const ALB_ROT: readonly [number, number, number, number] = [0.5 * Math.cos(FX.albRot[0]), 0.5 * Math.sin(FX.albRot[0]), 0.5 * Math.cos(FX.albRot[1]), 0.5 * Math.sin(FX.albRot[1])];

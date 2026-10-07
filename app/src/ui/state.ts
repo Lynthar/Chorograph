@@ -150,6 +150,8 @@ export const saveConflictSig = signal<SaveConflict | null>(null);
 /* —— 侵蚀计算相位（顶栏胶囊；host 独写）：work=工作档演算中 / ultra=4K 静置精修中 /
    done=刚落定（host 2s 后自动归 idle）。缓存命中不置相位——瞬时完成的事不值得一枚胶囊。 —— */
 export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
+/** 分块精修停摆（host 独写）：车道复位后又失败、当前缩放用得上块而视口里有块不是当前那一份——胶囊空闲时报「精修不可用」 */
+export const tilesDownSig = signal(false);
 /** 落定的规则场（host 独写）：门关＝粗格、门开＝工作档落地后的那份；演算中为 null。
     规则消费者只认它——ctx.ruleField 在等待窗里是过渡合成，视域算在上面就是「落笔即变、落地又变」。 */
 export const ruleFieldSig = signal<ElevField | null>(null);
@@ -380,6 +382,8 @@ export function endStroke(): void {
 
 function applyRestored(cur: World, snapshot: World): void {
   const restored = normalizeWorld(snapshot);
+  /* 涂改内容没变就沿用当前数组：host 按引用判类型网格能否复用，JSON 还原的新数组会让它白建 Grid、丢掉「仅底图」档高程笔的早退支 */
+  if (JSON.stringify(cur.terrainOverrides) === JSON.stringify(restored.terrainOverrides)) restored.terrainOverrides = cur.terrainOverrides;
   const gridChanged = terrKey(cur) !== terrKey(restored);   // 地形没变就不重建（撤销秒回）
   batch(() => {
     stopPlay();                                            // 撤销/重做换世界：停播，避免计时器推新态

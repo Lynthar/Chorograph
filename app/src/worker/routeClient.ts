@@ -6,7 +6,7 @@ import { handleRouteMsg, type RouteCtx, type RouteReply, type RouteRequest, type
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Grid } from "../core/grid.ts";
-import type { ErodeInput } from "../core/erode.ts";
+import type { CoarseCarve, ErodeInput } from "../core/erode.ts";
 import type { ElevField } from "../core/elev.ts";
 import type { ViewField } from "../core/viewshed.ts";
 import type { PeakTable } from "../core/spots.ts";
@@ -27,6 +27,12 @@ export interface RouteClient {
   /** 撤掉在飞的精修单：terminate 车道、单以 null 收场（新编辑来了，几十秒的单跑完也只会被令牌作废）；
       无单在飞不动车道。下一单懒建新车道。 */
   cancelUltra(): void;
+  /** 分块精修的车道数（按 CPU 核数定，懒建；host 按它决定同时在飞几块） */
+  readonly tileLanes: number;
+  /** 粗级切割量（分块精修各块共用，走分块车道）。建不出 Worker 返 null，绝不同步回退——同 erodeUltra */
+  erodeCarve(input: ErodeInput): Promise<CoarseCarve | null>;
+  /** 一块的窗口侵蚀（挑在飞单最少的分块车道）。同上不回退；新编辑来了也不撤——结果按内容寻址，算完照样有用 */
+  erodeTile(input: ErodeInput): Promise<ElevField | null>;
   /** 撤掉在飞的工作档侵蚀单：同 cancelUltra——新编辑来了，上一笔的单算完只会被令牌作废，还挡着新单排队（收笔后多等 1～4 s）；
       被撤的结果不进场缓存（撤销回那一步要重算，用户拍板接受）。崩溃判死与主动撤单分开：撤单后下一单懒建新车道，判死后退回主 worker。 */
   cancelErode(): void;
@@ -50,6 +56,36 @@ export function createRouteClient(): RouteClient {
   let ewDead = false;             // 侵蚀车道崩过＝不再建（退回主 worker / 同步）；主动撤单只置 ew=null，下一单懒建
   let uw: Worker | null = null;   // 4K 静置精修车道（2026-08-11，懒建）：精修单跑几十秒，
   let uwTried = false;            // 与 ew 分开＝精修期间新笔的工作档侵蚀不排队
+  /* 分块精修车道（懒建）：首次开图要算一百多块、每块半秒到一秒，两条并行把等待减半；核少的机器只开一条，免得挤占交互 */
+  const hc = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 0 : 0;
+  const TILE_LANES = hc >= 6 ? 2 : 1;
+  const tl: { w: Worker | null; tried: boolean; pend: Map<number, (r: RouteReply) => void> }[] =
+    Array.from({ length: TILE_LANES }, () => ({ w: null, tried: false, pend: new Map() }));
+  const killTileLane = (L: (typeof tl)[number]): void => {
+    try { L.w?.terminate(); } catch { /* 已死 */ }
+    if (L.w) L.tried = false;   // 崩了的车道下一单懒建新的（复位与否由分块编排定）；建不出 Worker 的照旧不再试
+    L.w = null;
+    for (const [, res] of L.pend) res({ t: "route", id: -1, res: null } as RouteReply);
+    L.pend.clear();
+  };
+  const ensureTl = (L: (typeof tl)[number]): Worker | null => {
+    if (L.tried) return L.w;
+    L.tried = true;
+    try {
+      const w = new RouteWorker();
+      w.onmessage = e => { const r = e.data as RouteReply, f = L.pend.get(r.id); if (f) { L.pend.delete(r.id); f(r); } };
+      w.onerror = () => killTileLane(L);
+      w.onmessageerror = () => killTileLane(L);
+      L.w = w;
+    } catch { L.w = null; }
+    return L.w;
+  };
+  const askTile = (msg: RouteRequest & { id: number }): Promise<RouteReply | null> => {
+    const L = tl.reduce((a, b) => (b.pend.size < a.pend.size ? b : a));
+    const w = ensureTl(L);
+    if (!w) return Promise.resolve(null);
+    return new Promise(res => { L.pend.set(msg.id, res); w.postMessage(msg); });
+  };
   let seq = 0;
   const pending = new Map<number, (r: RouteReply) => void>();
   const pendingE = new Map<number, (r: RouteReply) => void>();
@@ -191,6 +227,15 @@ export function createRouteClient(): RouteClient {
       const r = await new Promise<RouteReply>(res => { pendingU.set(id, res); worker.postMessage({ t: "erode", id, ...input }); });
       return r.t === "erode" ? r.f : null;
     },
+    tileLanes: TILE_LANES,
+    async erodeCarve(input) {
+      const r = await askTile({ t: "carve", id: ++seq, ...input });
+      return r && r.t === "carve" ? r.carve : null;
+    },
+    async erodeTile(input) {
+      const r = await askTile({ t: "erode", id: ++seq, ...input });
+      return r && r.t === "erode" ? r.f : null;
+    },
     cancelUltra() {
       if (!pendingU.size) return;
       killUltraWorker();
@@ -200,6 +245,6 @@ export function createRouteClient(): RouteClient {
       if (!pendingE.size) return;
       killErodeWorker();   // ewDead 不置：主动撤单，下一单懒建新车道
     },
-    dispose() { killWorker(); killErodeWorker(); killUltraWorker(); }
+    dispose() { killWorker(); killErodeWorker(); killUltraWorker(); for (const L of tl) killTileLane(L); }
   };
 }
