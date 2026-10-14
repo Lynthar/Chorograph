@@ -42,10 +42,10 @@ export function normalizeWorld(w: unknown): World {
     const v = o.meta[k];
     if (v != null && !(isFinite(+v) && +v > 0)) delete o.meta[k];
   }
-  // heightOverrides 保持「缺键不落盘」（旧档形状不变）：仅当存在时清理，非数组则删键
-  if (o.heightOverrides != null) {
-    if (Array.isArray(o.heightOverrides)) o.heightOverrides = o.heightOverrides.filter(isRec);
-    else delete o.heightOverrides;
+  // heightOverrides / upliftOverrides 保持「缺键不落盘」（旧档形状不变）：仅当存在时清理，非数组则删键
+  for (const k of ["heightOverrides", "upliftOverrides"]) if (o[k] != null) {
+    if (Array.isArray(o[k])) o[k] = o[k].filter(isRec);
+    else delete o[k];
   }
   // climateZones（气候分区）同「缺键不落盘」：非数组删键、剔非对象成员（档名与 runs 的坏值由解码端跳过）
   if (o.climateZones != null) {

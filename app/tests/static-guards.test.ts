@@ -61,8 +61,8 @@ describe("静态守卫：单一真源", () => {
 /* 生成器 v2 的跨引擎确定性：流向树会把 1 ULP 放大成整片流域翻转，而 Math.sin / exp / pow 这类函数各引擎可差 1 ULP——
    单测在 Node 里永远绿，只有在另一个浏览器上才翻，所以靠正则守住纪律。 */
 describe("静态守卫：生成器 v2 只用四则、开方与整数哈希", () => {
-  /* 生成链两个文件与各自许引的运行时模块（noise / relief / geo 内部都用 Math.sin 或 Math.cos，一个都不许进） */
-  const FILES: [string, string[]][] = [["core/gen2.ts", ["./constants.ts", "./gen2mesh.ts", "./types.ts"]], ["core/gen2mesh.ts", []]];
+  /* 生成链三个文件与各自许引的运行时模块（noise / relief / geo 内部都用 Math.sin 或 Math.cos，一个都不许进） */
+  const FILES: [string, string[]][] = [["core/gen2.ts", ["./constants.ts", "./gen2mesh.ts", "./steady.ts", "./types.ts"]], ["core/gen2mesh.ts", []], ["core/steady.ts", []]];
   for (const [f, allowed] of FILES) {
     const src = readFileSync(path.join(SRC, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     it(`${f} 不调超越函数`, () => {

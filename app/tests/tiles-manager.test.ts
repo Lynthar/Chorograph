@@ -227,4 +227,14 @@ describe("分块精修的编排（shell/tiles）", () => {
     r.m.reset();
     assert.strictEqual(r.last(), null);
   });
+
+  it("中尺度单（带起伏包络）不要切割量：不发 erodeCarve，块照常排队算、齐了上屏", async () => {
+    const r = rig(), mi = { ...INP, mesoEnv: new Float32Array(INP.cols * INP.rows) };
+    r.m.setCoarse(COARSE, GRID);
+    feed(r.m, mi);
+    await flush();
+    assert.strictEqual(r.st.carves, 0, "中尺度图不跑粗级，不该要切割量");
+    for (let k = 0; k < 4; k++) await r.release();
+    assert.strictEqual(r.calls.length, 4); assert.strictEqual(r.last()!.tiles.size, 4);
+  });
 });

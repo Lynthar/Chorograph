@@ -1,18 +1,21 @@
 /* 寻路 Worker 协议（纯函数）：ctx=一次性上下文（网格重建与每次编辑后重发；grid 缺席＝沿用上一份），
    route/legs=按 id 应答；erode=侵蚀重铸（自带全部输入、不依赖 ctx——纯函数直测，
    且程序化预览无 world 时照样可算）；carve=只算粗级切割量（分块精修各块共用）；vfield=视线判定用的规则场（规则场落定时推送一次，
-   viewshed 单只带观察者，sight 单带观察者 × 飞行目标，peaks 单算这份场的标高点峰表）。协议层不碰 Worker API——node:test 直接测；
-   入口(routeWorker.ts)与客户端(routeClient.ts)只做消息搬运。 */
+   viewshed 单只带观察者，sight 单带观察者 × 飞行目标，peaks 单算这份场的标高点峰表）；meso＝v2 图的中尺度稳态（带缓存的解就只派生），uplift＝在它上面解画抬升。
+   协议层不碰 Worker API——node:test 直接测；入口(routeWorker.ts)与客户端(routeClient.ts)只做消息搬运。 */
 import { computeRoute, type ComputedRoute, type RoutePoint } from "../core/route.ts";
 import { unitLegs, type Leg } from "../core/units.ts";
 import { erodeCarve, erodeField, type CoarseCarve, type ErodeInput } from "../core/erode.ts";
 import { sightTo, viewshed, type Observer, type SightHit, type ViewField, type VisMask } from "../core/viewshed.ts";
 import { peakTable, type PeakTable } from "../core/spots.ts";
-import type { ElevField } from "../core/elev.ts";
+import { gen2Meso, gen2Uplift, mesoKey, mesoState, type BasinWaters, type Gen2Sg, type MesoState, type UpliftCells } from "../core/gen2.ts";
+import type { ElevField, FieldGeom } from "../core/elev.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Meta, Unit, World } from "../core/types.ts";
 
-export interface RouteCtx { meta?: Meta; grid?: Grid; roads?: Set<string>; world?: World; yearNow?: number; vfield?: ViewField }
+export interface RouteCtx { meta?: Meta; grid?: Grid; roads?: Set<string>; world?: World; yearNow?: number; vfield?: ViewField;
+  /** 中尺度车道留着的这张图的 Sg（按 mesoKey）与画抬升的求解状态（第一单画抬升时才建） */
+  meso?: { key: string; sg: Gen2Sg; st?: MesoState } }
 
 /** 一名观察者的一个圈：owner＋id 定观察者，ring＋idx 定哪个圈（idx＝火力圈下标，其余恒 0） */
 export type VisRing = "vision" | "fire" | "radar";
@@ -33,7 +36,14 @@ export type RouteRequest =
   | { t: "vfield"; field: ViewField }
   | { t: "viewshed"; id: number; obs: VisReq[] }
   | { t: "sight"; id: number; reqs: SightReq[] }
-  | { t: "peaks"; id: number };
+  | { t: "peaks"; id: number }
+  | { t: "meso"; id: number; meta: Meta; geom: FieldGeom; sg: Gen2Sg | null }
+  | { t: "uplift"; id: number; meta: Meta; geom: FieldGeom; sg: Gen2Sg | null; cells: UpliftCells };
+
+/** 中尺度单的回执：sg 只在现算时带回（存缓存用），给了缓存的解就是 null */
+export interface MesoReply { base: Float32Array; env: Float32Array; cls: Uint8Array; basin: Uint8Array | null; water: BasinWaters | null; sg: Gen2Sg | null; iters: number; converged: boolean }
+/** 画抬升单的回执：收尾后的基底、包络与地类（同 Gen2MesoField） */
+export interface UpliftReply { base: Float32Array; env: Float32Array; cls: Uint8Array; basin: Uint8Array | null; water: BasinWaters | null; iters: number; converged: boolean }
 
 export type RouteReply =
   | { t: "route"; id: number; res: ComputedRoute | null }
@@ -42,7 +52,9 @@ export type RouteReply =
   | { t: "carve"; id: number; carve: CoarseCarve | null }
   | { t: "viewshed"; id: number; res: VisRes[] | null }
   | { t: "sight"; id: number; res: SightRes[] | null }
-  | { t: "peaks"; id: number; res: PeakTable | null };
+  | { t: "peaks"; id: number; res: PeakTable | null }
+  | ({ t: "meso"; id: number } & MesoReply)
+  | ({ t: "uplift"; id: number } & UpliftReply);
 
 export function handleRouteMsg(st: RouteCtx, msg: RouteRequest): RouteReply | null {
   if (msg.t === "ctx") {
@@ -64,6 +76,19 @@ export function handleRouteMsg(st: RouteCtx, msg: RouteRequest): RouteReply | nu
       ({ owner: o.owner, id: o.id, ring: o.ring, idx: o.idx, tgt, hit: sightTo(f, o, lon, lat, altM) })) : null };
   }
   if (msg.t === "peaks") return { t: "peaks", id: msg.id, res: st.vfield ? peakTable(st.vfield) : null };
+  if (msg.t === "meso") {
+    const r = gen2Meso(msg.meta, msg.geom, msg.sg ?? undefined);
+    st.meso = { key: mesoKey(msg.meta, msg.geom), sg: r.sg };   // 回执里的 sg 会被 transfer 走：现算的回一份拷贝，车道留原件
+    return { t: "meso", id: msg.id, base: r.base, env: r.env, cls: r.cls, basin: r.basin, water: r.water, sg: msg.sg ? null : { h: r.sg.h.slice(), rcv: r.sg.rcv.slice() }, iters: r.iters, converged: r.converged };
+  }
+  if (msg.t === "uplift") {
+    const key = mesoKey(msg.meta, msg.geom);
+    if (!st.meso || st.meso.key !== key) st.meso = { key, sg: msg.sg ?? gen2Meso(msg.meta, msg.geom).sg };   // 没带也没留：现算（同一份解，只是慢）
+    const m = st.meso;
+    if (!m.st) m.st = mesoState(msg.meta, msg.geom, m.sg);
+    const r = gen2Uplift(m.st, msg.cells);
+    return { t: "uplift", id: msg.id, base: r.base, env: r.env, cls: r.cls, basin: r.basin, water: r.water, iters: r.iters, converged: r.converged };
+  }
   if (!st.grid || !st.world) {
     return msg.t === "route" ? { t: "route", id: msg.id, res: null } : { t: "legs", id: msg.id, legs: null };
   }

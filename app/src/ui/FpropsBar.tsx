@@ -4,6 +4,7 @@
 import { measureLegs } from "../core/route.ts";
 import { fmtKm } from "../core/util.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushRadiusCells, fmtBrushKm } from "../core/brush.ts";
+import { upliftOn } from "../core/elev.ts";
 import { brushEraseSig, brushSizeSig, brushSmoothSig, decorEraseSig, decorSizeSig, editSubSig, isTacSig, modeSig, routePtsSig, routeResSig, terrainAxisOf, terrainAxisSig, worldSig } from "./state.ts";
 
 export function FpropsBar() {
@@ -66,7 +67,7 @@ export function FpropsBar() {
             </>
           )}
           <span class="fsep" />
-          <button class="ftg tr" aria-pressed={erase} onClick={() => { brushEraseSig.value = !brushEraseSig.peek(); }}>{sub === "terrain" && terrainAxisSig.value === "height" ? "下切 (E)" : "橡皮 (E)"}</button>
+          <button class="ftg tr" aria-pressed={erase} onClick={() => { brushEraseSig.value = !brushEraseSig.peek(); }}>{sub === "terrain" && terrainAxisSig.value === "height" && !upliftOn(world.meta) ? "下切 (E)" : "橡皮 (E)"}</button>
         </>
       )}
       <span class="fl"><kbd style={{ font: "10px var(--f-mono)" }}>Alt</kbd>+滚轮调大小</span>

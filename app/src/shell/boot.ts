@@ -7,7 +7,7 @@ import { clampToFrame, mapFrame } from "../core/frame.ts";
 import { createTerrainRenderer } from "../render/renderer.ts";
 import { mountUI } from "../ui/mount.tsx";
 import { initCalTemplates } from "../ui/CalendarOverlay.tsx";
-import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
+import { worldSig, yearSig, cellsVerSig, selSig, layersSig, applyPreset, layersOpenSig,
   modeSig, armSig, routePtsSig, routeResSig, routeBusySig, setMode,
   editSubSig, editVerSig, isTacSig, linkTypeSig, tacReqSig,
   paintFactionSig, flyReqSig, helpOpenSig, prefsOpenSig, importOpenSig, openSettings, selectOp,
@@ -191,7 +191,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
   let routeTicket = 0;
   effect(() => {
     const mode = modeSig.value, pts = routePtsSig.value, arm = armSig.value;
-    yearSig.value;   // 换年=换网格上下文，重算
+    cellsVerSig.value;   // 类型网格换代（换年、改地貌、v2 地类随中尺度落地重判）：按刚发出的上下文重算
     if (mode !== "route" || pts.length !== 2) { routeResSig.value = null; routeBusySig.value = false; return; }
     routeBusySig.value = true;
     const ticket = ++routeTicket;

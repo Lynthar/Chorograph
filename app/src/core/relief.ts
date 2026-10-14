@@ -95,13 +95,17 @@ export function mountainness(baseE: number): number {
   return sstep((baseE - RELIEF_E0) / (RELIEF_E1 - RELIEF_E0));
 }
 
+/** v2 图有中尺度基底时，起伏只取波长不超过这么多个网格格边的带：更长的已在中尺度稳态解里（主脊与支谷） */
+export const RELIEF_MESO_CELLS = 2;
+
 /** 起伏采样器：(经度, 纬度, 山地度) → 归一起伏（约 ±0.5，乘 RELIEF_M/elevUnitM 得抽象高程） */
 export type ReliefSampler = (lon: number, lat: number, m: number) => number;
 
-/** refCellKm＝参照细格边长（防混叠门的判据）；kmd＝每纬度公里；sphere＝球面图的图幅中心 [经, 纬]（null＝平面图）。同参数下确定性。
+/** refCellKm＝参照细格边长（防混叠门的判据）；kmd＝每纬度公里；sphere＝球面图的图幅中心 [经, 纬]（null＝平面图）；
+    maxKm＝只取波长不超过它的带（Infinity＝不封顶；封掉的带仍算在归一的权重和里，留下的带幅度不放大）。同参数下确定性。
     ⚠ 球面图必须按单位球 × 半径的三维坐标取样：「经度 × 每纬度公里」在纬度 φ 处把东西向压成 cos φ 倍，
     山纹被拉成南北向（54° 处东西/南北梯度能量比 3 倍）。平面图按经纬 × kmd 取二维。 */
-export function makeRelief(seed: number, refCellKm: number, kmd: number, sphere: readonly [number, number] | null): ReliefSampler {
+export function makeRelief(seed: number, refCellKm: number, kmd: number, sphere: readonly [number, number] | null, maxKm: number): ReliefSampler {
   const th = ((Math.imul(seed | 0, 2654435761) >>> 0) / 4294967296) * Math.PI;   // 每图一个山脉走向角
   const ct = Math.cos(th), st = Math.sin(th);
   const R = kmd * 180 / Math.PI, D = Math.PI / 180, sq = 1 / RELIEF_STRIKE - 1;
@@ -111,7 +115,8 @@ export function makeRelief(seed: number, refCellKm: number, kmd: number, sphere:
   const ax = -ct * Math.sin(l0) - st * Math.sin(p0) * Math.cos(l0), ay = ct * Math.cos(l0) - st * Math.sin(p0) * Math.sin(l0), az = st * Math.cos(p0);
   const gate = RELIEF_LAMBDA_KM.map(l => sstep((l / Math.max(1e-9, refCellKm) - RELIEF_GATE_LO) / (RELIEF_GATE_HI - RELIEF_GATE_LO)));
   const wsum = RELIEF_W.reduce((a, w, k) => a + w * gate[k], 0);
-  if (wsum <= 0) return () => 0;
+  for (let k = 0; k < gate.length; k++) if (RELIEF_LAMBDA_KM[k] > maxKm) gate[k] = 0;
+  if (wsum <= 0 || !gate.some(v => v > 0)) return () => 0;
   return (lon, lat, m) => {
     if (m <= 0) return 0;
     let X = 0, Y = 0, Z = 0;

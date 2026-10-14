@@ -6,12 +6,12 @@ import { CLIMATE_SWATCH } from "../core/climzone.ts";
 import { isGen2 } from "../core/gen2.ts";
 import { CLIMATE, CLIMATE_ORDER, DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, nodeCatOf, parseComposite } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhen, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
-import { HEIGHT_STEPS_STRAT, HEIGHT_STEPS_TAC, heightStepM } from "../core/elev.ts";
+import { DH_MAX_M, HEIGHT_STEPS_STRAT, HEIGHT_STEPS_TAC, UPLIFT_FLOORS_M, UPLIFT_PEAKS_M, heightStepM, upliftOn } from "../core/elev.ts";
 import { useLayoutEffect } from "preact/hooks";
 import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
-import { addTypeSig, brushEraseSig, canRedoSig, canUndoSig, climPaintSig, decorKindSig, editSubSig, eraNewSig, heightStepMSig, isTacSig, linkFromSig, linkTypeSig,
+import { addTypeSig, brushEraseSig, canRedoSig, canUndoSig, climPaintSig, decorKindSig, editSubSig, eraNewSig, heightStepMSig, upliftPeakMSig, upliftModeSig, basinFloorMSig, isTacSig, linkFromSig, linkTypeSig,
   mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, parseWhenInput, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisOf, terrainAxisSig, undoWorld, worldSig,
   type EditSub } from "./state.ts";
 
@@ -116,6 +116,7 @@ function TerrainCtx() {
   const tac = isTacSig.value, axis = terrainAxisOf(terrainAxisSig.value, tac);
   const meta = worldSig.value?.meta || {};
   const stepM = heightStepM(meta, heightStepMSig.value);   // 生效的每笔米数（0=自动档）
+  const up = upliftOn(meta), pk = upliftPeakMSig.value, floor = upliftModeSig.value === "floor", fm = basinFloorMSig.value;
   const setLf = (id: Landform) => { paintTerrainSig.value = eco === "none" ? id : id + "/" + eco; };
   const setEco = (id: Ecotype) => { paintTerrainSig.value = id === "none" ? lf : lf + "/" + id; };
   return (
@@ -123,7 +124,7 @@ function TerrainCtx() {
       <div class="seg2">
         <button aria-pressed={axis === "lf"} title="只改地貌（平原/丘陵/山地…），生态保留；涂到之处的手雕高程一并复位" onClick={() => { terrainAxisSig.value = "lf"; }}>地貌</button>
         <button aria-pressed={axis === "eco"} title="只改生态：地面色调/寻路代价 + 随笔落下真实布景印章（可单独选中调整）" onClick={() => { terrainAxisSig.value = "eco"; }}>生态</button>
-        <button aria-pressed={axis === "height"} title="抬升/下切地势：等高线、读数与视域随之变，地貌与寻路不变" onClick={() => { terrainAxisSig.value = "height"; }}>⛰ 高程</button>
+        <button aria-pressed={axis === "height"} title={up ? "画山或盆地：涂抹区长成所选峰高的山、压成所选盆底的盆地，地貌、寻路、等高线、读数与视域随之变" : "抬升/下切地势：等高线、读数与视域随之变，地貌与寻路不变"} onClick={() => { terrainAxisSig.value = "height"; }}>⛰ 高程</button>
         {!tac && <button aria-pressed={axis === "clim"} title="把一片涂成某种气候：配色、林线与雪线随之变，地貌、生态与寻路不变" onClick={() => { terrainAxisSig.value = "clim"; }}>气候</button>}
       </div>
       {axis === "lf" ? (
@@ -161,6 +162,44 @@ function TerrainCtx() {
             ))}
           </div>
           <div class="hint">涂生态＝改地面色调/寻路代价（保留地貌）+ 随笔<b>随机落下相应真实布景印章</b>（乔木/沼草/沙丘…，落后可在「选择」里单独点选、调整、删除）；选「无」＝清生态回纯地貌。<kbd>E</kbd>切橡皮＝抹地面并擦附近印章 · <kbd>[ ]</kbd>调笔刷</div>
+        </>
+      ) : up ? (
+        <>
+          <div class="seg2" role="group" aria-label="画山还是画盆地" style={{ marginTop: "4px" }}>
+            <button aria-pressed={!floor} onClick={() => { upliftModeSig.value = "peak"; }}>山</button>
+            <button aria-pressed={floor} onClick={() => { upliftModeSig.value = "floor"; }}>盆地</button>
+          </div>
+          {floor ? (
+            <>
+              <div class="sec" style={{ marginTop: "4px" }}>目标盆底<span class="mini">画盆地 · 可低于海面</span></div>
+              <div class="chips">
+                {UPLIFT_FLOORS_M.map(v => (
+                  <button key={v} class="ch tr" aria-pressed={!brushEraseSig.value && fm === v} onClick={() => { basinFloorMSig.value = v; brushEraseSig.value = false; }}>{v}m</button>
+                ))}
+                <input class="fld" type="number" min={-DH_MAX_M} max={DH_MAX_M} step={50} value={fm} style={{ width: "6em" }} aria-label="目标盆底（米）"
+                  onChange={e => {
+                    const el = e.currentTarget as HTMLInputElement, v = Math.round(+el.value);
+                    if (el.value.trim() !== "" && Math.abs(v) <= DH_MAX_M) { basinFloorMSig.value = v; brushEraseSig.value = false; } else el.value = String(basinFloorMSig.peek());
+                  }} />
+              </div>
+              <div class="hint">按住拖动把一片地压成盆地：每片连着的涂抹区里最低的那处压到所选盆底{brushEraseSig.value ? <>（现为 <b>橡皮</b>）</> : null}，可以低于海面。整片地面往下沉，盆心被泥沙填平，盆缘的山脊与谷照旧留着。盆里成外流湖、咸湖还是盐滩由水量定（光标移到盆上读得到），与海之间没有高过海面的陆地隔着就被海灌进。同一处再涂＝改成新的盆底、不累加，涂在画过的山上＝改成盆地；<kbd>E</kbd> 切橡皮、<kbd>[ ]</kbd> 调大小。松笔后约一秒解出盆形，侵蚀计算再补细节（进度见顶栏）。地貌按新的高度重判，寻路随之变；视野、火力与雷达圈按新地势重算。</div>
+            </>
+          ) : (
+            <>
+          <div class="sec" style={{ marginTop: "4px" }}>目标峰高<span class="mini">画山 · 地貌与寻路随山变</span></div>
+          <div class="chips">
+            {UPLIFT_PEAKS_M.map(v => (
+              <button key={v} class="ch tr" aria-pressed={!brushEraseSig.value && pk === v} onClick={() => { upliftPeakMSig.value = v; brushEraseSig.value = false; }}>{v}m</button>
+            ))}
+            <input class="fld" type="number" min={1} max={DH_MAX_M} step={100} value={pk} style={{ width: "6em" }} aria-label="目标峰高（米）"
+              onChange={e => {
+                const el = e.currentTarget as HTMLInputElement, v = Math.round(+el.value);
+                if (v > 0 && v <= DH_MAX_M) { upliftPeakMSig.value = v; brushEraseSig.value = false; } else el.value = String(upliftPeakMSig.peek());
+              }} />
+          </div>
+          <div class="hint">按住拖动把一片地画成山：每片连着的涂抹区里最高的那处长到所选峰高{brushEraseSig.value ? <>（现为 <b>橡皮</b>）</> : null}，山脊、支谷与山麓由生成器的流程长出来，山体宽窄随涂抹区。同一处再涂＝改成新的峰高、不累加；<kbd>E</kbd> 切橡皮（连旧的手雕高程一起擦）、<kbd>[ ]</kbd> 调大小。松笔后约一秒解出山形，侵蚀计算再补沟谷细节（进度见顶栏）。峰高指解出来的山顶；读数与标高点按格平滑，读到的数会比所选峰高略低，格子越粗低得越多。地貌按解出的高度重判（高处成山地、高山），寻路随之变；视野、火力与雷达圈按新地势重算。</div>
+            </>
+          )}
         </>
       ) : (
         <>

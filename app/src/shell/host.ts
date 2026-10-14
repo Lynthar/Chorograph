@@ -1,13 +1,15 @@
 /* 画布宿主：画布尺寸、相机取景、地形网格/高程场重建。
    全部经 ctx 共享态工作；rebuild 同步把寻路上下文送进 Worker（官道格按当年连线重算）。 */
-import { buildGridCells, roadCellSet, type Grid } from "../core/grid.ts";
-import { buildElevField, coarseField, fieldMix, fieldPlusDelta, waterSurface, type ElevField } from "../core/elev.ts";
+import { buildGridCells, gridGeom, roadCellSet, type Grid } from "../core/grid.ts";
+import { isGen2, mesoKey, type Gen2MesoField, type UpliftCells } from "../core/gen2.ts";
+import { buildElevField, coarseField, fieldMix, fieldPlusDelta, upliftCells, waterSurface, type ElevField } from "../core/elev.ts";
 import { erodeGate, erodeInput, erodeKey, ultraInput, upscaleOf, type ErodeInput, erodeMode } from "../core/erode.ts";
 import { tilePlan } from "../core/tiles.ts";
 import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { tileCacheGet, tileCachePut } from "../data/tilecache.ts";
+import { mesoCacheGet, mesoCachePut } from "../data/mesocache.ts";
 import { createTileManager } from "./tiles.ts";
-import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig, tilesDownSig } from "../ui/state.ts";
+import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig, tilesDownSig, cellsVerSig } from "../ui/state.ts";
 import { terrMetaKey } from "../ui/history.ts";
 import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
@@ -96,16 +98,20 @@ export function createHost(ctx: ShellCtx): Host {
   let erodeTimer: ReturnType<typeof setTimeout> | undefined, buildN = 0;
   let pendGate = false, pendHovs: HeightOverride[] | undefined, pendYear = 0;   // 门判定与延迟组装的原料（rebuild 同拍记账）
   let pendInp: ErodeInput | null = null, pendCoarse: Float32Array | null = null;   // 侵蚀单（fireErode 结算时才组装）与它的粗格基准（仅底图档＝不含高程涂改）
+  let pendGrid: Grid | null = null;   // 侵蚀单取哪个 Grid：仅底图档下画抬升在屏时是只带 Sg 的那个（侵蚀不看笔），其余即 ctx.grid
   let pendCoarseNow: Float32Array | null = null;   // 最新的含涂改粗格场：落地 / 渐变 / 精修入屏时把涂改增量叠回定形后的场（底图与涂改档下与 pendCoarse 同一对象）
   /** 定形后的场叠上「当前粗格 − 定形基准」（仅底图档＝高程笔的涂改）：底图与涂改档两份粗格同一对象，原样返回＝旧行为逐位 */
+  const basinOf = (g: Grid): Uint8Array | null => g.meso ? g.meso.basin : null;   // 画的盆地：增量合成不钳陆地地板
   const withDelta = (f: ElevField, baseC: Float32Array): ElevField =>
-    pendCoarseNow && pendCoarseNow !== baseC && ctx.grid ? fieldPlusDelta(f, baseC, pendCoarseNow, ctx.grid, ctx.grid.cells) : f;
+    pendCoarseNow && pendCoarseNow !== baseC && ctx.grid ? fieldPlusDelta(f, baseC, pendCoarseNow, ctx.grid, ctx.grid.cells, basinOf(ctx.grid)) : f;
   let pendUInp: ErodeInput | null = null;   // 同一单的精修档形态（数组共享引用，仅换预算三键；战术图才有）
   /* 工作档＝规则场（ctx.ruleField）兼等待窗合成的基座，跨同几何的重建存活；精修档只进画面，且只对
      当前构建有效——任何重建即弃（落笔不在千万格的精修场上逐 move 复制重传，静置后自会重算）。 */
   let work: ElevField | null = null, workBase: Float32Array | null = null, workKey = "";   // 已落地工作档 + 增量基准 + 几何键
   let ultra: ElevField | null = null;   // 在屏精修场（本次构建）
   let gridKey = "", gridOv: TerrainOverride[] | null = null;   // 当前 ctx.grid 建自哪份（meta 键+年份+图 id, 涂改数组引用），见 rebuild 注
+  let sentCells: string[][] | null = null;   // 上次随寻路上下文发出的类型格（换了就递增 cellsVerSig）
+  let gridSg: Grid | null = null, lastEg: Grid | null = null;  // 仅底图档下画抬升在屏时侵蚀用的 Grid（只带 Sg，底稿地类也按 Sg 判）· 上次重建的侵蚀 Grid
   let lastBuiltKey = "", coarseAt = 0;   // 上次重建的几何键（换几何＝免防抖立即发单）+ 本几何粗格首帧时刻（缓存「早到」判据）
   let builtYear = NaN;   // 上次重建的年份（离散换场查最近落地只在年份没变时）
   /* —— 4K 静置精修（2026-08-11）：交互档手感零变化——工作档落定且 ULTRA_IDLE_MS 无新改动后，
@@ -149,6 +155,64 @@ export function createHost(ctx: ShellCtx): Host {
     onDown: dn => { tilesDownSig.value = dn; }
   }, TILE_BUDGET * 4 * 1.3);
   const tilesOn = (): boolean => ctx.meta.mapKind !== "tactical" && ctx.routeClient.tileLanes > 0;
+  /* —— 中尺度（v2 图，core/gen2.gen2Meso）：稳态解只依赖生成参数与几何，独立车道上算、解存进 IDB。到了之前不发侵蚀单（先侵蚀宏观底再换形＝多一次可见换场），
+     到了就换一个带它的新 Grid 重建；车道不可用或这一单失败＝这张图照旧用宏观底。 —— */
+  let meso: { key: string; f: Gen2MesoField } | null = null;   // 当前图的那份（单槽）
+  let mesoWant = "", mesoBad = "";   // 在飞单的键 · 没有结果的键（不再要、侵蚀不再等）
+  let mesoHold = false;              // 这一轮的侵蚀单要等中尺度（rebuild 同拍定）
+  function requestMeso(key: string): void {
+    if (mesoWant === key) return;
+    mesoWant = key;
+    const meta = ctx.meta, geom = gridGeom(meta);
+    const done = (f: Gen2MesoField | null, e?: unknown): void => {
+      if (mesoWant !== key) return;   // 换了键：这一单撤了或用不上
+      mesoWant = "";
+      if (f) meso = { key, f }; else { mesoBad = key; console.warn("中尺度稳态没有结果（这张图照旧用宏观底）：", e ?? "车道不可用"); }
+      if (ctx.grid) rebuild();
+    };
+    void mesoCacheGet(key).then(sg => ctx.routeClient.meso(meta, geom, sg)).then(r => {
+      if (r?.sg) void mesoCachePut(key, r.sg);   // 现算的解都入缓存：过期的对它的键仍恒真
+      done(r ? { base: r.base, env: r.env, cls: r.cls, basin: r.basin, water: r.water } : null);
+    }, e => done(null, e));
+  }
+  /* —— 画抬升（v2 战略图，core/gen2.gen2Uplift）：在 Sg 上解，同一车道、单飞行闸（飞行中只记最新那份，落地后补发）；
+     解按（mesoKey, 逐格目标）内容留最近几份——撤销、重做直接换上。解回来之前屏上沿用上一份、侵蚀不发单（落笔不画草稿）。 —— */
+  const UP_KEEP = 4;
+  let upDone: { key: string; cells: UpliftCells; f: Gen2MesoField }[] = [];
+  let upWant: { key: string; cells: UpliftCells } | null = null;   // 最新要的那份（rebuild 同拍记）
+  let upBad: { key: string; cells: UpliftCells } | null = null;    // 解不出的那份：同一份不再等、不再发
+  let upFly = "";                                                  // 在飞那单的 mesoKey（换图时撤车道）
+  const sameCells = (a: UpliftCells, b: UpliftCells): boolean => {
+    if (a === b) return true;
+    if (a.idx.length !== b.idx.length) return false;
+    for (let i = 0; i < a.idx.length; i++) if (a.idx[i] !== b.idx[i] || a.peakM[i] !== b.peakM[i]) return false;
+    const fa = a.fidx, fb = b.fidx;
+    if (!fa || !fb) return !fa === !fb;
+    if (fa.length !== fb.length) return false;
+    for (let i = 0; i < fa.length; i++) if (fa[i] !== fb[i] || a.floorM![i] !== b.floorM![i]) return false;
+    return true;
+  };
+  const upFind = (key: string, cells: UpliftCells): Gen2MesoField | undefined => upDone.find(e => e.key === key && sameCells(e.cells, cells))?.f;
+  const upFlight = singleFlight(() => {
+    const want = upWant;
+    if (!want || upFind(want.key, want.cells)) return Promise.resolve();
+    const meta = ctx.meta, geom = gridGeom(meta);
+    upFly = want.key;
+    const fail = (e?: unknown): void => {
+      if (upFly !== want.key) return;   // 换图撤了车道：不是这张图的事
+      upFly = ""; upBad = want;
+      console.warn("画抬升没有解出（这一笔不显示）：", e ?? "车道不可用");
+      if (ctx.grid) rebuild();
+    };
+    return (ctx.routeClient.mesoHolds(want.key) ? Promise.resolve(null) : mesoCacheGet(want.key))
+      .then(sg => ctx.routeClient.uplift(meta, geom, want.cells, sg))
+      .then(r => {
+        if (!r) { fail(); return; }
+        upFly = "";
+        upDone = [{ key: want.key, cells: want.cells, f: { base: r.base, env: r.env, cls: r.cls, basin: r.basin, water: r.water } }, ...upDone].slice(0, UP_KEEP);
+        if (ctx.grid) rebuild();   // 还要的就是它＝换上；已不是最新＝重建记下新的那份、闸放开后补发
+      }, fail);
+  }, () => upFlight.fire());
   /** 规则场落定（ruleFieldSig 独写点）：门关的粗格、落地的工作档、算不出时当下那份；rebuild 起演算即置 null */
   const settleRule = (): void => { ruleFieldSig.value = ctx.ruleField; };
   const geomKey = (g: Grid): string =>
@@ -204,7 +268,7 @@ export function createHost(ctx: ShellCtx): Host {
   /** 按 rebuild 同拍记下的原料组装这一轮的侵蚀单（每 buildN 至多一次） */
   function assemble(): void {
     if (pendInp) return;
-    pendInp = erodeInput(ctx.meta, pendHovs, ctx.grid!, pendYear);
+    pendInp = erodeInput(ctx.meta, pendHovs, pendGrid!, pendYear);
     /* 2026-09-02 起战略图同享精修档，但**预算减半**：大陆级图（105 万粗格）在全额预算下取 3×＝
        950 万细格、单次要跑一两分钟；减半后恰取 2×＝420 万，几秒可得，内存也只要一半。 */
     pendUInp = pendInp ? ultraInput(pendInp, ctx.meta.mapKind === "tactical" ? ULTRA_CAP : ULTRA_CAP / 2) : null;
@@ -233,6 +297,7 @@ export function createHost(ctx: ShellCtx): Host {
   }, () => fireErode());
   function fireErode(): void {
     if (!ctx.grid || !pendGate) { dropPhase(); return; }   // 门关＝「relief=0 且无涂改」旧粗格路径逐位不变
+    if (mesoHold) { setPhase("work"); return; }           // 中尺度到了会重建、再发单
     erodeFlight.fire();
   }
   /** 工作档落地：规则场换真。画面：精修在屏＝不动（同一内容的更锐形态，不许被顶回去），只把规则场
@@ -331,6 +396,7 @@ export function createHost(ctx: ShellCtx): Host {
     $("hud").dataset.grid = `${ctx.grid!.cols}×${ctx.grid!.rows} 网格 ${ms.toFixed(0)} ms`;
     // 寻路上下文随网格重建同步进 Worker（官道格按当年连线重算）
     if (w) ctx.routeClient.setContext({ meta: ctx.meta, grid: ctx.grid!, roads: roadCellSet(w.nodes, w.edges, yearSig.value, ctx.grid!), world: w, yearNow: yearSig.value });
+    if (w && ctx.grid!.cells !== sentCells) { sentCells = ctx.grid!.cells; cellsVerSig.value++; }
   }
   /** recallOk＝离散换场（经 rebuildIfNeeded）：年份没变时先查最近落地过的工作档；笔刷每个 move 不查 */
   function rebuild(recallOk = false): void {
@@ -343,17 +409,36 @@ export function createHost(ctx: ShellCtx): Host {
     /* 类型网格按实例复用：只动 heightOverrides 的重建（高程笔每个 move）传同一个 Grid，基底与水面、起伏场、
        类型纹理、水面标高全按 Grid 实例记忆＝一并免算；键外任一项变了就换新实例，记忆整批作废。
        地貌笔改涂改必换数组（paintTerrainPath 只 filter/concat），撤销换世界＝换引用，故引用比较够用。 */
-    const gk = `${ctx.mapId}|${yearSig.value}|${terrMetaKey(ctx.meta)}`, ov = w ? w.terrainOverrides : null;
-    const reuse = !!ctx.grid && gk === gridKey && ov === gridOv;
+    const gk = `${ctx.mapId}|${yearSig.value}|${terrMetaKey(ctx.meta)}`, ov = w ? w.terrainOverrides : null, geom = gridGeom(ctx.meta);
+    const mk = isGen2(ctx.meta) ? mesoKey(ctx.meta, geom) : "", sgF = meso && meso.key === mk ? meso.f : undefined;
+    /* 画抬升：当年生效的逐格目标。解到了就换上它；没到就沿用屏上那份（同一张图上一笔的解或 Sg），侵蚀等它 */
+    const cells = sgF && w ? upliftCells(ctx.meta, w.upliftOverrides, geom, yearSig.value) : null;
+    const bad = !!cells && !!upBad && upBad.key === mk && sameCells(upBad.cells, cells);
+    const upF = cells && !bad ? upFind(mk, cells) : undefined;
+    const prev = ctx.grid, same = !!prev && gk === gridKey && ov === gridOv;
+    const mf = !cells || bad ? sgF : upF ?? (same && prev!.meso ? prev!.meso : sgF);
+    const reuse = same && prev!.meso === mf;
+    /* 中尺度场换了＝底稿地类也换了（按它的基底重判），格随之重建；gridSg 只在同一组（键, 涂改）下有效 */
     if (!reuse) {
-      ctx.grid = buildGridCells(ctx.meta, ov || [], yearSig.value);
-      gridKey = gk; gridOv = ov;
+      if (!same) { gridSg = null; gridKey = gk; gridOv = ov; }
+      ctx.grid = same && gridSg && gridSg.meso === mf ? gridSg : buildGridCells(ctx.meta, ov || [], yearSig.value, mf);
     }
+    const upOn = !!sgF && !!ctx.grid!.meso && ctx.grid!.meso !== sgF;   // 屏上是画抬升的解
+    if (upOn && !(gridSg && gridSg.meso === sgF))
+      gridSg = prev && same && prev.meso === sgF ? prev : buildGridCells(ctx.meta, ov || [], yearSig.value, sgF);
+    if ((mesoWant && mesoWant !== mk) || (upFly && upFly !== mk)) { ctx.routeClient.cancelMeso(); mesoWant = ""; upFly = ""; }
+    upWant = cells && !bad && !upF ? { key: mk, cells } : null;
+    mesoHold = !!mk && mk !== mesoBad && (!sgF || !!upWant);
+    if (!sgF) { if (mesoHold) requestMeso(mk); }
+    else if (upWant) upFlight.fire();
     const hovs = w ? w.heightOverrides : undefined, mode = erodeMode(ctx.meta);
+    const eg = mode !== "all" && upOn ? gridSg! : ctx.grid!;   // 侵蚀单取的 Grid：仅底图档不看笔，画抬升在屏时取只带 Sg 的那个
+    const eReuse = eg === lastEg;
+    lastEg = eg;
     const coarseNow = buildElevField(ctx.meta, hovs, ctx.grid!, yearSig.value);   // 含涂改的粗格场：显示与规则的增量来源
-    /* 仅底图 / 关闭档且 Grid 没换＝侵蚀输入一字没变：不撤单、不发单、不换场，只把涂改增量叠回已定形的场（精修在屏也留着）——
+    /* 仅底图 / 关闭档且侵蚀的 Grid 没换＝侵蚀输入一字没变：不撤单、不发单、不换场，只把涂改与画抬升的增量叠回已定形的场（精修在屏也留着）——
        高程笔「笔落即最终」的落点就在这里。关闭档从无工作档，走不到这一支。 */
-    if (mode !== "all" && reuse && work && workBase) {
+    if (mode !== "all" && eReuse && work && workBase) {
       pendCoarseNow = coarseNow;
       tiles.setCoarse(coarseNow, ctx.grid!);
       ctx.ruleField = withDelta(work, workBase);
@@ -369,10 +454,11 @@ export function createHost(ctx: ShellCtx): Host {
     ctx.routeClient.cancelUltra();   // 在飞的精修单也撤：几十秒的单跑完只会被令牌作废，白占一核
     ctx.routeClient.cancelErode();   // 在飞的工作档单同撤：算完只会被令牌作废，还挡着新单排队（收笔后多等 1～4 s）
     const erodeHovs = mode === "all" ? hovs : undefined;   // 仅底图档：侵蚀不看高程涂改
-    const coarse = mode === "all" ? coarseNow : buildElevField(ctx.meta, undefined, ctx.grid!, yearSig.value);   // 侵蚀基座与增量基准
+    const coarse = mode === "all" ? coarseNow : buildElevField(ctx.meta, undefined, eg, yearSig.value);   // 侵蚀基座与增量基准
     pendHovs = erodeHovs;
     pendYear = yearSig.value;
-    pendGate = erodeGate(ctx.meta, erodeHovs, ctx.grid!, pendYear);   // 门同拍判定（轻）；数组组装延迟到 fireErode 结算（见并发闸头注）
+    pendGrid = eg;
+    pendGate = erodeGate(ctx.meta, erodeHovs, eg, pendYear);   // 门同拍判定（轻）；数组组装延迟到 fireErode 结算（见并发闸头注）
     pendInp = null; pendUInp = null;
     pendCoarse = coarse; pendCoarseNow = coarseNow;
     doneOwed = false;
@@ -383,7 +469,7 @@ export function createHost(ctx: ShellCtx): Host {
        （开图先出粗帧、门关的旧契约路径、换图/改图幅弃场）。规则场与画面此刻同一份。 */
     if (!pendGate || workKey !== key) { work = null; workBase = null; workKey = ""; }
     /* 年份变了不查：播放与拨年每步都换 Grid、地形又多半不随年变，每步组装求键＝每帧白付几十毫秒 */
-    const back = recallOk && sameYear && pendGate && key === lastBuiltKey ? recall(key, coarse) : null;
+    const back = recallOk && sameYear && pendGate && !mesoHold && key === lastBuiltKey ? recall(key, coarse) : null;
     if (back) {   // 内容对上＝这就是该落定的场，不发单
       clearTimeout(erodeTimer);
       settleBuild(t0, w);
@@ -392,7 +478,7 @@ export function createHost(ctx: ShellCtx): Host {
       settleRule(); upload(); dropPhase(); scheduleUltra();
       return;
     }
-    ctx.ruleField = work && workBase ? fieldPlusDelta(work, workBase, coarseNow, ctx.grid!, ctx.grid!.cells) : coarseField(ctx.grid!, coarseNow);
+    ctx.ruleField = work && workBase ? fieldPlusDelta(work, workBase, coarseNow, ctx.grid!, ctx.grid!.cells, basinOf(ctx.grid!)) : coarseField(ctx.grid!, coarseNow);
     ctx.elevField = ctx.ruleField;
     ruleFieldSig.value = pendGate ? null : ctx.ruleField;   // 门开＝落地前是过渡合成，规则消费者沿用上一份；门关＝粗格即终态
     upload();   // rebuild 只在渲染器就绪后发生（boot 先建 R）；缺 R=启动即错

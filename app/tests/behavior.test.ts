@@ -7,8 +7,8 @@ import { COS_LAT_FLOOR, distKm, haversine, kmPerDeg, kmPerDegXY, lonCos, wrapLon
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
 import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, GEN_SEED_MAX, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
-import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
-import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, type Grid } from "../src/core/grid.ts";
+import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, upliftCells, upliftOn, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
+import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, stampRect, type Grid } from "../src/core/grid.ts";
 import { erodeGate, erodeInput } from "../src/core/erode.ts";
 import { peakTable, pickPeaks, waterSpots, type PickOpts } from "../src/core/spots.ts";
 import { handleRouteMsg } from "../src/worker/routeProto.ts";
@@ -1943,6 +1943,7 @@ describe("战术图生成（快照烘焙）", () => {
     ];
     const w = createTacticalWorld(src, ev, 200, {});
     assert.deepStrictEqual(w.heightOverrides, [{ lon: 112.0, lat: 34.5, dh: 0.2, step: 1 }]);
+    assert.ok(!("upliftOverrides" in createTacticalWorld({ ...src, upliftOverrides: [{ lon: 112.0, lat: 34.5, peakM: 3000 }] }, ev, 200, {})), "画抬升不随烘焙进战术图（战术图不解中尺度）");
     assert.strictEqual(w.meta.relief, 0.7);
     assert.strictEqual(w.meta.elevUnitM, 1500);
     assert.strictEqual(w.meta.contourM, 100);
@@ -2391,6 +2392,14 @@ describe("标高点 core/spots：真山顶按突出度、水面按连通块", ()
     put(40, 10, 8, 6, 0.0004); put(52, 24, 3, 2, 0.0006); put(4, 30, 3, 2, 0.0002);   // 0.8 m、1.2 m、0.4 m
     assert.deepStrictEqual(waterSpots(grid, ws, 2000, km, 2).map(s => Math.round(s.e * 2000)), [1], "0.8 与 1.2 都显示 1＝同值只标大块；0.4 显示 0＝不标");
     assert.deepStrictEqual(waterSpots(grid, ws, 2000, km, 0).map(s => Math.round(s.e * 2000)), [1, 1], "不合并时两块各一枚，显示 0 的仍不标");
+  });
+  it("水面为负只标画的盆地里的湖（盆地掩码位 1）；掩码外照旧不标（旧图沼泽旁的湖类型高程为负）", () => {
+    const km = { kmx: 100, kmy: 100 }, ws = Float32Array.from(wsurf, v => v === 0 ? 0 : -v);   // 两个湖都翻到海面下
+    assert.deepStrictEqual(waterSpots(grid, ws, 2000, km, 0), [], "没有盆地掩码：负水面不标");
+    const basin = new Uint8Array(cols * rows);
+    for (let i = 0; i < basin.length; i++) if (ws[i] < 0) basin[i] = 1;
+    const g2 = { ...grid, meso: { base: new Float32Array(cols * rows), env: new Float32Array(cols * rows), cls: new Uint8Array(cols * rows), basin, water: null } };
+    assert.deepStrictEqual(waterSpots(g2, ws, 2000, km, 0).map(s => Math.round(s.e * 2000)), [-300, -300, -400]);
   });
 });
 
@@ -3068,5 +3077,60 @@ describe("标高点 Worker 协议", () => {
     const field = { bb, step, cols, rows, data, wsurf: new Float32Array(cols * rows), gstep: step, gcols: cols, grows: rows, unitM: 2000, kmx: 100, kmy: 100, curvKm: 0 };
     assert.deepStrictEqual(handleRouteMsg({}, { t: "peaks", id: 1 }), { t: "peaks", id: 1, res: null });
     assert.deepStrictEqual(handleRouteMsg({ vfield: field }, { t: "peaks", id: 2 }), { t: "peaks", id: 2, res: peakTable(field) });
+  });
+});
+
+/* 画抬升（upliftOverrides）的数据口径：缺键不落盘、读端只在 v2 战略图上读、坏项跳过、超限钳边、按年生效 */
+describe("画抬升的数据口径（upliftOverrides）", () => {
+  const V2M = { terrain: "auto", genVer: 2, genSeed: 7, genStyle: "multi", worldModel: "sphere", gridN: 40, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as Meta;
+  it("normalize：非数组删键、剔非对象成员；本无此键者仍无", () => {
+    assert.ok(!("upliftOverrides" in normalizeWorld({ meta: {}, upliftOverrides: "x" })));
+    assert.ok(!("upliftOverrides" in normalizeWorld({ meta: {} })));
+    assert.strictEqual(normalizeWorld({ meta: {}, upliftOverrides: [null, { lon: 1, lat: 2, peakM: 3000 }, 7] }).upliftOverrides!.length, 1);
+  });
+  it("validate：坏项与超限提示、不升 fatal；非 v2 战略图上提示不生效", () => {
+    const v = validateWorld({ meta: V2M, nodes: [], upliftOverrides: [{ lon: 101, lat: 31, peakM: 3000 }, { lon: 101, lat: 31, peakM: -5 }, { lon: "x", lat: 31, peakM: 1 }, { lon: 101, lat: 31, peakM: 1e9 }] });
+    assert.strictEqual(v.ok, true);
+    assert.deepStrictEqual(v.warnings.map(x => x.path), ["upliftOverrides[1]", "upliftOverrides[2]", "upliftOverrides[3].peakM"]);
+    for (const meta of [{ ...V2M, mapKind: "tactical" }, { ...V2M, genVer: 1 }, {}])
+      assert.ok(validateWorld({ meta, nodes: [], upliftOverrides: [{ lon: 101, lat: 31, peakM: 3000 }] }).warnings.some(x => x.path === "upliftOverrides"), JSON.stringify(meta));
+    assert.ok(upliftOn(V2M) && !upliftOn({ ...V2M, mapKind: "tactical" }) && !upliftOn({ ...V2M, genVer: 1 }));
+  });
+  it("upliftCells：当年生效、同格取最大、坏项跳过、超限钳到 DH_MAX_M、粗块盖满 stampRect 罩住的格；非 v2 战略图或一格没有＝null", () => {
+    const g = buildGridCells(V2M, [], 0), ci = (lon: number, lat: number) => Math.floor((lat - 30) / g.step) * g.cols + Math.floor((lon - 100) / g.step);
+    const c = upliftCells(V2M, [
+      { lon: 101.05, lat: 31.05, peakM: 3000 }, { lon: 101.05, lat: 31.05, peakM: 2000 }, { lon: 101.05, lat: 31.05, peakM: 9000, since: 50 },
+      { lon: 102.05, lat: 32.05, peakM: 1e9 }, { lon: 103.05, lat: 33.05, peakM: NaN }, { lon: 100.55, lat: 33.55, peakM: 500, step: 0.3 }
+    ] as never, g, 0)!;
+    const at = (i: number) => c.peakM[Array.from(c.idx).indexOf(i)];
+    assert.strictEqual(at(ci(101.05, 31.05)), 3000, "同格取最大；未来时段的不生效");
+    assert.strictEqual(at(ci(102.05, 32.05)), DH_MAX_M);
+    assert.ok(!Array.from(c.idx).includes(ci(103.05, 33.05)), "坏项跳过");
+    const rc = stampRect({ lon: 100.55, lat: 33.55, step: 0.3 }, g)!;
+    assert.strictEqual(c.idx.length, 2 + (rc.c1 - rc.c0 + 1) * (rc.r1 - rc.r0 + 1), "粗块盖满它罩住的格（同 stampRect）");
+    assert.ok(Array.from(c.idx).every((v, k) => k === 0 || v > c.idx[k - 1]), "格号升序");
+    assert.strictEqual(upliftCells({ ...V2M, mapKind: "tactical" }, [{ lon: 101, lat: 31, peakM: 3000 }], g, 0), null);
+    assert.strictEqual(upliftCells(V2M, [{ lon: 101, lat: 31, peakM: 3000, until: -1 }], g, 0), null);
+  });
+  it("盆底：upliftCells 同格取最小、可为负、超限钳边，一格既有峰又有盆按盆；validate 认 floorM、峰盆都有或都没有提示", () => {
+    const g = buildGridCells(V2M, [], 0), ci = (lon: number, lat: number) => Math.floor((lat - 30) / g.step) * g.cols + Math.floor((lon - 100) / g.step);
+    const c = upliftCells(V2M, [
+      { lon: 101.05, lat: 31.05, floorM: 300 }, { lon: 101.05, lat: 31.05, floorM: -150 }, { lon: 102.05, lat: 32.05, floorM: -1e9 },
+      { lon: 103.05, lat: 33.05, peakM: 2000 }, { lon: 103.05, lat: 33.05, floorM: 50 }, { lon: 101.55, lat: 31.55, peakM: 1000 }
+    ] as never, g, 0)!;
+    const fat = (i: number) => c.floorM![Array.from(c.fidx!).indexOf(i)];
+    assert.strictEqual(fat(ci(101.05, 31.05)), -150, "同格取最小");
+    assert.strictEqual(fat(ci(102.05, 32.05)), -DH_MAX_M);
+    assert.strictEqual(fat(ci(103.05, 33.05)), 50, "峰盆同格按盆");
+    assert.deepStrictEqual(Array.from(c.idx), [ci(101.55, 31.55)], "峰表里不留那格");
+    assert.ok(!("fidx" in upliftCells(V2M, [{ lon: 101, lat: 31, peakM: 3000 }], g, 0)!), "没有盆时不带盆表");
+    assert.ok(upliftCells(V2M, [{ lon: 101, lat: 31, floorM: 0 }], g, 0)!.fidx!.length === 1, "只有盆也不是 null");
+    const v = validateWorld({ meta: V2M, nodes: [], upliftOverrides: [{ lon: 101, lat: 31, floorM: -200 }, { lon: 101, lat: 31, floorM: 100, peakM: 300 }, { lon: 101, lat: 31 }, { lon: 101, lat: 31, floorM: -1e9 }] });
+    assert.strictEqual(v.ok, true);
+    assert.deepStrictEqual(v.warnings.map(x => x.path), ["upliftOverrides[1]", "upliftOverrides[2]", "upliftOverrides[3].floorM"]);
+  });
+  it("时间轴范围罩住画抬升的时段", () => {
+    const r = yearRangeOf({ meta: {}, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [], upliftOverrides: [{ lon: 1, lat: 1, peakM: 1, since: 500, until: 600 }] } as World, NaN);
+    assert.ok(r.min <= 500 && r.max >= 600, `实得 ${r.min}–${r.max}`);
   });
 });

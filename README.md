@@ -52,6 +52,10 @@ https://lynthar.github.io/Chorograph/
 **离线单文件**，从 [Releases](https://github.com/Lynthar/Chorograph/releases) 下
 `Chorograph.html`，双击就能打开，也可以放在 U 盘里。
 
+**硬件**：实测于 Chromium 内核的 Edge；8 GB 内存可用、推荐 16 GB；集成显卡可用，独立显卡
+更顺。最大的战略图（约 150 万格）在浏览器里要约 3 GB 内存，首次打开要等后台地形计算一到
+两分钟，之后再开几秒。
+
 **从源码构建**（需要 Node 23.6+）：
 
 ```bash

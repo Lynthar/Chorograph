@@ -5,6 +5,7 @@ import { CLIMATE_ORDER, LANDFORM_ORDER } from "./constants.ts";
 import { DEFAULT_BBOX, type BBox, type Climate, type Landform, type Meta } from "./types.ts";
 import type { FieldGeom } from "./elev.ts";
 import { buildMesh, cellRand, meshLocate, type Gen2Mesh } from "./gen2mesh.ts";
+import { BAND_MARGIN_KM, Heap, bandOf, steady, treeArea, upliftSolve, type SteadyGraph, type SteadyInput, type SteadyResult, type UpliftRegion } from "./steady.ts";
 
 export type Gen2Style = "mono" | "multi" | "isles";
 export const isGen2 = (m: Meta | undefined): boolean => !!m && m.terrain === "auto" && m.genVer === 2;
@@ -610,6 +611,9 @@ export interface Macro {
   coastLam: number; coastK: number;         // 海岸噪声首波长（km）与宏观格取到的倍频数
   kmPerS: number;                           // 海侧陆地度每单位折多少公里（陆架按它把宽度换成陆地度）
   iters: number;
+  U: Float64Array; K: Float64Array;         // 稳态求解用的抬升（含陆地低抬升底）与可蚀性（含逐节点抖动）：中尺度稳态插到细格照用
+  hRel: Float64Array;                       // 稳态解（乘 KAPPA_M 之前，海 0）
+  plat: Float64Array; bowl: Float64Array;   // 高原叠加与沉降盆地的扣减量（米）
 }
 export function buildMacro(p: Gen2Params): Macro {
   const { bb } = p, lonS = bb.lonMax - bb.lonMin, latS = bb.latMax - bb.latMin;
@@ -680,7 +684,9 @@ export function buildMacro(p: Gen2Params): Macro {
   }
   for (let i = 0; i < n; i++) if (land[i]) U[i] += 0.1 * (0.6 + 0.4 * K[i]);   // 低抬升底：平原与丘陵从这里来
   /* 稳态求解 */
-  const { h: hRel, iters } = steady(G, land, U, K, sd);
+  const area = new Float64Array(n), out = new Uint8Array(n), h0 = new Float64Array(n);
+  for (let i = 0; i < n; i++) { area[i] = dx[(i / cols) | 0] * dy; if (land[i]) h0[i] = 1e-3 * cellRand(i, sd + 17); else out[i] = 1; }   // 初值抖动：首轮流向树不按格序排成平行线
+  const { h: hRel, iters } = steady({ nbOff: mesh.nbOff, nb: mesh.nb, len, area }, { U, K, acrit: ACRIT_KM2, out, hOut: new Float64Array(n), head: 0 }, h0, { maxIt: 400, tol: STEADY_TOL, canon: false });
   const h = new Float64Array(n);
   for (let i = 0; i < n; i++) { const v = land[i] ? KAPPA_M * hRel[i] + plat[i] : 0; h[i] = v > PEAK_KNEE_M ? PEAK_KNEE_M + (v - PEAK_KNEE_M) / (1 + (v - PEAK_KNEE_M) / PEAK_SOFT_M) : v; }   // 高过膝点渐近压缩：碰撞带叠高原在滑杆拉满时会冲上十公里
   for (let i = 0; i < n; i++) if (land[i]) h[i] -= Math.min(bowl[i], BOWL_MAX * h[i]);   // 盆底不跌破海面：海面以下的干地会被渲染端当成水，或钳成 0 m 的平台
@@ -756,7 +762,7 @@ export function buildMacro(p: Gen2Params): Macro {
     const sl = j === i ? 0.05 : Math.max(0.05, (sf[i] - (land[j] ? sf[j] : 0)) / rl[i]);   // 米/km
     wet[i] = fr.Q[i] / sl;   // 水量 ÷ 坡度：干处不沿大河长沼泽
   }
-  return { cols, rows, lon0: bb.lonMin, lat0: bb.latMin, dlon, dlat, dx, dy, mesh, rcv, acc: A, q: fr.Q, salt, lakeEnd, s, land, h, lake, lakeS, relief, moist, wet, shelf: shelfW, camp, cwarp, mid: Float64Array.from(sc.mid, v => Math.min(v, 1e6)), coastLam, coastK, kmPerS: (isl ? 160 : CO_LOUT) * ks, iters };
+  return { cols, rows, lon0: bb.lonMin, lat0: bb.latMin, dlon, dlat, dx, dy, mesh, rcv, acc: A, q: fr.Q, salt, lakeEnd, s, land, h, lake, lakeS, relief, moist, wet, shelf: shelfW, camp, cwarp, mid: Float64Array.from(sc.mid, v => Math.min(v, 1e6)), coastLam, coastK, kmPerS: (isl ? 160 : CO_LOUT) * ks, iters, U, K, hRel, plat, bowl };
 }
 /** 峰顶软上限：膝点以上按 x/(1+x/软度) 压缩，渐近膝点 + 软度（8.5 km） */
 const PEAK_KNEE_M = 5500, PEAK_SOFT_M = 3000;
@@ -773,14 +779,15 @@ const BOWL_MAX = 0.85;
 const LOSS_K = 0.0017;
 /** 潜在蒸散（mm/年）随纬度（球面）：赤道湿热、副热带最高、高纬冷 */
 const EVAP_LAT: [number, number][] = [[0, 1700], [15, 1800], [25, 1700], [35, 1300], [45, 950], [55, 700], [65, 450], [80, 250], [90, 200]];
-function evapPot(p: Gen2Params, G: MacroGeom, i: number, hm: number): number {
+function evapAt(p: Gen2Params, lat: number, hm: number): number {
   let E = 1100;
   if (p.sphere) {
-    const lat = p.bb.latMin + (G.mesh.Y[i] + 0.5) * G.dlat, al = lat < 0 ? -lat : lat;
+    const al = lat < 0 ? -lat : lat;
     for (let k = 1; k < EVAP_LAT.length; k++) if (al <= EVAP_LAT[k][0]) { const [a0, v0] = EVAP_LAT[k - 1], [a1, v1] = EVAP_LAT[k]; E = v0 + (v1 - v0) * (al - a0) / (a1 - a0); break; }
   }
   return E * Math.max(0.3, 1 - hm / 6000);   // 高处冷、蒸散少
 }
+const evapPot = (p: Gen2Params, G: MacroGeom, i: number, hm: number): number => evapAt(p, p.bb.latMin + (G.mesh.Y[i] + 0.5) * G.dlat, hm);
 /** 年径流 R（mm）＝降水 P 减实际蒸散，实际蒸散取 Pike 式 P·E/√(P²+E²)（湿处趋于潜在蒸散 E、干处趋于 P）；干燥度＝1 − P÷E（湿处 0） */
 function runoffOf(p: Gen2Params, G: MacroGeom, land: Uint8Array, moist: Float64Array, h: Float64Array) {
   const n = land.length, R = new Float64Array(n), arid = new Float64Array(n), P = new Float64Array(n), E = new Float64Array(n);
@@ -841,67 +848,6 @@ function route(G: MacroGeom, land: Uint8Array, sf: Float64Array, sink: Uint8Arra
 }
 const D4R = [0, 0, 1, -1], D4C = [1, -1, 0, 0];
 const D8R = [-1, -1, -1, 0, 0, 1, 1, 1], D8C = [-1, 0, 1, -1, 1, -1, 0, 1];
-
-/** 二叉最小堆（键＝高程，平手按格序）：优先洪泛的次序由它定，平手规则是跨引擎确定性的一部分 */
-class Heap {
-  k: Float64Array; v: Int32Array; n = 0;
-  constructor(n: number) { this.k = new Float64Array(n); this.v = new Int32Array(n); }
-  private less(a: number, b: number): boolean { return this.k[a] < this.k[b] || (this.k[a] === this.k[b] && this.v[a] < this.v[b]); }
-  private swap(a: number, b: number): void { const tk = this.k[a]; this.k[a] = this.k[b]; this.k[b] = tk; const tv = this.v[a]; this.v[a] = this.v[b]; this.v[b] = tv; }
-  push(key: number, val: number): void {
-    let i = this.n++; this.k[i] = key; this.v[i] = val;
-    while (i > 0) { const p = (i - 1) >> 1; if (!this.less(i, p)) break; this.swap(i, p); i = p; }
-  }
-  pop(): number {
-    const v = this.v[0]; this.n--;
-    if (this.n > 0) {
-      this.k[0] = this.k[this.n]; this.v[0] = this.v[this.n];
-      for (let i = 0; ;) {
-        const l = 2 * i + 1, r = l + 1; let m = i;
-        if (l < this.n && this.less(l, m)) m = l;
-        if (r < this.n && this.less(r, m)) m = r;
-        if (m === i) break; this.swap(i, m); i = m;
-      }
-    }
-    return v;
-  }
-}
-
-/** 河流功率律稳态（m=0.5、n=1）：优先洪泛自海定流向树 → 汇流面积 → 自出口沿树积分 h = h_接收 + U/(K√A)·L，迭代到流向树不变 */
-function steady(G: MacroGeom, land: Uint8Array, U: Float64Array, K: Float64Array, seed: number) {
-  const { cols, dx, dy } = G, { nbOff, nb } = G.mesh, n = land.length, h = new Float64Array(n), rcv = new Int32Array(n), prev = new Int32Array(n).fill(-1), rl = new Float64Array(n);
-  const order = new Int32Array(n), A = new Float64Array(n), seen = new Uint8Array(n), heap = new Heap(n);
-  for (let i = 0; i < n; i++) if (land[i]) h[i] = 1e-3 * cellRand(i, seed + 17);   // 初值抖动：首轮流向树不按格序排成平行线
-  let iters = 0;
-  for (; iters < 400; iters++) {
-    let dmax = 0, hmax = 0;
-    seen.fill(0); heap.n = 0;
-    let no = 0;
-    for (let i = 0; i < n; i++) if (!land[i]) { seen[i] = 1; rcv[i] = i; heap.push(0, i); }
-    while (heap.n) {
-      const i = heap.pop(); order[no++] = i;
-      for (let e = nbOff[i]; e < nbOff[i + 1]; e++) {
-        const j = nb[e]; if (seen[j]) continue;
-        seen[j] = 1; rcv[j] = i; rl[j] = G.len[e]; heap.push(h[j], j);
-      }
-    }
-    for (let i = 0; i < n; i++) A[i] = dx[(i / cols) | 0] * dy;
-    for (let o = no - 1; o >= 0; o--) { const i = order[o], j = rcv[i]; if (j !== i) A[j] += A[i]; }
-    for (let o = 0; o < no; o++) {
-      const i = order[o], j = rcv[i]; if (j === i) continue;
-      const v = h[j] + U[i] / (K[i] * Math.sqrt(A[i] > ACRIT_KM2 ? A[i] : ACRIT_KM2)) * rl[i];
-      const dv = v > h[i] ? v - h[i] : h[i] - v;
-      if (dv > dmax) dmax = dv; if (v > hmax) hmax = v;
-      h[i] = v;
-    }
-    if (dmax <= STEADY_TOL * hmax) break;   // 流向树在平地上的平手翻转不改高程，到相对容差即停
-    let same = true;
-    for (let i = 0; i < n; i++) if (rcv[i] !== prev[i]) { same = false; break; }
-    if (same) break;
-    prev.set(rcv);
-  }
-  return { h, rcv, A, rl, iters: iters + 1 };
-}
 
 /** 优先洪泛填洼（就地，沿三角网邻接，与稳态求解同一张图）：每个洼地填到溢出口高程（海格是源，高程 0） */
 function fillInPlace(mesh: Gen2Mesh, land: Uint8Array, f: Float64Array): void {
@@ -1053,10 +999,32 @@ const at3 = (F: ArrayLike<number>, I: Int32Array, W: Float64Array): number => F[
 
 /* —— 逐格派生（网格分辨率）—— */
 /** sea＝生成器定为海的细格（与深海连通的水；湖不算）：渲染端判水面时据此认海，被陆地围住的海盆也钉在 0 */
-export interface Gen2Fine { cells: string[][]; base: Float32Array; lf: Uint8Array; sea: Uint8Array; macro: Macro }
+export interface Gen2Fine { cells: string[][]; base: Float32Array; lf: Uint8Array; sea: Uint8Array; macro: Macro;
+  /** 细格所属的宏观湖号（−1 非湖）与溢出口格（岸线最低的陆格记它溢出的湖号，其余 −1） */
+  lakeOf: Int32Array; outlet: Int32Array;
+  /** 陆格地类判定里与高程无关的判据位（CF_*）：中尺度按自己的高程与起伏重判时照用 */
+  cf: Uint8Array }
 const LF_IDX: Record<Landform, number> = Object.fromEntries(LANDFORM_ORDER.map((l, i) => [l, i])) as Record<Landform, number>;
 const ECOS = ["none", "forest", "grassland", "marsh", "desert", "salt"] as const;
-const COMP: string[][] = LANDFORM_ORDER.map(lf => ECOS.map(e => e === "none" ? lf : lf + "/" + e));
+/** 复合类号 → 复合串：类号＝地貌序号 × 生态档数 + 生态序号（与 constants.compositeIndex 同序） */
+const COMP: string[] = LANDFORM_ORDER.flatMap(lf => ECOS.map(e => e === "none" ? lf : lf + "/" + e));
+const WATER_CLS = LF_IDX.water * ECOS.length, SALT_CLS = LF_IDX.plain * ECOS.length + 5;
+/** 地类判定里与高程无关的逐格判据（位，buildFine 定）：宏观与中尺度两次判定共用，高程与起伏各取各的 */
+const CF_COAST = 1, CF_SALT = 2, CF_MARSH = 4, CF_DESERT = 8, CF_GRASS = 16, CF_FOREST = 32;
+/** 林线（米）：森林只长在它以下 */
+const treeOf = (p: Gen2Params, lat: number): number => { const al = lat < 0 ? -lat : lat; return p.sphere ? Math.max(0, 4000 - 70 * Math.max(0, al - 20)) : 2400; };
+/** 陆格的复合类号：e＝地面高程、rl＝周围一个宏观格内的起伏（米）、f＝判据位 */
+function classOf(e: number, rl: number, f: number, tree: number): number {
+  let lf = e >= 3000 ? LF_IDX.alpine : e >= 1500 || (rl >= 1800 && e >= 900) ? LF_IDX.mountain : e >= 600 || rl >= 1000 ? LF_IDX.hill
+    : (f & CF_COAST) && e < 120 ? LF_IDX.coast : LF_IDX.plain;
+  let eco = 0;
+  if (f & CF_SALT) { lf = LF_IDX.plain; eco = 5; }   // 盐滩：干的内流盆底，平的
+  else if ((lf === LF_IDX.plain || lf === LF_IDX.coast) && e < 250 && (f & CF_MARSH)) eco = 3;
+  else if (f & CF_DESERT) eco = 4;
+  else if (f & CF_GRASS) eco = 2;
+  else if ((f & CF_FOREST) && e < tree) eco = 1;
+  return lf * ECOS.length + eco;
+}
 /** 陆架坡折（米）· 陆架均宽（km，按地段 0.4～2 倍）· 陆坡（tan 0.8°；3° 在战略格上只剩一格宽的崖） */
 const SHELF_BREAK_M = 140, SHELF_KM = 110, SLOPE_TAN = 0.014;
 /** 近岸最浅（抽象单位）：水格基底须不高于水面 + 它，否则渲染端把它画成陆地；与 core/elev 的 SHORE_E 同值 */
@@ -1370,7 +1338,7 @@ function buildFine(p: Gen2Params, M: Macro, g: FieldGeom): Gen2Fine {
   for (let i = 0; i < n; i++) { const w = water[i] || lakeOf[i] >= 0; dLand[i] = w ? Infinity : 0; dSea[i] = water[i] ? 0 : Infinity; }
   chamfer(dLand, cols, rows, kmx, kmy); chamfer(dSea, cols, rows, kmx, kmy);
   /* 第二趟：基底（米）与地类 */
-  const base = new Float32Array(n), lfIdx = new Uint8Array(n), cells: string[][] = [];
+  const base = new Float32Array(n), lfIdx = new Uint8Array(n), cf = new Uint8Array(n), cells: string[][] = [];
   /* 陆架＝淹在海面下的低缓陆地：按陆地度取深浅（陆架宽折成陆地度），宽窄跟着海岸带的缓急走，近岸岛连在同一片浅水上；
      离岸超过两倍陆架宽一律往深里走，大洋中间不冒出孤零零的浅滩 */
   const shelf = (s: number, w: number, dl: number): number => {
@@ -1379,36 +1347,30 @@ function buildFine(p: Gen2Params, M: Macro, g: FieldGeom): Gen2Fine {
   };
   for (let r = 0; r < rows; r++) {
     const row: string[] = [];
-    const lat = bb.latMin + (r + 0.5) * step, al = lat < 0 ? -lat : lat;
-    const tree = p.sphere ? Math.max(0, 4000 - 70 * Math.max(0, al - 20)) : 2400;
+    const lat = bb.latMin + (r + 0.5) * step, al = lat < 0 ? -lat : lat, tree = treeOf(p, lat);
     for (let c = 0; c < cols; c++) {
       const i = r * cols + c;
-      let e: number, lf: Landform, eco = 0;
-      if (water[i]) { e = shelf(S[i], SW[i], dLand[i]); lf = "water"; }
-      else if (lakeOf[i] >= 0) { e = Math.min(E[i], M.lakeS[lakeOf[i]] + SHORE_M); lf = "water"; }
+      let e: number, k: number;
+      if (water[i]) { e = shelf(S[i], SW[i], dLand[i]); k = WATER_CLS; }
+      else if (lakeOf[i] >= 0) { e = Math.min(E[i], M.lakeS[lakeOf[i]] + SHORE_M); k = WATER_CLS; }
       else {
         e = Math.max(1, E[i]);
-        for (let k = 0; k < 4; k++) {   // 湖岸不低于湖面：水面取岸线最低陆格（core/elev），湖面才＝溢出口
-          const nr = r + D4R[k], nc = c + D4C[k]; if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;
+        for (let d = 0; d < 4; d++) {   // 湖岸不低于湖面：水面取岸线最低陆格（core/elev），湖面才＝溢出口
+          const nr = r + D4R[d], nc = c + D4C[d]; if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;
           const id = lakeOf[nr * cols + nc]; if (id >= 0 && e < M.lakeS[id]) e = M.lakeS[id];
         }
         if (outlet[i] >= 0) e = M.lakeS[outlet[i]];
-        const rl = RL[i];
-        lf = e >= 3000 ? "alpine" : e >= 1500 || (rl >= 1800 && e >= 900) ? "mountain" : e >= 600 || rl >= 1000 ? "hill"
-          : dSea[i] <= 15 && e < 120 ? "coast" : "plain";
         const mo = MO[i];
-        if (SA[i] >= 0.5) { lf = "plain"; eco = 5; }   // 盐滩：干的内流盆底，平的
-        else if ((lf === "plain" || lf === "coast") && e < 250 && mo > 0.42 && WT[i] > WET_MARSH) eco = 3;
-        else if (mo < 0.14 && (!p.sphere || al < 55)) eco = 4;
-        else if (mo < 0.26) eco = 2;
-        else if (mo > 0.48 && e < tree) eco = 1;
+        cf[i] = (dSea[i] <= 15 ? CF_COAST : 0) | (SA[i] >= 0.5 ? CF_SALT : 0) | (mo > 0.42 && WT[i] > WET_MARSH ? CF_MARSH : 0)
+          | (mo < 0.14 && (!p.sphere || al < 55) ? CF_DESERT : 0) | (mo < 0.26 ? CF_GRASS : 0) | (mo > 0.48 ? CF_FOREST : 0);
+        k = classOf(e, RL[i], cf[i], tree);
       }
-      base[i] = e / p.unitM; lfIdx[i] = LF_IDX[lf];
-      row.push(COMP[LF_IDX[lf]][eco]);
+      base[i] = e / p.unitM; lfIdx[i] = (k / ECOS.length) | 0;
+      row.push(COMP[k]);
     }
     cells.push(row);
   }
-  return { cells, base, lf: lfIdx, sea: water, macro: M };
+  return { cells, base, lf: lfIdx, sea: water, macro: M, lakeOf, outlet, cf };
 }
 const WET_MARSH = 5000;   // 水量（m³/s）÷ 坡度（米/km）
 
@@ -1432,4 +1394,502 @@ function chamfer(d: Float64Array, cols: number, rows: number, kx: Float64Array, 
       d[i] = v;
     }
   }
+}
+
+/* —— 中尺度稳态（网格分辨率）：宏观场插到细格、在细格三角网上再解一层河流功率律，补出主脊、支谷与山麓的层次 ——
+   湖与河仍由宏观定；这里给连续基底、起伏包络，并按自己的基底重判陆格地类。 */
+/** 稳态的高程标度（米 / 抬升单位）与河道起始面积（km²） */
+const MESO_KAPPA_M = 650, MESO_ACRIT_KM2 = 100;
+/** 源头修正系数（steady 的 SteadyInput.head）：格面积大过河道起始面积时补上格内没解析的河源，同一张图换格边山高才相当 */
+const MESO_HEAD = 0.75;
+/** 宏观场插到细格后的磨平半径（宏观格边的倍数）：三角形边上的折痕与初值的格边折痕会被稳态解放大成直线 */
+const MESO_SMOOTH = 0.5;
+/** 平原渐变（宏观抬升）：低于 U0 照宏观面、高于 U1 全取中尺度解；低于宏观面的部分按权重三次方渐入，山脚不出环形浅槽 */
+const MESO_PLAIN_U0 = 0.12, MESO_PLAIN_U1 = 0.45;
+/** 起伏包络：宏观抬升从 U0 到 U1 渐满，汇流面积（km²）从 A0 到 A1 渐退（按四次方根插）——坡面上有起伏纹理，河谷与平原上没有 */
+const MESO_ENV_U0 = 0.15, MESO_ENV_U1 = 0.8, MESO_ENV_A0 = 500, MESO_ENV_A1 = 20000;
+/** 陆格抬升地板：近岸陆格会插到宏观海节点的抬升（≤ 0），负增量让节点比下游还低、流向每轮来回翻、永不收敛；取在宏观陆地的低抬升底（0.06–0.11）之下 */
+const MESO_U_MIN = 0.05;
+/** 稳态轮数上限：到流向树不变即停，撞上限也确定 */
+const MESO_MAXIT = 300;
+/** 收尾的格子尺度平滑核（5×5 二项式，约 1 格）：纯河流功率律在节点尺度带划痕 */
+const MESO_KERN = [1, 4, 6, 4, 1];
+/** 平滑按图幅渐入（√(宽×高)，km）：小于 KM0 取地板 MIN、大于 KM1 满核——大图要概括；小图多留些多峰结构，但节点尺度的折角仍要磨掉 */
+const MESO_GEN_KM0 = 1000, MESO_GEN_KM1 = 3000, MESO_GEN_MIN = 0.3;
+const mesoGenOf = (p: Gen2Params): number => { const [w, h] = extentKm(p); return MESO_GEN_MIN + (1 - MESO_GEN_MIN) * sstep((Math.sqrt(w * h) - MESO_GEN_KM0) / (MESO_GEN_KM1 - MESO_GEN_KM0)); };
+/** 这张图的收尾平滑强度（0..1，按图幅渐入，见 MESO_GEN_*） */
+export const mesoSmoothOf = (meta: Meta): number => mesoGenOf(gen2Params(meta));
+/** 陆格 i 的平滑模板：(1 − a)·自身 + a·（5×5 内的陆格按核权重归一，出口不参与）；a 为 0 就是自身、权 1。
+    收尾与画抬升量峰同用这一份，量到的就是收尾的值 */
+function landStencil(i: number, a: number, out: Uint8Array, cols: number, rows: number, at: number[], w: number[]): void {
+  if (!(a > 0)) { at.push(i); w.push(1); return; }
+  const r = (i / cols) | 0, c = i - r * cols, a0 = at.length;
+  let ws = 0;
+  for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+    const rr = r + dr, cc = c + dc; if (rr < 0 || cc < 0 || rr >= rows || cc >= cols) continue;
+    const j = rr * cols + cc; if (out[j]) continue;
+    const k = MESO_KERN[dr + 2] * MESO_KERN[dc + 2]; at.push(j); w.push(k); ws += k;
+  }
+  for (let t = a0; t < w.length; t++) w[t] = (at[t] === i ? 1 - a : 0) + a * w[t] / ws;
+}
+
+/** 中尺度算法代号：中尺度的数学或常数变了就加一，缓存键随之换代（旧解不许还魂） */
+export const MESO_VER = 1;
+/** 中尺度稳态的解：高程（米）与流向。缓存这两样就够——汇流面积由流向重积（treeArea），与现解逐位同 */
+export interface Gen2Sg { h: Float64Array; rcv: Int32Array }
+/** 中尺度的产出（网格分辨率）：base＝连续基底（抽象单位；水格照 gen2Fine.base）· env＝起伏包络 0..1（水格 0）·
+    cls＝复合类号（地貌序号 × 生态档数 + 生态序号，同 constants.compositeIndex）：陆格按 base 重判，水格同 gen2Fine ·
+    basin＝画的盆地（位 1＝下沉的支撑格，陆地可低于海面；位 2＝盐滩，侵蚀不填它），没画盆地为 null · water＝盆里积的水的读数表 */
+export interface Gen2MesoField { base: Float32Array; env: Float32Array; cls: Uint8Array; basin: Uint8Array | null; water: BasinWaters | null }
+export interface Gen2Meso extends Gen2MesoField { sg: Gen2Sg; iters: number; converged: boolean }
+/** 中尺度的内容键：生成参数 + 网格几何 + 算法代号——同键＝同解（gen2Meso 确定性） */
+export function mesoKey(meta: Meta, g: FieldGeom): string {
+  return "m" + MESO_VER + ":" + JSON.stringify([gen2Params(meta), g.bb, g.step, g.cols, g.rows]);
+}
+
+/** 中尺度求解的准备（网格分辨率）：插值并磨平的宏观场、出口与水面、稳态输入与初值。同一 meta 与几何确定 */
+interface MesoPrep { p: Gen2Params; g: FieldGeom; M: Macro; F: Gen2Fine; fU: Float64Array; fP: Float64Array; fB: Float64Array; fM: Float64Array; inp: SteadyInput; h0: Float64Array; area: Float64Array; gen: number }
+function mesoPrep(meta: Meta, g: FieldGeom): MesoPrep {
+  const p = gen2Params(meta), M = gen2Macro(meta), F = gen2Fine(meta, g);
+  const { bb, step, cols, rows } = g, n = cols * rows, sd = p.seed * 31;
+  const fU = new Float64Array(n), fK = new Float64Array(n), fP = new Float64Array(n), fB = new Float64Array(n), fH = new Float64Array(n), fM = new Float64Array(n);
+  scanMesh(M, rows, cols, r => (bb.latMin + (r + 0.5) * step - M.lat0) / M.dlat - 0.5, c => (bb.lonMin + (c + 0.5) * step - M.lon0) / M.dlon - 0.5, (c, r, I, W) => {
+    const i = r * cols + c;
+    fU[i] = at3(M.U, I, W); fK[i] = at3(M.K, I, W); fP[i] = at3(M.plat, I, W); fB[i] = at3(M.bowl, I, W); fH[i] = at3(M.hRel, I, W); fM[i] = at3(M.moist, I, W);
+  });
+  const rb = Math.round(MESO_SMOOTH * M.dy / (step * p.kmd));
+  for (const f of [fU, fK, fP, fB, fH, fM]) boxBlur3(f, cols, rows, rb);
+  /* 节点面积（名义格面积）；求解时才建细格三角网（节点位置取图上点的弦长） */
+  const area = new Float64Array(n), kmy = step * p.kmd;
+  for (let r = 0; r < rows; r++) {
+    const a = kmy * (p.sphere ? Math.max(0.05, cosD(bb.latMin + (r + 0.5) * step)) : 1) * kmy;
+    for (let c = 0; c < cols; c++) area[r * cols + c] = a;
+  }
+  /* 出口＝生成器的水：海 0、湖＝湖面 */
+  const out = new Uint8Array(n), hOut = new Float64Array(n), U = new Float64Array(n), K = new Float64Array(n), h0 = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const lk = F.lakeOf[i];
+    if (F.sea[i] || lk >= 0) { out[i] = 1; hOut[i] = lk >= 0 ? M.lakeS[lk] : 0; }
+    U[i] = MESO_KAPPA_M * (fU[i] > MESO_U_MIN ? fU[i] : MESO_U_MIN); K[i] = fK[i] * (0.8 + 0.4 * cellRand(i, sd + 913));
+    h0[i] = out[i] ? hOut[i] : MESO_KAPPA_M * fH[i] + 1e-3 * cellRand(i, sd + 17);
+  }
+  return { p, g, M, F, fU, fP, fB, fM, inp: { U, K, acrit: MESO_ACRIT_KM2, out, hOut, head: MESO_HEAD }, h0, area, gen: mesoGenOf(p) };
+}
+/** 细格三角网上的求解图：节点位置取图上点、边长取三维弦长 */
+function mesoGraph(pr: MesoPrep): SteadyGraph {
+  const { p, g: { bb, step, cols, rows }, area } = pr, n = cols * rows;
+  const { nbOff, nb, X, Y } = buildMesh(cols, rows, p.seed * 31 + 77);
+  const PX = new Float64Array(n), PY = new Float64Array(n), PZ = new Float64Array(n), len = new Float64Array(nb.length);
+  for (let i = 0; i < n; i++) { const P = pointOf(p, bb.lonMin + (X[i] + 0.5) * step, bb.latMin + (Y[i] + 0.5) * step); PX[i] = P.x; PY[i] = P.y; PZ[i] = P.z; }
+  for (let i = 0; i < n; i++) for (let e = nbOff[i]; e < nbOff[i + 1]; e++) {
+    const j = nb[e], x = PX[i] - PX[j], y = PY[i] - PY[j], z = PZ[i] - PZ[j]; len[e] = Math.sqrt(x * x + y * y + z * z);
+  }
+  return { nbOff, nb, len, area };
+}
+/** 画抬升对收尾的两处改动：du＝叠加的抬升（宏观单位，即求解增量 ÷ MESO_KAPPA_M）· kw＝软边权重（涂抹区内 1）：
+    峰顶软上限按它让开、平原渐变按它取满——画的峰高要落在目标上 */
+interface MesoUp { du: Float64Array; kw: Float64Array; bas?: BasinRegion[]; G?: SteadyGraph }
+/** 一行（或一列）上半宽 k 的滑窗最大值，就地写回（出界的部分不算）：van Herk–Gil-Werman，sgn −1 即最小值。x / g / h 是长 ≥ len + 2k 的暂存 */
+function winMax(f: Float64Array, off: number, stride: number, len: number, k: number, sgn: number, x: Float64Array, g: Float64Array, h: Float64Array): void {
+  const w = 2 * k + 1, m = len + 2 * k;
+  for (let t = 0; t < m; t++) x[t] = t < k || t >= len + k ? -Infinity : sgn * f[off + (t - k) * stride];
+  for (let t = 0; t < m; t++) g[t] = t % w === 0 || x[t] > g[t - 1] ? x[t] : g[t - 1];
+  for (let t = m - 1; t >= 0; t--) h[t] = t === m - 1 || (t + 1) % w === 0 || x[t] > h[t + 1] ? x[t] : h[t + 1];
+  for (let t = 0; t < len; t++) { const a = h[t], b = g[t + 2 * k]; f[off + t * stride] = sgn * (a > b ? a : b); }
+}
+/** 方窗（半宽 k 格）内的最大值减最小值 */
+function windowRange(s: Float64Array, cols: number, rows: number, k: number): Float64Array {
+  const L = Math.max(cols, rows) + 2 * k, x = new Float64Array(L), g = new Float64Array(L), h = new Float64Array(L);
+  const hi = Float64Array.from(s), lo = Float64Array.from(s);
+  for (const [f, sgn] of [[hi, 1], [lo, -1]] as const) {
+    for (let r = 0; r < rows; r++) winMax(f, r * cols, 1, cols, k, sgn, x, g, h);
+    for (let c = 0; c < cols; c++) winMax(f, c, cols, rows, k, sgn, x, g, h);
+  }
+  for (let i = 0; i < hi.length; i++) hi[i] -= lo[i];
+  return hi;
+}
+
+/** 收尾：格子尺度平滑（landStencil），再同宏观加高原、峰顶软上限、扣盆地，抬升低处渐变回宏观面，守住湖面＝溢出口，最后按基底重判陆格地类 */
+function mesoFinish(pr: MesoPrep, h: Float64Array, A: Float64Array, up: MesoUp | null): Gen2MesoField {
+  const { p, g: { bb, step, cols, rows }, M, F, fU, fP, fB, inp: { out, hOut } } = pr, n = cols * rows, um = p.unitM;
+  const base = new Float32Array(n), env = new Float32Array(n);
+  const qa0 = Math.sqrt(Math.sqrt(MESO_ENV_A0)), qa1 = Math.sqrt(Math.sqrt(MESO_ENV_A1));
+  const at: number[] = [], wt: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (out[i]) { base[i] = F.base[i]; continue; }
+    at.length = 0; wt.length = 0; landStencil(i, pr.gen, out, cols, rows, at, wt);
+    let hs = 0; for (let t = 0; t < at.length; t++) hs += wt[t] * h[at[t]];
+    let v = hs + fP[i];
+    if (v > PEAK_KNEE_M) {
+      const k = PEAK_KNEE_M + (v - PEAK_KNEE_M) / (1 + (v - PEAK_KNEE_M) / PEAK_SOFT_M);
+      v = !up || !(up.kw[i] > 0) ? k : up.kw[i] >= 1 ? v : k + up.kw[i] * (v - k);
+    }
+    v -= Math.min(fB[i], BOWL_MAX * v);
+    const u = up ? fU[i] + up.du[i] : fU[i];
+    let w = sstep((u - MESO_PLAIN_U0) / (MESO_PLAIN_U1 - MESO_PLAIN_U0));
+    if (up && up.kw[i] > w) w = up.kw[i];
+    const e = (v > 1 ? v : 1) / um, b0 = F.base[i], d = e - b0;
+    base[i] = b0 + (d >= 0 ? w : w * w * w) * d;
+    env[i] = sstep((u - MESO_ENV_U0) / (MESO_ENV_U1 - MESO_ENV_U0)) * (1 - clamp01((Math.sqrt(Math.sqrt(A[i])) - qa0) / (qa1 - qa0)));
+  }
+  const wf = up && up.bas && up.bas.length ? sinkBasins(pr, base, env, up.bas) : null;
+  /* 湖岸不低于湖面、溢出口恰为湖面（同 buildFine）：渲染端的水面取岸线最低陆格 */
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c; if (out[i]) continue;
+    for (let k = 0; k < 4; k++) {
+      const nr = r + D4R[k], nc = c + D4C[k]; if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;
+      const id = F.lakeOf[nr * cols + nc]; if (id >= 0 && base[i] < M.lakeS[id] / um) base[i] = M.lakeS[id] / um;
+    }
+    if (F.outlet[i] >= 0) base[i] = M.lakeS[F.outlet[i]] / um;
+  }
+  /* 地类按这份基底重判（判法同 buildFine）：起伏取半宽一个宏观格的方窗、水格取水面——与宏观起伏同一尺度，门槛才照用 */
+  const s = new Float64Array(n);
+  const wet = wf && up!.G ? basinWater(pr, up!.G, base, env, wf) : null;   // 画的盆里积的水：在湖岸钳制之后、地类重判之前
+  for (let i = 0; i < n; i++) s[i] = out[i] ? hOut[i] : wet && wet.lake[i] >= 0 ? wet.lakeS[wet.lake[i]] : base[i] * um;
+  const rl = windowRange(s, cols, rows, Math.max(1, Math.round(M.dy / (step * p.kmd)))), cls = new Uint8Array(n);
+  for (let r = 0; r < rows; r++) {
+    const tree = treeOf(p, bb.latMin + (r + 0.5) * step);
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c;
+      cls[i] = out[i] || (wet && wet.lake[i] >= 0) ? WATER_CLS : wet && wet.salt[i] ? SALT_CLS : classOf(s[i], rl[i], F.cf[i], tree);
+    }
+  }
+  let basin: Uint8Array | null = null;   // 位 1＝下沉的支撑格、位 2＝盐滩（内流盆的终点，侵蚀不填它）
+  if (wf) { basin = new Uint8Array(n); for (let i = 0; i < n; i++) basin[i] = (wf[i] > 0 ? 1 : 0) | (wet && wet.salt[i] ? 2 : 0); }
+  return { base, env, cls, basin, water: wet ? wet.info : null };
+}
+
+/**
+ * 中尺度基底：宏观 U / K / 稳态解 / 高原 / 盆地插到网格（g 必须是这张图的地形网格几何）、按半个宏观格磨平，
+ * 以生成器的水（海 0、湖＝湖面）为出口解稳态，加高原、扣盆地，抬升低处渐变回宏观面，最后守住湖面＝溢出口。
+ * @param sg 缓存的稳态解（同一 meta 生成参数、同一几何上本函数算出的）：给了就不再求解
+ */
+export function gen2Meso(meta: Meta, g: FieldGeom, sg?: Gen2Sg): Gen2Meso {
+  const pr = mesoPrep(meta, g);
+  let iters = 0, converged = true;
+  if (!sg) {
+    const S = steady(mesoGraph(pr), pr.inp, pr.h0, { maxIt: MESO_MAXIT, tol: 0, canon: true });
+    sg = { h: S.h, rcv: S.rcv }; iters = S.iters; converged = S.converged;
+  }
+  return { ...mesoFinish(pr, sg.h, treeArea(sg.rcv, pr.area), null), sg, iters, converged };
+}
+
+/* —— 画抬升（高程笔在 v2 战略图上）：涂抹区按连通区各自标定，区内最高点到区内最大目标峰高，山体与谷网由中尺度稳态长出 —— */
+/** 逐格目标：idx / peakM＝峰高（米，> 0），fidx / floorM＝盆底（米，可为负）；格号升序、同格一项，一格不同时出现在两边 */
+export interface UpliftCells { idx: Int32Array; peakM: Float64Array; fidx?: Int32Array; floorM?: Float64Array }
+/** 软边（km）：取它与 UPLIFT_SOFT_CELLS 个格边中较大者——消的是格边台阶，格比它粗时不到一格就消不掉 */
+const UPLIFT_SOFT_KM = 15, UPLIFT_SOFT_CELLS = 1.5;
+const softOf = (p: Gen2Params, step: number): number => Math.max(UPLIFT_SOFT_KM, UPLIFT_SOFT_CELLS * step * p.kmd);
+/** 8 邻连通分区：按格号起种，各区成员升序 */
+function components8(has: (i: number) => boolean, cols: number, rows: number): number[][] {
+  const n = cols * rows, lab = new Int32Array(n).fill(-1), areas: number[][] = [], st: number[] = [];
+  for (let i0 = 0; i0 < n; i0++) {
+    if (!has(i0) || lab[i0] >= 0) continue;
+    const k = areas.length, mem: number[] = [];
+    lab[i0] = k; st.push(i0);
+    while (st.length) {
+      const i = st.pop()!, r = (i / cols) | 0, c = i - r * cols; mem.push(i);
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const rr = r + dr, cc = c + dc; if (rr < 0 || cc < 0 || rr >= rows || cc >= cols) continue;
+        const j = rr * cols + cc; if (has(j) && lab[j] < 0) { lab[j] = k; st.push(j); }
+      }
+    }
+    areas.push(mem.sort((a, b) => a - b));
+  }
+  return areas;
+}
+/** 画抬升的求解状态：准备、求解图与 Sg 的完整解（流向、汇流面积、到下游的边长）——Worker 按 mesoKey 留着，每笔只跑标定链 */
+export interface MesoState { pr: MesoPrep; G: SteadyGraph; base: SteadyResult }
+/**
+ * @param sg 同一 meta 生成参数与几何上 gen2Meso 的解（现算或缓存，逐位同）：影响带重解的起点，换一份就换一族解
+ */
+export function mesoState(meta: Meta, g: FieldGeom, sg: Gen2Sg): MesoState {
+  const pr = mesoPrep(meta, g), G = mesoGraph(pr), n = g.cols * g.rows, { rcv } = sg, rl = new Float64Array(n);
+  for (let j = 0; j < n; j++) {   // 到下游的边长：同 steady 的洪泛，取受水者邻接表里第一条指向它的边
+    const i = rcv[j]; if (i === j) continue;
+    for (let e = G.nbOff[i]; e < G.nbOff[i + 1]; e++) if (G.nb[e] === j) { rl[j] = G.len[e]; break; }
+  }
+  return { pr, G, base: { h: sg.h, rcv, A: treeArea(rcv, pr.area), rl, iters: 0, converged: true } };
+}
+/** 画抬升的分区：各区的权重支撑与目标（steady 的 UpliftRegion）· kw 软边权重 · src 权重支撑的并集 · peakAdd 量峰时的反解改正 · soft 软边（km） */
+export interface UpliftSetup { regions: UpliftRegion[]; kw: Float64Array; src: Uint8Array; peakAdd: Float64Array; soft: number }
+/**
+ * 涂到的陆格按 8 邻连通分区，每区的目标＝区内最大峰高；区内权重＝各格目标比例，向外沿三角网按软边渐退（水格不抬）。
+ * 量峰的点是区内涂到的格，量的是收尾之后的高程：涂抹格的峰顶软上限让开，按格反解出稳态解要到的高度
+ */
+export function upliftRegions(st: MesoState, cells: UpliftCells): UpliftSetup {
+  const { pr, G } = st, { p, g: { step, cols, rows }, fP, fB, inp } = pr, n = cols * rows, { out } = inp;
+  const tgt = new Float64Array(n);
+  for (let k = 0; k < cells.idx.length; k++) { const i = cells.idx[k]; if (i >= 0 && i < n && !out[i] && cells.peakM[k] > tgt[i]) tgt[i] = cells.peakM[k]; }
+  const areas = components8(i => tgt[i] > 0, cols, rows);   // 各区的涂抹格
+  /* 软边：沿三角网到本区涂抹格的路程（多源 Dijkstra，带最近涂抹格的目标比例），只走到 soft 为止 */
+  const soft = softOf(p, step);
+  const d = new Float64Array(n).fill(Infinity), pay = new Float64Array(n), kw = new Float64Array(n), src = new Uint8Array(n), peakAdd = new Float64Array(n);
+  const regions: UpliftRegion[] = [];
+  for (const mem of areas) {
+    let T = 0;
+    for (const i of mem) if (tgt[i] > T) T = tgt[i];
+    const heap = new Heap(64), seen: number[] = [];
+    for (const i of mem) { d[i] = 0; pay[i] = tgt[i] / T; heap.push(0, i); seen.push(i); }
+    while (heap.n) {
+      const i = heap.pop(), di = d[i];
+      for (let e = G.nbOff[i]; e < G.nbOff[i + 1]; e++) {
+        const j = G.nb[e], v = di + G.len[e];
+        if (v < soft && v < d[j]) { if (d[j] === Infinity) seen.push(j); d[j] = v; pay[j] = pay[i]; heap.push(v, j); }
+      }
+    }
+    seen.sort((a, b) => a - b);
+    const idx: number[] = [], w: number[] = [];
+    for (const i of seen) {
+      const f = sstep(1 - d[i] / soft);
+      if (!out[i] && f > 0) { idx.push(i); w.push(f * pay[i]); src[i] = 1; if (f > kw[i]) kw[i] = f; }
+      d[i] = Infinity;
+    }
+    /* 量的是收尾之后的高程：平滑走同一份模板；涂抹格的峰顶软上限让开（kw＝1），只剩加高原、扣盆地——按格反解出平滑值要到的高度 */
+    for (const i of mem) {
+      const v1 = T + fB[i], need = fB[i] <= BOWL_MAX * v1 ? v1 : T / (1 - BOWL_MAX);
+      peakAdd[i] = T - (need - fP[i]);
+    }
+    const off = [0], sat: number[] = [], sw: number[] = [];
+    for (const i of mem) { landStencil(i, pr.gen, out, cols, rows, sat, sw); off.push(sat.length); }
+    regions.push({ idx: Int32Array.from(idx), w: Float64Array.from(w), peak: Int32Array.from(mem), target: T,
+      stencil: { off: Int32Array.from(off), at: Int32Array.from(sat), w: Float64Array.from(sw) } });
+  }
+  return { regions, kw, src, peakAdd, soft };
+}
+/* —— 画盆地：涂抹区叠一个光滑下沉场、盆心起伏随泥沙填平（向光滑面插值会抹掉盆缘的谷与脊，岸线成人工湖）；不进稳态（陆上负抬升让流向来回翻）—— */
+/** 一区画盆地：支撑格（升序）与碗形权重、量底的涂抹格、目标盆底（米） */
+interface BasinRegion { idx: Int32Array; w: Float64Array; floor: Int32Array; target: number }
+/**
+ * 涂到的陆格（目标盆底）按 8 邻连通分区，目标＝区内最小盆底。权重是碗形：区内到区外的路程最远处为 1，
+ * 向区界、再向外过软边平滑降到 0（平底会让淹水次序全是平手）；路程沿三角网量，水格不下沉
+ */
+function basinRegions(st: MesoState, cells: UpliftCells): BasinRegion[] {
+  const fidx = cells.fidx, fm = cells.floorM;
+  if (!fidx || !fm || !fidx.length) return [];
+  const { pr, G } = st, { p, g: { step, cols, rows }, inp: { out } } = pr, n = cols * rows;
+  const tgt = new Float64Array(n).fill(NaN);
+  for (let k = 0; k < fidx.length; k++) { const i = fidx[k]; if (i >= 0 && i < n && !out[i] && !(tgt[i] <= fm[k])) tgt[i] = fm[k]; }
+  const soft = softOf(p, step), din = new Float64Array(n).fill(Infinity), dout = new Float64Array(n).fill(Infinity), inR = new Uint8Array(n);
+  const regs: BasinRegion[] = [];
+  for (const mem of components8(i => tgt[i] === tgt[i], cols, rows)) {
+    let T = Infinity;
+    for (const i of mem) { inR[i] = 1; if (tgt[i] < T) T = tgt[i]; }
+    /* 区内：到最近区外节点的路程；区外：到最近涂抹格的路程（到 soft 为止） */
+    const hi = new Heap(64), ho = new Heap(64), seen: number[] = [];
+    for (const i of mem) {
+      dout[i] = 0; ho.push(0, i);
+      for (let e = G.nbOff[i]; e < G.nbOff[i + 1]; e++) if (!inR[G.nb[e]] && G.len[e] < din[i]) din[i] = G.len[e];
+      if (din[i] < Infinity) hi.push(din[i], i);
+    }
+    while (hi.n) {
+      const i = hi.pop(), di = din[i];
+      for (let e = G.nbOff[i]; e < G.nbOff[i + 1]; e++) { const j = G.nb[e], v = di + G.len[e]; if (inR[j] && v < din[j]) { din[j] = v; hi.push(v, j); } }
+    }
+    while (ho.n) {
+      const i = ho.pop(), di = dout[i];
+      for (let e = G.nbOff[i]; e < G.nbOff[i + 1]; e++) {
+        const j = G.nb[e], v = di + G.len[e];
+        if (!inR[j] && v < soft && v < dout[j]) { if (dout[j] === Infinity) seen.push(j); dout[j] = v; ho.push(v, j); }
+      }
+    }
+    let D = 0;
+    for (const i of mem) if (din[i] < Infinity && din[i] > D) D = din[i];
+    const all = mem.concat(seen).sort((a, b) => a - b), idx: number[] = [], w: number[] = [];
+    for (const i of all) {
+      const f = sstep(inR[i] ? (soft + (din[i] < Infinity ? din[i] : D)) / (soft + D) : (soft - dout[i]) / (soft + D));
+      if (!out[i] && f > 0) { idx.push(i); w.push(f); }
+      din[i] = Infinity; dout[i] = Infinity;
+    }
+    for (const i of mem) inR[i] = 0;
+    regs.push({ idx: Int32Array.from(idx), w: Float64Array.from(w), floor: Int32Array.from(mem), target: T });
+  }
+  return regs;
+}
+/**
+ * 收尾里的下沉（米）：e′ ＝ e − w·(e − 光滑面) − w·Dn，光滑面按软边半径三趟箱式磨平；Dn 闭式取到区内涂抹格的最低点恰为目标，
+ * 已在目标以下的区不沉。重叠的区下沉与填平各取最大。起伏包络乘 1 − w。
+ * @returns 逐格下沉权重（各区取最大），一区都没沉＝null
+ */
+function sinkBasins(pr: MesoPrep, base: Float32Array, env: Float32Array, regs: BasinRegion[]): Float64Array | null {
+  const { p, g: { step, cols, rows }, inp: { out, hOut } } = pr, n = cols * rows, um = p.unitM;
+  const e = new Float64Array(n);
+  for (let i = 0; i < n; i++) e[i] = out[i] ? hOut[i] : base[i] * um;
+  const hS = Float64Array.from(e);
+  boxBlur3(hS, cols, rows, Math.max(1, Math.round(softOf(p, step) / (step * p.kmd))));
+  const sub = new Float64Array(n), wf = new Float64Array(n), wv = new Float64Array(n);
+  let any = false;
+  for (const R of regs) {
+    for (let t = 0; t < R.idx.length; t++) wv[R.idx[t]] = R.w[t];
+    let Dn = Infinity;
+    for (const i of R.floor) { const w = wv[i]; if (w > 0) { const d = (e[i] - w * (e[i] - hS[i]) - R.target) / w; if (d < Dn) Dn = d; } }
+    for (let t = 0; t < R.idx.length; t++) wv[R.idx[t]] = 0;
+    if (!(Dn > 0 && Dn < Infinity)) continue;
+    any = true;
+    for (let t = 0; t < R.idx.length; t++) { const i = R.idx[t], w = R.w[t]; if (w * Dn > sub[i]) sub[i] = w * Dn; if (w > wf[i]) wf[i] = w; }
+  }
+  if (!any) return null;
+  for (let i = 0; i < n; i++) if (wf[i] > 0) { base[i] = (e[i] - wf[i] * (e[i] - hS[i]) - sub[i]) / um; env[i] *= 1 - wf[i]; }
+  return wf;
+}
+
+/** 画的盆地里积的水：逐格所属的洼地号（−1 不在任何一个里）与各洼地的结局——kind 0 外流湖 / 1 咸湖 / 2 盐滩 / 3 被海灌进，
+    surfM 水面（盐滩取盆底最低处），areaKm2 水面或盐滩面积 */
+export interface BasinWaters { at: Int16Array; list: { kind: 0 | 1 | 2 | 3; surfM: number; areaKm2: number }[] }
+interface BasinWet { lake: Int32Array; lakeS: number[]; salt: Uint8Array; info: BasinWaters | null }
+/** 内流湖至少多大（km²）：平衡面积不到它的内流盆是盐滩 */
+const BASIN_LAKE_KM2 = 300;
+/**
+ * 画盆地的水量平衡（同宏观那套搬到中尺度三角网）：自海与生成器的湖填洼，只认含下沉权重 > 0.5 的格的洼地；
+ * 入流取填平地表上的汇流水量，平衡湖面积＝入流 ÷ 湖面净蒸发。够大或溢出口离海面不到 ENDO_RIM_M＝外流湖（湖面＝溢出口），
+ * 否则自盆底淹起：够平衡面积成咸湖（干处外圈一圈盐滩），不够成盐滩。画的盆不填平。
+ * 写回 base 的三条渲染约束同 buildFine：湖床 ≤ 湖面 + SHORE_U、岸格 ≥ 湖面且最低那格恰为湖面、新湖与别的水和图幅边隔一格；
+ * 溢出口贴着海面又挨着海的盆是被海灌进，就与海连成一片
+ */
+function basinWater(pr: MesoPrep, G: SteadyGraph, base: Float32Array, env: Float32Array, wf: Float64Array): BasinWet | null {
+  const { p, g: { bb, step, cols, rows }, F, fM, area, inp: { out, hOut } } = pr, n = cols * rows, um = p.unitM, { nbOff, nb, len } = G;
+  const h = new Float64Array(n);
+  for (let i = 0; i < n; i++) h[i] = out[i] ? hOut[i] : base[i] * um;
+  /* 填洼：出口＝生成器的水（海 0、湖＝湖面），沿三角网 */
+  const f = Float64Array.from(h), seen = new Uint8Array(n), heap = new Heap(64);
+  for (let i = 0; i < n; i++) if (out[i]) { seen[i] = 1; heap.push(f[i], i); }
+  while (heap.n) {
+    const i = heap.pop(), fi = f[i];
+    for (let e = nbOff[i]; e < nbOff[i + 1]; e++) { const j = nb[e]; if (seen[j]) continue; seen[j] = 1; if (f[j] < fi) f[j] = fi; heap.push(f[j], j); }
+  }
+  /* 画过的洼地：f − h > 0.5 m 连通、含下沉权重 > 0.5 的格 */
+  const cid = new Int32Array(n).fill(-1), comps: number[][] = [], st: number[] = [];
+  for (let i0 = 0; i0 < n; i0++) {
+    if (out[i0] || cid[i0] !== -1 || !(f[i0] - h[i0] > 0.5)) continue;
+    const comp: number[] = [], k = comps.length; let mine = false;
+    cid[i0] = k; st.push(i0);
+    while (st.length) {
+      const i = st.pop()!; comp.push(i); if (wf[i] > 0.5) mine = true;
+      for (let e = nbOff[i]; e < nbOff[i + 1]; e++) { const j = nb[e]; if (!out[j] && cid[j] === -1 && f[j] - h[j] > 0.5) { cid[j] = k; st.push(j); } }
+    }
+    comps.push(mine ? comp : []);
+  }
+  if (!comps.some(c => c.length)) return null;
+  /* 年径流（同宏观 runoffOf）与填平地表上的汇流水量（同宏观 route，出口＝生成器的水） */
+  const P = new Float64Array(n), E = new Float64Array(n), R = new Float64Array(n), arid = new Float64Array(n);
+  for (let r = 0; r < rows; r++) {
+    const lat = bb.latMin + (r + 0.5) * step;
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c; if (out[i]) continue;
+      const pi = PREC_MM * Math.max(0, fM[i]), ei = evapAt(p, lat, h[i]);
+      P[i] = pi; E[i] = ei; R[i] = pi - pi * ei / Math.sqrt(pi * pi + ei * ei + 1e-9); arid[i] = pi < ei ? 1 - pi / ei : 0;
+    }
+  }
+  const rcv = new Int32Array(n), rl = new Float64Array(n), order = new Int32Array(n), key = new Float64Array(n), Q = new Float64Array(n);
+  let no = 0;
+  seen.fill(0);
+  for (let i = 0; i < n; i++) if (out[i]) { seen[i] = 1; rcv[i] = i; key[i] = f[i]; heap.push(key[i], i); }
+  while (heap.n) {
+    const i = heap.pop(); order[no++] = i;
+    for (let e = nbOff[i]; e < nbOff[i + 1]; e++) { const j = nb[e]; if (seen[j]) continue; seen[j] = 1; rcv[j] = i; rl[j] = len[e]; key[j] = f[j] > key[i] ? f[j] : key[i]; heap.push(key[j], j); }
+  }
+  for (let i = 0; i < n; i++) Q[i] = out[i] ? 0 : R[i] * area[i] / 31536;
+  for (let o = no - 1; o >= 0; o--) { const i = order[o], j = rcv[i]; if (j === i) continue; const keep = 1 - LOSS_K * arid[i] * rl[i]; Q[j] += keep > 0 ? Q[i] * keep : 0; }
+  /* 各洼地的结局 */
+  const lake = new Int32Array(n).fill(-1), lakeS: number[] = [], salt = new Uint8Array(n), kinds: (0 | 1 | 2)[] = [], seaIn: boolean[] = [];
+  const done: number[] = [];
+  for (let k = 0; k < comps.length; k++) {
+    const comp = comps[k]; if (!comp.length) { done.push(-1); continue; }
+    let Ac = 0, Pm = 0, Em = 0, Qin = 0;
+    for (const i of comp) { Ac += area[i]; Pm += P[i] * area[i]; Em += E[i] * area[i]; if (Q[i] > Qin) Qin = Q[i]; }
+    const spill = f[comp[0]], Enet = (Em - Pm) / Ac, Aeq = Enet > 0 ? Qin * 31536 / Enet : Infinity;
+    if (Aeq >= Ac || spill < ENDO_RIM_M) {
+      const id = lakeS.length; lakeS.push(spill); kinds.push(0);
+      let sea = false;
+      for (const i of comp) { lake[i] = id; for (let e = nbOff[i]; e < nbOff[i + 1] && !sea; e++) if (F.sea[nb[e]]) sea = true; }
+      seaIn.push(sea && spill <= 0);   // 溢出口就在海面、挨着海：被海灌进
+      done.push(id); continue;
+    }
+    /* 内流：自盆底淹起，每次淹进水位最低的邻格（同宏观） */
+    let bot = comp[0];
+    for (const i of comp) if (h[i] < h[bot] || (h[i] === h[bot] && i < bot)) bot = i;
+    const ord: number[] = [], lev: number[] = [], fh = new Heap(64), mark = -2 - k;
+    fh.push(h[bot], bot); cid[bot] = mark;
+    while (fh.n) {
+      const lv = fh.k[0], i = fh.pop(); ord.push(i); lev.push(lv);
+      for (let e = nbOff[i]; e < nbOff[i + 1]; e++) { const j = nb[e]; if (cid[j] === k) { cid[j] = mark; fh.push(h[j] > lv ? h[j] : lv, j); } }
+    }
+    const wet = Aeq >= BASIN_LAKE_KM2, want = wet ? Aeq : Math.max(area[bot], SALT_FRAC * Ac);
+    let acc = 0, m = 0;
+    while (m < ord.length && acc < want) acc += area[ord[m++]];
+    if (wet && m === ord.length) {   // 格子太粗、一淹就满：湖面到了溢出口，是外流湖
+      const id = lakeS.length; lakeS.push(spill); kinds.push(0); seaIn.push(false);
+      for (const i of comp) lake[i] = id;
+      done.push(id); continue;
+    }
+    let m2 = m;   // 干旱区咸湖外圈一圈盐滩（同宏观）
+    if (wet && Pm / Ac < SALT_RING_P) for (let a2 = 0; m2 < ord.length && a2 < SALT_RING * Aeq; ) a2 += area[ord[m2++]];
+    if (wet) {
+      const L = m < ord.length ? 0.5 * (lev[m - 1] + lev[m]) : lev[m - 1], id = lakeS.length;
+      lakeS.push(L); kinds.push(1); seaIn.push(false);
+      for (let t = 0; t < m; t++) lake[ord[t]] = id;
+      for (let t = m; t < m2; t++) salt[ord[t]] = 1;
+      done.push(id);
+    } else {
+      for (let t = 0; t < m; t++) salt[ord[t]] = 1;
+      done.push(-1);
+    }
+  }
+  /* 新湖与别的水、图幅边隔一格（含斜邻；两湖挨着退湖面高的一方）；被海灌进的不隔海 */
+  const lk0 = Int32Array.from(lake);
+  for (let i = 0; i < n; i++) {
+    const id = lk0[i]; if (id < 0) continue;
+    const r = (i / cols) | 0, c = i - r * cols;
+    if (r === 0 || c === 0 || r === rows - 1 || c === cols - 1) { lake[i] = -1; continue; }
+    for (let d = 0; d < 8; d++) {
+      const j = (r + D8R[d]) * cols + c + D8C[d], o = lk0[j];
+      if ((out[j] && !(seaIn[id] && F.sea[j])) || (o >= 0 && o !== id && (lakeS[o] < lakeS[id] || (lakeS[o] === lakeS[id] && o < id)))) { lake[i] = -1; break; }
+    }
+  }
+  /* 湖床、岸格与溢出口：每个 4 邻连通的湖体，岸格不低于湖面、最低那格恰为湖面（core/elev 的水面取岸线最低陆格） */
+  const body = new Int32Array(n).fill(-1);
+  for (let s0 = 0; s0 < n; s0++) {
+    if (lake[s0] < 0 || body[s0] >= 0) continue;
+    const id = lake[s0], L = seaIn[id] ? 0 : lakeS[id], q = [s0]; let lo = -1;
+    body[s0] = s0;
+    for (let t = 0; t < q.length; t++) {
+      const i = q[t], r = (i / cols) | 0, c = i - r * cols;
+      for (let d = 0; d < 4; d++) {
+        const rr = r + D4R[d], cc = c + D4C[d]; if (rr < 0 || cc < 0 || rr >= rows || cc >= cols) continue;
+        const j = rr * cols + cc;
+        if (lake[j] === id) { if (body[j] < 0) { body[j] = s0; q.push(j); } }
+        else if (!out[j] && lake[j] < 0) { if (base[j] < L / um) base[j] = L / um; if (lo < 0 || base[j] < base[lo] || (base[j] === base[lo] && j < lo)) lo = j; }
+      }
+      const bed = (L + SHORE_U * um) / um;
+      if (base[i] > bed) base[i] = bed;
+      env[i] = 0; salt[i] = 0;
+    }
+    if (lo >= 0 && !seaIn[id]) base[lo] = L / um;
+  }
+  /* 按洼地的读数表：外流湖 / 咸湖取湖面与湖面积，盐滩取盆底最低处与盐滩面积 */
+  const at = new Int16Array(n).fill(-1), list: BasinWaters["list"] = [], slot = new Int32Array(comps.length).fill(-1);
+  for (let k = 0; k < comps.length; k++) {
+    const comp = comps[k]; if (!comp.length) continue;
+    const id = done[k]; let a = 0, mn = Infinity;
+    for (const i of comp) { if (id >= 0 ? lake[i] === id : salt[i]) a += area[i]; if (h[i] < mn) mn = h[i]; }
+    if (!(a > 0)) continue;
+    slot[k] = list.length;
+    list.push({ kind: id >= 0 ? (seaIn[id] ? 3 : kinds[id]) : 2, surfM: id >= 0 ? (seaIn[id] ? 0 : lakeS[id]) : mn, areaKm2: a });
+    for (const i of comp) at[i] = slot[k];
+  }
+  return { lake, lakeS, salt, info: list.length ? { at, list } : null };
+}
+
+export interface Gen2Uplift extends Gen2MesoField { s: Float64Array; iters: number; converged: boolean }
+/**
+ * 画抬升：按 upliftRegions 分区，定树标定让各区最高点（收尾之后的高程）恰到目标，不抬就已到目标的区不抬。
+ * @returns 收尾后的基底与包络（零个区＝与 gen2Meso 逐位同）与各区系数
+ */
+export function gen2Uplift(st: MesoState, cells: UpliftCells): Gen2Uplift {
+  const { pr, G, base: B } = st, n = B.h.length, { regions, kw, src, peakAdd } = upliftRegions(st, cells), bas = basinRegions(st, cells);
+  if (!regions.length) return { ...mesoFinish(pr, B.h, B.A, bas.length ? { du: new Float64Array(n), kw: new Float64Array(n), bas, G } : null), s: new Float64Array(0), iters: 0, converged: true };
+  const S = upliftSolve(G, pr.inp, B, bandOf(G, src, BAND_MARGIN_KM), regions, peakAdd, MESO_MAXIT);
+  const du = new Float64Array(n);
+  regions.forEach((r, k) => { for (let t = 0; t < r.idx.length; t++) du[r.idx[t]] += S.s[k] * r.w[t] / MESO_KAPPA_M; });
+  return { ...mesoFinish(pr, S.h, S.A, { du, kw, bas, G }), s: S.s, iters: S.iters, converged: S.converged };
 }

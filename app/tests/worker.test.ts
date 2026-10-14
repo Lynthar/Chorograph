@@ -3,7 +3,7 @@
    语义断言防"新旧一起错"：官道减半、水军限水、可达性判定、时间轴范围。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildGridCells, roadCellSet, type Grid } from "../src/core/grid.ts";
+import { buildGridCells, gridGeom, roadCellSet, type Grid } from "../src/core/grid.ts";
 import { astar, cellCenter, cellCost, computeRoute, lonlatToCell, measureLegs, routeReport } from "../src/core/route.ts";
 import { DEPTH_RATIO, bearingDeg, footCornersLL, setUnitPoint, unitFacingAt, unitFootKm, unitLegs, unitPos } from "../src/core/units.ts";
 import { pickUnit, unitSpots } from "../src/render/units.ts";
@@ -11,7 +11,9 @@ import { project, type Camera } from "../src/core/projection.ts";
 import { yearRangeOf } from "../src/core/time.ts";
 import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
-import { ERODE_VER, erodeField, erodeGate, erodeInput, erodeKey, erodeMode, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
+import { ERODE_VER, erodeCarve, erodeField, erodeGate, erodeInput, erodeKey, erodeMode, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
+import { gen2Meso, gen2Uplift, mesoState, type UpliftCells } from "../src/core/gen2.ts";
+import { tileInput, tileKey, tilePlan } from "../src/core/tiles.ts";
 import { fbm } from "../src/core/noise.ts";
 import { baseElev, buildElevField, coarseField, elevBilinear, fieldMix, fieldPlusDelta, waterSurface, LAND_FLOOR, SHORE_E, type ElevField } from "../src/core/elev.ts";
 import { gnoise, makeRelief, mountainness, RELIEF_M } from "../src/core/relief.ts";
@@ -435,9 +437,19 @@ describe("起伏采样（core/relief）", () => {
       }
       return ex / ny;
     };
-    const iso = ratio(makeRelief(7, 0.5, kmd, [100, 54])), old = ratio(makeRelief(7, 0.5, kmd, null));
+    const iso = ratio(makeRelief(7, 0.5, kmd, [100, 54], Infinity)), old = ratio(makeRelief(7, 0.5, kmd, null, Infinity));
     assert.ok(iso > 0.8 && iso < 1.25, `三维取样东西/南北能量比 ${iso.toFixed(2)}`);
     assert.ok(old > 2, `对照：二维按度取样在 54° 被压扁，能量比 ${old.toFixed(2)}`);
+  });
+  it("波长封顶（中尺度图只加两格以下的带）：封在最短带以下恒 0，封在最长带以上与不封逐位同，封在中间幅度变小、不被归一放大", () => {
+    const pts: [number, number][] = [];
+    for (let i = 0; i < 40; i++) for (let j = 0; j < 40; j++) pts.push([100 + j * 0.031, 30 + i * 0.029]);
+    const rms = (rel: (lon: number, lat: number, m: number) => number): number => Math.sqrt(pts.reduce((a, [x, y]) => a + rel(x, y, 1) ** 2, 0) / pts.length);
+    const kmd = 111.19, all = makeRelief(7, 2, kmd, null, Infinity);
+    assert.ok(pts.every(([x, y]) => makeRelief(7, 2, kmd, null, 1)(x, y, 1) === 0), "封在最短带以下应恒 0");
+    assert.ok(pts.every(([x, y]) => makeRelief(7, 2, kmd, null, 1000)(x, y, 1) === all(x, y, 1)), "封在最长带以上应与不封逐位同");
+    const mid = rms(makeRelief(7, 2, kmd, null, 20)), full = rms(all);
+    assert.ok(mid > 0 && mid < 0.6 * full, `只留 20 km 以下的带，幅度 ${mid.toFixed(3)} 对不封 ${full.toFixed(3)}`);
   });
   it("梯度集避开坐标轴（R9-#14）：没有整条格边恒为 0（轴向集约 1/16 的格边是晕渲上的直缝）", () => {
     let zero = 0;
@@ -545,7 +557,7 @@ describe("侵蚀真形（core/erode）", () => {
     const inp = mk(), f = erodeField(inp), sx = f.cols / 4;
     /* 神谕＝erodeField 的基座公式（基面 + 起伏），只是不跑侵蚀：山地列右半是双线性纯区，
        基面恒 0.9、山地度＝amp×mountainness(0.9)＝0.7 */
-    const rel = makeRelief(inp.seed, f.step * inp.kmy, inp.kmy, null), rU = RELIEF_M / inp.unitM;
+    const rel = makeRelief(inp.seed, f.step * inp.kmy, inp.kmy, null, Infinity), rU = RELIEF_M / inp.unitM;
     const m = inp.amp * mountainness(0.9);
     let carved = 0;
     for (let r = 0; r < f.rows; r++) for (let c = Math.ceil(3.5 * sx); c < f.cols; c++) {
@@ -820,6 +832,87 @@ describe("侵蚀真形（core/erode）", () => {
   });
 });
 
+/* 中尺度单：v2 图挂上中尺度基底后，侵蚀不跑粗级、类型基面不扭、起伏按包络——这条路径的键与块单 */
+describe("侵蚀的中尺度单（ErodeInput.mesoEnv）", () => {
+  const m: Meta = { terrain: "auto", genVer: 2, genSeed: 7, genStyle: "multi", relief: 0.7, worldModel: "sphere", planetRadiusKm: 10000, gridN: 120,
+    bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } };
+  const g = buildGridCells(m, [], 0), R = gen2Meso(m, g), gm: Grid = buildGridCells(m, [], 0, R);
+  const inp = erodeInput(m, [], gm, 0)!;
+  it("门与组装同判；有中尺度时单里带包络、elev0 取中尺度基底，没有时不带", () => {
+    for (const gg of [g, gm]) for (const mm of [m, { ...m, erode: "none" }, { ...m, relief: 0 }]) {
+      assert.strictEqual(erodeGate(mm as Meta, [], gg, 0), erodeInput(mm as Meta, [], gg, 0) !== null);
+    }
+    const plain = erodeInput(m, [], g, 0)!;
+    assert.strictEqual(inp.mesoEnv, R.env); assert.ok(!("mesoEnv" in plain), "没有中尺度的单不该有这个键");
+    assert.notDeepStrictEqual(inp.elev0, plain.elev0, "elev0 没换成中尺度基底");
+  });
+  it("扩散只磨高出中尺度基底的那部分：侵蚀后陆地的最高点不低于基底最高点的 98%（基底在收尾平滑过、峰按它标定）", () => {
+    const f = erodeField(inp);
+    let mb = 0, mf = 0;
+    for (let i = 0; i < inp.elev0.length; i++) if (!inp.water[i]) mb = Math.max(mb, inp.elev0[i]);
+    for (let i = 0; i < f.data.length; i++) mf = Math.max(mf, f.data[i]);
+    assert.ok(mf >= 0.98 * mb, `侵蚀后最高 ${(mf * 2000).toFixed(0)} m，基底最高 ${(mb * 2000).toFixed(0)} m`);
+  });
+  it("画的盆地（干处成盐滩）：单里带盆地掩码、键只在有它时追加；盐滩是局部基准面，盆底不被细级填洼填平（去掉它同一处被填高）", () => {
+    /* 单块种子 5 南部是副热带荒漠：最干的一片低地上画盆，水量不够成湖、盆底成盐滩 */
+    const md: Meta = { ...m, genStyle: "mono", genSeed: 5 }, gd = buildGridCells(md, [], 0), Rd = gen2Meso(md, gd), st = mesoState(md, gd, Rd.sg);
+    const out = st.pr.inp.out, fM = st.pr.fM, { cols, rows } = gd, um = 2000;
+    let k0 = -1;
+    for (let r = 4; r < rows - 4; r++) for (let c = 4; c < cols - 4; c++) {
+      let ok = Rd.base[r * cols + c] * um < 800;
+      for (let dr = -4; dr <= 4 && ok; dr++) for (let dc = -4; dc <= 4; dc++) if (out[(r + dr) * cols + c + dc]) { ok = false; break; }
+      if (ok && (k0 < 0 || fM[r * cols + c] < fM[k0])) k0 = r * cols + c;
+    }
+    assert.ok(k0 >= 0, "夹具应有一片低平陆地");
+    const fidx: number[] = [];
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) fidx.push(k0 + dr * cols + dc);
+    const U = gen2Uplift(st, { idx: new Int32Array(0), peakM: new Float64Array(0), fidx: Int32Array.from(fidx).sort(), floorM: new Float64Array(9).fill(-100) });
+    assert.ok(U.water && U.water.list.some(x => x.kind === 2) && U.basin!.some(v => (v & 2) !== 0), `前提：成盐滩 ${JSON.stringify(U.water && U.water.list)}`);
+    const gb = buildGridCells(md, [], 0, U), ib = erodeInput(md, [], gb, 0)!;
+    assert.strictEqual(ib.basin, U.basin);
+    assert.ok(!("basin" in inp), "没画盆地的单不该有这个键");
+    assert.notStrictEqual(erodeKey(ib), erodeKey({ ...ib, basin: undefined }), "盆地掩码进键");
+    const lo = (f: ElevField): number => {
+      const sx = f.cols / cols, r0 = (k0 / cols) | 0, c0 = k0 % cols; let v = Infinity;
+      for (let r = (r0 - 1) * sx; r < (r0 + 2) * sx; r++) for (let c = (c0 - 1) * sx; c < (c0 + 2) * sx; c++) v = Math.min(v, f.data[r * f.cols + c]);
+      return v * um;
+    };
+    const plan = tilePlan(ib, 4e6, 0)!, ti = tileInput(ib, plan, null, plan.tiles[0]);
+    assert.strictEqual(ti.basin!.length, ti.cols * ti.rows, "块单的盆地掩码与 elev0 同窗裁");
+    assert.strictEqual(ti.basin![0], ib.basin![Math.round((ti.bb.latMin - ib.bb.latMin) / ib.step) * ib.cols + Math.round((ti.bb.lonMin - ib.bb.lonMin) / ib.step)]);
+    const keep = lo(erodeField(ib)), fill = lo(erodeField({ ...ib, basin: undefined }));
+    assert.ok(keep <= -50, `有局部基准面：盆底侵蚀后 ${keep.toFixed(0)} m（细格是粗格心的插值，到不了 −100 整）`);
+    assert.ok(fill > keep + 50, `去掉局部基准面：同一处被填到 ${fill.toFixed(0)} m（有它时 ${keep.toFixed(0)} m）`);
+  });
+  it("键：包络只在有它时追加，一格之差即换键", () => {
+    const k = erodeKey(inp), plain = erodeKey(erodeInput(m, [], g, 0)!);
+    assert.notStrictEqual(k, plain);
+    const env = inp.mesoEnv!.slice(), i = env.findIndex(v => v > 0.3); env[i] -= 0.001;
+    assert.notStrictEqual(erodeKey({ ...inp, mesoEnv: env }), k, "包络变了键必须变");
+  });
+  it("不跑粗级（切割量为 null）；两次逐位同；块单裁出包络、切割量为 null、块键各不相同", () => {
+    assert.strictEqual(erodeCarve(inp), null, "中尺度图的谷网已在稳态解里，粗级只会刻出沿格轴的直线谷壁");
+    const f1 = erodeField(inp), f2 = erodeField(inp);
+    assert.deepStrictEqual(f1.data, f2.data);
+    /* 钉现行输出：起伏封顶、不扭不羽、汇流微地形任一被改都会变（这条路径有意换代时才重钉，见 MESO_EALGO） */
+    let x = 0x811c9dc5 | 0; const u = new Uint32Array(f1.data.buffer, f1.data.byteOffset, f1.data.length);
+    for (let i = 0; i < u.length; i++) x = Math.imul(x ^ u[i], 16777619);
+    assert.strictEqual((x >>> 0).toString(36), "1ukyz2n");
+    const plan = tilePlan(inp, 4e6, 0)!, keys = new Set<string>();
+    assert.ok(plan && plan.tiles.length >= 2, "前提：至少两块");
+    for (const t of plan.tiles.slice(0, 3)) {
+      const ti = tileInput(inp, plan, null, t);
+      assert.strictEqual(ti.win!.carve, null);
+      assert.strictEqual(ti.mesoEnv!.length, ti.cols * ti.rows, "包络要与 elev0 同窗裁");
+      assert.strictEqual(ti.mesoEnv![0], inp.mesoEnv![Math.round((ti.bb.latMin - inp.bb.latMin) / inp.step) * inp.cols + Math.round((ti.bb.lonMin - inp.bb.lonMin) / inp.step)]);
+      keys.add(tileKey(ti));
+    }
+    assert.strictEqual(keys.size, Math.min(3, plan.tiles.length));
+    const t0 = tileInput(inp, plan, null, plan.tiles[0]), tf = erodeField(t0);
+    assert.strictEqual(tf.cols, t0.cols * plan.geom.sx, "块单照常算得出");
+  });
+});
+
 describe("A* 开集换堆（2026-08-13 规模引擎批）：弹出序与旧线性扫逐位相同、guard 随格数扩", () => {
   /* 神谕＝旧实现（Map 线性扫最小 f、平手保留先入者）,在测试里原样内联——随机世界对照,
      路径与里程 deepStrictEqual＝「(f,首入序) 字典序堆复刻平手语义」的性质锁。 */
@@ -1003,6 +1096,14 @@ describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
     assert.strictEqual(out.data[3], fine.data[3], "零增量细格原位不动（钳制恒等）");
     assert.strictEqual(out.data[4], fine.data[4], "合法低于类型地板的细格（海岸坡）不被人为抬高");
   });
+  it("画的盆地（free 掩码）不钳陆地地板：往下压可以低于类型地板与海面，掩码外照旧钳", () => {
+    const g2 = { bb: { lonMin: 0, lonMax: 2, latMin: 0, latMax: 1 }, step: 1, cols: 2, rows: 1 };
+    const cells = [["plain", "plain"]], base = Float32Array.of(0.16, 0.16), now = Float32Array.of(-0.1, -0.1);
+    const fine: ElevField = { bb: g2.bb, step: 0.5, cols: 4, rows: 2, data: new Float32Array(8).fill(0.16), eroded: false };
+    const out = fieldPlusDelta(fine, base, now, g2, cells, Uint8Array.of(1, 0));
+    assert.ok(out.data[0] < -0.05, "盆里的细格随增量压到海面以下：" + out.data[0]);
+    assert.ok(out.data[3] >= 0.06 - 1e-6, "掩码外照旧钳回类型地板：" + out.data[3]);
+  });
 });
 
 describe("腿账读到 (0,1) 区间的航点速度（写端允许的正小数不能被读端静默换成基线）", () => {
@@ -1016,5 +1117,38 @@ describe("腿账读到 (0,1) 区间的航点速度（写端允许的正小数不
     assert.strictEqual(lt.ok, lb.ok, "航点声明与部队基线同值＝同结论");
     assert.ok(Math.abs(lt.need - lb.need) < 1e-9, "耗时同式");
     assert.strictEqual(lt.ok, false, "0.64 km 按 0.5 km/日要一天多");
+  });
+});
+
+/* 中尺度车道的画抬升单：车道按 mesoKey 留着 Sg 与求解图，每笔只发逐格目标 */
+describe("中尺度车道：画抬升单（routeProto uplift）", () => {
+  const m: Meta = { terrain: "auto", genVer: 2, genSeed: 7, genStyle: "multi", worldModel: "sphere", planetRadiusKm: 10000, gridN: 90,
+    bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } };
+  const geom = gridGeom(m), R = gen2Meso(m, geom), st0 = mesoState(m, geom, R.sg), out = st0.pr.inp.out;
+  const land = out.findIndex((v, i) => v === 0 && i > out.length / 2);
+  const cells: UpliftCells = { idx: Int32Array.of(land), peakM: Float64Array.of(4000) };
+  const want = gen2Uplift(st0, cells);
+  it("中尺度单之后不带 sg 的画抬升单＝gen2Uplift；回执的 sg 是拷贝，车道留着的原件不受 transfer 影响", () => {
+    const st: RouteCtx = {};
+    const r = handleRouteMsg(st, { t: "meso", id: 1, meta: m, geom, sg: null });
+    assert.ok(r && r.t === "meso" && r.sg);
+    assert.notStrictEqual(r.sg!.h, st.meso!.sg.h, "回执的 sg 与车道留着的不是同一块内存");
+    assert.deepStrictEqual(r.sg!.h, st.meso!.sg.h);
+    const u = handleRouteMsg(st, { t: "uplift", id: 2, meta: m, geom, sg: null, cells });
+    assert.ok(u && u.t === "uplift");
+    assert.deepStrictEqual(u.base, want.base); assert.deepStrictEqual(u.env, want.env);
+    const keep = st.meso!.st;
+    handleRouteMsg(st, { t: "uplift", id: 3, meta: m, geom, sg: null, cells });
+    assert.strictEqual(st.meso!.st, keep, "第二笔沿用同一份求解状态（不重建三角网）");
+  });
+  it("车道没留着：带缓存的 sg 或现算，结果逐位同；换了图（键）就换状态", () => {
+    const a: RouteCtx = {}, b: RouteCtx = {};
+    const ua = handleRouteMsg(a, { t: "uplift", id: 1, meta: m, geom, sg: { h: R.sg.h.slice(), rcv: R.sg.rcv.slice() }, cells });
+    const ub = handleRouteMsg(b, { t: "uplift", id: 1, meta: m, geom, sg: null, cells });
+    assert.ok(ua && ua.t === "uplift" && ub && ub.t === "uplift");
+    assert.deepStrictEqual(ua.base, want.base); assert.deepStrictEqual(ub.base, want.base);
+    const m2 = { ...m, genSeed: 8 }, k0 = a.meso!.key;
+    handleRouteMsg(a, { t: "uplift", id: 2, meta: m2, geom: gridGeom(m2), sg: null, cells });
+    assert.notStrictEqual(a.meso!.key, k0);
   });
 });

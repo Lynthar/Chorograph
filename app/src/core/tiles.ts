@@ -80,8 +80,8 @@ function cropCarve(cv: CoarseCarve, lonMin: number, latMin: number, lonMax: numb
 }
 
 /** 块 i 的侵蚀单：父格窗口＝块心外扩 TILE_MARGIN（钳到图幅），倍率 plan.sx，四个窗口约定见 core/erode.ErodeWindow。
-    carve＝erodeCarve(inp) 的全图切割量（null＝粗级被跳过的小图，块也就不该有） */
-export function tileInput(inp: ErodeInput, plan: TilePlan, carve: CoarseCarve, i: number): ErodeInput {
+    carve＝erodeCarve(inp) 的全图切割量；中尺度图（inp.mesoEnv）不跑粗级，传 null */
+export function tileInput(inp: ErodeInput, plan: TilePlan, carve: CoarseCarve | null, i: number): ErodeInput {
   const g = plan.geom, { c0, r0, c1, r1 } = tileCells(g, i), M = TILE_MARGIN;
   const a0 = Math.max(0, c0 - M), a1 = Math.min(g.cols, c1 + M), b0 = Math.max(0, r0 - M), b1 = Math.min(g.rows, r1 + M);
   const w = a1 - a0, h = b1 - b0;
@@ -94,8 +94,8 @@ export function tileInput(inp: ErodeInput, plan: TilePlan, carve: CoarseCarve, i
   const sc = inp.sphere ? [(inp.bb.lonMin + inp.bb.lonMax) / 2, (inp.bb.latMin + inp.bb.latMax) / 2] as const : null;
   return { ...inp, bb: { lonMin, latMin, lonMax, latMax }, cols: w, rows: h,
     elev0: sub(inp.elev0), water: sub(inp.water), wsurf: sub(inp.wsurf), hovGrid: sub(inp.hovGrid),
-    cap: w * h * g.sx * g.sx, axisMax: g.sx, acrit: plan.acrit, bandS: g.sx / plan.sxW,
-    win: { carve: cropCarve(carve, lonMin, latMin, lonMax, latMax), refS: 1, sc, coast: true } };
+    cap: w * h * g.sx * g.sx, axisMax: g.sx, acrit: plan.acrit, bandS: g.sx / plan.sxW, ...(inp.mesoEnv ? { mesoEnv: sub(inp.mesoEnv) } : {}), ...(inp.basin ? { basin: sub(inp.basin) } : {}),
+    win: { carve: carve ? cropCarve(carve, lonMin, latMin, lonMax, latMax) : null, refS: 1, sc, coast: true } };
 }
 
 /** 块缓存的键：窗口单的内容键（含窗口位置与裁过的切割量）＋块代号 */

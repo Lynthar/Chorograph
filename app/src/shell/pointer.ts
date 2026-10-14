@@ -10,7 +10,7 @@ import { climateAt, zoneIndex, zoneStep } from "../core/climzone.ts";
 import { BRUSH_NOTCHES, brushRadiusCells, brushDabStepDeg, interpolatePath } from "../core/brush.ts";
 import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
-import { elevUnitM, elevSmooth, heightStepM } from "../core/elev.ts";
+import { elevUnitM, elevSmooth, heightStepM, upliftOn } from "../core/elev.ts";
 import { distKm, lonCos } from "../core/geo.ts";
 import { esc, fmtKm, tget } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
@@ -23,13 +23,13 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUn
   inspEditSig, settingsSig, closeSettings, helpOpenSig, calOverlaySig, geoImportSig, prefsOpenSig, importOpenSig, saveConflictSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
   addTypeSig, paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, terrainAxisOf, climPaintSig, decorKindSig, decorSizeSig,
-  brushSizeSig, brushEraseSig, decorEraseSig, eraNewSig, heightStepMSig,
+  brushSizeSig, brushEraseSig, decorEraseSig, eraNewSig, heightStepMSig, upliftPeakMSig, upliftModeSig, basinFloorMSig,
   mutateWorld, mutateWorldLive, pushHistoryOnce, beginStroke, endStroke, undoWorld, redoWorld,
   deleteNodeAt, deleteUnitAt, deleteEdgeIdx, deleteDecorAt,
   type EditSub, type Sel }
   from "../ui/state.ts";
 import { addNode, addEdge, addFreeEdge, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
-  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setUnitFacing, setNodeRangeKm, setNodeVision, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath, paintClimatePath }
+  removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setUnitFacing, setNodeRangeKm, setNodeVision, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath, paintUpliftPath, paintClimatePath }
   from "../ui/editops.ts";
 import { poolGet } from "../ui/stamps.ts";
 import { paintDims, maskFromLayer, brushMask, runsFromMask, ensurePaintLayer, type PaintMask } from "../ui/paint.ts";
@@ -39,6 +39,9 @@ import type { ShellCtx } from "./ctx.ts";
 import type { Host } from "./host.ts";
 import type { LibraryIO } from "./library.ts";
 import type { WorldNode } from "../core/types.ts";
+
+/** 画的盆的结局在光标读数里的说法（下标同 core/gen2.BasinWaters 的 kind） */
+const BASIN_KIND = ["外流湖", "咸湖", "盐滩", "被海灌进"] as const;
 
 /* —— 拖拽/笔迹瞬态（每帧读写，不进 signals）—— */
 interface PanDrag { x: number; y: number; lon0: number; lat0: number; click: boolean }
@@ -286,7 +289,9 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     mutateWorldLive(w => {
-      changed = axis === "height"
+      changed = axis === "height" && upliftOn(ctx.meta)
+        ? paintUpliftPath(w, grid, yearSig.peek(), path, upliftModeSig.peek() === "floor" ? { floorM: basinFloorMSig.peek() } : { peakM: upliftPeakMSig.peek() }, R + 1, brushEraseSig.peek(), eraNewSig.peek())
+        : axis === "height"
         ? paintHeightPath(w, grid, path, brushEraseSig.peek() ? -dhAbs : dhAbs, R + 1, eraNewSig.peek())
         : paintTerrainPath(w, grid, yearSig.peek(), path, paintTerrainSig.value, R + 1, brushEraseSig.value, eraNewSig.peek(), axis, terrainStroke?.wiped);
       return changed;
@@ -687,6 +692,8 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
           const row = g.cells[Math.floor((ll[1] - g.bb.latMin) / g.step)];
           const cell = row && row[Math.floor((lonD - g.bb.lonMin) / g.step)];
           if (cell) hTxt += ` ｜ ${terrainProps(cell).名}`;
+          const wr = g.meso && g.meso.water, k = wr && row ? wr.at[Math.floor((ll[1] - g.bb.latMin) / g.step) * g.cols + Math.floor((lonD - g.bb.lonMin) / g.step)] : -1;
+          if (wr && k >= 0) { const b = wr.list[k]; hTxt += ` ｜ ${BASIN_KIND[b.kind]} · ${b.kind === 2 ? "盆底" : "水面"} ${Math.round(b.surfM)}m · ${Math.round(b.areaKm2)} km²`; }   // 画的盆成了什么（水量平衡定）
         }
       }
       $("ftCoord").textContent = `经纬度 ${dataLon(ctx.meta, ll[0]).toFixed(dec)}°, ${ll[1].toFixed(dec)}°${hTxt}`;

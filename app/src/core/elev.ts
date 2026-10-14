@@ -8,12 +8,12 @@
 import { kmPerDeg, kmPerDegXY, lonCos } from "./geo.ts";
 import { terrainProps } from "./constants.ts";
 import { GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, genHeightAt, genLandformOf, genSeaLevel } from "./terrain.ts";
-import { makeRelief, mountainness, reliefSeedOf, RELIEF_M } from "./relief.ts";
+import { makeRelief, mountainness, reliefSeedOf, RELIEF_M, RELIEF_MESO_CELLS } from "./relief.ts";
 import { activeAt } from "./time.ts";
 import { stampRect, type Grid } from "./grid.ts";
-import { gen2Fine, isGen2 } from "./gen2.ts";
-import { LANDFORM_ORDER } from "./constants.ts";
-import type { BBox, HeightOverride, Meta } from "./types.ts";
+import { gen2Fine, isGen2, type UpliftCells } from "./gen2.ts";
+import { ECO_ORDER, LANDFORM_ORDER } from "./constants.ts";
+import type { BBox, HeightOverride, Meta, UpliftOverride } from "./types.ts";
 
 /* 起伏/涂改后的钳制：陆地不跌成海滩之下、水面不浮出海（类型才是真源，观感须与类型自洽）。
    地板/天花随类型收敛（2026-07 裁决）：地板=min(0.10, 类型基础)、天花=max(-0.06, 类型基础)——
@@ -68,9 +68,9 @@ export function fieldMix(from: ElevField, to: ElevField, t: number): ElevField {
     参照是扭曲基面邻域）不许被人为抬高，增量为零的细格因此恒等于 fine=原位不动之约保持；
     水域格天花=max(WATER_CEIL, 本次粗格场该格值)——涂水后残留的陆高须压进水面，否则新画的
     水面上浮着旧地形的干斑；取粗格场而非类型表，内陆湖才不会在等待窗里被按回海平面。 */
-export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][]): ElevField {
+export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null): ElevField {
   const d = deltaOf(base, now, geom);
-  return d ? applyDelta(fine, d, now, geom, cells) : fine;
+  return d ? applyDelta(fine, d, now, geom, cells, free) : fine;
 }
 /** 粗格增量 now − base 与它的变化范围（粗格闭区间）；两份逐位相同＝null */
 export interface CoarseDelta { diff: Float32Array; c0: number; r0: number; c1: number; r1: number }
@@ -88,9 +88,9 @@ export function deltaOf(base: Float32Array, now: Float32Array, geom: FieldGeom):
   for (let i = 0; i < rows * cols; i++) diff[i] = now[i] - base[i];
   return { diff, c0, r0, c1, r1 };
 }
-/** 把一份粗格增量羽化进细场 fine（语义见 fieldPlusDelta）。fine 可以只是图幅的一块（分块精修），原点须落在细格网上；
+/** 把一份粗格增量羽化进细场 fine（语义见 fieldPlusDelta；free＝不钳陆地地板的粗格，即画的盆地 Grid.meso.basin，盆底可低于类型地板与海面）。fine 可以只是图幅的一块（分块精修），原点须落在细格网上；
     补丁窗碰不到这块＝返回 fine 本身（引用不变） */
-export function applyDelta(fine: ElevField, d: CoarseDelta, now: Float32Array, geom: FieldGeom, cells?: string[][]): ElevField {
+export function applyDelta(fine: ElevField, d: CoarseDelta, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null): ElevField {
   const { cols, rows } = geom, { diff, c0, r0, c1, r1 } = d;
   /* 补丁窗＝变化粗格 [c0..c1]×[r0..r1] 的双线性支撑域折到细格（k=粗细步长比），外留 1 格余量；
      出界钳到边缘格＝边缘章的支撑域自然含边界细格。oc/or＝fine 原点在全图细格网上的偏移（整幅场为 0） */
@@ -113,7 +113,7 @@ export function applyDelta(fine: ElevField, d: CoarseDelta, now: Float32Array, g
         /* 水域天花取**本次粗格场**的该格值（＝所属水体的水面下切后的床面），不取类型表：
            类型表只有一个 −0.35，拿它当天花会把内陆湖在等待窗里按回海平面、侵蚀落地又弹回来。 */
         v = p.lf === "water" ? Math.min(v, Math.max(WATER_CEIL, now[pr * cols + pc]))
-          : Math.max(v, Math.min(Math.min(LAND_FLOOR, p.elev), fine.data[i]));
+          : free && free[pr * cols + pc] ? v : Math.max(v, Math.min(Math.min(LAND_FLOOR, p.elev), fine.data[i]));
       }
       data[i] = v;
     }
@@ -125,7 +125,7 @@ export function applyDelta(fine: ElevField, d: CoarseDelta, now: Float32Array, g
 export function elevUnitM(meta: Meta | undefined): number {
   return +((meta || {}).elevUnitM as number) || 2000;
 }
-/** 一枚高程涂改的幅度上限（米，正负同值）：宽过地球（珠峰 8.8 km、马里亚纳 11 km）与火星奥林帕斯山（约 22 km）的起伏。
+/** 一枚高程涂改的幅度上限（米，正负同值；画抬升的目标峰高同用它）：宽过地球（珠峰 8.8 km、马里亚纳 11 km）与火星奥林帕斯山（约 22 km）的起伏。
     外来档的荒谬值（如 1e20）超限即钳边，不带进高程场、等高线与侵蚀 */
 export const DH_MAX_M = 30000;
 /** 涂改的生效幅度（抽象单位）：非数＝0，超出 ±DH_MAX_M 钳边。读端（高程场 / 侵蚀门 / 侵蚀输入）一律经此取值——各读各的就不再逐位同判 */
@@ -133,6 +133,33 @@ export function dhOf(o: { dh?: unknown }, meta: Meta | undefined): number {
   const cap = DH_MAX_M / elevUnitM(meta), v = +(o.dh as number) || 0;
   return v > cap ? cap : v < -cap ? -cap : v;
 }
+/** 画抬升生效的图（v2 战略图）：高程笔在这里画目标峰高与目标盆底、读端只在这里读 upliftOverrides。笔、读端与校验同判 */
+export const upliftOn = (meta: Meta | undefined): boolean => isGen2(meta) && (meta as Meta).mapKind !== "tactical";
+/** 当年生效的画抬升栅到网格（格号升序；同格峰取最大、盆取最小，一格既有峰又有盆按盆；坏值跳过、超限钳到 ±DH_MAX_M）。
+    不生效的图或一格没有＝null；没有盆时不带 fidx / floorM */
+export function upliftCells(meta: Meta | undefined, ups: UpliftOverride[] | undefined, grid: FieldGeom, yearNow: number): UpliftCells | null {
+  if (!ups || !ups.length || !upliftOn(meta)) return null;
+  const pk = new Map<number, number>(), fl = new Map<number, number>();
+  for (const o of ups) {
+    if (!isFinite(o.lon) || !isFinite(o.lat) || !activeAt(o, yearNow)) continue;
+    const p = +(o.peakM as number), f = typeof o.floorM === "number" ? o.floorM : NaN, isP = p > 0;
+    if (isP === isFinite(f)) continue;
+    const v = isP ? Math.min(p, DH_MAX_M) : Math.max(-DH_MAX_M, Math.min(DH_MAX_M, f)), rc = stampRect(o, grid);
+    if (rc) for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) {
+      const i = r * grid.cols + c;
+      if (isP) { if (!(pk.get(i)! >= v)) pk.set(i, v); } else if (!(fl.get(i)! <= v)) fl.set(i, v);
+    }
+  }
+  for (const i of fl.keys()) pk.delete(i);
+  if (!pk.size && !fl.size) return null;
+  const idx = Int32Array.from(pk.keys()).sort(), out: UpliftCells = { idx, peakM: Float64Array.from(idx, i => pk.get(i)!) };
+  if (fl.size) { const fidx = Int32Array.from(fl.keys()).sort(); out.fidx = fidx; out.floorM = Float64Array.from(fidx, i => fl.get(i)!); }
+  return out;
+}
+/** 画盆地的目标盆底预设（米）：可以低于海面；表单另有数字框 */
+export const UPLIFT_FLOORS_M = [-400, -100, 100, 300, 600, 1000];
+/** 画抬升的目标峰高预设（米）：表单另有数字框，预设之外的值照样能画 */
+export const UPLIFT_PEAKS_M = [500, 1000, 2000, 3000, 5000, 8000];
 /** 高程笔幅度档（米/笔；2026-08-10 精度批，用户点单「战术 1m 起、战略 10m 起」）。 */
 export const HEIGHT_STEPS_TAC = [1, 5, 10, 25, 50];
 export const HEIGHT_STEPS_STRAT = [10, 25, 50, 100, 250];
@@ -270,6 +297,8 @@ export const SUP_LO_PX = 28, SUP_HI_PX = 56, SUP_DASH_PX = 16;
 export const BASE_SLOPE_DEG = 15, SEABED_SLOPE_DEG = 3, SHORE_E = -0.03, BASE_BLUR_KM = 0.6;
 /** 水陆判据：高程低于所在格水面 − WATER_EPS 即水（视线判定与侵蚀的陆地下限读它；着色器与 CPU 瓦片写的是字面 0.02，要改一起改） */
 export const WATER_EPS = 0.02;
+/** 没有水面（画的盆地里没有水邻的陆格）：「高程 < 水面 − WATER_EPS」恒不成立、陆地钳不到它；取有限值，Float32 与纹理照常装得下 */
+export const NO_WATER = -1000;
 /** 生成器连续高程 h → 抽象高程：分段线性，各地貌带的均值落回类型值（平原 0.16 / 丘陵 0.5 / 山地 0.9） */
 export function elevFromGenH(h: number, meta: Meta | undefined): number {
   const sea = genSeaLevel(meta);
@@ -337,9 +366,9 @@ function boxBlur3(f: Float32Array, cols: number, rows: number, r: number): void 
    连通水体（4 邻）逐个定水面：碰到图幅边、或含生成器定为海的格（seaSeed）的算海，恒钉在海平面 0（既有海图逐位不变）；
    其余算内陆湖，水面取岸线最低陆地类型高程——水从最低处溢走，站不到比它更高的位置。
    meta.outside==="land"（图幅外是陆地）时无海可言，被图幅切开的湖也按湖算。
-   ⚠ 陆格也记一份（相邻水体水面取最小、无水邻＝0）：渲染端按格最近取，湖面不晕开一格则
+   ⚠ 陆格也记一份（相邻水体水面取最小、无水邻＝0；画的盆地里无水邻＝NO_WATER，那里的干地可以低于海面）：渲染端按格最近取，湖面不晕开一格则
      湖岸线被粗格边切成方块；取最小＝夹在高低两湖之间的陆地不被高的那个淹掉。 */
-function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: number, inland: boolean, seaSeed: Uint8Array | null): Float32Array {
+function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: number, inland: boolean, seaSeed: Uint8Array | null, dry: Uint8Array | null): Float32Array {
   const n = cols * rows, lab = new Int32Array(n).fill(-1), surf: number[] = [], st: number[] = [];
   const DR = [0, 0, 1, -1], DC = [1, -1, 0, 0];
   for (let s0 = 0; s0 < n; s0++) {
@@ -370,7 +399,7 @@ function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: 
       if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;
       if (water[nr * cols + nc]) v = Math.min(v, surf[lab[nr * cols + nc]]);
     }
-    ws[i] = isFinite(v) ? v : 0;
+    ws[i] = isFinite(v) ? v : dry && dry[i] ? NO_WATER : 0;
   }
   return ws;
 }
@@ -406,18 +435,19 @@ function baseFields(meta: Meta | undefined, grid: Grid): { base: Float32Array; w
   const U = elevUnitM(m);
   const gLand = Math.tan(BASE_SLOPE_DEG * Math.PI / 180) * 1000 / U;   // 抽象/km
   const gSea = Math.tan(SEABED_SLOPE_DEG * Math.PI / 180) * 1000 / U;
-  const v2 = isGen2(m) ? gen2Fine(m, grid) : null;
+  /* v2：中尺度到了，基底与派生地类都取它（地类随中尺度基底重判）；没到取宏观那份 */
+  const v2 = isGen2(m) ? gen2Fine(m, grid) : null, vb = v2 ? (grid.meso ? grid.meso.base : v2.base) : null, vc = grid.meso ? grid.meso.cls : null;
   const gen = m.terrain === "auto" && !v2 ? genHField(m, grid) : null;
   const t = new Float32Array(n), water = waterMask(grid);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     const i = r * cols + c, p = terrainProps(cells[r][c]);
     t[i] = p.elev;
     if (gen && genLandformOf(gen[i], m) === p.lf) t[i] = elevFromGenH(gen[i], m);
-    else if (v2 && LANDFORM_ORDER[v2.lf[i]] === p.lf) t[i] = v2.base[i];   // 没被涂过（现类型＝v2 派生类型）取 v2 基底
+    else if (v2 && LANDFORM_ORDER[vc ? (vc[i] / ECO_ORDER.length) | 0 : v2.lf[i]] === p.lf) t[i] = vb![i];   // 没被涂过（现类型＝派生类型）取 v2 基底
   }
   let seed: Uint8Array | null = null;   // v2：生成器的海格（没被涂成别的）作海的种子——整球图与「图幅外＝陆地」下碰图幅边判不出海
   if (v2) { seed = new Uint8Array(n); for (let i = 0; i < n; i++) if (v2.sea[i] && water[i]) seed[i] = 1; }
-  const ws = waterSurfaceOf(t, water, cols, rows, m.outside === "land", seed);
+  const ws = waterSurfaceOf(t, water, cols, rows, m.outside === "land", seed, grid.meso ? grid.meso.basin : null);
   const b = new Float32Array(n), d = new Float32Array(n);
   for (let i = 0; i < n; i++) { b[i] = water[i] ? ws[i] : t[i]; d[i] = water[i] ? Infinity : 0; }
   chamferMin(b, cols, rows, gLand * dxKm, gLand * dyKm, gLand * ddKm);   // 陆地：水格作源（海=0，湖=湖面），坡不超山前坡
@@ -466,13 +496,14 @@ function reliefField(m: Meta, grid: Grid): Float32Array {
   const base = baseElev(m, grid), water = waterMask(grid);
   const kmd = kmPerDeg(m);
   const sc = m.worldModel !== "flat" ? [(bb.lonMin + bb.lonMax) / 2, (bb.latMin + bb.latMax) / 2] as const : null;
-  const relief = makeRelief(seed, step * kmd, kmd, sc), reliefU = RELIEF_M / elevUnitM(m);
+  const env = grid.meso ? grid.meso.env : null;   // 中尺度图：起伏按包络、只加两格以下的带（同 core/erode）
+  const relief = makeRelief(seed, step * kmd, kmd, sc, env ? RELIEF_MESO_CELLS * step * kmd : Infinity), reliefU = RELIEF_M / elevUnitM(m);
   const f = new Float32Array(rows * cols);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     const i = r * cols + c;
     let e: number = base[i];
     if (amp > 0 && !water[i]) {
-      const mm = amp * mountainness(e);
+      const mm = amp * (env ? env[i] : mountainness(e));
       if (mm > 0) e += relief(bb.lonMin + (c + 0.5) * step, bb.latMin + (r + 0.5) * step, mm) * reliefU;
     }
     f[i] = e;

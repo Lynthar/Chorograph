@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
 import { regenRivers } from "../src/ui/editops.ts";
-import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, outsideCount, pullIntoFrame, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, paintUpliftPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, outsideCount, pullIntoFrame, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
@@ -52,6 +52,7 @@ describe("撤销栈", () => {
     assert.strictEqual(terrKey(a), terrKey(mkWorld({ ...a, meta: { ...a.meta, 名称: "改名", contourM: 20, climate: "arid" } })), "显示层设置不影响地形键");
     const c = mkWorld({ terrainOverrides: [{ lon: 1, lat: 2, t: "forest" }] });
     assert.notStrictEqual(terrKey(a), terrKey(c));
+    assert.notStrictEqual(terrKey(a), terrKey(mkWorld({ ...a, upliftOverrides: [{ lon: 1, lat: 2, peakM: 3000 }] })), "画抬升进地形键（撤销它要重建）");
     for (const m of [{ outside: "land" }, { gridN: 300 }, { relief: 0.5 }, { worldModel: "flat" }, { kmPerDeg: 50 }, { elevUnitM: 1000 }, { genSeed: 7 }, { reliefSeed: 9 }, { erode: "base" }] as const)
       assert.notStrictEqual(terrKey(a), terrKey(mkWorld({ ...a, meta: { ...a.meta, ...m } })), JSON.stringify(m));
   });
@@ -317,6 +318,52 @@ describe("编辑操作内核", () => {
     assert.strictEqual(new Set(wt.terrainOverrides!.map(key)).size, 8);
   });
 
+  it("画抬升：同格再涂＝覆盖不累加、同值空笔；橡皮擦笔下当刻生效的抬升与旧涂改；时段分层；地貌笔一并复位并计数", () => {
+    const M = { worldModel: "sphere", terrain: "plain", gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;   // 4 列＝1°/格
+    const g = buildGridCells(M, [], 3000);
+    const w = { meta: M, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] } as never as import("../src/core/types.ts").World;
+    const P: [number, number][] = [[101.5, 31.5]];
+    assert.ok(paintUpliftPath(w, g, 3000, P, { peakM: 2000 }, 2, false, null));
+    assert.strictEqual(w.upliftOverrides!.length, 5, "半径 1 格圆盘＝十字 5 格");
+    assert.ok(w.upliftOverrides!.every(o => o.peakM === 2000));
+    const arr0 = w.upliftOverrides;
+    assert.strictEqual(paintUpliftPath(w, g, 3000, P, { peakM: 2000 }, 2, false, null), false, "同值再涂＝空笔（不留空撤销）");
+    assert.strictEqual(w.upliftOverrides, arr0, "空笔不换数组");
+    assert.ok(paintUpliftPath(w, g, 3000, [[101.5, 31.5]], { peakM: 3000.4 }, 1, false, null));
+    assert.strictEqual(w.upliftOverrides!.length, 5, "覆盖不增条目");
+    assert.strictEqual(w.upliftOverrides!.filter(o => o.peakM === 3000).length, 1, "笔下那格改成新峰高（取整到米），其余不动");
+    assert.notStrictEqual(w.upliftOverrides, arr0, "改了就换新数组");
+    paintUpliftPath(w, g, 3000, [[103.5, 33.5]], { peakM: 1000 }, 1, false, { on: true, since: 3100, until: null });
+    assert.strictEqual(w.upliftOverrides!.length, 6, "另一时段另记一条");
+    paintHeightAt(w, g, 101.5, 31.5, 0.5, 1, null);
+    assert.ok(paintUpliftPath(w, g, 3000, [[101.5, 31.5], [103.5, 33.5]], { peakM: 0 }, 1, true, null), "橡皮");
+    assert.strictEqual(w.upliftOverrides!.length, 5, "当刻生效的那格擦掉，未来时段的留着");
+    assert.ok(w.upliftOverrides!.some(o => o.since === 3100));
+    assert.strictEqual(w.heightOverrides!.length, 0, "旧的高程涂改一起擦");
+    const acc = { n: 0 };
+    paintTerrainPath(w, g, 3000, P, "plain", 2, false, null, "lf", acc);
+    assert.strictEqual(w.upliftOverrides!.length, 1, "地貌笔复位笔下的抬升（未来时段那条在笔外）");
+    assert.strictEqual(acc.n, 4, "计入收笔回执的复位条数");
+    paintUpliftPath(w, g, 3000, [[103.5, 33.5]], { peakM: 0 }, 1, true, { on: false, since: null, until: null });
+    paintTerrainPath(w, g, 3100, [[103.5, 33.5]], "plain", 1, false, null, "lf");
+    assert.ok(!("upliftOverrides" in w), "擦空删键（缺键不落盘）");
+  });
+  it("画盆地：记目标盆底（可为负、取整到米）；同值空笔；山盆在同一格互相覆盖；橡皮一并擦", () => {
+    const M = { worldModel: "sphere", terrain: "plain", gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;
+    const g = buildGridCells(M, [], 3000);
+    const w = { meta: M, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] } as never as import("../src/core/types.ts").World;
+    const P: [number, number][] = [[101.5, 31.5]];
+    assert.ok(paintUpliftPath(w, g, 3000, P, { floorM: -200.4 }, 2, false, null));
+    assert.ok(w.upliftOverrides!.length === 5 && w.upliftOverrides!.every(o => o.floorM === -200 && !("peakM" in o)), "盆地格只记 floorM");
+    assert.strictEqual(paintUpliftPath(w, g, 3000, P, { floorM: -200 }, 2, false, null), false, "同值再涂＝空笔");
+    assert.ok(paintUpliftPath(w, g, 3000, P, { peakM: 1500 }, 1, false, null));
+    assert.strictEqual(w.upliftOverrides!.length, 5, "山涂在盆上＝覆盖，不增条目");
+    assert.strictEqual(w.upliftOverrides!.filter(o => o.peakM === 1500 && !("floorM" in o)).length, 1);
+    assert.ok(paintUpliftPath(w, g, 3000, P, { floorM: 100 }, 2, false, null));
+    assert.ok(w.upliftOverrides!.every(o => o.floorM === 100), "盆涂在山上同理");
+    assert.ok(paintUpliftPath(w, g, 3000, P, { floorM: 0 }, 2, true, null), "橡皮");
+    assert.ok(!("upliftOverrides" in w), "擦空删键");
+  });
   it("paintHeightAt：同格图章加性合并、下切、累加≈0 自动清除", () => {
     const M = { worldModel: "sphere", terrain: "plain", gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;   // 4 列＝1°/格
     const g = buildGridCells(M, [], 0);

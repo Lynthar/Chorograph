@@ -124,6 +124,7 @@ export function strategicExtent(world: World): { lo: number; hi: number } | null
   for (const d of world.decor || []) span(d);
   for (const t of world.terrainOverrides || []) span(t);
   for (const h of world.heightOverrides || []) span(h);
+  for (const u of world.upliftOverrides || []) span(u);
   return seen ? { lo, hi } : null;
 }
 

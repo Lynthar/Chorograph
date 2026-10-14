@@ -1,5 +1,5 @@
 /* 撤销/重做（分域快照，上限 60）：语义仍是"每步一份完整世界"，但串化时把「地形域」
-   （terrainOverrides/heightOverrides——战术图与重涂改档的体积大头）与其余「对象域」分开；
+   （terrainOverrides/heightOverrides/upliftOverrides——战术图与重涂改档的体积大头）与其余「对象域」分开；
    入栈时地形串与栈顶逐字相等 ⇒ 改存栈顶同一份（新串沦为临时垃圾被回收），
    于是连续 N 步对象编辑只多存 N 份小对象域 + 1 份地形串，不再是 N 份整档。
    接口与快照式完全一致；stats() 仅诊断/测试用。
@@ -16,11 +16,11 @@ export function terrMetaKey(m: Meta): string {
     m.elevUnitM, m.kmPerDeg, m.planetRadiusKm, m.erode]);
 }
 export function terrKey(w: World): string {
-  return terrMetaKey(w.meta || {}) + JSON.stringify([w.terrainOverrides, w.heightOverrides]);
+  return terrMetaKey(w.meta || {}) + JSON.stringify([w.terrainOverrides, w.heightOverrides, w.upliftOverrides]);
 }
 
 /** 地形域键（体积大头且多数编辑步不动）；其余键全归对象域 */
-const TERR_KEYS: readonly string[] = ["terrainOverrides", "heightOverrides"];
+const TERR_KEYS: readonly string[] = ["terrainOverrides", "heightOverrides", "upliftOverrides"];
 
 interface Snap { t: string; o: string }
 

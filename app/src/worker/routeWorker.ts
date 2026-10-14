@@ -14,5 +14,7 @@ scope.onmessage = e => {
      Worker 侧交出即不再读 */
   if (r.t === "erode") scope.postMessage(r, [r.f.data.buffer]);
   else if (r.t === "carve" && r.carve) scope.postMessage(r, [r.carve.data.buffer]);
+  else if (r.t === "uplift") scope.postMessage(r, [r.base.buffer, r.env.buffer, r.cls.buffer, ...(r.basin ? [r.basin.buffer] : []), ...(r.water ? [r.water.at.buffer] : [])]);
+  else if (r.t === "meso") scope.postMessage(r, r.sg ? [r.base.buffer, r.env.buffer, r.cls.buffer, r.sg.h.buffer, r.sg.rcv.buffer] : [r.base.buffer, r.env.buffer, r.cls.buffer]);
   else scope.postMessage(r);
 };

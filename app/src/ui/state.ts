@@ -155,6 +155,8 @@ export const tilesDownSig = signal(false);
 /** 落定的规则场（host 独写）：门关＝粗格、门开＝工作档落地后的那份；演算中为 null。
     规则消费者只认它——ctx.ruleField 在等待窗里是过渡合成，视域算在上面就是「落笔即变、落地又变」。 */
 export const ruleFieldSig = signal<ElevField | null>(null);
+/** 类型网格的代号（host 独写）：发给寻路的网格换了 cells（换年、改地貌、v2 地类随中尺度重判）就加一——读地类的结果按它重算 */
+export const cellsVerSig = signal(0);
 /** 标高点峰表（shell/spots 独写）：落定规则场的全场峰表，演算中沿用上一份；换图清空 */
 export const spotTableSig = signal<SpotTable | null>(null);
 
@@ -611,6 +613,9 @@ export const terrainAxisSig = signal<TerrainAxis>("lf");   // 地形子工具四
 export const terrainAxisOf = (a: TerrainAxis, tac: boolean): TerrainAxis => a === "clim" && tac ? "lf" : a;
 export const climPaintSig = signal<Climate>("temperate");      // 气候笔：当前档
 export const heightStepMSig = signal(0);                      // 高程笔幅度 米/笔；0=自动（战术 10/战略 50），生效值走 core/elev.heightStepM
+export const upliftPeakMSig = signal(3000);                   // 画抬升（v2 战略图的高程笔）：目标峰高（米）
+export const upliftModeSig = signal<"peak" | "floor">("peak");   // 画抬升两态：山 / 盆地
+export const basinFloorMSig = signal(300);                    // 画盆地：目标盆底（米，可为负）
 export const addTypeSig = signal<string>("city");             // 地点：落点预选类型（柱B——同布景选印章之例；缺省城市=旧行为）
 export const decorKindSig = signal<string>("tree");           // 布景：当前印章种类
 export const decorSizeSig = signal(1);                        // 布景印章尺寸（0.5–2.5）

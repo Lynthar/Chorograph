@@ -136,8 +136,8 @@ export function waterSpots(grid: Grid, wsurf: Float32Array, unitM: number, km: {
     const k = comp[i]; count[k]++;
     if (best[k] < 0 || dist[i] > dist[best[k]]) best[k] = i;
   }
-  const shown = (e: number): number => Math.round(e * unitM);
-  const byCount = Array.from({ length: nComp }, (_, k) => k).filter(k => shown(wsurf[best[k]]) > 0 && count[k] >= minCells)
+  const shown = (e: number): number => Math.round(e * unitM), dry = grid.meso ? grid.meso.basin : null;   // 水面为负只认画的盆地里的湖（旧图沼泽旁的湖类型高程为负，不标）
+  const byCount = Array.from({ length: nComp }, (_, k) => k).filter(k => (shown(wsurf[best[k]]) > 0 || (!!dry && (dry[best[k]] & 1) !== 0 && shown(wsurf[best[k]]) !== 0)) && count[k] >= minCells)
     .sort((a, b) => count[b] - count[a] || a - b);
   const out: SpotHeight[] = [];
   for (const k of byCount) {

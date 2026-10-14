@@ -1,4 +1,4 @@
-/* 分块精修的编排：拿到全图工作档输入 → Worker 算一份粗级切割量 → 各块的键 → 内存/缓存命中直接上，其余按「视口里的先、离视心近的先」排队算。
+/* 分块精修的编排：拿到全图工作档输入 → Worker 算一份粗级切割量（中尺度图不跑粗级、没有这一步） → 各块的键 → 内存/缓存命中直接上，其余按「视口里的先、离视心近的先」排队算。
    视口里的块齐了才一起上屏（不出现半清半糊的拼贴），视口外的随到随上；编辑后旧块照旧显示、叠上粗格增量（同工作档的等待窗合成），
    视口里换了键的块也等视口齐了才一起换（不出现新旧拼贴）。块只进画面：规则场、读数与等高线不读这里。 */
 import { applyDelta, deltaOf, type CoarseDelta } from "../core/elev.ts";
@@ -39,7 +39,7 @@ export const TILE_RETRY_MS = 5000;
 
 export function createTileManager(d: TileDeps, memCapBytes: number): TileManager {
   let token = 0, plan: TilePlan | null = null, inp: ErodeInput | null = null, base: Float32Array | null = null, inpKey = "";
-  let carve: CoarseCarve | null = null, keys: Map<number, string> | null = null;
+  let carve: CoarseCarve | null | undefined, keys: Map<number, string> | null = null;   // carve：undefined＝还没到，null＝中尺度图不要
   const carves = new Map<string, CoarseCarve>();   // erodeKey → 切割量（Map 的插入序当 LRU）
   let dead = false;   // 车道失败：停发单，等复位
   let retry: "none" | "pending" | "used" = "none";   // 复位只给一次；用过之后再失败＝本会话停摆
@@ -82,7 +82,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
         if (now && grid && s.base !== now) {
           if (!deltas.has(s.base)) deltas.set(s.base, deltaOf(s.base, now, grid));
           const dl = deltas.get(s.base);
-          if (dl) a = applyDelta(tileField(plan.geom, i, s.raw), dl, now, grid, grid.cells).data;
+          if (dl) a = applyDelta(tileField(plan.geom, i, s.raw), dl, now, grid, grid.cells, grid.meso ? grid.meso.basin : null).data;
         }
         if (a !== disp.get(i)) changed = true;
       }
@@ -123,7 +123,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
   }
   function revive(): void {
     dead = false; retry = "used";
-    if (plan && inp && !carve) requestCarve(); else pump();
+    if (plan && inp && carve === undefined) requestCarve(); else pump();
     updateBusy();
   }
   const center = (): [number, number] => (view ? [(view.lonMin + view.lonMax) / 2, (view.latMin + view.latMax) / 2] : [0, 0]);
@@ -139,7 +139,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
     return best;
   }
   function pump(): void {
-    while (!dead && plan && inp && carve && keys && queue.size && inflight.size < Math.max(1, d.client.tileLanes)) {
+    while (!dead && plan && inp && carve !== undefined && keys && queue.size && inflight.size < Math.max(1, d.client.tileLanes)) {
       const i = next()!, key = keys.get(i)!, t = token, p = plan, src = inp, cv = carve;
       queue.delete(i); inflight.set(i, key);
       const lost = (e?: unknown): void => { if (t === token && keys?.get(i) === key) queue.add(i); fail(e); };   // 这一块回队，复位后接着算
@@ -156,7 +156,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
     }
   }
   /* 切割量到了：先算齐全部块键（land 里判「视口齐了」要看全），再逐块认领——键没变的只换基准，内存命中的直接上，其余排队 */
-  function onCarve(cv: CoarseCarve): void {
+  function onCarve(cv: CoarseCarve | null): void {
     const p = plan!, src = inp!;
     carve = cv; keys = new Map();
     for (const i of p.tiles) keys.set(i, tileKey(tileInput(src, p, cv, i)));
@@ -173,6 +173,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
   }
   function requestCarve(): void {
     const t = token, src = inp!, key = inpKey;
+    if (src.mesoEnv) { onCarve(null); return; }
     d.client.erodeCarve(src).then(cv => {
       if (t !== token || !plan) return;
       if (!cv) { fail(); return; }
@@ -184,7 +185,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
 
   return {
     reset() {
-      token++; plan = null; inp = null; base = null; carve = null; keys = null;
+      token++; plan = null; inp = null; base = null; carve = undefined; keys = null;
       shown.clear(); published.clear(); held.clear(); fresh.clear(); queue.clear(); inflight.clear();
       disp = new Map(); dispFor = new Map(); vis = new Set();
       emit(null); updateBusy();
@@ -194,7 +195,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
       if (plan && (plan.geom.sx !== nextPlan.geom.sx || plan.geom.cols !== nextPlan.geom.cols || plan.geom.rows !== nextPlan.geom.rows)) {
         shown.clear(); published.clear(); held.clear(); fresh.clear(); disp = new Map(); dispFor = new Map(); emit(null);
       }
-      plan = nextPlan; inp = nextInp; base = nextBase; inpKey = key; carve = null; keys = null; queue.clear();
+      plan = nextPlan; inp = nextInp; base = nextBase; inpKey = key; carve = undefined; keys = null; queue.clear();
       const inPlan = new Set(nextPlan.tiles);
       for (const i of [...shown.keys()]) if (!inPlan.has(i)) { shown.delete(i); published.delete(i); held.delete(i); fresh.delete(i); }
       if (view) vis = visibleOf(nextPlan, view);

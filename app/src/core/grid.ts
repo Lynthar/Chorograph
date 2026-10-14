@@ -3,15 +3,19 @@
    涂改可带时段（地形纪元）与块尺寸（战术图继承的战略图涂改=1°粗块盖章）。 */
 import { seedTerrain } from "./terrain.ts";
 import { gen2Fine, isGen2 } from "./gen2.ts";
-import { canonComposite } from "./constants.ts";
+import { allComposites, canonComposite } from "./constants.ts";
 import { activeAt } from "./time.ts";
 import { kmPerDeg } from "./geo.ts";
 import type { FieldGeom } from "./elev.ts";
+import type { Gen2MesoField } from "./gen2.ts";
 import { DEFAULT_BBOX, type BBox, type Edge, type Meta, type TerrainOverride, type WorldNode } from "./types.ts";
 
 /* cells 存**复合串**（"地貌" 或 "地貌/生态"；旧 8 类 id 是其兼容子集）。seedTerrain 产 canonical 复合、
    涂改经 canonComposite 归一；消费点一律走 core/constants 的 terrainProps/flatten（不再直接查旧表）。 */
-export interface Grid { bb: BBox; step: number; cols: number; rows: number; cells: string[][] }
+export interface Grid { bb: BBox; step: number; cols: number; rows: number; cells: string[][];
+  /** v2 图的中尺度场（core/gen2.gen2Meso，同一张图、同一几何）：有它，底稿地类、连续基底与起伏取它。
+      只经 buildGridCells 挂上——cells 的底稿随它变，按 Grid 实例记忆的基底、水面与起伏也只认新实例 */
+  meso?: Gen2MesoField }
 
 /* 地形网格的格边度数——**格边即最小笔刷**（笔刷只能整格地涂），也是涂改块与寻路格的粒度。
    缺 `meta.gridN` 走自动档（见下），写了就照写、只钳到各自域内。
@@ -94,12 +98,28 @@ export function gridGeom(meta: Meta | undefined): FieldGeom {
   return { bb, step, cols, rows };
 }
 
-export function buildGridCells(meta: Meta | undefined, overrides: TerrainOverride[] | undefined, yearNow: number): Grid {
+/* 中尺度底稿按类号数组记忆：同一份中尺度场重建（换年、改涂改）只拷行 */
+const mesoCellsMemo = new WeakMap<Uint8Array, string[][]>();
+function mesoCells(cls: Uint8Array, cols: number, rows: number): string[][] {
+  let base = mesoCellsMemo.get(cls);
+  if (base) return base;
+  const names = allComposites();
+  base = [];
+  for (let r = 0; r < rows; r++) { const row: string[] = new Array(cols); for (let c = 0; c < cols; c++) row[c] = names[cls[r * cols + c]]; base.push(row); }
+  mesoCellsMemo.set(cls, base);
+  return base;
+}
+
+/** @param meso v2 图同一几何上的中尺度场：给了就以它重判的地类为底稿、并挂在返回的 Grid 上（非 v2 图忽略） */
+export function buildGridCells(meta: Meta | undefined, overrides: TerrainOverride[] | undefined, yearNow: number, meso?: Gen2MesoField): Grid {
   const m = meta || {};
   const { bb, step, cols, rows } = gridGeom(m);
   const mk = `${bb.lonMin},${bb.latMin},${bb.lonMax},${bb.latMax}|${step}|${cols}x${rows}|${m.terrain || ""}|${(m.genSeed as number) ?? ""}|${m.genStyle || ""}|${m.genVer ?? ""}|${m.genLand ?? ""}|${m.genMtn ?? ""}|${m.genIsl ?? ""}|${m.worldModel || ""}|${m.planetRadiusKm ?? ""}|${m.kmPerDeg ?? ""}`;
+  const ms = meso && isGen2(m) ? meso : undefined;
   let cells: string[][];
-  if (seedMemo && seedMemo.key === mk) {
+  if (ms) {
+    cells = mesoCells(ms.cls, cols, rows).map(row => row.slice());
+  } else if (seedMemo && seedMemo.key === mk) {
     cells = seedMemo.base.map(row => row.slice());
   } else if (isGen2(m)) {
     const base = gen2Fine(m, { bb, step, cols, rows }).cells;   // v2：流域是全局量，整场算完再逐格取
@@ -122,7 +142,7 @@ export function buildGridCells(meta: Meta | undefined, overrides: TerrainOverrid
     if (!rc) return;
     for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) cells[r][c] = ot;
   });
-  return { bb, step, cols, rows, cells };
+  return ms ? { bb, step, cols, rows, cells, meso: ms } : { bb, step, cols, rows, cells };
 }
 
 /** 涂改章覆盖的格矩形（闭区间、已裁进图幅；一格都罩不住＝null）。`step` 缺省＝本图格边＝单格章（点所在格），

@@ -173,6 +173,15 @@ export interface HeightOverride extends Timed {
   step?: number;              // 图章尺寸（同 TerrainOverride 语义；战术图继承的战略图涂改=1°粗块）
 }
 
+/** 画抬升（v2 战略图的高程笔，core/gen2.gen2Uplift）：这一格要长成多高的山或压成多低的盆，地形由中尺度稳态与收尾解出。
+    只记输入不记结果——解随求解过程变，存档存了结果就再也对不上同一份输入。peakM 与 floorM 恰有一个 */
+export interface UpliftOverride extends Timed {
+  lon: number; lat: number;
+  peakM?: number;             // 目标峰高（米，> 0）：所在连通涂抹区的最高点标定到区内最大的这个值
+  floorM?: number;            // 目标盆底（米，可为负）：所在连通涂抹区的最低点标定到区内最小的这个值
+  step?: number;              // 图章尺寸（同 HeightOverride）
+}
+
 export interface TrackPt {
   t: number; lon: number; lat: number;
   st?: string;                // 状态（UNIT_STATUS 键：battle/standoff/rout）：自该航点起生效到下一航点；缺省=行军/常态
@@ -223,6 +232,7 @@ export interface World {
   decor: Decor[];
   terrainOverrides: TerrainOverride[];
   heightOverrides?: HeightOverride[];   // 可选（不入 normalizeWorld 数组清单——旧档形状不变）
+  upliftOverrides?: UpliftOverride[];   // 画抬升（可选键，缺省不落盘——同 heightOverrides；只在 v2 战略图上生效）
   units: Unit[];
   assets?: Asset[];                     // 自定义印章资产（可选键，缺省不落盘——同 heightOverrides）
   climateZones?: ClimateZone[];         // 气候分区（core/climzone；可选键，缺省不落盘；只进观感）

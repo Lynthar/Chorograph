@@ -2,12 +2,13 @@
    同步回退跑同一协议函数。ctx 始终同镜像到回退态——Worker 中途挂掉也能续算。
    Worker 经 `?worker&inline` 内联进主包（Vite）——单文件产物自包含、无外部 worker 文件。 */
 import RouteWorker from "./routeWorker.ts?worker&inline";
-import { handleRouteMsg, type RouteCtx, type RouteReply, type RouteRequest, type SightReq, type SightRes, type VisReq, type VisRes } from "./routeProto.ts";
+import { handleRouteMsg, type MesoReply, type UpliftReply, type RouteCtx, type RouteReply, type RouteRequest, type SightReq, type SightRes, type VisReq, type VisRes } from "./routeProto.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
 import type { Grid } from "../core/grid.ts";
 import type { CoarseCarve, ErodeInput } from "../core/erode.ts";
-import type { ElevField } from "../core/elev.ts";
+import type { ElevField, FieldGeom } from "../core/elev.ts";
+import { mesoKey, type Gen2Sg, type UpliftCells } from "../core/gen2.ts";
 import type { ViewField } from "../core/viewshed.ts";
 import type { PeakTable } from "../core/spots.ts";
 import type { Arm, Meta, Unit, World } from "../core/types.ts";
@@ -36,6 +37,16 @@ export interface RouteClient {
   /** 撤掉在飞的工作档侵蚀单：同 cancelUltra——新编辑来了，上一笔的单算完只会被令牌作废，还挡着新单排队（收笔后多等 1～4 s）；
       被撤的结果不进场缓存（撤销回那一步要重算，用户拍板接受）。崩溃判死与主动撤单分开：撤单后下一单懒建新车道，判死后退回主 worker。 */
   cancelErode(): void;
+  /** v2 图的中尺度稳态（独立车道，懒建）：整幅要 6–30 s，只依赖生成参数与几何——编辑不撤它；sg＝缓存的解（给了就只派生）。
+      建不出 Worker 或车道崩了返 null，绝不同步回退（同 erodeUltra） */
+  meso(meta: Meta, geom: FieldGeom, sg: Gen2Sg | null): Promise<MesoReply | null>;
+  /** 撤掉在飞的中尺度单（换了生成参数或几何，旧单算完也用不上当前图）：以 null 收场，下一单懒建新车道 */
+  cancelMeso(): void;
+  /** 中尺度车道手里留着这把 mesoKey 的 Sg（上一单就是这张图、车道没被撤）：画抬升单这时不必带 sg */
+  mesoHolds(key: string): boolean;
+  /** 在 Sg 上解画抬升（同一车道；车道按 mesoKey 留着求解图，每笔只跑标定链）。sg＝车道没留着时由调用方从缓存取来；
+      都没有时车道现算 Sg（同一份解，只是慢）。建不出 Worker 或车道崩了返 null，绝不同步回退 */
+  uplift(meta: Meta, geom: FieldGeom, cells: UpliftCells, sg: Gen2Sg | null): Promise<UpliftReply | null>;
   /** 视线判定与标高点共用的规则场：同 setContext 惰性推送（下一单之前才克隆）；与上一份同一组数组＝不重推 */
   setViewField(field: ViewField): void;
   /** 一批观察者的视线掩膜（寻路车道）；Worker 挂掉时返 null——调用方保持上一份 */
@@ -116,6 +127,26 @@ export function createRouteClient(): RouteClient {
       ew.onmessageerror = () => { ewDead = true; killErodeWorker(); };
     } catch { ew = null; ewDead = true; }
     return ew;
+  };
+  let mw: Worker | null = null, mwTried = false;   // 中尺度车道（懒建）：几十秒的单不挤侵蚀与精修车道，编辑时也不撤
+  let mwKey = "";                                   // 车道留着哪把 mesoKey 的 Sg（单落地才记；车道没了即清）
+  const pendingM = new Map<number, (r: RouteReply) => void>();
+  const killMesoWorker = () => {
+    try { mw?.terminate(); } catch { /* 已死 */ }
+    mw = null; mwKey = "";
+    for (const [, res] of pendingM) res({ t: "route", id: -1, res: null } as RouteReply);
+    pendingM.clear();
+  };
+  const ensureMw = (): Worker | null => {
+    if (mwTried) return mw;
+    mwTried = true;
+    try {
+      mw = new RouteWorker();
+      mw.onmessage = e => { const r = e.data as RouteReply, f = pendingM.get(r.id); if (f) { pendingM.delete(r.id); f(r); } };
+      mw.onerror = killMesoWorker;
+      mw.onmessageerror = killMesoWorker;
+    } catch { mw = null; }
+    return mw;
   };
   const killUltraWorker = () => {
     try { uw?.terminate(); } catch { /* 已死 */ }
@@ -241,10 +272,34 @@ export function createRouteClient(): RouteClient {
       killUltraWorker();
       uwTried = false;   // 与崩溃判死不同：这是主动撤单，车道要能再建
     },
+    async meso(meta, geom, sg) {
+      const worker = ensureMw();
+      if (!worker) return null;
+      const id = ++seq;
+      const r = await new Promise<RouteReply>(res => { pendingM.set(id, res); worker.postMessage({ t: "meso", id, meta, geom, sg }, sg ? [sg.h.buffer, sg.rcv.buffer] : []); });
+      if (r.t !== "meso") return null;
+      if (mw === worker) mwKey = mesoKey(meta, geom);
+      return r;
+    },
+    mesoHolds: key => !!key && key === mwKey && !!mw,
+    async uplift(meta, geom, cells, sg) {
+      const worker = ensureMw();
+      if (!worker) return null;
+      const id = ++seq;
+      const r = await new Promise<RouteReply>(res => { pendingM.set(id, res); worker.postMessage({ t: "uplift", id, meta, geom, sg, cells }, sg ? [sg.h.buffer, sg.rcv.buffer] : []); });
+      if (r.t !== "uplift") return null;
+      if (mw === worker) mwKey = mesoKey(meta, geom);
+      return r;
+    },
+    cancelMeso() {
+      if (!pendingM.size) return;
+      killMesoWorker();
+      mwTried = false;   // 主动撤单：车道要能再建
+    },
     cancelErode() {
       if (!pendingE.size) return;
       killErodeWorker();   // ewDead 不置：主动撤单，下一单懒建新车道
     },
-    dispose() { killWorker(); killErodeWorker(); killUltraWorker(); for (const L of tl) killTileLane(L); }
+    dispose() { killWorker(); killErodeWorker(); killUltraWorker(); killMesoWorker(); for (const L of tl) killTileLane(L); }
   };
 }

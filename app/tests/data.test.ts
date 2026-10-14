@@ -636,6 +636,43 @@ describe("侵蚀场缓存（data/fieldcache）", () => {
   });
 });
 
+/* —— 中尺度稳态缓存（data/mesocache）：解逐位往返、换代清场、LRU 封顶 —— */
+import { mesoCacheGet, mesoCachePut, MESO_CACHE_CAP } from "../src/data/mesocache.ts";
+import { MESO_VER } from "../src/core/gen2.ts";
+
+describe("中尺度稳态缓存（data/mesocache）", () => {
+  const live = (tag: string): string => "m" + MESO_VER + ":" + tag;
+  const mkSg = (k: number) => ({ h: Float64Array.from({ length: 64 }, (_, i) => k + i / 3), rcv: Int32Array.from({ length: 64 }, (_, i) => (i * 7 + k) % 64) });
+  /* ⚠ 本测须最先触碰缓存模块（同 fieldcache：换代清场只在首开时跑一次） */
+  it("换代清场：中尺度代号不同的存货首开即清，当代键保留", async () => {
+    const raw = await openDB("yutu2-mesocache", 1, d => {
+      d.createObjectStore("sg", { keyPath: "key" });
+      d.createObjectStore("touch", { keyPath: "key" }).createIndex("t", "t");
+    });
+    const t = raw.transaction(["sg", "touch"], "readwrite");
+    t.objectStore("sg").put({ key: "m0:旧", ...mkSg(1) });
+    t.objectStore("sg").put({ key: live("keep"), ...mkSg(2) });
+    await txDone(t);
+    raw.close();
+    assert.ok(await mesoCacheGet(live("keep")), "当代键必须活过清场");
+    assert.strictEqual(await mesoCacheGet("m0:旧"), null, "旧代的解不许还魂");
+  });
+  it("存取往返：高程（Float64）与流向逐位一致；未命中＝null", async () => {
+    const sg = mkSg(5);
+    await mesoCachePut(live("rt"), sg);
+    const got = await mesoCacheGet(live("rt"));
+    assert.ok(got);
+    assert.ok(got!.h instanceof Float64Array, "降成 Float32 就与现算的解不再逐位同");
+    assert.deepStrictEqual(got!.h, sg.h); assert.deepStrictEqual(got!.rcv, sg.rcv);
+    assert.strictEqual(await mesoCacheGet(live("没存过")), null);
+  });
+  it("LRU 封顶：超 CAP 淘汰最旧，最新的留着", async () => {
+    for (let i = 0; i < MESO_CACHE_CAP + 2; i++) await mesoCachePut(live("lru-" + i), mkSg(i), 10_000 + i);
+    assert.strictEqual(await mesoCacheGet(live("lru-0")), null, "最旧一条必被淘汰");
+    assert.ok(await mesoCacheGet(live("lru-" + (MESO_CACHE_CAP + 1))));
+  });
+});
+
 describe("历法模板库 data/calstore（2026-08-19：图库页存模具，建图时整份拷进 meta）", () => {
   it("pickCalendarCfg 只留认得的键，坏值当没给（模板是本机自由数据）", () => {
     assert.deepStrictEqual(pickCalendarCfg({ months: 10, dpm: 36, era: " 启 ", junk: 1, __proto__: { x: 1 } } as never),
