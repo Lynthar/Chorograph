@@ -146,6 +146,8 @@ export interface Edge extends Timed {
   type: "road" | "river" | "trade" | "wall";   // wall=工事（2026-07 特化柱B，additive）：壁垒/长城/堑壕/岸线，寻路不吃
   名称?: string;
   widthM?: number;            // 河流真实水面宽（米）：按地理尺度渲染线宽（缺省=样式底宽 2.6px）
+  ws?: number[];              // 逐点水面宽（米，与 pts 等长）：生成的河沿程变宽；表单改了 widthM 就删（改成整条一个宽）
+  mz?: number[];              // 逐点曲流强度（整数 0..MZ_MAX，与 pts 等长）：渲染端照它在折线上合成弯道；与 ws 同删
   gen?: true;                 // 生成器画的河：改了生成参数时只替换带它的；用户一改就删（改过的河归用户）
   reverse?: boolean;          // 工事齿面翻转：缺省齿在画线方向左侧（同作战线防线齿之例；岸线惯例＝齿朝水）
   certainty?: Certainty;      // 可靠性（柱B）：缺键=确证；推断/传说走虚线+淡显（同地点之规）
@@ -236,6 +238,7 @@ export interface World {
   units: Unit[];
   assets?: Asset[];                     // 自定义印章资产（可选键，缺省不落盘——同 heightOverrides）
   climateZones?: ClimateZone[];         // 气候分区（core/climzone；可选键，缺省不落盘；只进观感）
+  genRiverOff?: number[];               // 删掉或改过的生成河经过的格（升序格号，按这张图的地形网格）：重抽时过半的格落在这里的河不画；生成参数换了就清
   [k: string]: unknown;
 }
 

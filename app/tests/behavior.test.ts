@@ -14,13 +14,14 @@ import { peakTable, pickPeaks, waterSpots, type PickOpts } from "../src/core/spo
 import { handleRouteMsg } from "../src/worker/routeProto.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
-import { ELEV } from "../src/core/constants.ts";
+import { ELEV, MZ_MAX } from "../src/core/constants.ts";
 import { clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
 import { esc, errText, fmtKm, hexA, newId, parseKV, safeName } from "../src/core/util.ts";
 import { ALL_KINDS, ARM_OPT_KINDS, EDGE_STYLE, EYE_M, EYE_M_KIND, EYE_M_NODE, FIRE_DIRECT_KIND, LEGACY_KIND, MODERN_KINDS, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
 import { fmtStrength, nodeEyeM, parseStrength, rangeDirect, setUnitPoint, unitAltAt, unitFireDirect, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { astar, computeRoute } from "../src/core/route.ts";
-import { wallTeeth } from "../src/render/edges.ts";
+import { drawEdges, riverShape, wallTeeth } from "../src/render/edges.ts";
+import { RIVER_WATER_PX, riverSet, riverThr } from "../src/render/rivers.ts";
 import { facingHandlePx, pickFacingHandle, unitSpots } from "../src/render/units.ts";
 import { changedBox, coastInk, planTile, sameGeom, tileCovers, unionBB, wrapCopies } from "../src/render/terrainCPU.ts";
 import { drawFactions, type LoopBudget } from "../src/render/factions.ts";
@@ -35,7 +36,7 @@ import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NRM0, SNOW_LAT_M, c
 import { terrainOpts, contourStepOf } from "../src/render/renderer.ts";
 import { CLIMATE, CLIMATE_ORDER, allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/ui/stamps.ts";
-import type { Meta, World, WorldNode } from "../src/core/types.ts";
+import type { Edge, Meta, World, WorldNode } from "../src/core/types.ts";
 import { validateWorld } from "../src/core/validate.ts";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -1697,16 +1698,16 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
      推演底图不替等高线做主（等高线仍是独立图层），也不改纸色/雪线/增益的来源。 */
   it("terrainOpts：推演底图只翻 flat，等高线仍随图层开关，其余项与观感底图逐位相同", () => {
     const meta = { mapKind: "tactical", elevUnitM: 2000, bbox: { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 } } as Meta;
-    const a = terrainOpts(meta, 0.001, { contour: true }, 1.5, "shaded", 1, [800, 600], 0.05, null), b = terrainOpts(meta, 0.001, { contour: true }, 1.5, "flat", 1, [800, 600], 0.05, null);
+    const a = terrainOpts(meta, 0.001, { contour: true }, 1.5, "shaded", 1, [800, 600], 0.05, null, null), b = terrainOpts(meta, 0.001, { contour: true }, 1.5, "flat", 1, [800, 600], 0.05, null, null);
     assert.strictEqual(a.flat, false); assert.strictEqual(b.flat, true);
     assert.deepStrictEqual({ ...a, flat: null }, { ...b, flat: null }, "样式之外的项逐位相同");
-    assert.strictEqual(terrainOpts(meta, 0.001, { contour: false }, 1, "flat", 1, [800, 600], 0.05, null).contour, false, "推演底图不强开等高线");
-    assert.strictEqual(a.dpr, 1); assert.strictEqual(terrainOpts(meta, 0.001, {}, 1, "shaded", 2.5, [800, 600], 0.05, null).dpr, 2.5, "设备像素比原样进渲染选项（等高线像素量据此锚 CSS 像素）");
+    assert.strictEqual(terrainOpts(meta, 0.001, { contour: false }, 1, "flat", 1, [800, 600], 0.05, null, null).contour, false, "推演底图不强开等高线");
+    assert.strictEqual(a.dpr, 1); assert.strictEqual(terrainOpts(meta, 0.001, {}, 1, "shaded", 2.5, [800, 600], 0.05, null, null).dpr, 2.5, "设备像素比原样进渲染选项（等高线像素量据此锚 CSS 像素）");
     assert.deepStrictEqual(a.px, [800, 600], "可见区物理像素原样进渲染选项（画布可大于可见区，渲染器只画这一块）");
     assert.strictEqual(a.gain, shadeGain(meta, 0.001) * 1.5, "增益＝shadeGain × 本机山影深浅");
     assert.strictEqual(a.paper, paperOf(meta)); assert.strictEqual(a.beach, beachOf(meta)); assert.strictEqual(a.slopeK, slopeKOf(meta)); assert.deepStrictEqual(a.snow, snowSpec(meta)); assert.deepStrictEqual(a.clim, climLook(meta));
     assert.strictEqual(a.cStep, 0.05, "等距原样进渲染选项（调用方经 contourStepOf 取档）");
-    assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded", 1, [800, 600], 0.05, null).wrap, false, "平面世界不环绕");
+    assert.strictEqual(terrainOpts({ worldModel: "flat" } as Meta, 0.01, {}, 1, "shaded", 1, [800, 600], 0.05, null, null).wrap, false, "平面世界不环绕");
   });
   it("contourStepOf：坡度按视口窗统计（放大进山不按整图 75 分位）、范围按全场；整幅视角＝全场统计；上一档按 meta 记忆", () => {
     // 64×16 的 1 km 格：西半幅缓坡 0.002、东半幅陡坡 0.5；100 m/px 下东半幅下限 600 m → 1000，西半幅 2.4 m → 地板 10
@@ -1806,6 +1807,73 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     both.edges.push({ type: "road", from: "a", to: "b" });   // 道路在 y≈292，点击 (400,294)：距路 2px、距河 6px
     const hit = pickEdge(zoom, both.meta, both, 3107, 400, 294);
     assert.strictEqual(hit && hit.edge.type, "road", "重叠处取距中轴最近者");
+  });
+  it("逐点河宽：画宽随柔化同式插值、两头不变；拾取走廊按逐点宽（宽的那头点得中、窄的那头同样偏移点不中）", () => {
+    const zoom: Camera = { lon0: 100, lat0: 30, degPerPx: 0.001, w: 800, h: 600, flat: false };
+    const e: Edge = { type: "river", pts: [[99.8, 30], [100, 30], [100.2, 30]], widthM: 3000, ws: [100, 1000, 3000] };
+    const sh = riverShape({ worldModel: "sphere", planetRadiusKm: 10000 }, zoom, e), pm = sh.tp[sh.tp.length - 1] / 3000;
+    assert.strictEqual(sh.pts.length, sh.px.length);
+    assert.ok(Math.abs(sh.tp[0] - 100 * pm) < 1e-9 && sh.tp.every((v, k) => !k || v >= sh.tp[k - 1]), "两头宽不变、沿河单调");
+    const w: World = { meta: { worldModel: "sphere", planetRadiusKm: 10000 }, factions: [], decor: [], terrainOverrides: [], units: [], nodes: [], edges: [e] };
+    assert.ok(pickEdge(zoom, w.meta, w, 3107, 560, 310), "宽的那头（真宽约 17 px）偏 10 px 点得中");
+    assert.strictEqual(pickEdge(zoom, w.meta, w, 3107, 240, 310), null, "窄的那头偏 10 px 点不中");
+  });
+  /* 宽河当水体由地形渲染器画（render/rivers）：叠加层按同一份门槛跳过那些段，线头不伸进水面；地形没画河时宽河照旧画成线 */
+  it("河当水体：地形画的段叠加层跳过（选中描两岸红晕）、线头不补进水面、末端进干流或水格渐隐、河口展宽不过门槛；地形没画就照旧画线", () => {
+    const zoom: Camera = { lon0: 100, lat0: 30, degPerPx: 0.0005, w: 800, h: 600, flat: false };
+    const meta: Meta = { worldModel: "sphere", planetRadiusKm: 10000 };
+    const fills: { style: string; alpha: number }[] = [], strokes: string[] = [], xs: number[] = [];
+    const rec = new Proxy({ globalAlpha: 1 } as Record<string | symbol, unknown>, {
+      get: (t, k) => k === "fill" ? () => { fills.push({ style: String(t.fillStyle), alpha: t.globalAlpha as number }); }
+        : k === "stroke" ? () => { strokes.push(String(t.strokeStyle)); }
+        : k === "moveTo" || k === "lineTo" ? (x: number) => { xs.push(x); }
+        : k === "arc" ? (x: number, _y: number, r: number) => { xs.push(x + r); }
+        : k in t ? t[k] : () => {},
+      set: (t, k, v) => { t[k] = v; return true; }
+    }) as unknown as CanvasRenderingContext2D;
+    const mk = (edges: Edge[]): World => ({ meta, factions: [], decor: [], terrainOverrides: [], units: [], nodes: [], edges });
+    const rvOf = (w: World) => { const s = riverSet(meta, w, 3107, zoom.degPerPx); return s ? { set: s, thr: riverThr(zoom.degPerPx) } : undefined; };
+    const draw = (w: World, rv: ReturnType<typeof rvOf> | undefined, sel: number | null = null, grid?: Grid): void => {
+      fills.length = 0; strokes.length = 0; xs.length = 0; drawEdges(rec, zoom, meta, w, 3107, new Map(), {}, sel, grid, rv);
+    };
+    const blue = (a = 1) => fills.filter(x => x.style === "#3f7fc4" && x.alpha < a);
+    assert.ok(600 / 1000 / (2 * Math.PI * 10000 / 360) / zoom.degPerPx >= RIVER_WATER_PX, "前提：600 m 真宽过门槛");
+    const wide = mk([{ type: "river", pts: [[99.7, 30], [99.9, 30], [100.1, 30], [100.3, 30]], widthM: 600 }]);
+    draw(wide, rvOf(wide));
+    assert.strictEqual(fills.length, 0, "整条过门槛：叠加层一笔不画（水面在地形渲染器里）");
+    draw(wide, rvOf(wide), 0);
+    assert.ok(strokes.includes("rgba(192,57,43,.35)") && !blue(2).length, "选中：沿两岸描红晕、不盖水面");
+    draw(wide, undefined);
+    assert.ok(blue(2).length > 0, "地形没画河（推演底图 / 地形层关）：宽河照旧画成线");
+    /* 上游窄、下游宽：线只画到第一段水面段的起点，那一头不补圆头 */
+    const mix = mk([{ type: "river", pts: [[99.7, 30], [99.9, 30], [100.1, 30], [100.3, 30]], widthM: 1200, ws: [100, 100, 1200, 1200] }]);
+    const sh = riverShape(meta, zoom, mix.edges[0]), k0 = sh.g.findIndex((g, k) => k < sh.g.length - 1 && Math.min(g, sh.g[k + 1]) >= riverThr(zoom.degPerPx));
+    const xt = 400 + (sh.pts[k0][0] - 100) * Math.cos(30 * Math.PI / 180) / zoom.degPerPx;
+    draw(mix, rvOf(mix));
+    assert.ok(k0 > 0 && blue(2).length > 0 && Math.max(...xs) <= xt + 1e-6, `线画到 x≤${xt.toFixed(2)}：实到 ${Math.max(...xs).toFixed(2)}`);
+    draw(mix, undefined);
+    assert.ok(Math.max(...xs) > 790, "地形没画河：整条画线");
+    /* 支流末端落在画成水面的干流里：末段渐隐（同水格之规）；干流没画成水面时线照旧接线 */
+    const trib = mk([{ type: "river", pts: [[99.7, 30], [100.3, 30]], widthM: 1200 }, { type: "river", pts: [[100, 30.1], [100, 30.05], [100, 30]], widthM: 50 }]);
+    draw(trib, rvOf(trib));
+    assert.ok(blue(0.1).length > 0, "进干流的那一头淡到近 0");
+    draw(trib, undefined);
+    assert.strictEqual(blue(1).length, 0, "干流是线时不渐隐");
+    /* 尾端落在水格上（湖、海）：线状的末段渐隐；没有网格不知道哪是水，不渐隐 */
+    const grid = { bb: { lonMin: 99.6, latMin: 29.8, lonMax: 100.4, latMax: 30.2 }, step: 0.2, cols: 4, rows: 2,
+      cells: [["plain", "plain", "plain", "water"], ["plain", "plain", "plain", "water"]] } as unknown as Grid;   // 东头一列是水
+    const thin = mk([{ type: "river", pts: [[99.7, 30], [99.9, 30], [100.1, 30], [100.3, 30]], widthM: 100, ws: [100, 100, 100, 200] }]);
+    draw(thin, rvOf(thin), null, grid);
+    const faded = blue(1).map(x => x.alpha);
+    assert.ok(faded.length >= 3 && faded.some(a => a < 0.1), `尾端逐段淡下去：${faded.map(a => a.toFixed(2)).join(" ")}`);
+    draw(thin, rvOf(thin));
+    assert.strictEqual(blue(1).length, 0, "没有网格就不渐隐");
+    /* 河口展宽那一点（2×）不让线状河的末段单独跳成水面：判水面的真宽封顶在 widthM */
+    const wm = Math.round(2.4 * zoom.degPerPx * (2 * Math.PI * 10000 / 360) * 1000);
+    const mouth = mk([{ type: "river", pts: [[99.7, 30], [99.9, 30], [100.1, 30], [100.3, 30]], widthM: wm, ws: [wm, wm, wm, 2 * wm] }]);
+    assert.ok(riverSet(meta, mouth, 3107, 1e-6)!.gmax < riverThr(zoom.degPerPx), `真宽约 2.4 px（${wm} m）：一段都不过门槛`);
+    draw(mouth, rvOf(mouth));
+    assert.ok(Math.max(...xs) > 790, "整条画线，末段不跳成水面");
   });
   it("decorSizePx：线性段与旧公式逐位；KNEE 后缓增单调；深放大封顶 CAP；id 抖动 ±10% 有界", () => {
     assert.strictEqual(decorSizePx("peak", 1, 0.02, 0.001), 11 * 1 * ((0.02 / 0.001) / 14), "线性段=旧公式（同结合序）");
@@ -3077,6 +3145,50 @@ describe("标高点 Worker 协议", () => {
     const field = { bb, step, cols, rows, data, wsurf: new Float32Array(cols * rows), gstep: step, gcols: cols, grows: rows, unitM: 2000, kmx: 100, kmy: 100, curvKm: 0 };
     assert.deepStrictEqual(handleRouteMsg({}, { t: "peaks", id: 1 }), { t: "peaks", id: 1, res: null });
     assert.deepStrictEqual(handleRouteMsg({ vfield: field }, { t: "peaks", id: 2 }), { t: "peaks", id: 2, res: peakTable(field) });
+  });
+});
+
+/* 生成河的数据口径：逐点河宽 ws 随 pts 一起剔、对不上就删键；删改记录 genRiverOff 只留格号、升序去重、空了删键 */
+describe("生成河的数据口径（ws 与 genRiverOff）", () => {
+  it("normalize：坏点剔掉时逐点宽跟着剔；长度不符、有非正数、挂在 from/to 连线上都删键", () => {
+    const n = normalizeWorld({ meta: {}, nodes: [], edges: [
+      { type: "river", pts: [[1, 2], ["x", 3], [3, 4], [5, 6]], ws: [10, 20, 30, 40] },
+      { type: "river", pts: [[1, 2], [3, 4]], ws: [10] },
+      { type: "river", pts: [[1, 2], [3, 4]], ws: [10, -1] },
+      { type: "river", from: "a", to: "b", ws: [1, 2] }] });
+    assert.deepStrictEqual(n.edges[0].pts, [[1, 2], [3, 4], [5, 6]]);
+    assert.deepStrictEqual(n.edges[0].ws, [10, 30, 40], "第二个点坏了，第二个宽一起剔");
+    for (const k of [1, 2, 3]) assert.ok(!("ws" in n.edges[k]), `edges[${k}]`);
+  });
+  it("normalize：曲流强度 mz 同 ws——随坏点一起剔、长度不符或有非数删键、挂在 from/to 上删键；超出 0..MZ_MAX 或带小数的钳成整数", () => {
+    const n = normalizeWorld({ meta: {}, nodes: [], edges: [
+      { type: "river", pts: [[1, 2], ["x", 3], [3, 4], [5, 6]], mz: [0, 5, 12, -3] },
+      { type: "river", pts: [[1, 2], [3, 4]], mz: [1] },
+      { type: "river", pts: [[1, 2], [3, 4]], mz: [1, "2"] },
+      { type: "river", pts: [[1, 2], [3, 4]], mz: [2.6, null] },
+      { type: "river", pts: [[1, 2], [3, 4]], mz: [4.4, 9] },
+      { type: "river", from: "a", to: "b", mz: [1, 2] }] });
+    assert.deepStrictEqual(n.edges[0].mz, [0, MZ_MAX, 0], "第二个点坏了，第二个强度一起剔；12 钳到满档、−3 钳到 0");
+    for (const k of [1, 2, 3, 5]) assert.ok(!("mz" in n.edges[k]), `edges[${k}]`);
+    assert.deepStrictEqual(n.edges[4].mz, [4, 9]);
+  });
+  it("normalize：删改记录剔非整数与负数、升序去重；空了或不是数组删键", () => {
+    assert.deepStrictEqual(normalizeWorld({ meta: {}, nodes: [], genRiverOff: [9, 3, 3, -1, 2.5, "7", 5] }).genRiverOff, [3, 5, 9]);
+    for (const v of [[], "x", [-1, 0.5]]) assert.ok(!("genRiverOff" in normalizeWorld({ meta: {}, nodes: [], genRiverOff: v })), JSON.stringify(v));
+  });
+  it("validate：坏的逐点宽与删改记录提示、不升 fatal；超量升 fatal", () => {
+    const v = validateWorld({ meta: {}, nodes: [], edges: [{ type: "river", pts: [[1, 2], [3, 4]], ws: [1] }, { type: "river", pts: [[1, 2], [3, 4]], ws: [1, 2] }], genRiverOff: [1, 2.5] });
+    assert.strictEqual(v.ok, true);
+    assert.deepStrictEqual(v.warnings.map(x => x.path), ["edges[0].ws", "genRiverOff"]);
+    assert.strictEqual(validateWorld({ meta: {}, nodes: [], genRiverOff: "x" }).warnings[0].path, "genRiverOff");
+    assert.strictEqual(validateWorld({ meta: {}, nodes: [], genRiverOff: new Array(4000001).fill(1) }).ok, false);
+  });
+  it("validate：曲流强度长度不符或非数提示忽略、越界或带小数提示钳、不升 fatal；超量升 fatal", () => {
+    const v = validateWorld({ meta: {}, nodes: [], edges: [{ type: "river", pts: [[1, 2], [3, 4]], mz: [1] }, { type: "river", pts: [[1, 2], [3, 4]], mz: [1, 12] },
+      { type: "river", pts: [[1, 2], [3, 4]], mz: [0, 9] }, { type: "river", pts: [[1, 2], [3, 4]], mz: [0.5, 1] }] });
+    assert.strictEqual(v.ok, true);
+    assert.deepStrictEqual(v.warnings.map(x => x.path), ["edges[0].mz", "edges[1].mz", "edges[3].mz"]);
+    assert.strictEqual(validateWorld({ meta: {}, nodes: [], edges: [{ type: "river", pts: [[1, 2], [3, 4]], mz: new Array(100001).fill(1) }] }).ok, false);
   });
 });
 

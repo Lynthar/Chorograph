@@ -1,9 +1,9 @@
 /* 世界数据的规范化与构造（自 v0.14 index.html 原样迁移，黄金基准平价锁定）。
    normalizeWorld 是"单点迁移"哲学的载体：外部导入/旧存档缺什么补什么、旧字段就地升级，
    改这里的任何分支都是行为变更——旧档打开后的内容会跟着变，先想兼容。 */
-import { ALL_KINDS, LEGACY_KIND, LEGACY_TYPE, EVENT_TYPES, UNIT_KINDS } from "./constants.ts";
+import { ALL_KINDS, LEGACY_KIND, LEGACY_TYPE, EVENT_TYPES, MZ_MAX, UNIT_KINDS } from "./constants.ts";
 import { autoGridN, gridGeom } from "./grid.ts";
-import { gen2Params, gen2Rivers, isGen2 } from "./gen2.ts";
+import { gen2Params, gen2Rivers, isGen2, type GenRiver } from "./gen2.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
 import type { BBox, CalendarCfg, Climate, Edge, GenStyle, Meta, TerrainMode, World, WorldModel } from "./types.ts";
@@ -103,12 +103,28 @@ export function normalizeWorld(w: unknown): World {
     });
   });
   o.edges.forEach((e: any) => {   // 自由画河道折线 pts 净化（同 ops.pts 防御）：剔非法坐标、不足 2 点删键；旧 from/to 边无 pts 零影响
-    if (e.pts == null) return;
+    if (e.pts == null) { delete e.ws; delete e.mz; return; }
+    /* 逐点河宽与曲流强度随 pts 一起剔；长度对不上或有坏值就删键（整条退回 widthM、不弯）——留着错位的值，渲染与拾取会读到别的点。
+       曲流强度钳成 0..MZ_MAX 的整数 */
+    const same = (a: unknown): any[] | null => Array.isArray(a) && Array.isArray(e.pts) && a.length === e.pts.length ? a : null;
+    const ws = same(e.ws), mz = same(e.mz), kept: number[] = [], keptZ: number[] = [];
     e.pts = Array.isArray(e.pts)
-      ? e.pts.filter((p: any) => Array.isArray(p) && isFinite(+p[0]) && isFinite(+p[1])).map((p: any) => [+p[0], +p[1]])
+      ? e.pts.filter((p: any, k: number) => {
+          const ok = Array.isArray(p) && isFinite(+p[0]) && isFinite(+p[1]);
+          if (ok && ws) kept.push(+ws[k]);
+          if (ok && mz) keptZ.push(typeof mz[k] === "number" ? mz[k] : NaN);
+          return ok;
+        }).map((p: any) => [+p[0], +p[1]])
       : null;
-    if (!Array.isArray(e.pts) || e.pts.length < 2) delete e.pts;
+    if (!Array.isArray(e.pts) || e.pts.length < 2) { delete e.pts; delete e.ws; delete e.mz; return; }
+    if (ws && kept.every(v => isFinite(v) && v > 0)) e.ws = kept; else delete e.ws;
+    if (mz && keptZ.every(v => isFinite(v))) e.mz = keptZ.map(v => Math.max(0, Math.min(MZ_MAX, Math.round(v)))); else delete e.mz;
   });
+  // genRiverOff（生成河的删改记录）同「缺键不落盘」：只留非负整数、升序去重，空或非数组删键（越界格号由读端自然落空）
+  if (o.genRiverOff != null) {
+    const v = Array.isArray(o.genRiverOff) ? [...new Set<number>(o.genRiverOff.filter((x: any) => Number.isInteger(x) && x >= 0))].sort((a, b) => a - b) : [];
+    if (v.length) o.genRiverOff = v; else delete o.genRiverOff;
+  }
   // v0.9 迁移：旧 events[](挂靠地点的战役) → 独立"事件点"地点(type:event)；arrows(两端=地点) → 自由折线 ops
   if (Array.isArray(o.events) && o.events.length) {
     const byId = (id: unknown) => (o.nodes || []).find((n: any) => n.id === id);
@@ -219,12 +235,48 @@ export function blankWorld(s: BlankWorldSpec, today: string): World {
   return w as World;
 }
 
-/** 生成器画的河，成 edges 条目（带 gen 标记）；不是 v2 自动生成的图＝空 */
-export function genRiverEdges(meta: Meta): Edge[] {
-  if (!isGen2(meta)) return [];
-  return gen2Rivers(meta, gridGeom(meta)).map(r => ({ type: "river", pts: r.pts, widthM: r.widthM, gen: true }));
+/** 折线经过的格（这张图的地形网格；每段按不超过半格的步长取样，升序去重）：删改记录与重抽时的比对同用这一份 */
+export function riverCells(meta: Meta, pts: [number, number][]): number[] {
+  const { bb, step, cols, rows } = gridGeom(meta), set = new Set<number>();
+  const add = (x: number, y: number): void => {
+    const c = Math.floor((x - bb.lonMin) / step), r = Math.floor((y - bb.latMin) / step);
+    if (c >= 0 && r >= 0 && c < cols && r < rows) set.add(r * cols + c);
+  };
+  for (let k = 0; k < pts.length; k++) {
+    const [x, y] = pts[k];
+    if (!k) { add(x, y); continue; }
+    const [x0, y0] = pts[k - 1], n = Math.max(1, Math.ceil(Math.max(Math.abs(x - x0), Math.abs(y - y0)) / (0.5 * step)));
+    for (let t = 1; t <= n; t++) add(x0 + (x - x0) * t / n, y0 + (y - y0) * t / n);
+  }
+  return [...set].sort((a, b) => a - b);
 }
-/** 生成器的河由哪些参数定：两次取值相同就不必重画（重画会让用户删掉的河复活）；不是 v2 自动生成的图＝空串 */
+/** 抽出的河成 edges 条目（带 gen 标记）：一条河过半的格落在删改记录里就不画——删掉的不回来、改过的旁边不再冒一条；改了道的照画 */
+export function genRiverEdgesOf(meta: Meta, rivers: GenRiver[], off: number[] | undefined): Edge[] {
+  const mute = off && off.length ? new Set(off) : null, out: Edge[] = [];
+  for (const r of rivers) {
+    if (mute) {
+      const cs = riverCells(meta, r.pts);
+      let hit = 0;
+      for (const c of cs) if (mute.has(c)) hit++;
+      if (2 * hit > cs.length) continue;
+    }
+    const e: Edge = { type: "river", pts: r.pts, widthM: r.widthM, gen: true };
+    if (r.ws) e.ws = r.ws;
+    if (r.mz) e.mz = r.mz;
+    out.push(e);
+  }
+  return out;
+}
+/** 宏观河网抽的河（建图时、中尺度没有结果时用）；不是 v2 自动生成的图＝空 */
+export function genRiverEdges(meta: Meta, off?: number[]): Edge[] {
+  if (!isGen2(meta)) return [];
+  return genRiverEdgesOf(meta, gen2Rivers(meta, gridGeom(meta)), off);
+}
+/** 生成器的地形由哪些参数定（含图幅与网格）：变了就是另一张图，删改记录随之作废；不是 v2 自动生成的图＝空串 */
+export function genTerrKey(meta: Meta): string {
+  return isGen2(meta) ? JSON.stringify([gen2Params(meta), meta.gridN]) : "";
+}
+/** 生成器的河由哪些参数定：地形键加两个河流滑杆 */
 export function genRiverKey(meta: Meta): string {
   return isGen2(meta) ? JSON.stringify([gen2Params(meta), meta.gridN, meta.genRiv ?? null, meta.genWater ?? null]) : "";
 }

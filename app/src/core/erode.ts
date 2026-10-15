@@ -14,8 +14,9 @@ import { gnoise, makeRelief, mountainness, type ReliefSampler, RELIEF_CARVE_K, R
   RELIEF_ROUGH_HI, RELIEF_ROUGH_LO, RELIEF_STRIKE, RELIEF_W, RELIEF_E0, RELIEF_E1, RIDGED_MEAN, RIDGED_MEAN3, reliefSeedOf } from "./relief.ts";
 import { kmPerDegXY } from "./geo.ts";
 import { activeAt } from "./time.ts";
-import { stampRect, type Grid } from "./grid.ts";
+import { buildGridCells, stampRect, type Grid } from "./grid.ts";
 import type { BBox, HeightOverride, Meta } from "./types.ts";
+import { nestKeyParts, type NestInput } from "./nested.ts";
 
 /** 侵蚀计算档（meta.erode，设置弹层一行三选）：缺键与非法值＝all。
     all＝底图与涂改都侵蚀（落笔先见草稿，算完落地换真形）；base＝只侵蚀地类底图，高程涂改直接叠在定形后的场上
@@ -75,6 +76,11 @@ export interface ErodeInput {
   /** v2 图画的盆地（粗格，同 Gen2MesoField.basin）：位 2 的格是局部基准面——细级填洼从它起、侵蚀不动它，闭合盆地才不被填成盆沿高的平台。
       只在有它时进 erodeKey */
   basin?: Uint8Array;
+  /** 地貌涂改造成的基面增量（粗格；陆格＝带涂改的 baseElev − 不带涂改的，水格 0）：粗级参照面与涂改盆掩码把它与高程涂改同算。
+      只由 erodeInput 在粗级 λ > 0 的图上挂（没有增量不挂），只在有它时进 erodeKey；窗口单必须按窗裁，否则细级盆掩码按错格取样 */
+  lfDelta?: Float32Array;
+  /** 块层嵌套解的外层裁剪（只由 core/tiles.tileInput 给带中尺度的图的块填；有它的单由 core/nested.nestedField 解，不走本模块）。只在有它时进 erodeKey */
+  nest?: NestInput;
 }
 /** 粗级切割量（侵蚀后 − 侵蚀前，水域 0）与它的网格几何：只由参照细格定，同一份图的各档、各窗口共用 */
 export interface CoarseCarve { data: Float32Array; geo: FieldGeom }
@@ -141,7 +147,11 @@ const COARSE_MIN = 24;      // 粗级任一轴少于此格数不做（夹具级�
    按格无量纲时谷距是网格尺度的成谷失稳（约 5 个粗格一条），格越细刮痕越密；
    ⚠ 只给类型路（起伏滑杆 > 0 且类型山地度 ≥ 雕体山地度）＋地板：真高程、手雕图与粗格图逐位不变 */
 const COARSE_D_KM2 = 7.5e-4;
-const DIFF_MONO = 0.5;      // 显式 4 邻扩散的单调上限：逐格系数超过它就拆子步（超 0.5 出棋盘振荡、超 1 发散）
+/** 粗级扩散对涂改本身（高程涂改与地貌涂改的基面增量）的磨平上限（σ，km）：粗格边约 3.3 km 以下时不起作用，战术图与细格战略图逐位不变 */
+const COARSE_CARVE_SIG_KM = 4;
+/** 涂改造出的闭合洼地的判据（米）：(基面 + 涂改) 的填深比基面自己的多出这么多，才算用户画的盆 */
+const CARVED_BASIN_M = 0.5;
+const DIFF_MONO = 0.5;     // 显式 4 邻扩散的单调上限：逐格系数超过它就拆子步（超 0.5 出棋盘振荡、超 1 发散）
 
 /** 细分倍率：总格数不超预算 cap、单轴不超 axisMax（48×32 战略@40万,8→8×；140×94 战术@140万,8→8×、
     280×188 战术@140万,8→5×；精修档 axisMax=16：240×161@1050万→16×＝3840×2576）。
@@ -163,8 +173,8 @@ const SHORE_LAND = -WATER_EPS + 1e-4;
 const MESO_EALGO = 2;
 /** 中尺度图细级侵蚀的汇流微地形（米；波长 km 与权重）：平原的基底近乎匀坡，D8 下切沿格轴与对角刻成直沟——侵蚀前叠上、侵蚀后减掉，地形本身不动 */
 const MESO_MICRO_M = 8, MESO_MICRO_KM: readonly [number, number][] = [[15, 1], [6, 0.5]];
-const EALGO = 12;   // 12=起伏球面按三维取样、梯度集避开坐标轴、起伏种子分存；11=不再烘焙投影阴影（只留晕渲）；10=投影阴影光向改西北；9=侵蚀基准面与陆格下限取水陆判据线；8=粗级扩散按 km²（只给类型路）；7=多重网格（粗级先长谷网）；6=起伏改公里锚定的异质多尺度脊线场（core/relief），5=连续基底，4=细带归一，3=4K 精修
-const KNOB_FP = [EALGO, MAX_FINE, MAX_FINE_TAC, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF, COARSE_K, COARSE_ITERS, COARSE_DIFF, COARSE_MIN, COARSE_D_KM2, DIFF_MONO,
+const EALGO = 14;   // 14=地貌涂改的基面增量与高程涂改同作粗级参照面、同进涂改盆掩码；13=粗级扩散对涂改的磨平按 σ≤4 km 封顶、涂改造出的闭合洼地不填平；12=起伏球面按三维取样、梯度集避开坐标轴、起伏种子分存；11=不再烘焙投影阴影（只留晕渲）；10=投影阴影光向改西北；9=侵蚀基准面与陆格下限取水陆判据线；8=粗级扩散按 km²（只给类型路）；7=多重网格（粗级先长谷网）；6=起伏改公里锚定的异质多尺度脊线场（core/relief），5=连续基底，4=细带归一，3=4K 精修
+const KNOB_FP = [EALGO, MAX_FINE, MAX_FINE_TAC, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF, COARSE_K, COARSE_ITERS, COARSE_DIFF, COARSE_MIN, COARSE_D_KM2, COARSE_CARVE_SIG_KM, CARVED_BASIN_M, DIFF_MONO,
   WARP1, WARP2, TYPE_FEATHER, DETAIL_AMP, DETAIL_SLOPE_K, DETAIL_SLOPE_CAP, EPS,
   RELIEF_M, RELIEF_LAMBDA_KM, RELIEF_W, RELIEF_GATE_LO, RELIEF_GATE_HI, RELIEF_ROUGH_LO, RELIEF_ROUGH_HI,
   RELIEF_STRIKE, RELIEF_E0, RELIEF_E1, RELIEF_CARVE_K, RIDGED_MEAN, RIDGED_MEAN3].join("|");
@@ -211,6 +221,8 @@ export function erodeKey(inp: ErodeInput): string {
     mixA(new Uint32Array(me.buffer, me.byteOffset, me.length));
   }
   if (inp.basin) mixA(inp.basin);   // 同理只在画了盆地的单上追加
+  if (inp.lfDelta) mixA(new Uint32Array(inp.lfDelta.buffer, inp.lfDelta.byteOffset, inp.lfDelta.length));   // 同理只在有地貌涂改增量的单上追加
+  if (inp.nest) for (const a of nestKeyParts(inp.nest)) mixA(a);   // 同理只在嵌套解的块单上追加
   return ERODE_VER + "-" + (a >>> 0).toString(36) + "-" + (b >>> 0).toString(36);
 }
 
@@ -255,8 +267,28 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
   const elev0 = baseElev(m, grid), water = waterMask(grid);   // 三份（含 wsurf）都是按 Grid 记忆的共享只读数组（postMessage 克隆）
   const { kmx, kmy } = kmPerDegXY(m, bb);
   const cap = m.mapKind === "tactical" ? MAX_FINE_TAC : MAX_FINE, menv = grid.meso ? grid.meso.env : null, bas = grid.meso ? grid.meso.basin : null;
+  const cg = coarseGeom(cols, rows, step, step / upscaleOf(cols, rows, cap, 8));
+  const lfd = !menv && cg && carveLam(cg.cstep * Math.sqrt(kmx * kmy)) > 0 ? landformDelta(m, grid) : null;
   return { bb, step, cols, rows, elev0, water, wsurf: waterSurface(m, grid), amp, seed: reliefSeedOf(m), sphere: m.worldModel !== "flat", kmx, kmy, hovGrid,
-    cap, axisMax: 8, acrit: ACRIT_CELLS, bandS: 1, unitM: elevUnitM(m), ...(menv ? { mesoEnv: menv } : {}), ...(bas ? { basin: bas } : {}) };
+    cap, axisMax: 8, acrit: ACRIT_CELLS, bandS: 1, unitM: elevUnitM(m), ...(menv ? { mesoEnv: menv } : {}), ...(bas ? { basin: bas } : {}), ...(lfd ? { lfDelta: lfd } : {}) };
+}
+
+/* 按 Grid 实例记忆（同一 Grid 只配一份 meta，同 core/elev 的派生场）：高程笔每笔复用 Grid＝不重算 */
+const lfMemo = new WeakMap<Grid, Float32Array | null>();
+/** 地貌涂改造成的基面增量（ErodeInput.lfDelta）：与不带涂改的底稿逐格比，没有改过地类的格或增量处处为 0 时返 null */
+function landformDelta(m: Meta, grid: Grid): Float32Array | null {
+  const hit = lfMemo.get(grid);
+  if (hit !== undefined) return hit;
+  const g0 = buildGridCells(m, [], 0);
+  let out: Float32Array | null = null;
+  if (g0.cells.some((row, r) => row.some((t, c) => t !== grid.cells[r][c]))) {
+    const b1 = baseElev(m, grid), b0 = baseElev(m, g0), water = waterMask(grid), d = new Float32Array(b1.length);
+    let any = false;
+    for (let i = 0; i < d.length; i++) if (!water[i] && b1[i] !== b0[i]) { d[i] = b1[i] - b0[i]; any = true; }
+    if (any) out = d;
+  }
+  lfMemo.set(grid, out);
+  return out;
 }
 
 /** 精修档输入（4K 静置精修，2026-08-11）：同一份工作档输入换预算——数组共享引用（Worker 侧
@@ -303,11 +335,14 @@ interface Level {
   h: Float32Array; wat: Uint8Array; FC: number; FR: number; fstep: number; kmx: number; kmy: number; acritKm2: number;
   /** 逐格扩散系数（有则替代 diff） */
   dcell?: Float64Array | null;
-  /** 扩散的参照面（有则只磨 h − ref）：中尺度图的基底已在收尾平滑过、峰按它标定，再磨一遍就把峰磨低 */
+  /** 扩散的参照面（有则只磨 h − ref）：中尺度图传基底（峰按它标定，再磨就低了）；粗级传 λ × 涂改（见 COARSE_CARVE_SIG_KM） */
   ref?: Float32Array;
+  /** 填洼只给路由、不写回的格（涂改造出的闭合洼地）：写回会把用户画的盆填成盆沿高的平台 */
+  keep?: Uint8Array | null;
 }
 function streamPower(L: Level, iters: number, diff: number, postDiff: number, mfd: boolean): void {
-  const { h, wat, FC, FR, fstep, kmx, kmy, acritKm2: Acrit, dcell, ref } = L, n = FC * FR;
+  const { h, wat, FC, FR, fstep, kmx, kmy, acritKm2: Acrit, dcell, ref } = L, n = FC * FR, keep = L.keep || null;
+  const hf = keep ? new Float32Array(n) : h;   // 路由面（填洼后）：没有 keep 时就是 h 本身＝填高写回，逐位旧行为
   let lapRef: Float32Array | null = null;   // 参照面的 4 邻拉普拉斯：扩散减去它＝只磨高出参照面的那部分
   if (ref) {
     lapRef = new Float32Array(n);
@@ -332,6 +367,7 @@ function streamPower(L: Level, iters: number, diff: number, postDiff: number, mf
   let popN = 0;
   const flood = (): void => {
     closed.fill(0); hn = 0; popN = 0;
+    if (keep) hf.set(h);
     const push = (v: number, key: number): void => {
       let i = hn++;
       while (i > 0) {
@@ -343,7 +379,7 @@ function streamPower(L: Level, iters: number, diff: number, postDiff: number, mf
     };
     for (let r = 0; r < FR; r++) for (let c = 0; c < FC; c++) {
       const i = r * FC + c;
-      if (wat[i] || c === 0 || r === 0 || c === FC - 1 || r === FR - 1) { closed[i] = 1; push(i, h[i]); }
+      if (wat[i] || c === 0 || r === 0 || c === FC - 1 || r === FR - 1) { closed[i] = 1; push(i, hf[i]); }
     }
     while (hn > 0) {
       const c = heap[0], ck = heapK[0];   // 顶＝当前最小；ck===h[c]（close 后 h 不动）
@@ -370,8 +406,8 @@ function streamPower(L: Level, iters: number, diff: number, postDiff: number, mf
         const nb = c + NB[k];
         if (nb < 0 || nb >= n || closed[nb]) continue;
         closed[nb] = 1;
-        if (!wat[nb] && h[nb] <= ck) h[nb] = ck + EPS;
-        push(nb, h[nb]);
+        if (!wat[nb] && hf[nb] <= ck) { hf[nb] = ck + EPS; if (keep && !keep[nb]) h[nb] = hf[nb]; }
+        push(nb, hf[nb]);
       }
     }
   };
@@ -388,7 +424,7 @@ function streamPower(L: Level, iters: number, diff: number, postDiff: number, mf
     for (let s = popN - 1; s >= 0; s--) {
       const c = order![s];
       if (wat[c]) continue;
-      const x = c % FC, hc = h[c];
+      const x = c % FC, hc = hf[c];
       let sum = 0;
       for (let k = 0; k < 8; k++) {
         mw[k] = 0;
@@ -396,7 +432,7 @@ function streamPower(L: Level, iters: number, diff: number, postDiff: number, mf
         if (dx < 0 ? x === 0 : dx > 0 && x === FC - 1) continue;
         const nb = c + NB[k];
         if (nb < 0 || nb >= n) continue;
-        const d = hc - h[nb];
+        const d = hc - hf[nb];
         if (d <= 0) continue;
         mw[k] = d / DK[k]; sum += mw[k];
       }
@@ -434,19 +470,19 @@ function streamPower(L: Level, iters: number, diff: number, postDiff: number, mf
         const c = r * FC + x;
         if (wat[c]) continue;
         let bs = 0, bi = -1;
-        const hc = h[c];
+        const hc = hf[c];
         if (rEdge || x === 0 || x === FC - 1) {
           for (let i = 0; i < 8; i++) {
             const dx = DXNB[i];
             if (dx < 0 ? x === 0 : dx > 0 && x === FC - 1) continue;
             const nb = c + NB[i];
             if (nb < 0 || nb >= n) continue;
-            if (h[nb] < hc) { const s = (hc - h[nb]) / DK[i]; if (s > bs) { bs = s; bi = i; } }
+            if (hf[nb] < hc) { const s = (hc - hf[nb]) / DK[i]; if (s > bs) { bs = s; bi = i; } }
           }
         } else {
           for (let i = 0; i < 8; i++) {
             const nb = c + NB[i];
-            if (h[nb] < hc) { const s = (hc - h[nb]) / DK[i]; if (s > bs) { bs = s; bi = i; } }
+            if (hf[nb] < hc) { const s = (hc - hf[nb]) / DK[i]; if (s > bs) { bs = s; bi = i; } }
           }
         }
         if (bi >= 0) { rcv[c] = c + NB[bi]; rdist[c] = DK[bi]; }
@@ -471,12 +507,63 @@ function streamPower(L: Level, iters: number, diff: number, postDiff: number, mf
     for (let s = 0; s < n; s++) {
       const c = stack[s], r = rcv[c];
       if (r === c || wat[c]) continue;
+      if (keep && (hf[c] > h[c] || h[r] >= h[c])) continue;   // 积水的盆里不下切；受水者不比自己低时下切会把格往上抬
       const f = KDT * Math.sqrt(A[c]) * (A[c] / (A[c] + Acrit)) / rdist[c];   // 河道起始压制，见 ACRIT_CELLS
       h[c] = (h[c] + f * h[r]) / (1 + f);
     }
     diffuse();
   }
   for (let k = 0; k < postDiff; k++) diffuse();   // 收尾磨圆：压掉陡壁上的平行冲沟毛刺与迭代台痕
+}
+
+/** 涂改造出的闭合洼地（Level.keep）：(base + hb) 的填深比不带涂改的基面 (base − lf) 多出 CARVED_BASIN_M 的非基准面格；没有返 null。
+    base＝带地貌涂改的基面，hb＝高程涂改，lf＝地貌涂改的基面增量（null 按 0）。出口与 streamPower 的填洼同为基准面格（lev）与图幅边——窗口单因此按窗口边判，与全图同处一致 */
+function carvedBasins(base: Float32Array, hb: Float32Array | null, lf: Float32Array | null, lev: Uint8Array, FC: number, FR: number, unitM: number): Uint8Array | null {
+  const n = FC * FR, z = new Float32Array(n), d0 = new Float32Array(n), d1 = new Float32Array(n);
+  const heap = new Int32Array(n), key = new Float64Array(n), closed = new Uint8Array(n);
+  const depth = (withHb: boolean, out: Float32Array): void => {   // 填平值与弹出次序无关，二叉堆平手不必定序
+    for (let i = 0; i < n; i++) z[i] = withHb ? (hb ? base[i] + hb[i] : base[i]) : lf ? base[i] - lf[i] : base[i];
+    closed.fill(0);
+    let hn = 0;
+    const push = (v: number, k: number): void => {
+      let i = hn++;
+      while (i > 0) { const p = (i - 1) >> 1; if (key[p] <= k) break; heap[i] = heap[p]; key[i] = key[p]; i = p; }
+      heap[i] = v; key[i] = k;
+    };
+    for (let r = 0; r < FR; r++) for (let c = 0; c < FC; c++) {
+      const i = r * FC + c;
+      if (lev[i] || c === 0 || r === 0 || c === FC - 1 || r === FR - 1) { closed[i] = 1; out[i] = 0; push(i, z[i]); }
+    }
+    while (hn > 0) {
+      const c = heap[0], ck = key[0];
+      if (--hn > 0) {
+        const lv = heap[hn], lk = key[hn];
+        let i = 0;
+        for (;;) {
+          let m = 2 * i + 1;
+          if (m >= hn) break;
+          if (m + 1 < hn && key[m + 1] < key[m]) m++;
+          if (key[m] >= lk) break;
+          heap[i] = heap[m]; key[i] = key[m]; i = m;
+        }
+        heap[i] = lv; key[i] = lk;
+      }
+      const x = c % FC;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const xx = x + dx, nb = c + dy * FC + dx;
+        if (xx < 0 || xx >= FC || nb < 0 || nb >= n || closed[nb]) continue;
+        closed[nb] = 1;
+        const k = z[nb] > ck ? z[nb] : ck;
+        out[nb] = k - z[nb]; push(nb, k);
+      }
+    }
+  };
+  depth(false, d0); depth(true, d1);
+  const tau = CARVED_BASIN_M / unitM, keep = new Uint8Array(n);
+  let any = false;
+  for (let i = 0; i < n; i++) if (!lev[i] && d1[i] - d0[i] > tau) { keep[i] = 1; any = true; }
+  return any ? keep : null;
 }
 
 /** 一次侵蚀的公用设置（细级与粗级共用的初始场采样器、参照格、集水阈值）：erodeField 与 erodeCarve 各取所需 */
@@ -504,17 +591,23 @@ function erodeSetup(inp: ErodeInput) {
       dstT 有则逐格记「类型路主导」（粗级物理扩散的门）。 */
   /** 类型基面（陆地那一支：域扭曲 + 帐篷羽化，不含雕痕与起伏）：子格海岸线按它与水面的等值线定（见 ErodeWindow.coast） */
   const menv = inp.mesoEnv;
-  const landBase = menv ? (lon: number, lat: number): number => elevBilinear(elev0, geo, lon, lat)   // 中尺度图：谷网就是基底，扭与羽都会把它挪开、磨钝
-    : (lon: number, lat: number): number => {
+  const lfd = inp.lfDelta;
+  /* dLf 有则把地貌涂改增量按同一扭曲落点写进 dLf[i]（中尺度图不挂增量） */
+  const landBase: (lon: number, lat: number, dLf?: Float32Array | null, i?: number) => number = menv
+    ? (lon, lat) => elevBilinear(elev0, geo, lon, lat)   // 中尺度图：谷网就是基底，扭与羽都会把它挪开、磨钝
+    : (lon, lat, dLf, i) => {
     const sl = lon + wA1 * gnoise(lon * fw1, lat * fw1, seed + 101) + wA2 * gnoise(lon * fw2, lat * fw2, seed + 303);
     const sa = lat + wA1 * gnoise(lon * fw1 + 53.7, lat * fw1 + 17.3, seed + 202) + wA2 * gnoise(lon * fw2 + 11.9, lat * fw2 + 41.2, seed + 404);
+    if (dLf) dLf[i!] = 0.25 * (elevBilinear(lfd!, geo, sl - ft, sa - ft) + elevBilinear(lfd!, geo, sl + ft, sa - ft)
+      + elevBilinear(lfd!, geo, sl - ft, sa + ft) + elevBilinear(lfd!, geo, sl + ft, sa + ft));
     return 0.25 * (elevBilinear(elev0, geo, sl - ft, sa - ft) + elevBilinear(elev0, geo, sl + ft, sa - ft)
       + elevBilinear(elev0, geo, sl - ft, sa + ft) + elevBilinear(elev0, geo, sl + ft, sa + ft));
   };
   const initInto = (dstB: Float32Array, dstH: Float32Array, i: number, lon: number, lat: number, isWater: boolean, ws: number, relief: ReliefSampler,
-    dstT: Uint8Array | null): void => {
-    const b = !isWater ? landBase(lon, lat) : Math.min(elevBilinear(elev0, geo, lon, lat), ws + SHORE_E);   // 水格：双线性会把岸上的陆地值插进来
+    dstT: Uint8Array | null, dstHb: Float32Array | null, dstLf: Float32Array | null): void => {
+    const b = !isWater ? landBase(lon, lat, dstLf, i) : Math.min(elevBilinear(elev0, geo, lon, lat), ws + SHORE_E);   // 水格：双线性会把岸上的陆地值插进来
     const hb = noHov ? 0 : elevBilinear(inp.hovGrid, geo, lon, lat);
+    if (dstHb) dstHb[i] = isWater ? 0 : hb;   // 水格侵蚀时站在判据线上，不带涂改
     let e = b + hb;
     if (!isWater) {
       const mT = amp > 0 ? amp * (menv ? elevBilinear(menv, geo, lon, lat) : mountainness(e)) : 0, mC = Math.min(1, Math.abs(hb) * RELIEF_CARVE_K), m = Math.max(mT, mC);
@@ -529,25 +622,33 @@ function erodeSetup(inp: ErodeInput) {
   const relief = makeRelief(seed, rstepB * kmy, kmy, sc, menv ? RELIEF_MESO_CELLS * step * kmy : Infinity);
   const cellKm2 = (fstep * kmx) * (fstep * kmy);
   const acritKm2 = (inp.win ? inp.acrit : Math.min(inp.acrit, n / 64)) * cellKm2;   // 封顶见 ACRIT_CELLS 头注；工作档 acrit≡300，精修档经 ultraInput 面积归一；粗级同用此 km² 阈值
-  return { sx, FC, FR, n, fstep, rstep, rstepB, sc, initInto, landBase, relief, acritKm2 };
+  return { sx, FC, FR, n, fstep, rstep, rstepB, sc, initInto, landBase, relief, acritKm2, noHov };
 }
+
+/** 粗级格边（度）与格数：只由参照细格 rstep 定（工作档与精修档同一份）；任一轴不足 COARSE_MIN 粗格＝粗级不跑（null） */
+function coarseGeom(cols: number, rows: number, step: number, rstep: number): { cstep: number; CC: number; CR: number } | null {
+  const cstep = rstep * COARSE_K, CC = Math.ceil(cols * step / cstep - 1e-9), CR = Math.ceil(rows * step / cstep - 1e-9);
+  return CC < COARSE_MIN || CR < COARSE_MIN ? null : { cstep, CC, CR };
+}
+/** 粗级扩散里涂改那一份被参照面抵掉的比例 λ（σ² = 轮数 × 系数 × 格边² / 2，涂改只被磨到 COARSE_CARVE_SIG_KM）：粗格边 ≤ 约 3.33 km 时 ≤ 0＝不抵 */
+function carveLam(cKm: number): number { return 1 - 2 * COARSE_CARVE_SIG_KM * COARSE_CARVE_SIG_KM / (COARSE_ITERS * cKm * cKm * COARSE_DIFF); }
 
 /** 粗级：同一套初始场按粗级格心重采样（起伏只取粗级解析得了的带），跑 COARSE_ITERS 轮，
     产出切割量（侵蚀后−侵蚀前，水域恒 0）；任一轴不足 COARSE_MIN 粗格＝不做（null） */
 function carveOf(inp: ErodeInput, S: ReturnType<typeof erodeSetup>): CoarseCarve | null {
   if (inp.mesoEnv) return null;   // 中尺度图：谷网已在中尺度稳态解里，粗级的 D8 下切只会刻出沿格轴的直线谷壁
   const { bb, step, cols, rows, water, wsurf, seed, kmx, kmy } = inp, { initInto, sc, acritKm2 } = S;
-  const cstep = S.rstep * COARSE_K, CC = Math.ceil(cols * step / cstep - 1e-9), CR = Math.ceil(rows * step / cstep - 1e-9);
-  if (CC < COARSE_MIN || CR < COARSE_MIN) return null;
-  const nc = CC * CR, hc = new Float32Array(nc), h0 = new Float32Array(nc), bc = new Float32Array(nc), wc = new Uint8Array(nc);
-  const tc = new Uint8Array(nc);
+  const cg = coarseGeom(cols, rows, step, S.rstep);
+  if (!cg) return null;
+  const { cstep, CC, CR } = cg, nc = CC * CR, hc = new Float32Array(nc), h0 = new Float32Array(nc), bc = new Float32Array(nc), wc = new Uint8Array(nc);
+  const tc = new Uint8Array(nc), hbc = S.noHov ? null : new Float32Array(nc), lfc = inp.lfDelta ? new Float32Array(nc) : null;
   const reliefC = makeRelief(seed, cstep * kmy, kmy, sc, Infinity);
   for (let r = 0; r < CR; r++) {
     const lat = bb.latMin + (r + 0.5) * cstep, pr = Math.max(0, Math.min(rows - 1, Math.floor((lat - bb.latMin) / step)));
     for (let c = 0; c < CC; c++) {
       const lon = bb.lonMin + (c + 0.5) * cstep, pc = Math.max(0, Math.min(cols - 1, Math.floor((lon - bb.lonMin) / step))), i = r * CC + c;
       wc[i] = water[pr * cols + pc];
-      initInto(bc, hc, i, lon, lat, wc[i] === 1, wsurf[pr * cols + pc], reliefC, tc);
+      initInto(bc, hc, i, lon, lat, wc[i] === 1, wsurf[pr * cols + pc], reliefC, tc, hbc, lfc);
       if (wc[i]) hc[i] = wsurf[pr * cols + pc] + SHORE_LAND;   // 基准面＝渲染端的水陆判据线；切割量在水格恒 0
     }
   }
@@ -558,7 +659,19 @@ function carveOf(inp: ErodeInput, S: ReturnType<typeof erodeSetup>): CoarseCarve
     dcell = new Float64Array(nc);
     for (let i = 0; i < nc; i++) dcell[i] = tc[i] ? dPhys : COARSE_DIFF;
   }
-  streamPower({ h: hc, wat: wc, FC: CC, FR: CR, fstep: cstep, kmx, kmy, acritKm2, dcell }, COARSE_ITERS, COARSE_DIFF, 0, true);
+  let keep: Uint8Array | null = null, ref: Float32Array | null = null;
+  if (hbc || lfc) {
+    keep = carvedBasins(bc, hbc, lfc, wc, CC, CR, inp.unitM);
+    /* 涂改（高程涂改＋地貌涂改的基面增量）作参照面、抵掉 λ 份扩散：否则窄雕刻与地貌笔堆的山中心剩一半。
+       谷网的数值低通仍按格——改按物理值在细粗格上刻出沿格轴的直谷、在地类台阶边刻出粗格间距的珠串 */
+    const lam = dcell ? 0 : carveLam(cKm);
+    if (lam > 0) {
+      ref = hbc || lfc!;
+      if (hbc && lfc) for (let i = 0; i < nc; i++) ref[i] += lfc[i];
+      for (let i = 0; i < nc; i++) ref[i] *= lam;
+    }
+  }
+  streamPower({ h: hc, wat: wc, FC: CC, FR: CR, fstep: cstep, kmx, kmy, acritKm2, dcell, keep, ...(ref ? { ref } : {}) }, COARSE_ITERS, COARSE_DIFF, 0, true);
   for (let i = 0; i < nc; i++) hc[i] -= h0[i];
   return { data: hc, geo: { bb, step: cstep, cols: CC, rows: CR } };
 }
@@ -586,14 +699,14 @@ export function erodeField(inp: ErodeInput): ElevField {
   }
   const h = new Float32Array(n);
   const base = new Float32Array(n);   // 结构基面（无噪声）：钳制参照，同旧「类型基础值」之职
-  const wat = new Uint8Array(n);
+  const wat = new Uint8Array(n), hbf = S.noHov ? null : new Float32Array(n), lff = inp.lfDelta ? new Float32Array(n) : null;
   for (let r = 0; r < FR; r++) {
     const pr = Math.min(rows - 1, (r / sx) | 0), lat = bb.latMin + (r + 0.5) * fstep;
     for (let c = 0; c < FC; c++) {
       const pc = Math.min(cols - 1, (c / sx) | 0), i = r * FC + c;
       const lon = bb.lonMin + (c + 0.5) * fstep, k = pr * cols + pc;
       wat[i] = shore && shore[k] ? (landBase(lon, lat) < wsurf[k] - WATER_EPS ? 1 : 0) : water[k];
-      initInto(base, h, i, lon, lat, wat[i] === 1, wsurf[k], relief, null);
+      initInto(base, h, i, lon, lat, wat[i] === 1, wsurf[k], relief, null, hbf, lff);
     }
   }
   const acritKm2 = S.acritKm2;
@@ -637,7 +750,8 @@ export function erodeField(inp: ErodeInput): ElevField {
       }
     }
   }
-  streamPower({ h, wat: lev, FC, FR, fstep, kmx, kmy, acritKm2, ...(inp.mesoEnv ? { ref: base } : {}) }, ITERS, DIFF, POST_DIFF, false);
+  const keep = hbf || lff ? carvedBasins(base, hbf, lff, lev, FC, FR, inp.unitM) : null;
+  streamPower({ h, wat: lev, FC, FR, fstep, kmx, kmy, acritKm2, keep, ...(inp.mesoEnv ? { ref: base } : {}) }, ITERS, DIFF, POST_DIFF, false);
   for (let i = 0; i < n; i++) if (wat[i]) h[i] = bed[i];
   if (micro) for (let i = 0; i < n; i++) h[i] -= micro[i];
   const h2 = new Float32Array(n);

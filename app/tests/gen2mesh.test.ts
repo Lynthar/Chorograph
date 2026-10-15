@@ -45,6 +45,22 @@ describe("宏观三角网", () => {
       assert.strictEqual(k, cols * rows, "真节点的邻接图不连通");
     }
   });
+  it("真节点邻接表＝三角形里两端都是真节点的边：每条在两端各列一次、逐点升序", () => {
+    for (const m of meshes) {
+      const { tri, nbOff, nb, cols, rows } = m, n = cols * rows, want = new Set<number>();
+      for (let t = 0; t < tri.length / 3; t++) for (let k = 0; k < 3; k++) {
+        const a = tri[3 * t + k], b = tri[3 * t + (k + 1) % 3];
+        if (a < n && b < n) { want.add(a * n + b); want.add(b * n + a); }
+      }
+      let got = 0, unsorted = 0;
+      for (let i = 0; i < n; i++) for (let e = nbOff[i]; e < nbOff[i + 1]; e++) {
+        assert.ok(want.has(i * n + nb[e]), `${i}–${nb[e]} 不是三角形的边`);
+        got++; if (e > nbOff[i] && nb[e] <= nb[e - 1]) unsorted++;
+      }
+      assert.strictEqual(got, want.size, "有边没进邻接表或列了两次");
+      assert.strictEqual(unsorted, 0, "邻接表不是逐点严格升序");
+    }
+  });
   it("同参两次逐位相同", () => {
     const [c, r, s] = CASES[0], a = meshes[0], b = buildMesh(c, r, s);
     assert.deepStrictEqual([a.X, a.Y, a.tri, a.adj, a.nb], [b.X, b.Y, b.tri, b.adj, b.nb]);

@@ -3,6 +3,13 @@
 import { tget } from "./util.ts";
 import type { Arm, Climate, Ecotype, Landform, TerrainId } from "./types.ts";
 
+/** 水陆判据：高程低于所在格水面 − WATER_EPS 即水（视线判定与侵蚀的陆地下限读它；着色器与 CPU 瓦片写的是字面 0.02，要改一起改） */
+export const WATER_EPS = 0.02;
+/** 水格床面封在水面 + SHORE_E 以下：渲染端「低于水面即水」的判据才成立 */
+export const SHORE_E = -0.03;
+/** 没有水面（画的盆地里没有水邻的陆格）：「高程 < 水面 − WATER_EPS」恒不成立、陆地钳不到它；取有限值，Float32 与纹理照常装得下 */
+export const NO_WATER = -1000;
+
 /* 8 种地形：显示名 / 陆军寻路代价 / 底色 */
 export const TERRAIN: Record<TerrainId, { 名: string; land: number; color: string }> = {
   plain:    { 名: "平原", land: 1.0, color: "#d7e3b8" },
@@ -460,6 +467,11 @@ export const CLIMATE: Record<Climate, { 名: string; treeM: number | null; snowM
   arid:        { 名: "干旱",   treeM: 3500, snowM: 5700 }
 };
 export const CLIMATE_ORDER: Climate[] = ["polar", "boreal", "temperate", "subtropical", "tropical", "arid"];
+
+/** 生成河的水力几何：水面宽（米）＝RIV_WIDTH·√水量；冲积平原平底半宽（km）＝FP_CORE·FP_KW·√水量。生成器刻谷、渲染端曲流封顶同读 */
+export const RIV_WIDTH = 6, FP_KW = 0.16, FP_CORE = 0.7;
+/** 逐点曲流强度 mz 的满档（整数 0..MZ_MAX，0＝不弯）：生成器写、规范化与校验钳、渲染端按它折成幅度 */
+export const MZ_MAX = 9;
 
 /** 全部生态散布 kind 的并集（生态笔替换语义的清扫范围：刷别的生态时扫掉这些；
     手放的山峰/丘/自定义图章不在并集里＝永不被生态笔扫掉）。派生量、不动平价表。 */

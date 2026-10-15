@@ -1,22 +1,25 @@
 /* 画布宿主：画布尺寸、相机取景、地形网格/高程场重建。
    全部经 ctx 共享态工作；rebuild 同步把寻路上下文送进 Worker（官道格按当年连线重算）。 */
 import { buildGridCells, gridGeom, roadCellSet, type Grid } from "../core/grid.ts";
-import { isGen2, mesoKey, type Gen2MesoField, type UpliftCells } from "../core/gen2.ts";
+import { isGen2, mesoKey, riverParams, type Gen2MesoField, type GenRiver, type UpliftCells } from "../core/gen2.ts";
+import { genRiverEdges, genRiverEdgesOf } from "../core/world.ts";
 import { buildElevField, coarseField, fieldMix, fieldPlusDelta, upliftCells, waterSurface, type ElevField } from "../core/elev.ts";
 import { erodeGate, erodeInput, erodeKey, ultraInput, upscaleOf, type ErodeInput, erodeMode } from "../core/erode.ts";
 import { tilePlan } from "../core/tiles.ts";
+import type { NestBase, NestSrc } from "../core/nested.ts";
 import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { tileCacheGet, tileCachePut } from "../data/tilecache.ts";
 import { mesoCacheGet, mesoCachePut } from "../data/mesocache.ts";
 import { createTileManager } from "./tiles.ts";
-import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig, tilesDownSig, cellsVerSig } from "../ui/state.ts";
+import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig, tilesDownSig, cellsVerSig, inStroke, mutateWorldLive, readOnlySig, selSig } from "../ui/state.ts";
+import { syncGenRivers } from "../ui/editops.ts";
 import { terrMetaKey } from "../ui/history.ts";
 import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { ShellCtx } from "./ctx.ts";
 import { clampView, viewCosK, type Camera } from "../core/projection.ts";
 import { frameView } from "../core/frame.ts";
-import type { BBox, HeightOverride, TerrainOverride, World } from "../core/types.ts";
+import type { BBox, HeightOverride, Meta, TerrainOverride, World } from "../core/types.ts";
 
 export interface Host {
   /** 可见区或 DPR 变了就重画；后备存储只增不减（换屏/缩放后重读 devicePixelRatio 才整个重分配） */
@@ -157,28 +160,36 @@ export function createHost(ctx: ShellCtx): Host {
   const tilesOn = (): boolean => ctx.meta.mapKind !== "tactical" && ctx.routeClient.tileLanes > 0;
   /* —— 中尺度（v2 图，core/gen2.gen2Meso）：稳态解只依赖生成参数与几何，独立车道上算、解存进 IDB。到了之前不发侵蚀单（先侵蚀宏观底再换形＝多一次可见换场），
      到了就换一个带它的新 Grid 重建；车道不可用或这一单失败＝这张图照旧用宏观底。 —— */
-  let meso: { key: string; f: Gen2MesoField } | null = null;   // 当前图的那份（单槽）
+  /** 中尺度场抽出的河与抽它用的滑杆键（riverParams）：滑杆换了要重抽，场不变 */
+  interface RivSet { rk: string; rivers: GenRiver[] }
+  const rkOf = (m: Meta): string => JSON.stringify(riverParams(m));
+  let meso: { key: string; f: Gen2MesoField; riv: RivSet; nb: NestBase } | null = null;   // 当前图的那份（单槽）；nb＝块层嵌套解的静态场
+  /** 中尺度场（中尺度单或画抬升的解）→ 它给块层嵌套解的那份：不挂在 Grid 上——Grid 换实例就整份克隆给寻路车道 */
+  const nestOf = new WeakMap<Gen2MesoField, NestSrc>();
   let mesoWant = "", mesoBad = "";   // 在飞单的键 · 没有结果的键（不再要、侵蚀不再等）
   let mesoHold = false;              // 这一轮的侵蚀单要等中尺度（rebuild 同拍定）
   function requestMeso(key: string): void {
     if (mesoWant === key) return;
     mesoWant = key;
     const meta = ctx.meta, geom = gridGeom(meta);
-    const done = (f: Gen2MesoField | null, e?: unknown): void => {
+    const done = (m: { f: Gen2MesoField; riv: RivSet; nb: NestBase } | null, e?: unknown): void => {
       if (mesoWant !== key) return;   // 换了键：这一单撤了或用不上
       mesoWant = "";
-      if (f) meso = { key, f }; else { mesoBad = key; console.warn("中尺度稳态没有结果（这张图照旧用宏观底）：", e ?? "车道不可用"); }
+      if (m) meso = { key, ...m }; else { mesoBad = key; console.warn("中尺度稳态没有结果（这张图照旧用宏观底）：", e ?? "车道不可用"); }
       if (ctx.grid) rebuild();
     };
     void mesoCacheGet(key).then(sg => ctx.routeClient.meso(meta, geom, sg)).then(r => {
       if (r?.sg) void mesoCachePut(key, r.sg);   // 现算的解都入缓存：过期的对它的键仍恒真
-      done(r ? { base: r.base, env: r.env, cls: r.cls, basin: r.basin, water: r.water } : null);
+      if (!r) { done(null); return; }
+      const f: Gen2MesoField = { base: r.base, env: r.env, cls: r.cls, basin: r.basin, water: r.water };
+      nestOf.set(f, r.nest);
+      done({ f, riv: { rk: rkOf(meta), rivers: r.rivers }, nb: r.nest.base });
     }, e => done(null, e));
   }
   /* —— 画抬升（v2 战略图，core/gen2.gen2Uplift）：在 Sg 上解，同一车道、单飞行闸（飞行中只记最新那份，落地后补发）；
      解按（mesoKey, 逐格目标）内容留最近几份——撤销、重做直接换上。解回来之前屏上沿用上一份、侵蚀不发单（落笔不画草稿）。 —— */
   const UP_KEEP = 4;
-  let upDone: { key: string; cells: UpliftCells; f: Gen2MesoField }[] = [];
+  let upDone: { key: string; cells: UpliftCells; f: Gen2MesoField; riv: RivSet }[] = [];
   let upWant: { key: string; cells: UpliftCells } | null = null;   // 最新要的那份（rebuild 同拍记）
   let upBad: { key: string; cells: UpliftCells } | null = null;    // 解不出的那份：同一份不再等、不再发
   let upFly = "";                                                  // 在飞那单的 mesoKey（换图时撤车道）
@@ -209,10 +220,57 @@ export function createHost(ctx: ShellCtx): Host {
       .then(r => {
         if (!r) { fail(); return; }
         upFly = "";
-        upDone = [{ key: want.key, cells: want.cells, f: { base: r.base, env: r.env, cls: r.cls, basin: r.basin, water: r.water } }, ...upDone].slice(0, UP_KEEP);
+        const f: Gen2MesoField = { base: r.base, env: r.env, cls: r.cls, basin: r.basin, water: r.water };
+        if (meso && meso.key === want.key) nestOf.set(f, { base: meso.nb, sol: r.nest });
+        upDone = [{ key: want.key, cells: want.cells, f, riv: { rk: rkOf(meta), rivers: r.rivers } }, ...upDone].slice(0, UP_KEEP);
         if (ctx.grid) rebuild();   // 还要的就是它＝换上；已不是最新＝重建记下新的那份、闸放开后补发
       }, fail);
   }, () => upFlight.fire());
+  /* —— 生成的河跟着屏上的中尺度场走：场换了、两个河流滑杆或删改记录变了就换带 gen 标记的河（editops.syncGenRivers，逐条相同零写入）。
+     不推撤销（河是场的函数：撤销换回旧场，河跟着换回）、只读态不写；笔画中途不写（会让空笔回收误判），收笔后再来。
+     中尺度没有结果（车道不可用）时用宏观河网兜底；还在算时留着存档里的河。 —— */
+  const NO_CELLS: UpliftCells = { idx: new Int32Array(0), peakM: new Float64Array(0) };
+  let rivLast: unknown[] = [], rivQueued = false;
+  const rivEntry = (mf: Gen2MesoField): { cells?: UpliftCells; riv: RivSet } | undefined => meso && meso.f === mf ? meso : upDone.find(e => e.f === mf);
+  function syncRiversSoon(): void {
+    if (rivQueued) return;
+    rivQueued = true;
+    queueMicrotask(() => { rivQueued = false; syncRivers(); });   // 不在重建或编排 effect 里写 worldSig
+  }
+  function syncRivers(): void {
+    const w = worldSig.peek(), g = ctx.grid;
+    if (!w || !g || readOnlySig.peek() || !isGen2(ctx.meta)) return;
+    if (inStroke()) { setTimeout(syncRiversSoon, 250); return; }
+    const rk = rkOf(ctx.meta), mf = g.meso;
+    let rivers: GenRiver[] | null = null;
+    if (mf) {
+      const e = rivEntry(mf);
+      if (!e) return;
+      if (e.riv.rk !== rk) { rivFlight.fire(); return; }
+      rivers = e.riv.rivers;
+    } else if (!mesoBad || mesoBad !== mesoKey(ctx.meta, gridGeom(ctx.meta))) return;
+    const now = [mf, rk, w.genRiverOff, w.edges];
+    if (now.every((v, i) => v === rivLast[i])) return;
+    const add = rivers ? genRiverEdgesOf(ctx.meta, rivers, w.genRiverOff) : genRiverEdges(ctx.meta, w.genRiverOff);
+    const sel = selSig.peek(), selE = sel && sel.kind === "edge" ? w.edges[sel.idx] : null;
+    mutateWorldLive(x => syncGenRivers(x, add));
+    const w2 = worldSig.peek()!;
+    rivLast = [mf, rk, w2.genRiverOff, w2.edges];
+    if (selE && sel && sel.kind === "edge") {   // 连线按下标选中：按对象身份找回新下标，换掉的生成河就清选中
+      const k = w2.edges.indexOf(selE);
+      if (k !== sel.idx) selSig.value = k >= 0 ? { kind: "edge", idx: k } : null;
+    }
+  }
+  /** 滑杆换了：在屏的场用同一份格子再要一单（零个区＝gen2Meso 逐位同；车道留着求解状态时只跑收尾），只换它带的河 */
+  const rivFlight = singleFlight(() => {
+    const mf = ctx.grid && ctx.grid.meso, e = mf ? rivEntry(mf) : undefined, meta = ctx.meta, rk = rkOf(meta);
+    if (!mf || !e || e.riv.rk === rk) return Promise.resolve();
+    const geom = gridGeom(meta), key = mesoKey(meta, geom);
+    return (ctx.routeClient.mesoHolds(key) ? Promise.resolve(null) : mesoCacheGet(key))
+      .then(sg => ctx.routeClient.uplift(meta, geom, e.cells || NO_CELLS, sg))
+      .then(r => { if (r) { e.riv = { rk, rivers: r.rivers }; syncRiversSoon(); } },
+        err => console.warn("按新滑杆重抽河没有结果（沿用原来的河）：", err));
+  }, () => rivFlight.fire());
   /** 规则场落定（ruleFieldSig 独写点）：门关的粗格、落地的工作档、算不出时当下那份；rebuild 起演算即置 null */
   const settleRule = (): void => { ruleFieldSig.value = ctx.ruleField; };
   const geomKey = (g: Grid): string =>
@@ -318,7 +376,7 @@ export function createHost(ctx: ShellCtx): Host {
     /* 分块：画面场已有的倍率（精修档或工作档）不比块细才分块；计划为空＝本图不分块 */
     if (tilesOn()) {
       const plan = tilePlan(inp, TILE_BUDGET, uinp ? upscaleOf(uinp.cols, uinp.rows, uinp.cap, uinp.axisMax) : upscaleOf(inp.cols, inp.rows, inp.cap, inp.axisMax));
-      if (plan) tiles.setInput(inp, plan, baseC, ck); else tiles.reset();
+      if (plan) tiles.setInput(inp, plan, baseC, ck, pendGrid && pendGrid.meso ? nestOf.get(pendGrid.meso) ?? null : null); else tiles.reset();
     }
     /* 胶囊在块编排之后定：视口里的块没换完，「已完成」欠着、块齐了再报；缓存命中静默，前一单被撤时亮着的「计算中」也收掉 */
     if (ultra) return;
@@ -431,6 +489,7 @@ export function createHost(ctx: ShellCtx): Host {
     mesoHold = !!mk && mk !== mesoBad && (!sgF || !!upWant);
     if (!sgF) { if (mesoHold) requestMeso(mk); }
     else if (upWant) upFlight.fire();
+    syncRiversSoon();
     const hovs = w ? w.heightOverrides : undefined, mode = erodeMode(ctx.meta);
     const eg = mode !== "all" && upOn ? gridSg! : ctx.grid!;   // 侵蚀单取的 Grid：仅底图档不看笔，画抬升在屏时取只带 Sg 的那个
     const eReuse = eg === lastEg;
@@ -495,6 +554,7 @@ export function createHost(ctx: ShellCtx): Host {
   function rebuildIfNeeded(): void {
     if (!ctx.R) return;
     if (ctx.mapId + "@" + yearSig.value + "@" + gridVerSig.value !== ctx.builtFor) rebuild(true);
+    else syncRiversSoon();   // 世界变了、地形没变（删河、撤销删河、挪河流滑杆）：河照样核一遍
   }
   function cam(): Camera {
     const [w, h] = cssSize();

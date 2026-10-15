@@ -7,7 +7,7 @@ import { DH_MAX_M, elevUnitM } from "../core/elev.ts";
 import { brushZones, encodeZones, paintedZones, zoneGeom } from "../core/climzone.ts";
 import { newId, parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
-import { genRiverEdges } from "../core/world.ts";
+import { genRiverEdges, riverCells } from "../core/world.ts";
 import { TRACK_OK, isModern, setUnitPoint, unitKind, unitPos, type TrackKey } from "../core/units.ts";
 import { ALL_KINDS, CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
@@ -115,7 +115,28 @@ export function addEdge(w: World, from: string, to: string, type: Edge["type"]):
 
 export function removeEdgeAt(w: World, idx: number): boolean {
   if (!(idx >= 0 && idx < w.edges.length)) return false;
+  muteGenRiver(w, w.edges[idx]);
   w.edges.splice(idx, 1);
+  return true;
+}
+
+/* —— 生成的河：只换带 gen 标记的；删掉或改过的记进 genRiverOff，重抽时过半落在里面的不画（core/world.genRiverEdgesOf）—— */
+const isGenRiver = (e: Edge): boolean => e.gen === true && e.type === "river";
+/** 删改一条生成的河之前记下它经过的格；不是生成的河不记 */
+export function muteGenRiver(w: World, e: Edge | undefined): void {
+  if (!e || !isGenRiver(e) || !Array.isArray(e.pts)) return;
+  const s = new Set(w.genRiverOff || []);
+  for (const c of riverCells(w.meta, e.pts)) s.add(c);
+  w.genRiverOff = [...s].sort((a, b) => a - b);
+}
+const sameNums = (a: number[] | undefined, b: number[] | undefined): boolean => a === b || (!!a && !!b && a.length === b.length && a.every((v, i) => v === b[i]));
+const sameGen = (a: Edge, b: Edge): boolean => a.widthM === b.widthM && sameNums(a.ws, b.ws) && sameNums(a.mz, b.mz) && Object.keys(a).length === Object.keys(b).length
+  && !!a.pts && !!b.pts && a.pts.length === b.pts.length && a.pts.every((p, i) => p[0] === b.pts![i][0] && p[1] === b.pts![i][1]);
+/** 生成的河换成 add：逐条按值相同就不动（返回 false＝没改，开图时与存档逐字同就零写入）；非生成的连线保持原序，生成的河排在最后 */
+export function syncGenRivers(w: World, add: Edge[]): boolean {
+  const cur = w.edges.filter(isGenRiver);
+  if (cur.length === add.length && cur.every((e, i) => sameGen(e, add[i]))) return false;
+  w.edges = w.edges.filter(e => !isGenRiver(e)).concat(add);
   return true;
 }
 
@@ -125,9 +146,11 @@ export function addFreeEdge(w: World, pts: [number, number][], type: "river" | "
   w.edges.push(e);
   return e;
 }
-/** 按当前生成参数重画生成器的河：只换带 gen 标记的，用户改过（标记已删）的不动；不是 v2 自动生成的图只撤不画 */
-export function regenRivers(w: World): { removed: number; added: number } {
-  const keep = w.edges.filter(e => !(e.gen === true && e.type === "river")), add = genRiverEdges(w.meta);
+/** 按当前生成参数用宏观河网重画生成器的河（中尺度落地后 host 再换成中尺度的）：只换带 gen 标记的，用户改过（标记已删）的不动；
+    不是 v2 自动生成的图只撤不画。clear＝地形参数换了、删改记录作废（格号对不上新地形） */
+export function regenRivers(w: World, clear: boolean): { removed: number; added: number } {
+  if (clear) delete w.genRiverOff;
+  const keep = w.edges.filter(e => !isGenRiver(e)), add = genRiverEdges(w.meta, w.genRiverOff);
   const removed = w.edges.length - keep.length;
   w.edges = keep.concat(add);
   return { removed, added: add.length };
@@ -187,6 +210,14 @@ export function applyNodeForm(n: WorldNode, v: NodeFormValues): void {
 /** 连线表单一次提交（旧 ee_save 语义；widthM=河流真宽米数，>0 存、空/非法删；
     reverse=工事齿面翻转（柱B），真存假删——缺省齿在画线方向左侧不落盘 */
 export interface EdgeFormValues { 名称: string; note: string; kv: string; since: string; until: string; widthM?: string; reverse?: boolean; certainty?: string }
+/** 表单保存：生成的河先记进删改记录（一存就归用户，重抽不再在旁边冒一条一样的），再落表单 */
+export function saveEdgeForm(w: World, idx: number, v: EdgeFormValues): boolean {
+  const e = w.edges[idx];
+  if (!e) return false;
+  muteGenRiver(w, e);
+  applyEdgeForm(e, v);
+  return true;
+}
 export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
   delete e.gen;   // 改过的河归用户：重新生成时不再替换
   const nm = v.名称.trim(); if (nm) e.名称 = nm; else delete e.名称;
@@ -195,7 +226,11 @@ export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
   if (Object.keys(kv).length) e.字段 = kv; else delete e.字段;
   const s = parseFloat(v.since); if (isFinite(s)) e.since = s; else delete e.since;
   const u = parseFloat(v.until); if (isFinite(u)) e.until = u; else delete e.until;
-  if (v.widthM !== undefined) { const w = parseFloat(v.widthM); if (w > 0) e.widthM = w; else delete e.widthM; }
+  if (v.widthM !== undefined) {   // 河宽改了就删逐点宽与曲流强度：用户填的是整条一个宽，弯的波长随宽走
+    const w = parseFloat(v.widthM), nw = w > 0 ? w : undefined;
+    if (nw !== e.widthM) { delete e.ws; delete e.mz; }
+    if (nw) e.widthM = nw; else delete e.widthM;
+  }
   if (v.reverse !== undefined) { if (v.reverse) e.reverse = true; else delete e.reverse; }
   if (v.certainty !== undefined) setCertainty(e, v.certainty);
 }

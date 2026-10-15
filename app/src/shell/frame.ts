@@ -7,7 +7,7 @@ import { calOf, fmtWhen } from "../core/calendar.ts";
 import { hexA, errText } from "../core/util.ts";
 import { drawOverlay, drawOp, type LoopBudget } from "../render/overlay.ts";
 import type { ElevField } from "../core/elev.ts";
-import { contourStepOf, terrainOpts } from "../render/renderer.ts";
+import { contourStepOf, riverSet, terrainOpts } from "../render/renderer.ts";
 import { drawAnalysis } from "../render/analysis.ts";
 import { drawPaintCells, drawBrushRing, drawSelectBox, drawClimZones } from "../render/editHud.ts";
 import { paintStep } from "../core/territory.ts";
@@ -47,7 +47,8 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     const rf = ruleFieldSig.value; if (rf) ruleLanded = rf;
     host.syncTiles();   // 分块精修：按本帧视口排先算哪几块、视口里的块齐了才上屏
     const cstep = layers.terrain ? contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleLanded, ctx.ruleField, viewBB()).v : 0;   // 等距：渲染器与注记同吃一档
-    if (layers.terrain) ctx.R!.render(viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, pxSize(), cstep, zoneField(world)));
+    const to = layers.terrain ? terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, pxSize(), cstep, zoneField(world), riverSet(ctx.meta, world, yearNow, ctx.view.degPerPx)) : null;
+    if (to) ctx.R!.render(viewBB(), to);
     if (world) {
       const octx = ov.getContext("2d")!;
       const selIdForOps = (selSig.value && selSig.value.kind === "node") ? selSig.value.id : null;
@@ -58,7 +59,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       const decorSelId = (selSig.value && selSig.value.kind === "decor") ? selSig.value.id : null;
       const decorMultiIds = (selSig.value && selSig.value.kind === "multi") ? selSig.value.decorIds || null : null;
       const loopBudget: LoopBudget = { ms: full ? Infinity : terrMs, spent: 0, done: 0, skipped: 0 };
-      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, visMasks: visMaskSig.value, detect: detectSig.value, ruleField: ruleLanded, spotTable: spotTableSig.value, contourStep: cstep, smooth: brushSmoothSig.value, edgeSelIdx, editing: modeSig.value === "edit", decorSelId, decorMultiIds, loopBudget });
+      drawOverlay(octx, cam(), ctx.meta, world, yearNow, ctx.DPR, { layers, selId: selIdForOps, opSel: opSelSig.value, grid: ctx.grid || undefined, multiIds, multiUnitIds, unitSelId, unitLegs: unitLegsSig.value, visMasks: visMaskSig.value, detect: detectSig.value, ruleField: ruleLanded, spotTable: spotTableSig.value, contourStep: cstep, smooth: brushSmoothSig.value, edgeSelIdx, rivers: to ? to.rivers : undefined, editing: modeSig.value === "edit", decorSelId, decorMultiIds, loopBudget });
       if (loopBudget.skipped) terrPass++;
       terrMs = Math.max(TERR_FRAME_MS, performance.now() - tp - loopBudget.spent);
       const m = modeSig.value;

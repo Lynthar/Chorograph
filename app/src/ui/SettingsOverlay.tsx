@@ -8,7 +8,7 @@
      物理在创建那一刻可见、可谈、然后定死，与「地势定形」同一个可读性哲学）。
    卡片以 token 为 key 整体重挂=每次打开重灌表单。 */
 import { useEffect, useRef, useState } from "preact/hooks";
-import { blankWorld, clampWorldBBox, genRiverKey, WORLD_KM_PER_DEG, WORLD_RADIUS_KM, type BlankWorldSpec } from "../core/world.ts";
+import { blankWorld, clampWorldBBox, genRiverKey, genTerrKey, WORLD_KM_PER_DEG, WORLD_RADIUS_KM, type BlankWorldSpec } from "../core/world.ts";
 import { blankTacticalWorld, TAC_DIA_KM, type BlankTacSpec } from "../core/tactical.ts";
 import { GEN_SEED_MAX } from "../core/terrain.ts";
 import { GEN2_SEED_MAX, isGen2, LAND_RANGE, landFrac, type Gen2Style } from "../core/gen2.ts";
@@ -286,9 +286,9 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
      尺度（形态/半径/每度里程/范围）创建后锁定,此处一律不读不写；旧「改范围→拆分涂改→视图
      回中」链随之退役（splitOverridesToStep 已删）。 */
   const apply = () => {
-    let riv = null as { removed: number; added: number } | null;   // 写在 mutateWorld 的回调里：as 免得被收窄成 null
+    let riv = "" as "" | "new" | "gone";   // 写在 mutateWorld 的回调里：as 免得被收窄成字面量
     mutateWorld(w => {
-      const mm = w.meta, rk = genRiverKey(mm);
+      const mm = w.meta, rk = genRiverKey(mm), tk = genTerrKey(mm);
       mm.名称 = q<HTMLInputElement>("#sw_name").value.trim() || "未命名世界";
       mm.terrain = (((box.current!.querySelector('[name=sw_terr]:checked') as HTMLInputElement | null)?.value) || "auto") as TerrainMode;
       if (mm.terrain === "auto") {
@@ -322,11 +322,15 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         if (ev && ev !== "SE") cc.era = ev; else delete cc.era;
         if (Object.keys(cc).length) mm.calendar = cc; else delete mm.calendar;
       }
-      if (genRiverKey(mm) !== rk) riv = regenRivers(w);   // 生成参数变了才重画：只换带标记的河，没变就不动（删掉的河不复活）
+      /* 河的参数变了才重画（没变就不动）：地形换了先用宏观河顶上、删改记录作废；只挪了两个河流滑杆，地形不变，host 按新滑杆重抽 */
+      if (genRiverKey(mm) !== rk) {
+        if (genTerrKey(mm) !== tk) { const r = regenRivers(w, true); riv = r.added ? "new" : r.removed ? "gone" : ""; }
+        else riv = "new";
+      }
     }, { grid: true });
     if (riv && selSig.peek()?.kind === "edge") selSig.value = null;   // 连线按下标选中，换河之后下标指向别的线
     closeSettings();
-    showToast(!riv || !riv.removed && !riv.added ? "已应用到当前世界" : riv.added ? "已应用到当前世界，河流按新参数重画" : "已应用到当前世界，自动生成的河一并撤下", { undo: true });
+    showToast(!riv ? "已应用到当前世界" : riv === "new" ? "已应用到当前世界，河流按新参数重画" : "已应用到当前世界，自动生成的河一并撤下", { undo: true });
   };
   /* 战术战场参数（仅 create + 战术分支）：中心经纬 + 直径 + 战役年份 + 等高距。
      ⚠ 战场恒平面：不再收世界形态/星球半径;每度里程缺省 111.19（core 兜底） */
@@ -371,7 +375,7 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         const rk = genRiverKey(w.meta);
         w.meta.genSeed = seed; w.meta.genStyle = g.genStyle;
         if (g.genVer === 2) { w.meta.genLand = g.genLand; w.meta.genMtn = g.genMtn; w.meta.genIsl = g.genIsl; w.meta.genRiv = g.genRiv; w.meta.genWater = g.genWater; }
-        if (genRiverKey(w.meta) !== rk) riv = regenRivers(w).added > 0;
+        if (genRiverKey(w.meta) !== rk) riv = regenRivers(w, true).added > 0;   // 换种子＝换地形：删改记录作废
       }, { grid: true });
       if (riv && selSig.peek()?.kind === "edge") selSig.value = null;
       showToast(riv ? `已按种子 ${seed} 重生成地形与河流` : `已按种子 ${seed} 重生成地形`, { undo: true });   // 与「应用」同回执（此前静默）

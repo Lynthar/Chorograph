@@ -12,10 +12,10 @@ import { yearRangeOf } from "../src/core/time.ts";
 import { distKm } from "../src/core/geo.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
 import { ERODE_VER, erodeCarve, erodeField, erodeGate, erodeInput, erodeKey, erodeMode, rowFbm, ultraInput, upscaleOf, type ErodeInput } from "../src/core/erode.ts";
-import { gen2Meso, gen2Uplift, mesoState, type UpliftCells } from "../src/core/gen2.ts";
+import { gen2Meso, gen2Uplift, mesoState, riverParams, type UpliftCells } from "../src/core/gen2.ts";
 import { tileInput, tileKey, tilePlan } from "../src/core/tiles.ts";
 import { fbm } from "../src/core/noise.ts";
-import { baseElev, buildElevField, coarseField, elevBilinear, fieldMix, fieldPlusDelta, waterSurface, LAND_FLOOR, SHORE_E, type ElevField } from "../src/core/elev.ts";
+import { baseElev, buildElevField, coarseField, elevBilinear, fieldMix, fieldPlusDelta, waterMask, waterSurface, LAND_FLOOR, SHORE_E, type ElevField } from "../src/core/elev.ts";
 import { gnoise, makeRelief, mountainness, RELIEF_M } from "../src/core/relief.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
@@ -659,7 +659,7 @@ describe("侵蚀真形（core/erode）", () => {
     const hov = new Float32Array(24 * 24);
     for (let r = 6; r < 18; r++) for (let c = 6; c < 18; c++) hov[r * 24 + c] = 0.2 + 0.03 * ((r * 7 + c * 3) % 5);
     /* 钉的是现行实现的输出：变了＝真高程与手雕图的地形跟着变了（起伏或侵蚀有意换代时才重钉） */
-    assert.strictEqual(fieldHash(erodeField(ramp(24, 0.0024, 0, 40_000, hov))), "xrlcje");
+    assert.strictEqual(fieldHash(erodeField(ramp(24, 0.0024, 0, 40_000, hov))), "1tjz9lt");
   });
   it("粗级物理扩散以旧常数为地板：粗格大于约 224 m 的图输出逐位钉死", () => {
     /* 133 m 格 ×8 细分再 ×4 成粗格≈0.8 km＞交界；缺省尺寸以上的战术图与战略图都在这一侧 */
@@ -687,6 +687,120 @@ describe("侵蚀真形（core/erode）", () => {
     let cov = 0, vp = 0, vq = 0; for (let i = 0; i < P.length; i++) { cov += (P[i] - mp) * (Q[i] - mq); vp += (P[i] - mp) ** 2; vq += (Q[i] - mq) ** 2; }
     const rho = cov / Math.sqrt(vp * vq);
     assert.ok(rho > 0.85, `两档高通相关 ${rho.toFixed(3)}`);
+  });
+  /* 粗格图上的高程涂改：64×64 父格（0.06°≈6.7 km）、平原底、西一列水域，cap 把细分压到 2×＝粗格约 12 km、32 粗格一轴，
+     粗级扩散按格（σ≈15 km）——窄雕刻的病只在这一档出现，细分 8× 的同图是对照。盘与环都以 (32,32) 为心 */
+  const N4 = 64;
+  const plainland = (sx: number, hov?: Float32Array): ErodeInput => {
+    const n2 = N4 * N4, elev0 = new Float32Array(n2).fill(0.16), water = new Uint8Array(n2);
+    for (let r = 0; r < N4; r++) { water[r * N4] = 1; elev0[r * N4] = -0.35; }
+    return { bb: { lonMin: 100, lonMax: 100 + N4 * 0.06, latMin: 30, latMax: 30 + N4 * 0.06 }, step: 0.06, cols: N4, rows: N4,
+      elev0, water, wsurf: new Float32Array(n2), amp: 0.7, seed: 4242, kmx: 96.3, kmy: 111.19, hovGrid: hov || new Float32Array(n2),
+      cap: n2 * sx * sx, axisMax: 8, acrit: 300, bandS: 1, unitM: 2000, sphere: false };
+  };
+  const carve = (inside: (d2: number) => boolean, v: number): Float32Array => {
+    const g = new Float32Array(N4 * N4);
+    for (let r = 0; r < N4; r++) for (let c = 0; c < N4; c++) if (inside((r - 32) * (r - 32) + (c - 32) * (c - 32))) g[r * N4 + c] = v;
+    return g;
+  };
+  const disc3 = carve(d2 => d2 <= 9.5, 1), ring68 = carve(d2 => d2 >= 35.5 && d2 <= 64.5, 1.5);
+  /** 距盘心 rad 父格以内细格的增量均值（单点会落在起伏纹理的谷里） */
+  const meanIn = (f: ElevField, f0: ElevField, rad: number): number => {
+    const sx = f.cols / N4; let s = 0, k = 0;
+    for (let r = 0; r < f.rows; r++) for (let c = 0; c < f.cols; c++) {
+      const y = (r + 0.5) / sx - 32.5, x = (c + 0.5) / sx - 32.5;
+      if (x * x + y * y <= rad * rad) { s += f.data[r * f.cols + c] - f0.data[r * f.cols + c]; k++; }
+    }
+    return s / k;
+  };
+  const at32 = (f: ElevField, dr: number, dc: number): number => elevBilinear(f.data, f, 100 + (32.5 + dc) * 0.06, 30 + (32.5 + dr) * 0.06);
+  it("粗格图上 47 km 宽的平顶雕刻保留八成以上、盘心不低于盘内一圈：粗级扩散对涂改只磨到 σ≤4 km", () => {
+    const f0 = erodeField(plainland(2)), fd = erodeField(plainland(2, disc3));
+    assert.strictEqual(fd.cols, N4 * 2, "前提：细分 2×、粗级在跑");
+    const inner = meanIn(fd, f0, 2);
+    assert.ok(inner >= 0.8, `盘内两格以内保留 ${inner.toFixed(3)}（不封顶时只剩约一半、体积推到外圈）`);
+    let ring = 0;
+    for (let k = 0; k < 24; k++) ring += (at32(fd, 2 * Math.sin(k * Math.PI / 12), 2 * Math.cos(k * Math.PI / 12)) - at32(f0, 2 * Math.sin(k * Math.PI / 12), 2 * Math.cos(k * Math.PI / 12))) / 24;
+    assert.ok(meanIn(fd, f0, 1) >= ring, `盘心 ${meanIn(fd, f0, 1).toFixed(3)} 低于两格处一圈 ${ring.toFixed(3)}＝平顶成了碟`);
+  });
+  it("同一雕刻在细分 2× 与 8× 上保留率差不过 0.1（雕刻的磨平按公里，不随粗格边涨）", () => {
+    const a = meanIn(erodeField(plainland(2, disc3)), erodeField(plainland(2)), 2);
+    const b = meanIn(erodeField(plainland(8, disc3)), erodeField(plainland(8)), 2);
+    assert.ok(Math.abs(a - b) <= 0.1, `2× ${a.toFixed(3)} vs 8× ${b.toFixed(3)}`);
+  });
+  it("涂改围出的闭合盆不被填洼抬成盆沿高的平台（粗细两级）", () => {
+    for (const sx of [2, 8]) {
+      const d = at32(erodeField(plainland(sx, ring68)), 0, 0) - at32(erodeField(plainland(sx)), 0, 0);
+      assert.ok(d < 0.15, `${sx}× 盆心被抬 ${d.toFixed(3)}（环高 1.5）`);
+    }
+  });
+  it("没有高程涂改的粗格图输出逐位钉死：涂改的磨平封顶与盆的不填平都不碰生成地形", () => {
+    assert.strictEqual(fieldHash(erodeField(plainland(2))), "ziqki8");
+  });
+  /* 粗格图上的地貌涂改：真路径（buildGridCells → erodeInput）。64×64 父格 0.08°（约 14 km）平原图，缺省 cap 细分 8×、粗格约 6.4 km（λ≈0.7），
+     cap 压到 2× 时粗格约 26 km（λ≈0.98）——地貌笔涂的山在后一档上被粗级扩散削掉一半。图形都以 (32,32) 为心 */
+  const LF_N = 64, LF_S = 0.08;
+  const lfMeta: Meta = { terrain: "plain", relief: 0.7, gridN: LF_N, bbox: { lonMin: 100, lonMax: 100 + LF_N * LF_S, latMin: 30, latMax: 30 + LF_N * LF_S } };
+  const lfPaint = (inside: (d2: number) => boolean, t: string, m: Meta = lfMeta, s = LF_S) => {
+    const o = [], bb = m.bbox!;
+    for (let r = 0; r < LF_N; r++) for (let c = 0; c < LF_N; c++)
+      if (inside((r - 32) * (r - 32) + (c - 32) * (c - 32))) o.push({ lon: bb.lonMin + (c + 0.5) * s, lat: bb.latMin + (r + 0.5) * s, t, step: s });
+    return o;
+  };
+  const lfInput = (sx: number, ov: ReturnType<typeof lfPaint>): ErodeInput => ({ ...erodeInput(lfMeta, [], buildGridCells(lfMeta, ov, 0), 0)!, cap: LF_N * LF_N * sx * sx });
+  const lfMean = (f: ElevField, f0: ElevField, rad: number): number => {
+    const sx = f.cols / LF_N; let s = 0, k = 0;
+    for (let r = 0; r < f.rows; r++) for (let c = 0; c < f.cols; c++) {
+      const y = (r + 0.5) / sx - 32.5, x = (c + 0.5) / sx - 32.5;
+      if (x * x + y * y <= rad * rad) { s += f.data[r * f.cols + c] - f0.data[r * f.cols + c]; k++; }
+    }
+    return s / k;
+  };
+  const lfAt = (f: ElevField, dc: number): number => elevBilinear(f.data, f, 100 + (32.5 + dc) * LF_S, 30 + 32.5 * LF_S);
+  const lfDisc = lfPaint(d2 => d2 <= 9.5, "mountain"), lfRing = lfPaint(d2 => d2 >= 35.5 && d2 <= 64.5, "alpine");
+  it("erodeInput 只在粗级 λ>0 的图上挂地貌涂改增量：陆格＝带与不带涂改的基底之差、水格 0；没改地类、战术图与细格图都不挂", () => {
+    const ov = [...lfDisc, ...lfPaint(d2 => d2 >= 200 && d2 <= 230, "water")];
+    const g1 = buildGridCells(lfMeta, ov, 0), g0 = buildGridCells(lfMeta, [], 0), d = erodeInput(lfMeta, [], g1, 0)!.lfDelta!;
+    const b1 = baseElev(lfMeta, g1), b0 = baseElev(lfMeta, g0), w = waterMask(g1);
+    assert.ok(d && d.length === LF_N * LF_N && w.includes(1), "前提：挂上了、画了水");
+    for (let i = 0; i < d.length; i++) assert.strictEqual(d[i], w[i] ? 0 : Math.fround(b1[i] - b0[i]), `格 ${i}`);
+    assert.strictEqual(erodeInput(lfMeta, [], g0, 0)!.lfDelta, undefined, "没涂");
+    assert.strictEqual(erodeInput(lfMeta, [], buildGridCells(lfMeta, lfPaint(d2 => d2 <= 9.5, "plain"), 0), 0)!.lfDelta, undefined, "涂成原地类");
+    for (const m of [{ ...lfMeta, mapKind: "tactical" as const, bbox: { lonMin: 100, lonMax: 100.64, latMin: 30, latMax: 30.64 } },
+      { ...lfMeta, bbox: { lonMin: 100, lonMax: 101.28, latMin: 30, latMax: 31.28 } }]) {
+      const s = (m.bbox.lonMax - m.bbox.lonMin) / LF_N, g = buildGridCells(m, lfPaint(d2 => d2 <= 9.5, "mountain", m, s), 0);
+      assert.ok(erodeInput(m, [], g, 0)!.elev0.some(v => v > 0.5), "前提：涂上了");
+      assert.strictEqual(erodeInput(m, [], g, 0)!.lfDelta, undefined, `粗格 ≤ 约 3.33 km（${m.mapKind || "战略"}）：输入与改动前逐位同`);
+    }
+  });
+  it("粗格图上地貌笔涂的山：盘内两格保留 ≥ 0.8（不挂增量时约一半），2× 与 8× 差不过 0.1，粗级不往山脚推体积", () => {
+    const D = 0.9 - 0.16, keep: number[] = [];
+    for (const sx of [2, 8]) {
+      const f0 = erodeField(lfInput(sx, [])), inp = lfInput(sx, lfDisc);
+      keep.push(lfMean(erodeField(inp), f0, 2) / D);
+      if (sx !== 2) continue;
+      assert.ok(lfMean(erodeField({ ...inp, lfDelta: undefined }), f0, 2) / D < 0.6, "对照：不挂增量时削掉近一半");
+      /* 增量与类型基面要在同一个扭曲落点取样：错开时参照面的台阶不在山的台阶上，扩散沿错位处来回搬土（实测沉积约 0.4 × D） */
+      const dep = Math.max(...erodeCarve(inp)!.data);
+      assert.ok(dep < 0.1 * D, `粗级切割量的沉积最大 ${dep.toFixed(3)}（不挂增量时约 0.14，推成山脚裙带）`);
+    }
+    assert.ok(keep[0] >= 0.8, `2× 保留 ${keep[0].toFixed(3)}`);
+    assert.ok(Math.abs(keep[0] - keep[1]) <= 0.1, `2× ${keep[0].toFixed(3)} vs 8× ${keep[1].toFixed(3)}`);
+  });
+  it("地貌笔围出的盆不被填平：高原里挖的平原、环山的盆心（粗细两级）", () => {
+    const plateau = lfPaint(d2 => d2 <= 150, "mountain"), hole = [...plateau, ...lfPaint(d2 => d2 <= 9.5, "plain")];
+    for (const sx of [2, 8]) {
+      const dig = lfAt(erodeField(lfInput(sx, plateau)), 0) - lfAt(erodeField(lfInput(sx, hole)), 0);
+      assert.ok(dig >= 0.8 * (0.9 - 0.16), `${sx}× 洞心只比高原低 ${dig.toFixed(3)}（填平时约两成）`);
+      const lift = lfAt(erodeField(lfInput(sx, lfRing)), 0) - lfAt(erodeField(lfInput(sx, [])), 0);
+      assert.ok(lift < 0.1 * (1.5 - 0.16), `${sx}× 盆心被抬 ${lift.toFixed(3)}`);
+    }
+  });
+  it("地貌涂改增量只在有它时进键、一格之差即换键", () => {
+    const inp = erodeInput(lfMeta, [], buildGridCells(lfMeta, lfDisc, 0), 0)!, k = erodeKey(inp);
+    assert.notStrictEqual(erodeKey({ ...inp, lfDelta: undefined }), k);
+    const d = inp.lfDelta!.slice(), i = d.findIndex(v => v > 0.3); d[i] -= 0.001;
+    assert.notStrictEqual(erodeKey({ ...inp, lfDelta: d }), k, "增量变了键必须变");
   });
   it("erodeKey：同输入同键、键带算法代前缀；任一分量（单个格值/种子/幅度/bb/量纲）变即换键", () => {
     /* 键是场缓存（data/fieldcache）的全部正确性来源：漏进键的分量变了而键没变＝按键取回
@@ -866,7 +980,7 @@ describe("侵蚀的中尺度单（ErodeInput.mesoEnv）", () => {
     assert.ok(k0 >= 0, "夹具应有一片低平陆地");
     const fidx: number[] = [];
     for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) fidx.push(k0 + dr * cols + dc);
-    const U = gen2Uplift(st, { idx: new Int32Array(0), peakM: new Float64Array(0), fidx: Int32Array.from(fidx).sort(), floorM: new Float64Array(9).fill(-100) });
+    const U = gen2Uplift(st, { idx: new Int32Array(0), peakM: new Float64Array(0), fidx: Int32Array.from(fidx).sort(), floorM: new Float64Array(9).fill(-100) }, riverParams(md));
     assert.ok(U.water && U.water.list.some(x => x.kind === 2) && U.basin!.some(v => (v & 2) !== 0), `前提：成盐滩 ${JSON.stringify(U.water && U.water.list)}`);
     const gb = buildGridCells(md, [], 0, U), ib = erodeInput(md, [], gb, 0)!;
     assert.strictEqual(ib.basin, U.basin);
@@ -897,7 +1011,7 @@ describe("侵蚀的中尺度单（ErodeInput.mesoEnv）", () => {
     /* 钉现行输出：起伏封顶、不扭不羽、汇流微地形任一被改都会变（这条路径有意换代时才重钉，见 MESO_EALGO） */
     let x = 0x811c9dc5 | 0; const u = new Uint32Array(f1.data.buffer, f1.data.byteOffset, f1.data.length);
     for (let i = 0; i < u.length; i++) x = Math.imul(x ^ u[i], 16777619);
-    assert.strictEqual((x >>> 0).toString(36), "1ukyz2n");
+    assert.strictEqual((x >>> 0).toString(36), "1u3c7e1");
     const plan = tilePlan(inp, 4e6, 0)!, keys = new Set<string>();
     assert.ok(plan && plan.tiles.length >= 2, "前提：至少两块");
     for (const t of plan.tiles.slice(0, 3)) {
@@ -1127,17 +1241,21 @@ describe("中尺度车道：画抬升单（routeProto uplift）", () => {
   const geom = gridGeom(m), R = gen2Meso(m, geom), st0 = mesoState(m, geom, R.sg), out = st0.pr.inp.out;
   const land = out.findIndex((v, i) => v === 0 && i > out.length / 2);
   const cells: UpliftCells = { idx: Int32Array.of(land), peakM: Float64Array.of(4000) };
-  const want = gen2Uplift(st0, cells);
-  it("中尺度单之后不带 sg 的画抬升单＝gen2Uplift；回执的 sg 是拷贝，车道留着的原件不受 transfer 影响", () => {
+  const want = gen2Uplift(st0, cells, riverParams(m));
+  it("中尺度单之后不带 sg 的画抬升单＝gen2Uplift（含河）；回执的 sg 是拷贝，车道留着的原件不受 transfer 影响；中尺度单带回求解状态，画抬升不重建三角网", () => {
     const st: RouteCtx = {};
     const r = handleRouteMsg(st, { t: "meso", id: 1, meta: m, geom, sg: null });
     assert.ok(r && r.t === "meso" && r.sg);
+    assert.deepStrictEqual(r.rivers, R.rivers, "回执的河按单里 meta 的滑杆抽");
+    const st0Lane = st.meso!.st;
+    assert.ok(st0Lane, "中尺度单就留下求解状态");
     assert.notStrictEqual(r.sg!.h, st.meso!.sg.h, "回执的 sg 与车道留着的不是同一块内存");
     assert.deepStrictEqual(r.sg!.h, st.meso!.sg.h);
     const u = handleRouteMsg(st, { t: "uplift", id: 2, meta: m, geom, sg: null, cells });
     assert.ok(u && u.t === "uplift");
-    assert.deepStrictEqual(u.base, want.base); assert.deepStrictEqual(u.env, want.env);
+    assert.deepStrictEqual(u.base, want.base); assert.deepStrictEqual(u.env, want.env); assert.deepStrictEqual(u.rivers, want.rivers);
     const keep = st.meso!.st;
+    assert.strictEqual(keep, st0Lane, "画抬升单沿用中尺度单留下的求解状态");
     handleRouteMsg(st, { t: "uplift", id: 3, meta: m, geom, sg: null, cells });
     assert.strictEqual(st.meso!.st, keep, "第二笔沿用同一份求解状态（不重建三角网）");
   });

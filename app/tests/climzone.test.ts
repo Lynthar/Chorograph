@@ -125,7 +125,7 @@ describe("气候分区：查找优先级与 v2 派生", () => {
 describe("气候分区：渲染输入", () => {
   it("无分区时 terrainOpts 不带 zones（两端走 snow/clim 旧路径）", () => {
     const m = { bbox: BB, climate: "temperate" } as Meta;
-    assert.strictEqual(terrainOpts(m, 0.01, {}, 1, "shaded", 1, [800, 600], 0.05, null).zones, undefined);
+    assert.strictEqual(terrainOpts(m, 0.01, {}, 1, "shaded", 1, [800, 600], 0.05, null, null).zones, undefined);
   });
   it("权重每格和为 1，过渡跨档界、远处为纯档；GL 两张 RGBA8 之和≈255", () => {
     const w = world();

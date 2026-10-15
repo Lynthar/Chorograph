@@ -30,7 +30,17 @@ export class Heap {
   }
 }
 
-/** 求解用的图：节点 i 的邻居是 nb[nbOff[i]] .. nb[nbOff[i + 1] − 1]，len 是对应边长（km），area 是节点面积（km²） */
+/** 优先洪泛的起点入堆：seen 标好全部源点、键在 key，只放挨着非源点的那些。邻居全是源点的源点弹出时什么也不发现，
+    堆按（键, 号）全序弹出，不放它们其余节点的弹出次序逐位不变——整片海就不必过堆；代价是它们不进洪泛序 */
+export function pushRim(heap: Heap, seen: Uint8Array, key: Float64Array, nbOff: Int32Array, nb: Int32Array): void {
+  for (let i = 0; i < seen.length; i++) {
+    if (!seen[i]) continue;
+    for (let e = nbOff[i]; e < nbOff[i + 1]; e++) if (!seen[nb[e]]) { heap.push(key[i], i); break; }
+  }
+}
+
+/** 求解用的图：节点 i 的邻居是 nb[nbOff[i]] .. nb[nbOff[i + 1] − 1]，len 是对应边长（km），area 是节点面积（km²）。
+    邻接必须对称（i 列着 j 则 j 列着 i）：lowestTree 按节点自己的邻居取受水者、洪泛按谁的表里有它，不对称时两者对不上 */
 export interface SteadyGraph { nbOff: Int32Array; nb: Int32Array; len: Float64Array; area: Float64Array }
 /** 一步增高＝U / (K·√max(A, acrit))·边长（U 已乘好高程标度）；out 标出口，出口高程固定为 hOut。
     head＝源头修正：面积大过 acrit 的叶节点（汇流面积＝自身面积）增量再乘 1 + head·(1 − √(acrit / 面积))——格内从分水岭起的那段河源没被解析，
@@ -38,7 +48,8 @@ export interface SteadyGraph { nbOff: Int32Array; nb: Int32Array; len: Float64Ar
 export interface SteadyInput { U: Float64Array; K: Float64Array; acrit: number; out: Uint8Array; hOut: Float64Array; head: number }
 /** 稳态解：流向（出口指自己）、汇流面积（km²）与到下游的边长；converged＝停在流向树不变（或相对容差）上，不是撞上轮数上限 */
 export interface SteadyResult { h: Float64Array; rcv: Int32Array; A: Float64Array; rl: Float64Array; iters: number; converged: boolean }
-/** maxIt 轮数上限；tol > 0 时 dmax ≤ tol·(hmax − 最低出口) 也算收敛；canon 每轮用规范积分（影响带重解的 base 必须这样解） */
+/** maxIt 轮数上限；tol > 0 时 dmax ≤ tol·(hmax − 最低出口) 也算收敛；canon 每轮用规范积分（影响带重解的 base 必须这样解），
+    首轮之后的流向树先试 lowestTree、不成再洪泛，与每轮都洪泛逐位同（洪泛序不试：它的积分次序要的是出堆序） */
 export interface SteadyOpt { maxIt: number; tol: number; canon: boolean }
 
 /** 源头修正的逐节点系数（作叶时乘）；head 为 0＝null，增量逐位同不修正 */
@@ -92,26 +103,65 @@ export function treeArea(rcv: Int32Array, area: Float64Array): Float64Array {
   return A;
 }
 
+/** 一轮优先洪泛定流向树：出口标进 seen、指自己，其余节点归第一个发现它的出堆邻居（堆按（本格 h, 号）），出堆序写进 order。
+    返回出堆个数；够不到出口的节点 seen 为 0，rcv 与 rl 不动 */
+export function floodTree(G: SteadyGraph, out: Uint8Array, h: Float64Array, rcv: Int32Array, rl: Float64Array, seen: Uint8Array, heap: Heap, order: Int32Array): number {
+  const { nbOff, nb, len } = G, n = out.length;
+  seen.fill(0); heap.n = 0;
+  for (let i = 0; i < n; i++) if (out[i]) { seen[i] = 1; rcv[i] = i; }
+  pushRim(heap, seen, h, nbOff, nb);
+  let no = 0;
+  while (heap.n) {
+    const i = heap.pop(); order[no++] = i;
+    for (let e = nbOff[i]; e < nbOff[i + 1]; e++) {
+      const j = nb[e]; if (seen[j]) continue;
+      seen[j] = 1; rcv[j] = i; rl[j] = len[e]; heap.push(h[j], j);
+    }
+  }
+  return no;
+}
+
+/**
+ * 不走堆的一轮流向树：ids 里每个节点的受水者取 cand 里按（h, 号）最低的邻居，rl 取受水者邻接表里第一条指向它的边。
+ * 每个节点都排在这个最低邻之后时，洪泛的出堆序恰是（h, 号）升序、各节点被最低邻发现，结果与这一轮洪泛逐位同。
+ * @param ids 这一轮洪泛要定受水者的节点，必须都够得着出口：够不着的洪泛不碰，这里却会给它接上受水者
+ * @param cand 洪泛会出堆的节点（null＝ids 的邻居全会出堆）：漏标或多标，受水者就与洪泛不同
+ * @param rcv / rl 上一轮的树：受水者没变的节点 rl 不重查
+ * @returns false＝有节点不排在最低邻之后（零增量边上的平地），rcv / rl 可能已改了一部分，这一轮必须再洪泛
+ */
+export function lowestTree(G: SteadyGraph, h: Float64Array, rcv: Int32Array, rl: Float64Array, ids: Int32Array, cand: Uint8Array | null): boolean {
+  const { nbOff, nb, len } = G;
+  for (let t = 0; t < ids.length; t++) {
+    const j = ids[t]; let m = -1, hm = 0;
+    for (let e = nbOff[j]; e < nbOff[j + 1]; e++) {
+      const k = nb[e]; if (cand && !cand[k]) continue;
+      const hk = h[k]; if (m < 0 || hk < hm || (hk === hm && k < m)) { m = k; hm = hk; }
+    }
+    if (m < 0 || !(hm < h[j] || (hm === h[j] && m < j))) return false;
+    if (rcv[j] === m) continue;
+    let e = nbOff[m];
+    while (e < nbOff[m + 1] && nb[e] !== j) e++;
+    if (e === nbOff[m + 1]) return false;   // 邻接不对称：交给洪泛
+    rcv[j] = m; rl[j] = len[e];
+  }
+  return true;
+}
+
 /** 全图稳态：每轮自出口优先洪泛（键＝本格 h）定流向树 → 汇流面积 → 自出口沿树积分，到流向树不变（或相对容差）或到上限。
     h0 是初值（出口处被 hOut 覆盖）；够不到出口的节点洪泛序下不碰，规范序下成根、高程不动 */
 export function steady(G: SteadyGraph, inp: SteadyInput, h0: Float64Array, opt: SteadyOpt): SteadyResult {
-  const { nbOff, nb, len, area } = G, { U, K, acrit, out, hOut } = inp, n = area.length;
+  const { area } = G, { U, K, acrit, out, hOut } = inp, n = area.length;
   const h = Float64Array.from(h0), rcv = new Int32Array(n), prev = new Int32Array(n).fill(-1), rl = new Float64Array(n);
   const order = new Int32Array(n), A = new Float64Array(n), seen = new Uint8Array(n), heap = new Heap(n), tw = opt.canon ? treeWork(n) : null, hf = headOf(G, inp);
   let hs0 = Infinity;
   for (let i = 0; i < n; i++) if (out[i]) { h[i] = hOut[i]; if (hOut[i] < hs0) hs0 = hOut[i]; }
   if (hs0 === Infinity) hs0 = 0;
-  let iters = 0, converged = false;
+  let iters = 0, converged = false, live: Int32Array | null = null;   // 规范序：首次洪泛够得着的非出口节点，此后先试 lowestTree
   for (; iters < opt.maxIt; iters++) {
-    seen.fill(0); heap.n = 0;
-    let no = 0;
-    for (let i = 0; i < n; i++) if (out[i]) { seen[i] = 1; rcv[i] = i; heap.push(h[i], i); }
-    while (heap.n) {
-      const i = heap.pop(); order[no++] = i;
-      for (let e = nbOff[i]; e < nbOff[i + 1]; e++) {
-        const j = nb[e]; if (seen[j]) continue;
-        seen[j] = 1; rcv[j] = i; rl[j] = len[e]; heap.push(h[j], j);
-      }
+    let no = 0;   // 出堆序只给洪泛序积分用；规范序走 treeOrder
+    if (!live || !lowestTree(G, h, rcv, rl, live, null)) {
+      no = floodTree(G, out, h, rcv, rl, seen, heap, order);
+      if (tw && !live) { const ids: number[] = []; for (let i = 0; i < n; i++) if (seen[i] && !out[i]) ids.push(i); live = Int32Array.from(ids); }
     }
     let dmax = 0, hmax = hs0;
     if (tw) {
@@ -169,7 +219,7 @@ export function steadyBand(G: SteadyGraph, inp: SteadyInput, base: SteadyResult,
   for (const i of ids) for (let e = nbOff[i]; e < nbOff[i + 1]; e++) { const j = nb[e]; if (esc[j] || (inB[j] && out[j])) isSeed[j] = 1; }   // 不挨带内陆地的出口发现不了谁，不进堆
   for (let i = 0; i < n; i++) if (isSeed[i]) { seeds.push(i); if (inB[i]) roots.push(i); }
   /* 每轮只重积受影响的节点：出口邻点往下的带外链（含链尾的根）、挨着带内陆地的带内出口与带内节点；其余节点的 A 恒等于 base。
-     次序父在子前：带外链按 base 的规范序，带内节点按本轮出堆序 */
+     次序父在子前：带外链按 base 的规范序，带内节点按本轮出堆序（lowestTree 定树的轮次按自 F0 沿新流向的广度序） */
   for (const s of seeds) if (!inB[s]) for (let j = s; !inD[j]; j = base.rcv[j]) { inD[j] = 1; if (base.rcv[j] === j) break; }
   const F0: number[] = [];
   for (let q = 0; q < tw.no; q++) if (inD[tw.order[q]]) F0.push(tw.order[q]);
@@ -186,26 +236,35 @@ export function steadyBand(G: SteadyGraph, inp: SteadyInput, base: SteadyResult,
   const rcv = Int32Array.from(from.rcv), rl = Float64Array.from(from.rl), h = Float64Array.from(from.h), A = Float64Array.from(from.A);
   const prev = new Int32Array(ids.length).fill(-1), seen = new Uint8Array(n), heap = new Heap(ids.length + seeds.length);
   const ford = new Int32Array(ids.length), bOff = new Int32Array(nA + 1), bPos = new Int32Array(nA), bKid = new Int32Array(ids.length);
+  const idA = Int32Array.from(ids), cand = Uint8Array.from(isSeed);   // 带内洪泛出堆的是种子与带内节点
+  for (const i of ids) cand[i] = 1;
   let iters = 0, converged = false;
   for (; iters < maxIt; iters++) {
-    for (const i of ids) seen[i] = 0;
-    heap.n = 0;
-    for (const s of seeds) { seen[s] = 1; heap.push(h[s], s); }
+    const fast = iters > 0 && lowestTree(G, h, rcv, rl, idA, cand);
     let nf = 0;
-    while (heap.n) {
-      const i = heap.pop();
-      if (!isSeed[i]) ford[nf++] = i;
-      for (let e = nbOff[i]; e < nbOff[i + 1]; e++) {
-        const j = nb[e]; if (!inB[j] || out[j] || seen[j]) continue;
-        seen[j] = 1; rcv[j] = i; rl[j] = len[e]; heap.push(h[j], j);
+    if (!fast) {
+      for (const i of ids) seen[i] = 0;
+      heap.n = 0;
+      for (const s of seeds) { seen[s] = 1; heap.push(h[s], s); }
+      while (heap.n) {
+        const i = heap.pop();
+        if (!isSeed[i]) ford[nf++] = i;
+        for (let e = nbOff[i]; e < nbOff[i + 1]; e++) {
+          const j = nb[e]; if (!inB[j] || out[j] || seen[j]) continue;
+          seen[j] = 1; rcv[j] = i; rl[j] = len[e]; heap.push(h[j], j);
+        }
       }
+      if (nf < ids.length) throw new Error("影响带重解：带内有节点够不到出口");
     }
-    if (nf < ids.length) throw new Error("影响带重解：带内有节点够不到出口");
     bOff.fill(0);
     for (const i of ids) bOff[ax[rcv[i]] + 1]++;
     for (let k = 0; k < nA; k++) bOff[k + 1] += bOff[k];
     bPos.set(bOff.subarray(0, nA));
     for (const i of ids) bKid[bPos[ax[rcv[i]]]++] = i;
+    if (fast) for (let q = 0; q < F0.length + nf; q++) {   // 受水者都是种子（在 F0）或带内节点、且严格排在前面：广度序罩住全部带内节点
+      const k = ax[q < F0.length ? F0[q] : ford[q - F0.length]];
+      for (let t = bOff[k]; t < bOff[k + 1]; t++) ford[nf++] = bKid[t];
+    }
     /* A＝本格面积 + 子节点按号降序逐个相加（与规范积分逐位同），子在父前；h 父在子前 */
     for (let q = F0.length + nf - 1; q >= 0; q--) {
       const j = q < F0.length ? F0[q] : ford[q - F0.length], k = ax[j];

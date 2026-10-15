@@ -12,7 +12,7 @@ import { makeRelief, mountainness, reliefSeedOf, RELIEF_M, RELIEF_MESO_CELLS } f
 import { activeAt } from "./time.ts";
 import { stampRect, type Grid } from "./grid.ts";
 import { gen2Fine, isGen2, type UpliftCells } from "./gen2.ts";
-import { ECO_ORDER, LANDFORM_ORDER } from "./constants.ts";
+import { ECO_ORDER, LANDFORM_ORDER, NO_WATER, SHORE_E, WATER_EPS } from "./constants.ts";
 import type { BBox, HeightOverride, Meta, UpliftOverride } from "./types.ts";
 
 /* 起伏/涂改后的钳制：陆地不跌成海滩之下、水面不浮出海（类型才是真源，观感须与类型自洽）。
@@ -294,11 +294,8 @@ export const SUP_LO_PX = 28, SUP_HI_PX = 56, SUP_DASH_PX = 16;
    ④ 水格自岸边起按海床坡 SEABED_SLOPE_DEG 向外变深，深度与地板都从**所属水体的水面**算起
       （见 waterSurfaceOf）：海的水面是 0＝逐位同旧式，内陆湖的水面在岸线高度上。
    ⚠ 只改基底不改分类；水格恒 ≤ 水面 + SHORE_E＝渲染端「低于水面即水」的判据成立。 */
-export const BASE_SLOPE_DEG = 15, SEABED_SLOPE_DEG = 3, SHORE_E = -0.03, BASE_BLUR_KM = 0.6;
-/** 水陆判据：高程低于所在格水面 − WATER_EPS 即水（视线判定与侵蚀的陆地下限读它；着色器与 CPU 瓦片写的是字面 0.02，要改一起改） */
-export const WATER_EPS = 0.02;
-/** 没有水面（画的盆地里没有水邻的陆格）：「高程 < 水面 − WATER_EPS」恒不成立、陆地钳不到它；取有限值，Float32 与纹理照常装得下 */
-export const NO_WATER = -1000;
+export const BASE_SLOPE_DEG = 15, SEABED_SLOPE_DEG = 3, BASE_BLUR_KM = 0.6;
+export { NO_WATER, SHORE_E, WATER_EPS };
 /** 生成器连续高程 h → 抽象高程：分段线性，各地貌带的均值落回类型值（平原 0.16 / 丘陵 0.5 / 山地 0.9） */
 export function elevFromGenH(h: number, meta: Meta | undefined): number {
   const sea = genSeaLevel(meta);

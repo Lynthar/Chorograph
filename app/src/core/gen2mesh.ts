@@ -72,14 +72,18 @@ export function buildMesh(cols: number, rows: number, seed: number): Gen2Mesh {
   /* 超三角形：离图幅三倍远（再远外接圆行列式的乘积逼近双精度整数上限），最后连同挨着它的三角形一起删 */
   const M = 3 * (cols + rows), cx = cols / 2, cy = rows / 2;
   X[N] = cx - 2 * M; Y[N] = cy - M; X[N + 1] = cx + 2 * M; Y[N + 1] = cy - M; X[N + 2] = cx; Y[N + 2] = cy + 2 * M;
-  const tv: number[] = [N, N + 1, N + 2], ta: number[] = [-1, -1, -1], alive: number[] = [1];
+  /* 三角形表（含已删的，编号即下标）：tv 顶点、ta 邻接，先按每点约 11 个开、不够再长；alive 按预留上限一次开足 */
+  const CAP = 16 * (N + 3);
+  let tv = new Int32Array(33 * (N + 3)), ta = new Int32Array(33 * (N + 3)), T = 1;
+  const alive = new Uint8Array(CAP);
+  tv[0] = N; tv[1] = N + 1; tv[2] = N + 2; ta[0] = ta[1] = ta[2] = -1; alive[0] = 1;
   /* 插入次序：含影子那一圈按格逐行扫——相邻两点挨着，定位从上一个新三角形走过去只要几步 */
   const order: number[] = [];
   for (let r = -1; r <= rows; r++) for (let q = -1; q <= cols; q++) {
     if (q >= 0 && q < cols && r >= 0 && r < rows) { order.push(r * cols + q); continue; }
     for (let k = 0; k < g; k++) if (gq[k] === q && gr[k] === r) { order.push(n + k); break; }
   }
-  const bad: number[] = [], stack: number[] = [], isBad = new Uint8Array(16 * (N + 3)), edgeA: number[] = [], edgeB: number[] = [], edgeT: number[] = [];
+  const bad: number[] = [], stack: number[] = [], isBad = new Uint8Array(CAP), edgeA: number[] = [], edgeB: number[] = [], edgeT: number[] = [];
   const byA = new Int32Array(N + 3).fill(-1), byB = new Int32Array(N + 3).fill(-1);
   let last = 0;
   for (const p of order) {
@@ -110,20 +114,25 @@ export function buildMesh(cols: number, rows: number, seed: number): Gen2Mesh {
       edgeA.push(tv[3 * s + (k + 1) % 3]); edgeB.push(tv[3 * s + (k + 2) % 3]); edgeT.push(u);
     }
     /* 空腔边界每条边 (a, b) 与 p 连成新三角形 (a, b, p)：对 p 的边接外侧原邻居，另两条边接相邻的新三角形 */
-    const base = alive.length;
+    const base = T;
+    if (CAP < T + edgeA.length + 16) throw new Error("gen2mesh：三角形数超出预留");
+    if (tv.length < 3 * (T + edgeA.length)) {
+      const L = Math.min(3 * CAP, Math.max(3 * (T + edgeA.length), Math.floor(1.5 * tv.length))), t2 = new Int32Array(L), a2 = new Int32Array(L);
+      t2.set(tv); a2.set(ta); tv = t2; ta = a2;
+    }
     for (let e = 0; e < edgeA.length; e++) {
       const a = edgeA[e], b = edgeB[e], u = edgeT[e], nt = base + e;
-      tv.push(a, b, p); ta.push(-1, -1, u); alive.push(1);
+      tv[3 * nt] = a; tv[3 * nt + 1] = b; tv[3 * nt + 2] = p; ta[3 * nt] = -1; ta[3 * nt + 1] = -1; ta[3 * nt + 2] = u; alive[nt] = 1;
       byA[a] = nt; byB[b] = nt;
       if (u >= 0) for (let k = 0; k < 3; k++) if (ta[3 * u + k] >= 0 && isBad[ta[3 * u + k]] && tv[3 * u + (k + 1) % 3] === b && tv[3 * u + (k + 2) % 3] === a) { ta[3 * u + k] = nt; break; }
     }
     for (let e = 0; e < edgeA.length; e++) { const nt = base + e; ta[3 * nt] = byA[edgeB[e]]; ta[3 * nt + 1] = byB[edgeA[e]]; }
     for (const s of bad) { alive[s] = 0; isBad[s] = 0; }
-    if (isBad.length < alive.length + 16) throw new Error("gen2mesh：三角形数超出预留");
+    T += edgeA.length;
     last = base;
   }
   /* 删超三角形及挨着它的三角形，压紧编号 */
-  const T = alive.length, map = new Int32Array(T).fill(-1);
+  const map = new Int32Array(T).fill(-1);
   let m = 0;
   for (let t = 0; t < T; t++) if (alive[t] && tv[3 * t] < N && tv[3 * t + 1] < N && tv[3 * t + 2] < N) map[t] = m++;
   const tri = new Int32Array(3 * m), adj = new Int32Array(3 * m);
@@ -132,15 +141,16 @@ export function buildMesh(cols: number, rows: number, seed: number): Gen2Mesh {
     for (let j = 0; j < 3; j++) { tri[3 * k + j] = tv[3 * t + j]; const u = ta[3 * t + j]; adj[3 * k + j] = u >= 0 ? map[u] : -1; }
   }
   /* 真节点之间的邻接：每条内边在它 a < b 的那个三角形里数一次 */
-  const deg = new Int32Array(n + 1), pa: number[] = [], pb: number[] = [];
+  const deg = new Int32Array(n + 1), pa = new Int32Array(3 * m), pb = new Int32Array(3 * m);
+  let ne = 0;
   for (let t = 0; t < m; t++) for (let j = 0; j < 3; j++) {
     const a = tri[3 * t + (j + 1) % 3], b = tri[3 * t + (j + 2) % 3];
-    if (a < b && b < n) { pa.push(a); pb.push(b); deg[a]++; deg[b]++; }
+    if (a < b && b < n) { pa[ne] = a; pb[ne] = b; ne++; deg[a]++; deg[b]++; }
   }
   const nbOff = new Int32Array(n + 1);
   for (let i = 0; i < n; i++) nbOff[i + 1] = nbOff[i] + deg[i];
   const nb = new Int32Array(nbOff[n]), fill = nbOff.slice(0, n);
-  for (let e = 0; e < pa.length; e++) { nb[fill[pa[e]]++] = pb[e]; nb[fill[pb[e]]++] = pa[e]; }
+  for (let e = 0; e < ne; e++) { nb[fill[pa[e]]++] = pb[e]; nb[fill[pb[e]]++] = pa[e]; }
   for (let i = 0; i < n; i++) nb.subarray(nbOff[i], nbOff[i + 1]).sort();
   return { cols, rows, X: X.slice(0, N), Y: Y.slice(0, N), src, tri, adj, nbOff, nb };
 }

@@ -11,7 +11,8 @@ import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps } from "../core/constants.ts";
 import { elevBilinear, elevSmooth, coarseField, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
 import { zoneColMix, zoneTreeMix, zoneWeightsAt, ZONE_N, type ZoneWeights } from "./zones.ts";
-import { climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, ALB_ROT, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, type ClimLook } from "./material.ts";
+import { climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, ALB_ROT, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, WATER, type ClimLook } from "./material.ts";
+import { riverDirty, riverSD } from "./rivers.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
 import { tileCells, tileElevAt, tileWeight, type TileLayer } from "../core/tiles.ts";
@@ -60,10 +61,11 @@ export function wrapCopies(viewBB: BBox, gridBB: BBox, wrap: boolean): number[] 
 }
 
 /** 岸线：水陆相邻两像素之间的格边描 w 宽的线段（竖段在像素左边、横段在上边，端点落在邻像素中心），按 4×4 超采样算覆盖、
-    以 55% 深蓝逐像素混进 d——不走画布描边：浏览器按路径繁简换光栅算法，补画窗与整块瓦片的抗锯齿会差一两级。
-    w 按屏幕像素封顶（同 GL 约 1.4 px 的 coast 带）：只按 pxpd 放大时战术图放大后每段描成上百 px 宽＝沿岸成片矩形染色 */
-export function coastInk(d: Uint8ClampedArray, elev: Float32Array, wsv: Float32Array, W: number, H: number, w: number): void {
-  const land = (i: number): boolean => elev[i] >= wsv[i] - 0.02;
+    以岸线墨（WATER.ink / inkA）逐像素混进 d——不走画布描边：浏览器按路径繁简换光栅算法，补画窗与整块瓦片的抗锯齿会差一两级。
+    w 按屏幕像素封顶（同 GL 约 1.4 px 的 coast 带）：只按 pxpd 放大时战术图放大后每段描成上百 px 宽＝沿岸成片矩形染色。
+    @param rsd 逐像素到当水画的河面的有向距离（负＝河里）：河里也算水，岸线只描河与湖海并集的边；缺省＝没有河 */
+export function coastInk(d: Uint8ClampedArray, elev: Float32Array, wsv: Float32Array, W: number, H: number, w: number, rsd?: Float32Array | null): void {
+  const land = rsd ? (i: number): boolean => elev[i] >= wsv[i] - 0.02 && !(rsd[i] < 0) : (i: number): boolean => elev[i] >= wsv[i] - 0.02;
   const sv = new Uint8Array(W * H), sh = new Uint8Array(W * H), near = new Uint8Array(W * H);
   const hw = w / 2, R = Math.ceil(hw) + 1;
   for (let y = 1; y < H; y++) for (let x = 1; x < W; x++) {
@@ -86,8 +88,8 @@ export function coastInk(d: Uint8ClampedArray, elev: Float32Array, wsv: Float32A
       }
     }
     if (!n) continue;
-    const k = 0.55 * n / 16, q = (py * W + px) * 4;
-    d[q] += (38 - d[q]) * k; d[q + 1] += (66 - d[q + 1]) * k; d[q + 2] += (86 - d[q + 2]) * k;
+    const k = WATER.inkA * n / 16, q = (py * W + px) * 4, I = WATER.ink;
+    d[q] += (I[0] - d[q]) * k; d[q + 1] += (I[1] - d[q + 1]) * k; d[q + 2] += (I[2] - d[q + 2]) * k;
   }
 }
 /** 两份同形数组的变化包围盒（行主序、每格 stride 个数）：[c0, r0, c1, r1] 闭区间，无变化 null（导出以便单测） */
@@ -201,7 +203,7 @@ const cw = (eh: number, itv: number, ad: number, w0: number, w1: number): number
 const oddK = (eh: number, itv: number): number => Math.round(eh / itv) % 2 === 0 ? 0 : 1;
 
 function elevRamp(e: number, ws: number, beach: boolean, clim?: ClimLook, dl = 0): [number, number, number] {
-  if (e < ws - 0.02) { const t = Math.max(0, Math.min(1, (e - ws + 0.35) / 0.33)); return [40 + t * 60, 90 + t * 70, 132 + t * 66]; }
+  if (e < ws - 0.02) { const t = Math.max(0, Math.min(1, (e - ws + 0.35) / 0.33)), D = WATER.deep, S = WATER.shallow; return [D[0] + t * (S[0] - D[0]), D[1] + t * (S[1] - D[1]), D[2] + t * (S[2] - D[2])]; }
   if (clim && clim.n > 0) return climRampColor(clim, e, dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移；同 GL）
   return rampColor(e, beach);   // 陆地分层设色（GL 同源）
 }
@@ -343,7 +345,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     }
     const img = ctx.createImageData(W, H), d = img.data;
     const ed = opts.contour ? new Float32Array(W * H) : null;
-    const out: RGB = opts.paper ? [217, 210, 192] : [40, 90, 132];
+    const out: RGB = opts.paper ? [217, 210, 192] : [WATER.deep[0], WATER.deep[1], WATER.deep[2]];
     for (let y = 0; y < H; y++) {
       const lat = viewBB.latMax - y / pxpdY, inRow = lat >= gb.latMin && lat <= gb.latMax;
       const row = inRow ? g.cells[Math.min(g.rows - 1, Math.floor((lat - gb.latMin) / g.step))] : null;
@@ -395,6 +397,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const tfade = clim || opts.zones ? new Float32Array(W * H) : null;
     const Z = opts.zones, zw = new Float32Array(ZONE_N), zt = new Float32Array(4), zc = new Float32Array(4);   // 气候分区（同 GL：各档结果按权重混）
     const tmead = Z ? new Float32Array(W * H * 3) : null;
+    const RV = opts.rivers && opts.rivers.set.gmax >= opts.rivers.thr ? opts.rivers : null, rsd = RV ? new Float32Array(W * H) : null;   // 到当水画的河面（瓦片像素；同 GL rsd）
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = y * W + x, p = L2P(x, y);
       const rx = p[0] - lonMin, ry = p[1] - latMin;
@@ -432,6 +435,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const es = tw > 0 ? dispSmooth(p[0], p[1]) : elevSmooth(field!.data, field!, p[0], p[1]);
       ed[i] = rule === field && tw === 0 ? es : elevSmooth(rule!.data, rule!, p[0], p[1]);   // 线只跟规则场：画面场为精修档或带块时都不跟画面
       cav[i] = Math.max(-0.10, Math.min(0.16, (es - elevBil(p[0], p[1])) / field!.step * gain * 2 * NRM0 * (1 + FX.macroW) * FX.cavAmp));   // 同 GL：按真实坡度并随夸张走
+      if (rsd) { const s = riverSD(RV!.set, p[0], p[1], RV!.thr); rsd[i] = s < 1e8 ? s * pxpd : 1e9; }   // 河取未扭曲位置（同 GL）
     }
     const light = SHADE_LIGHT;
     const nrm = 4.5 * (pxpd / 14) * gain;
@@ -453,8 +457,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const lt = sstep(FX.shadeKnee, 1, dn);
       const sh = FX.shadeLo + (FX.shadeHi - FX.shadeLo) * lt;
       const shR = FX.cool[0] + (FX.warm[0] - FX.cool[0]) * lt, shG = FX.cool[1] + (FX.warm[1] - FX.cool[1]) * lt, shB = FX.cool[2] + (FX.warm[2] - FX.cool[2]) * lt;
-      let col = elevRamp(e, ws, beach, clim, rowShift[y]), zsn = 0;
-      if (e >= ws - 0.02) {
+      const ec = rsd && rsd[i] < 0 && e >= ws - 0.02 ? ws - 0.0201 : e;   // 陆上的河面＝紧贴判据线下的浅水（同 GL）
+      let col = elevRamp(ec, ws, beach, clim, rowShift[y]), zsn = 0;
+      if (ec >= ws - 0.02) {
         if (Z) { zoneColMix(Z.looks, zoneWeightsAt(Z.wt, p[0], p[1], zw), e, rowShift[y], beach, zc); col = [zc[0], zc[1], zc[2]]; zsn = zc[3]; }
         matAt(rx, ry);   // 趟二重取材质（色调/反照率/岩化）——省四条逐像素缓存数组的内存
         if (MT.tintW > 0) {
@@ -514,8 +519,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         col = [col[0] * s2 * shR, col[1] * s2 * shG, col[2] * s2 * shB];
         col = contourMix(opts, W, H, col, ed, i, x, y, ws, p[0], p[1], pxpd, pxpd, rule!);
       } else {
-        const shore = sstep(ws - 0.10, ws - 0.02, e) * sstep(FX.shoreLo, FX.shoreHi, pxpd * step);   // 近岸浅水带随 px/格 渐显（同 GL）
-        const sc = [0.55 * 255, 0.72 * 255, 0.75 * 255], sa = shore * FX.shoreMix;
+        const shore = sstep(ws - 0.10, ws - 0.02, ec) * sstep(FX.shoreLo, FX.shoreHi, pxpd * step);   // 近岸浅水带随 px/格 渐显（同 GL）
+        const sc = [WATER.shore[0] * 255, WATER.shore[1] * 255, WATER.shore[2] * 255], sa = shore * FX.shoreMix;
         col = [col[0] * (1 - sa) + sc[0] * sa, col[1] * (1 - sa) + sc[1] * sa, col[2] * (1 - sa) + sc[2] * sa];
         if (microOn) {   // 静态波纹（同 GL：值噪声 ridged + 横向拉伸 + 门控）
           const [f1, f2, fr] = lodF(pxpd, FX.wavePx), g = octaveGate(pxpd, f1);
@@ -529,7 +534,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       }
       const q = i * 4; d[q] = col[0]; d[q + 1] = col[1]; d[q + 2] = col[2]; d[q + 3] = 255;
     }
-    coastInk(d, elev, wsv, W, H, Math.max(1, Math.min(1.5 * (opts.dpr ?? 1), pxpd / 14)));
+    coastInk(d, elev, wsv, W, H, Math.max(1, Math.min(1.5 * (opts.dpr ?? 1), pxpd / 14)), rsd);
     return img;
   }
 
@@ -632,7 +637,10 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         const vb: BBox = c ? { lonMin: viewBB.lonMin + c, lonMax: viewBB.lonMax + c, latMin: viewBB.latMin, latMax: viewBB.latMax } : viewBB;
         let t = next.concat(tiles).find(x => planTile(x, key, vb, pxpd, grid!.bb) === "keep");   // 视口宽过一份世界时几份拷贝要的是同一片
         if (t && Z && t.o.zones !== Z) t.o = { ...t.o, zones: Z };   // 补画照新权重画（其余选项与键同）
-        if (t && dirty.length && !next.includes(t) && !patchTile(t, dirty)) { const stale = t; tiles = tiles.filter(x => x !== stale); t = undefined; }
+        let rd: BBox[] = [];   // 画成水面的河段变了（改河、换门槛）：只补画那几段；瓦片记着自己画时的那份
+        if (t && !next.includes(t) && t.o.rivers !== opts.rivers) { rd = riverDirty(t.o.rivers, opts.rivers); t.o = { ...t.o, rivers: opts.rivers }; }
+        const fix = rd.length ? dirty.concat(rd) : dirty;
+        if (t && fix.length && !next.includes(t) && !patchTile(t, fix)) { const stale = t; tiles = tiles.filter(x => x !== stale); t = undefined; }
         if (!t) {
           const plan = planTile(null, key, vb, pxpd, grid.bb);
           if (typeof plan !== "object") continue;
@@ -649,7 +657,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       // 纵向用独立 pxpdY：viewBB 经度含 cos(lat0) 校正、纬度不含，贴图须各向异性拉伸
       //（对齐旧 drawTile 经 project 求角点的行为；瓦片内部仍为方度像素，交给 drawImage 缩放）。
       const pxpdY = H / (viewBB.latMax - viewBB.latMin);
-      ctx.fillStyle = opts.paper ? PAPER : "rgb(40,90,132)";
+      ctx.fillStyle = opts.paper ? PAPER : `rgb(${WATER.deep.join(",")})`;
       ctx.fillRect(0, 0, W, H);
       for (const t of tiles) {
         const py0 = (viewBB.latMax - t.bb.latMax) * pxpdY, py1 = (viewBB.latMax - t.bb.latMin) * pxpdY;

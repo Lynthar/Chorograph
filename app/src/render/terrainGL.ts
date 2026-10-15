@@ -16,7 +16,8 @@
    ⚠ 噪声坐标一律用图幅局部坐标（ll-网格原点），深放大高频档才不在 fp32 下失谐；
    ⚠ fwidth 只喂 e/es 两个一致控制流值，材质分支里不得调用。 */
 import { terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
-import { climRampGLSL, materialTable, rampGLSL, snowLatGLSL, ALB_ROT, CLIM_STOPS, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, POOL_ROT, SHADE_LIGHT } from "./material.ts";
+import { climRampGLSL, materialTable, rampGLSL, snowLatGLSL, waterGLSL, ALB_ROT, CLIM_STOPS, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, POOL_ROT, SHADE_LIGHT, WATER } from "./material.ts";
+import { riverGLSL, riverTexels, RIV_TEX_W, type RiverSet } from "./rivers.ts";
 import { zoneGLSL, zoneLookTexels, ZLOOK_W, ZONE_N, type ZoneWeights } from "./zones.ts";
 import type { Grid } from "../core/grid.ts";
 import { SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
@@ -26,6 +27,7 @@ import { tilesInView, tileWeight, type TileLayer } from "../core/tiles.ts";
 const VS = `#version 300 es
 void main(){ vec2 p=vec2(float(gl_VertexID<<1&2), float(gl_VertexID&2)); gl_Position=vec4(p*2.0-1.0,0.0,1.0); }`;
 
+const WG = waterGLSL();
 const FS = `#version 300 es
 precision highp float; precision highp int;
 uniform sampler2D uGrid;          // RG32F: R=水面高程(海 0/内陆湖岸线高) G=复合索引(地貌×生态数+生态)——均粗格最近取
@@ -69,6 +71,11 @@ uniform float uTW;                // 块的缩放权重（core/tiles.tileWeight�
 uniform float uTStep;             // 度/块格
 uniform ivec2 uTDim;              // 全图块格维度
 uniform int uTK;                  // 一块的块格边长
+uniform int uRiv;                 // 1＝有河段宽过本帧门槛（render/rivers：河当水体画）
+uniform vec4 uRivA;               // 河段分桶原点经纬、桶边长（度）、判水面门槛（度）
+uniform ivec2 uRivN;              // 桶数
+uniform highp sampler2D uRSeg;    // 河段 RGBA32F（rivers.riverTexels）
+uniform highp isampler2D uRIdx;   // 各桶（起点, 段数）+ 桶内段号 R32I
 uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合平色＝terrainProps.color（推演底图用；G 通道即复合索引）
 uniform vec3 uTint[${COMPOSITE_COUNT}];     // 各复合生态色调（无=vec3(-1)）
 uniform vec4 uMatA[${COMPOSITE_COUNT}];     // 材质纹理权重(canopy,dune,ridge,marsh)——render/material.ts 真源
@@ -269,8 +276,9 @@ ${rampGLSL()}
 ${snowLatGLSL()}
 ${climRampGLSL()}
 ${zoneGLSL()}
+${riverGLSL()}
 vec3 elevRamp(float e,float ws,float dl){
-  if(e<ws-0.02){ float t=clamp((e-ws+0.35)/0.33,0.0,1.0); return vec3(40.0+t*60.0,90.0+t*70.0,132.0+t*66.0)/255.0; }
+  if(e<ws-0.02){ float t=clamp((e-ws+0.35)/0.33,0.0,1.0); return ${WG.ramp}; }
   if(uClimN>0) return climRamp(e,dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移）
   return uBeach==1 ? elevLand(e) : elevLow(e);   // 陆地分层设色＝material.rampColor 同源（CPU 同）
 }
@@ -286,12 +294,13 @@ void main(){
   float ad=fwidth(er)*uDPR+1e-7;  // 等高线线宽（CSS 像素锚定）：两种底图共用，故在 uMode 分支之前取（分支内 fwidth 未定义，软渲返 0）
   vec2 gd=vec2(dFdx(er),dFdy(er));   // 规则场制图面屏幕梯度（间曲线沿等值线切虚线）；与 fwidth 同处取＝一致控制流
   vec3 col; float ws, e;
+  float rsd=1e9;   // 到当水画的河面的有向距离（像素，负＝在河里；1e9＝附近没有）：只在观感底图取
   if(uMode==1){
     /* 推演底图：所在格的类型平色（uTColor＝terrainProps.color），不扭曲、不晕渲、不铺纹理——
        像素的颜色就是光标读数与寻路读到的那一格；等高线与纸色在下方照画 */
     ws=wsAt(ll); e=cd.x;
     // 图幅外＝深海（同 CPU 兜底的底色；水域格的浅蓝只给格子，图幅界才看得见）；纸模式由末尾纸色覆盖
-    col=outside(rel) ? vec3(40.0,90.0,132.0)/255.0 : uTColor[int(cd.y+0.5)];
+    col=outside(rel) ? ${WG.deep} : uTColor[int(cd.y+0.5)];
   } else {
   float px=1.0/uPXPD, py=1.0/uPXPDY;
   /* 域扭曲一次共用：色调/材质查找与晕渲高程同一形变（涂改方块的直角沟壑随之弯成有机走向）。
@@ -354,9 +363,11 @@ void main(){
   float sh=mix(float(${FX.shadeLo}),float(${FX.shadeHi}),lt);
   vec3 shT=mix(vec3(${FX.cool.join(",")}),vec3(${FX.warm.join(",")}),lt);
   float cav=clamp((es-cd.x)/uFStep*uGain*float(${2 * NRM0 * (1 + FX.macroW)})*float(${FX.cavAmp}), -0.10, 0.16);   // 帐篷差按真实坡度并随夸张走：谷暗脊明（廉价 AO）
-  col=elevRamp(e,ws,dLat);   // 赋外层 col（此处若写 vec3 col 即遮蔽＝观感底图整幅黑）
+  if(uRiv==1){ float sdd=riverSD(ll); if(sdd<1e8) rsd=sdd*uPXPDY; }   // 河取未扭曲位置：河是数据，与叠加层的线、拾取同一个位置
+  float ec=rsd<0.0 && e>=ws-0.02 ? ws-0.0201 : e;   // 陆上的河面＝紧贴判据线下的浅水（水段色阶最浅一档、满近岸带）
+  col=elevRamp(ec,ws,dLat);   // 赋外层 col（此处若写 vec3 col 即遮蔽＝观感底图整幅黑）
   float zsn=0.0;
-  if(e>=ws-0.02){
+  if(ec>=ws-0.02){
     if(uZone==1) zoneCol(e,dLat,col,zsn);   // 气候分区：各档色阶与雪盖按权重混
     if(mt.tintW>0.0) col=mix(col, fk>0.0 ? mix(mt.tint,mead,fk) : mt.tint, 0.45*mt.tintW);   // 软过渡；林线以上的森林换草甸色
     // 生态辨识度：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重 tw.y/tw.w，详见 material.ts）
@@ -390,8 +401,8 @@ void main(){
     col*=sh*shT*(1.0-cav);
   } else {
     // 近岸浅水带：随缩放渐隐（px/° 区间见 FX.shoreLo/Hi）——整幅视角下固定高程区间摊成贴纸大光环
-    float shore=smoothstep(ws-0.10,ws-0.02,e)*smoothstep(float(${FX.shoreLo}),float(${FX.shoreHi}),uPXPD*uGridBB.z);
-    col=mix(col, vec3(0.55,0.72,0.75), shore*float(${FX.shoreMix}));
+    float shore=smoothstep(ws-0.10,ws-0.02,ec)*smoothstep(float(${FX.shoreLo}),float(${FX.shoreHi}),uPXPD*uGridBB.z);
+    col=mix(col, ${WG.shore}, shore*float(${FX.shoreMix}));
     vec3 LW=lodF(float(${FX.wavePx}));  // 静态波纹（横向拉伸；无动画，尊重空闲降频）
     float wv=mix(ridged(vnoise2(vec2(rel.x*0.35,rel.y)*LW.x+vec2(3.1,9.7))),
                  ridged(vnoise2(vec2(rel.x*0.35,rel.y)*LW.y+vec2(21.3,1.1))), LW.z);
@@ -401,9 +412,10 @@ void main(){
   // 岸线（只给观感底图；推演底图的水陆界就是格边，按高程描线会与格边错位）。fwidth 在分支外取＝一致控制流
   float aa=fwidth(e)+1e-6;
   float coast=1.0-smoothstep(0.0, aa*1.4, abs(e-ws+0.02));
-  col=mix(col, vec3(38.0,66.0,86.0)/255.0, coast*0.55*(1.0-float(uMode)));
+  if(rsd<1e8) coast=1.0-smoothstep(0.0,1.4,abs(min((e-ws+0.02)/aa,rsd)));   // 河与湖海并成一片水：岸线只描并集的边（按像素距）
+  col=mix(col, ${WG.ink}, coast*${WATER.inkA}*(1.0-float(uMode)));
   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
-  if(uContour==1 && er>=ws-0.02 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
+  if(uContour==1 && er>=ws-0.02 && rsd>=0.0 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
     // 等高线画在规则场制图面 er（晕渲是画，等高线是尺），按 contourK 着墨。
     // 间曲线的浮现门看 ±10 px 差分的**粗坡**，不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍、平地上永远开不了门；
     // 虚线相位锚网格原点的像素坐标（平移不爬动），对 ±切向对称（CPU 的 y 轴反向也同相）
@@ -494,6 +506,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   /* 气候分区纹理（3/4＝权重、5＝观感表）：无分区时绑 1×1 占位，采样器恒完整 */
   let zw0: WebGLTexture | null = null, zw1: WebGLTexture | null = null, zlook: WebGLTexture | null = null;
   let zwFor: ZoneWeights | null = null, zlKey: string | null = null;
+  /* 河段纹理（8＝河段、9＝桶表与段号）：没有河时绑 1×1 占位；按河段集引用换代重传 */
+  let rseg: WebGLTexture | null = null, ridx: WebGLTexture | null = null, rivFor: RiverSet | null = null;
   function zoneTex(unit: number, t: WebGLTexture | null, w: number, h: number, data: ArrayBufferView, float: boolean): WebGLTexture | null {
     if (t) gl.deleteTexture(t);
     const nt = gl.createTexture();
@@ -577,6 +591,26 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     }
   }
 
+  function riverTex(s: RiverSet | null): void {
+    for (const t of [rseg, ridx]) if (t) gl.deleteTexture(t);
+    let T = s ? riverTexels(s) : null;
+    if (T && Math.max(T.segRows, T.idxRows) > maxTex) { console.warn(`河段纹理 ${RIV_TEX_W}×${Math.max(T.segRows, T.idxRows)} 超出本机纹理上限 ${maxTex}，宽河照旧画成线`); T = null; }
+    const mk = (unit: number, ifmt: number, fmt: number, type: number, rows: number, data: ArrayBufferView): WebGLTexture | null => {
+      const t = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, T ? RIV_TEX_W : 1, rows, 0, fmt, type, data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.activeTexture(gl.TEXTURE0);
+      return t;
+    };
+    rseg = mk(8, gl.RGBA32F, gl.RGBA, gl.FLOAT, T ? T.segRows : 1, T ? T.seg : new Float32Array(4));
+    ridx = mk(9, gl.R32I, gl.RED_INTEGER, gl.INT, T ? T.idxRows : 1, T ? T.idx : new Int32Array(1));
+    rivFor = s; rivOk = !!T;
+  }
+  let rivOk = false;
   /* 建程序 + 设常量 uniform（创建时 + webglcontextrestored 后重跑）。 */
   function initProgram(): boolean {
     pr = compileProgram(gl);
@@ -587,6 +621,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform1i(U("uRule"), 2);
     gl.uniform1i(U("uZW0"), 3); gl.uniform1i(U("uZW1"), 4); gl.uniform1i(U("uZLook"), 5);
     gl.uniform1i(U("uTAtlas"), 6); gl.uniform1i(U("uTPage"), 7);
+    gl.uniform1i(U("uRSeg"), 8); gl.uniform1i(U("uRIdx"), 9);
+    riverTex(null);
     placeTileTex(1, 1, 1, 1); atlasFor = null;   // 占位；块层来了按它的几何重建
     zw0 = zoneTex(3, null, 1, 1, new Uint8Array(4), false); zw1 = zoneTex(4, null, 1, 1, new Uint8Array(4), false);
     zlook = zoneTex(5, null, 1, 1, new Float32Array(4), true); zwFor = null; zlKey = null;
@@ -692,7 +728,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   };
   let name = queryName();
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; zw0 = zw1 = zlook = null; atlas = page = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
+  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; zw0 = zw1 = zlook = null; atlas = page = null; rseg = ridx = null; rivFor = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
@@ -708,8 +744,10 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       if (!g || !pr || !f || !fRule) return;
       const S = opts.snow, Z = opts.zones, H = canvas.height, [vw, vh] = opts.px ?? [canvas.width, H];
       const TL = opts.flat ? null : tLayer, tw = TL ? tileWeight(TL.geom.step * vh / (viewBB.latMax - viewBB.latMin) / (opts.dpr ?? 1)) : 0;
+      /* 门槛往水那边让百万分之一：Float32 的真宽与门槛舍入后与叠加层的判定差一点时，宁可水与线叠着也别空一截 */
+      const RV = opts.flat ? undefined : opts.rivers, rthr = RV ? RV.thr * (1 - 1e-6) : 0, rivOn = !!RV && RV.set.gmax >= rthr;
       const key = `${viewBB.lonMin},${viewBB.latMin},${viewBB.lonMax},${viewBB.latMax}|${vw}x${vh}/${H}|${+!!opts.flat}${+!!opts.contour}${+!!opts.wrap}${+!!opts.paper}${+(opts.beach !== false)}`
-        + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${opts.slopeK ?? 0}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}|${opts.clim ? opts.clim.key : ""}|${Z ? `${Z.wt.id}:${Z.looks.key}` : ""}|${tw > 0 ? `${tVer}:${tw}` : ""}`;
+        + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${opts.slopeK ?? 0}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}|${opts.clim ? opts.clim.key : ""}|${Z ? `${Z.wt.id}:${Z.looks.key}` : ""}|${tw > 0 ? `${tVer}:${tw}` : ""}|${rivOn ? `${RV!.set.id}:${RV!.thr}` : ""}`;
       if (key === lastKey) return;   // 画布上已是这一帧
       lastKey = key;
       gl.viewport(0, H - vh, vw, vh);   // 可见区贴画布顶；GL 原点在左下
@@ -756,6 +794,13 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
         gl.uniform2i(U("uTDim"), tg.cols * tg.sx, tg.rows * tg.sx);
         gl.uniform1i(U("uTK"), tg.P * tg.sx);
       }
+      if (rivOn && RV!.set !== rivFor) riverTex(RV!.set);
+      gl.uniform1i(U("uRiv"), rivOn && rivOk ? 1 : 0);
+      if (rivOn && rivOk) {
+        const s = RV!.set;
+        gl.uniform4f(U("uRivA"), s.ox, s.oy, s.bs, rthr);
+        gl.uniform2i(U("uRivN"), s.nx, s.ny);
+      }
       gl.uniform1f(U("uGain"), opts.gain ?? 1);
       gl.uniform1f(U("uSlopeK"), opts.slopeK ?? 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -769,7 +814,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);
       if (tex) gl.deleteTexture(tex);
-      for (const t of [zw0, zw1, zlook, atlas, page]) if (t) gl.deleteTexture(t);
+      for (const t of [zw0, zw1, zlook, atlas, page, rseg, ridx]) if (t) gl.deleteTexture(t);
       dropFieldTex();
       if (pr) gl.deleteProgram(pr);
     }

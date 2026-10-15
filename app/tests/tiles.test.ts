@@ -52,6 +52,16 @@ describe("分块精修（core/tiles）", () => {
     assert.ok(mean < 5e-4 && p99 < 5e-3, `拼块与全图差太大：均值 ${mean} p99 ${p99}（场的标准差约 0.28）`);
   });
 
+  it("块单按窗裁地貌涂改增量：细级盆掩码按窗口几何取样，原样带全图那份就错格", () => {
+    assert.ok(INP.lfDelta, "前提：夹具涂了山地、粗格约 12 km（粗级 λ>0）");
+    for (const i of PLAN.tiles) {
+      const ti = tileInput(INP, PLAN, CARVE, i), r0 = Math.round((ti.bb.latMin - BB.latMin) / ST), c0 = Math.round((ti.bb.lonMin - BB.lonMin) / ST);
+      assert.ok(ti.cols * ti.rows < GRID.cols * GRID.rows, "前提：窗口比全图小");
+      assert.strictEqual(ti.lfDelta!.length, ti.cols * ti.rows);
+      for (let r = 0; r < ti.rows; r++) for (let c = 0; c < ti.cols; c++) assert.strictEqual(ti.lfDelta![r * ti.cols + c], INP.lfDelta![(r0 + r) * GRID.cols + c0 + c]);
+    }
+  });
+
   it("子格海岸线：水陆交界的父格里细格有水有陆（不照搬父格＝不再是方台阶）；不开时整格一致", () => {
     const sc = [(BB.lonMin + BB.lonMax) / 2, (BB.latMin + BB.latMax) / 2] as const, ws = INP.wsurf;
     const mixed = (coast: boolean): number => {

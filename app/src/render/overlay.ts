@@ -21,6 +21,7 @@ import { drawContourLabels } from "./contourlab.ts";
 import type { Grid } from "../core/grid.ts";
 import type { ElevField } from "../core/elev.ts";
 import type { SpotTable } from "../core/spots.ts";
+import type { TerrainRivers } from "./rivers.ts";
 import type { Leg } from "../core/units.ts";
 import type { VisMasks } from "../core/viewshed.ts";
 import type { SightRes } from "../worker/routeProto.ts";
@@ -61,6 +62,7 @@ export interface OverlayOpts {
   contourStep?: number;               // 等距（抽象单位，renderer.contourStepOf 取的那一档，与地形渲染器同一档；注记按它标）
   smooth?: number;                    // 涂域边界平滑档（Chaikin 轮数 0–3；缺省 2，笔刷框调）
   edgeSelIdx?: number | null;         // 选中连线下标（红晕高亮，对齐旧 isSelEdge）
+  rivers?: TerrainRivers;             // 地形渲染器本帧当水画的河（renderer.terrainOpts 的那一份）：这些段叠加层不再画线
   editing?: boolean;                  // 编辑模式：全部地点可见（对齐旧 nodeVisible）
   loopBudget?: LoopBudget;            // 涂域环首算的本帧额度（缺省＝一次算全）
 }
@@ -111,7 +113,7 @@ export function drawOverlay(
         handleUnit: opts.editing ? (opts.unitSelId || null) : null,     // 编辑态选中对象的圈带半径拖动手柄
         handleNode: opts.editing ? (opts.selId || null) : null
       });
-      drawEdges(ctx, c2, meta, world, yearNow, byId, L, opts.edgeSelIdx);   // 连线（道路/河流/商路）
+      drawEdges(ctx, c2, meta, world, yearNow, byId, L, opts.edgeSelIdx, opts.grid, opts.rivers);   // 连线（道路/河流/商路）
       const field = createLabelField();   // 标签避让场（每拷贝一场）：线注记/标注 claim → 当日事件→地名→部队 先占先得
       if (on("arrows")) drawOps(ctx, c2, world, yearNow, opts.selId, opts.opSel, field);
       if (on("nodes")) drawNodes(ctx, c2, meta, world, yearNow, opts, multiSet, fcolor, field);   // 地点记号 + 楷体标签（避让）

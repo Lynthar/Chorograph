@@ -3,7 +3,7 @@
    · fatal：旧版导入门槛拒绝的（无 meta/nodes 非数组）+ 会让 normalize/渲染直接崩的（数组成员不是对象）；
    · warning：normalizeWorld 会补齐/改写的、以及悬空引用等数据质量问题——照常打开，仅提示写手。
    注意分级红线：凡旧版能打开的档，这里绝不能报 fatal（"旧档无损打开"是 验收）。 */
-import { ALL_KINDS, CERTAINTY, CLIMATE, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_KIND, LEGACY_TYPE, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
+import { ALL_KINDS, CERTAINTY, CLIMATE, DECOR, EDGE_STYLE, EVENT_TYPES, LEGACY_KIND, LEGACY_TYPE, MZ_MAX, NODE_STYLE, UNIT_KINDS, isValidTerrain } from "./constants.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
 import { ERODE_MODES } from "./erode.ts";
@@ -21,7 +21,7 @@ const isNum = (x: unknown): x is number => typeof x === "number" && isFinite(x);
 
 /** 校验一份外部 JSON 是否能作为世界打开；不修改入参。 */
 /** 顶层数组的量级上限（校验闸）。往当前图并入 GeoJSON 也按它预算——能保存出的档必须能再导入。 */
-const WORLD_CAPS: Record<string, number> = { factions: 20000, terrainOverrides: 4000000, heightOverrides: 4000000, upliftOverrides: 4000000, climateZones: 64 };
+const WORLD_CAPS: Record<string, number> = { factions: 20000, terrainOverrides: 4000000, heightOverrides: 4000000, upliftOverrides: 4000000, climateZones: 64, genRiverOff: 4000000 };
 export const worldCap = (k: string): number => WORLD_CAPS[k] ?? 200000;
 
 export function validateWorld(w: unknown): ValidateResult {
@@ -189,6 +189,18 @@ export function validateWorld(w: unknown): ValidateResult {
     if (Array.isArray(e.pts) && (e.pts as unknown[]).length > 100000) F(`${p}.pts`, "折线点数过多（疑损坏或恶意档）");   // 逐帧遍历的嵌套数组同吃量级闸
     if (free) { if (e.type !== "river" && e.type !== "wall") W(`${p}.pts`, "只有河流与工事可用自由折线 pts"); }
     else for (const end of ["from", "to"]) if (!nodeIds.has(String(e[end]))) W(`${p}.${end}`, `连线引用了不存在的地点「${String(e[end])}」`);
+    if (e.ws != null) {   // 逐点河宽：normalize 同判（随 pts 一起剔，对不上就删键、按整条河宽画）
+      if (Array.isArray(e.ws) && (e.ws as unknown[]).length > 100000) F(`${p}.ws`, "逐点河宽过长（疑损坏或恶意档）");
+      else if (!Array.isArray(e.ws) || !Array.isArray(e.pts) || (e.ws as unknown[]).length !== (e.pts as unknown[]).length || !(e.ws as unknown[]).every(v => isNum(v) && v > 0))
+        W(`${p}.ws`, "逐点河宽与折线点数不符或有非正数，打开时忽略、按整条河宽画");
+    }
+    if (e.mz != null) {   // 逐点曲流强度：normalize 同判（随 pts 一起剔，对不上就删键、不画弯；值钳成 0..MZ_MAX 的整数）
+      const z = e.mz as unknown[];
+      if (Array.isArray(z) && z.length > 100000) F(`${p}.mz`, "逐点曲流强度过长（疑损坏或恶意档）");
+      else if (!Array.isArray(z) || !Array.isArray(e.pts) || z.length !== (e.pts as unknown[]).length || !z.every(isNum))
+        W(`${p}.mz`, "逐点曲流强度与折线点数不符或有非数，打开时忽略、不画弯");
+      else if (!z.every(v => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= MZ_MAX)) W(`${p}.mz`, `逐点曲流强度应是 0–${MZ_MAX} 的整数，打开时钳到范围内`);
+    }
     if (!tget(EDGE_STYLE, String(e.type))) W(`${p}.type`, `未知连线类型「${String(e.type)}」`);
     checkCertainty(p, e);
     checkTimed(p, e);
@@ -231,6 +243,14 @@ export function validateWorld(w: unknown): ValidateResult {
   });
   if (Array.isArray(o.upliftOverrides) && o.upliftOverrides.length && !upliftOn(meta as Meta))
     W("upliftOverrides", "画抬升只在第二版生成器的战略图上生效，这张图上不显示");
+
+  /* —— 生成河的删改记录（格号；normalize 剔非整数、升序去重）—— */
+  const off = o.genRiverOff;
+  if (off != null) {
+    if (!Array.isArray(off)) W("genRiverOff", "生成河的删改记录不是数组，打开时将被丢弃");
+    else if (off.length > worldCap("genRiverOff")) F("genRiverOff", `生成河的删改记录含 ${off.length} 项，超出可处理上限（疑损坏或恶意档）`);
+    else if (!off.every(x => Number.isInteger(x) && (x as number) >= 0)) W("genRiverOff", "生成河的删改记录含不是格号的值，打开时剔除");
+  }
 
   /* —— 气候分区（战略图专有；每档一份 runs，形状同涂域层）—— */
   const cz = o.climateZones;

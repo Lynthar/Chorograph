@@ -1,12 +1,17 @@
 /* 连线与作战线（自 overlay.ts 原样拆出，行为不变）：
-   河流三层描边（选中红晕/白衬底/河蓝）、官道双线、商路紫点线、工事墨石齿线（2026-07 特化柱B）；
+   河流三层描边（选中红晕/白衬底/河蓝；真宽过门槛的段由地形渲染器当水画，见 render/rivers）、官道双线、商路紫点线、工事墨石齿线（2026-07 特化柱B）；
    作战线 攻势=末端实心箭头 / 防线=行进方向左侧齿线（reverse 翻面）。 */
 import { EDGE_STYLE, certaintyStyle } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
 import { activeAt, opVisibleAt } from "../core/time.ts";
 import { project, projectSeq, type Camera } from "../core/projection.ts";
 import { kmPerDeg } from "../core/geo.ts";
-import { chaikinOpen, meander } from "../core/geometry.ts";
+import { meander } from "../core/geometry.ts";
+import { RIVER_WATER_PX, riverGeom, riverSD, riverWidest, type RiverGeom, type TerrainRivers } from "./rivers.ts";
+import { MEANDER_K, meanderFade } from "./meander.ts";
+import { FP_CORE, FP_KW, RIV_WIDTH } from "../core/constants.ts";
+import { waterMask } from "../core/elev.ts";
+import type { Grid } from "../core/grid.ts";
 import type { LabelField } from "./labels.ts";
 import type { Edge, Meta, Op, World, WorldNode } from "../core/types.ts";
 
@@ -16,7 +21,121 @@ import type { Edge, Meta, Op, World, WorldNode } from "../core/types.ts";
 export function riverWpx(meta: Meta | undefined, cam: Camera, e: Edge): number {
   const wm = +(e.widthM as number) || 0;
   if (!(wm > 0)) return 2.6;
-  return Math.max(1 + 1.6 * Math.min(1, Math.max(0, Math.log10(wm / 10) / 2)), (wm / 1000) / kmPerDeg(meta) / cam.degPerPx);
+  return Math.max(tierPx(wm), (wm / 1000) / kmPerDeg(meta) / cam.degPerPx);
+}
+const tierPx = (wm: number): number => 1 + 1.6 * Math.min(1, Math.max(0, Math.log10(wm / 10) / 2));
+/** 自由折线河按画法柔化（与曲流）后的折线（rivers.riverGeom）与逐点的画宽、真宽（px）：绘制与拾取同用；g＝逐点判水面的真宽（度，与地形渲染器比同一个门槛）。
+    真宽封顶在 widthM（它不计河口展宽）：只用来判线还是水面，展宽那一截推不过门槛 */
+export function riverShape(meta: Meta | undefined, cam: Camera, e: Edge): { pts: [number, number][]; px: number[]; tp: number[]; g: number[] } {
+  const wm = +(e.widthM as number) || 0, pm = 1 / 1000 / kmPerDeg(meta) / cam.degPerPx, wx = riverWidest(e);
+  const G = riverGeom(meta, e, meanderFade(MEANDER_K * wx * pm) > 0 && nearView(cam, projectSeq(cam, e.pts!), meanderPad(wx, pm)));
+  const S = G.m ? meanderView(meta, cam, G) : G, px: number[] = [], tp: number[] = [];
+  for (let k = 0; k < S.pts.length; k++) {
+    const w = S.w[k];
+    tp.push(w > 0 ? Math.min(w, wm > 0 ? wm : w) * pm : 0); px.push(w > 0 ? Math.max(tierPx(w), w * pm) : 2.6);
+  }
+  return { pts: S.pts, px, tp, g: S.g };
+}
+/** 曲流离底线的最远处（px）：平底半宽封顶，外加一个波长的余量（点距、柔化） */
+const meanderPad = (wM: number, pm: number): number => (FP_CORE * FP_KW * wM / RIV_WIDTH * 1000 + MEANDER_K * wM) * pm + 16;
+/** 折线外框外扩 pad 后碰不碰得到屏幕 */
+function nearView(cam: Camera, pp: [number, number][], pad: number): boolean {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const [x, y] of pp) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  return x1 + pad >= 0 && x0 - pad <= cam.w && y1 + pad >= 0 && y0 - pad <= cam.h;
+}
+/** 曲流按本帧缩放渐入：逐点偏移乘 meanderFade(弯的屏幕谷向波长)；整段不弯（含离屏幕超过最大横移的底线段）的点都在底线上，换回稀疏的底线点。
+    宽到画成水面的点恒是满幅（MEANDER_FADE_PX 的门），与地形渲染器读的满幅曲线是同一条 */
+function meanderView(meta: Meta | undefined, cam: Camera, G: RiverGeom): { pts: [number, number][]; w: number[]; g: number[] } {
+  const { base, bw, bg, M } = G.m!, kmpp = cam.degPerPx * kmPerDeg(meta), fOf = (w: number): number => meanderFade(MEANDER_K * w / 1000 / kmpp);
+  const bp = projectSeq(cam, base), pad = meanderPad(M.wmax, 1 / 1000 / kmpp), on = new Uint8Array(base.length);
+  for (let j = 0; j < base.length - 1; j++) on[j] = nearView(cam, [bp[j], bp[j + 1]], pad) ? 1 : 0;
+  const n = M.pts.length, fAt = (i: number): number => on[M.seg[i]] ? fOf(M.w[i]) : 0;
+  const pts: [number, number][] = [], w: number[] = [], g: number[] = [];
+  for (let i = 0; i < n;) {
+    const f = fAt(i);
+    if (f > 0) {
+      pts.push(f >= 1 ? M.pts[i] : [M.bx[i] + f * (M.pts[i][0] - M.bx[i]), M.by[i] + f * (M.pts[i][1] - M.by[i])]); w.push(M.w[i]); g.push(G.g[i]);
+      i++; continue;
+    }
+    let b = i;
+    while (b + 1 < n && !(fAt(b + 1) > 0)) b++;
+    pts.push([M.bx[i], M.by[i]]); w.push(M.w[i]); g.push(G.g[i]);
+    for (let j = M.seg[i] + 1; j <= M.seg[b]; j++) if (M.U[j] > M.u[i] && M.U[j] < M.u[b]) { pts.push(base[j]); w.push(bw[j]); g.push(bg[j]); }
+    if (b > i) { pts.push([M.bx[b], M.by[b]]); w.push(M.w[b]); g.push(G.g[b]); }
+    i = b + 1;
+  }
+  return { pts, w, g };
+}
+/** 折线 [a, b] 画成变宽带并进当前路径：每段一个梯形，内部顶点补圆（圆接头），capA / capB 时那一头也补圆。
+    子路径一律顺时针，非零环绕下是并集：半透明的一次填满不叠深 */
+function addRibbon(ctx: CanvasRenderingContext2D, P: [number, number][], R: number[], a: number, b: number, capA: boolean, capB: boolean): void {
+  for (let k = a; k < b; k++) {
+    const [x0, y0] = P[k], [x1, y1] = P[k + 1], dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy);
+    if (!(L > 0)) continue;
+    const nx = -dy / L, ny = dx / L, q = [[x0 + nx * R[k], y0 + ny * R[k]], [x1 + nx * R[k + 1], y1 + ny * R[k + 1]], [x1 - nx * R[k + 1], y1 - ny * R[k + 1]], [x0 - nx * R[k], y0 - ny * R[k]]];
+    let area = 0;
+    for (let i = 0; i < 4; i++) area += q[i][0] * q[(i + 1) % 4][1] - q[(i + 1) % 4][0] * q[i][1];
+    const o = area > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
+    ctx.moveTo(q[o[0]][0], q[o[0]][1]); for (let i = 1; i < 4; i++) ctx.lineTo(q[o[i]][0], q[o[i]][1]); ctx.closePath();
+  }
+  for (let k = a; k <= b; k++) {
+    if ((k === a && !capA) || (k === b && !capB)) continue;
+    const [x, y] = P[k]; ctx.moveTo(x + R[k], y); ctx.arc(x, y, R[k], 0, 2 * Math.PI);
+  }
+}
+/** 选中的水面段 [a, b]：沿两岸各描一道红晕（水面在地形渲染器里，叠加层盖上去就把水染红了） */
+function bankHalo(ctx: CanvasRenderingContext2D, P: [number, number][], px: number[], a: number, b: number): void {
+  ctx.beginPath();
+  for (const side of [1, -1]) for (let k = a; k <= b; k++) {
+    const p0 = P[Math.max(a, k - 1)], p1 = P[Math.min(b, k + 1)], dx = p1[0] - p0[0], dy = p1[1] - p0[1], L = Math.hypot(dx, dy) || 1;
+    const r = (px[k] / 2 + 1.6) * side, x = P[k][0] - dy / L * r, y = P[k][1] + dx / L * r;
+    if (k === a) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.lineWidth = 3.2; ctx.strokeStyle = "rgba(192,57,43,.35)"; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.stroke();
+}
+/** 渐隐段切成的小段长（px）：透明度逐小段一档 */
+const FADE_STEP = 6;
+/** 带逐点宽、宽到画成水面、或首尾落在水里的河。wet[k]＝第 k 段由地形渲染器当水画（null＝一段都不是）：这里跳过，选中时沿两岸描红晕；
+    其余段按逐点宽画线（选中红晕、白衬底、河蓝），挨着水面段的那一头不补圆头——线头压在水面上会露出一截白衬底。
+    fh / ft 是首 / 尾渐隐的弧长（px，0＝不渐隐），这段里的线淡到 0 */
+function drawRiverVar(ctx: CanvasRenderingContext2D, P0: [number, number][], px0: number[], wet: boolean[] | null, fh: number, ft: number, selected: boolean): void {
+  /* 弧长、渐隐段细分、逐段透明度；par＝细分后的小段属于原折线的哪一段 */
+  const S0 = [0];
+  for (let k = 1; k < P0.length; k++) S0.push(S0[k - 1] + Math.hypot(P0[k][0] - P0[k - 1][0], P0[k][1] - P0[k - 1][1]));
+  const L = S0[S0.length - 1], alpha = (s: number): number => Math.min(1, fh > 0 ? s / fh : 1, ft > 0 ? (L - s) / ft : 1);
+  const P: [number, number][] = [P0[0]], px = [px0[0]], A: number[] = [], par: number[] = [];
+  for (let k = 0; k < P0.length - 1; k++) {
+    const s0 = S0[k], s1 = S0[k + 1], fade = (fh > 0 && s0 < fh) || (ft > 0 && s1 > L - ft), m = fade ? Math.max(1, Math.ceil((s1 - s0) / FADE_STEP)) : 1;
+    for (let t = 1; t <= m; t++) {
+      const u = t / m, uh = (t - 0.5) / m;
+      P.push(t === m ? P0[k + 1] : [P0[k][0] + (P0[k + 1][0] - P0[k][0]) * u, P0[k][1] + (P0[k + 1][1] - P0[k][1]) * u]);
+      px.push(px0[k] + (px0[k + 1] - px0[k]) * u);
+      A.push(fade ? Math.max(0, alpha(s0 + (s1 - s0) * uh)) : 1); par.push(k);
+    }
+  }
+  const n = P.length, wetAt = (j: number): boolean => !!wet && wet[par[j]];
+  for (let a = 0; a < n - 1;) {
+    let b = a + 1;
+    const wt = wetAt(a), whole = A[a] >= 1;
+    while (b < n - 1 && wetAt(b) === wt && (A[b] >= 1) === whole) b++;
+    if (wt) { if (selected) bankHalo(ctx, P, px, a, b); }
+    else if (whole) {
+      const capA = a === 0 || !wetAt(a - 1), capB = b === n - 1 || !wetAt(b);
+      const fill = (grow: (v: number) => number, col: string): void => { ctx.beginPath(); addRibbon(ctx, P, px.map(v => grow(v) / 2), a, b, capA, capB); ctx.fillStyle = col; ctx.fill("nonzero"); };
+      if (selected) fill(v => v + 6.4, "rgba(192,57,43,.35)");
+      fill(v => v + Math.min(2.4, v), "rgba(255,255,255,.5)");
+      fill(v => v, "#3f7fc4");
+    } else for (let k = a; k < b; k++) {   // 线状的渐隐段：逐小段按透明度画
+      const piece = (grow: (v: number) => number, col: string, al: number): void => { ctx.beginPath(); addRibbon(ctx, P, px.map(v => grow(v) / 2), k, k + 1, false, false); ctx.globalAlpha = al; ctx.fillStyle = col; ctx.fill("nonzero"); };
+      const g0 = ctx.globalAlpha;
+      if (selected) piece(v => v + 6.4, "rgba(192,57,43,.35)", g0 * A[k]);
+      piece(v => v + Math.min(2.4, v), "rgba(255,255,255,.5)", g0 * A[k]);
+      piece(v => v, "#3f7fc4", g0 * A[k]);
+      ctx.globalAlpha = g0;
+    }
+    a = b;
+  }
 }
 function strokeRiver(ctx: CanvasRenderingContext2D, pts: [number, number][], wpx: number, selected: boolean, dash?: number[] | null): void {
   const stroke = (w: number, col: string) => {
@@ -72,10 +191,19 @@ function offscreenPts(pp: [number, number][], cam: Camera): boolean {
 
 /** 一条连线的本体绘制（drawEdges 逐边在 save/restore 内调用）。dash=可靠性虚线（null＝确证，逐位不变） */
 function strokeEdge(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
-  byId: Map<string, WorldNode>, e: Edge, st: { color: string; w: number }, selected: boolean, dash: number[] | null): void {
+  byId: Map<string, WorldNode>, e: Edge, st: { color: string; w: number }, selected: boolean, dash: number[] | null, wet: ((lon: number, lat: number) => boolean) | null, rv: TerrainRivers | undefined): void {
   if (e.type === "river" && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由画河：沿自身折线（Chaikin 柔化），无端点
-    const pp = projectSeq(cam, chaikinOpen(e.pts, 2));
-    if (!offscreenPts(pp, cam)) strokeRiver(ctx, pp, riverWpx(meta, cam, e), selected, dash);
+    const sh = riverShape(meta, cam, e), pp = projectSeq(cam, sh.pts);
+    if (offscreenPts(pp, cam)) return;
+    /* 首尾落在水里的那一头（水格，或地形渲染器画成水面的别的河），原始折线的末段整段渐隐（画面岸线另有域扭曲与分块，不硬截） */
+    const m = e.pts.length, q = projectSeq(cam, [e.pts[0], e.pts[1], e.pts[m - 2], e.pts[m - 1]]);
+    const fh = wet && wet(e.pts[0][0], e.pts[0][1]) ? Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]) : 0;
+    const ft = wet && wet(e.pts[m - 1][0], e.pts[m - 1][1]) ? Math.hypot(q[3][0] - q[2][0], q[3][1] - q[2][1]) : 0;
+    /* 地形渲染器当水画的段（确证的自由折线河，rivers.riverSet 同门）：与它比同一个门槛，两端较窄的那头过门槛才算 */
+    const wseg = rv && !dash ? sh.g.slice(1).map((g, k) => Math.min(sh.g[k], g) >= rv.thr) : null;
+    /* 没有逐点宽、窄于水面门槛、两头都不在水里的照旧三层描边（旧样式逐位不变）；有可靠性虚线的也照旧——水面与渐隐都表达不了虚线 */
+    if (dash || (!Array.isArray(e.ws) && !fh && !ft && !sh.tp.some(v => v >= RIVER_WATER_PX))) strokeRiver(ctx, pp, riverWpx(meta, cam, e), selected, dash);
+    else drawRiverVar(ctx, pp, sh.px, wseg && wseg.some(Boolean) ? wseg : null, fh, ft, selected);
     return;
   }
   if (e.type === "wall" && Array.isArray(e.pts) && e.pts.length >= 2) {    // 自由画工事：原样折线（防线有棱角，不柔化）
@@ -108,11 +236,17 @@ function strokeEdge(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | und
 }
 
 /** 连线（道路/河流/商路/工事）；选中的一条垫红晕（对齐旧 isSelEdge）。单相机（overlay 拷贝循环内调用）。
-    可靠性（柱B）：逐边 save/restore 施 alpha 与虚线——确证＝dash null + alpha 1 ＝旧渲染逐位。 */
+    可靠性（柱B）：逐边 save/restore 施 alpha 与虚线——确证＝dash null + alpha 1 ＝旧渲染逐位。
+    rv＝地形渲染器本帧当水画的河（renderer.terrainOpts 给的那一份；缺省＝没画，宽河也画成线） */
 export function drawEdges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
   world: World, yearNow: number, byId: Map<string, WorldNode>,
-  layers: Record<string, boolean>, edgeSelIdx?: number | null): void {
+  layers: Record<string, boolean>, edgeSelIdx: number | null | undefined, grid: Grid | undefined, rv?: TerrainRivers): void {
   const on = (id: string) => layers[id] !== false;
+  const wet = grid || rv ? (lon: number, lat: number): boolean => {   // 河的首尾落在水里（湖、海、画的盆里成的湖、画成水面的干流）：那一头渐隐
+    const c = grid ? Math.floor((lon - grid.bb.lonMin) / grid.step) : -1, r = grid ? Math.floor((lat - grid.bb.latMin) / grid.step) : -1;
+    if (grid && c >= 0 && r >= 0 && c < grid.cols && r < grid.rows && waterMask(grid)[r * grid.cols + c] === 1) return true;
+    return !!rv && riverSD(rv.set, lon, lat, rv.thr) < 0;
+  } : null;
   for (let idx = 0; idx < world.edges.length; idx++) {
     const e = world.edges[idx];
     if (!on(e.type) || !activeAt(e, yearNow)) continue;
@@ -120,7 +254,7 @@ export function drawEdges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
     const cs = certaintyStyle(e.certainty, "edge");
     ctx.save();
     ctx.globalAlpha *= cs.alpha;
-    strokeEdge(ctx, cam, meta, byId, e, st, edgeSelIdx === idx, cs.dash);
+    strokeEdge(ctx, cam, meta, byId, e, st, edgeSelIdx === idx, cs.dash, wet, rv);
     ctx.restore();
   }
 }

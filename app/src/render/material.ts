@@ -366,6 +366,16 @@ const sstep01 = (a: number, b: number, x: number): number => {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
+
+/** 水面配色（两端渲染器同读，GL 的字面量由 waterGLSL 生成）：水段色阶 deep→shallow（0–255，水面下 0.35→0.02 抽象单位线性；deep 也是图外深海底色）、
+    近岸浅水 shore（0–1，按 FX.shoreMix 混入）、岸线墨 ink（0–255）按 inkA 混入。河当水体画（render/rivers），湖海与河同用这一份 */
+export const WATER = { deep: [40, 90, 132], shallow: [100, 160, 198], shore: [0.55, 0.72, 0.75], ink: [38, 66, 86], inkA: 0.55 } as const;
+/** WATER 的 GLSL 字面量（整数补「.0」）：ramp＝按 t 取水段色阶、shore＝近岸色、ink＝岸线墨、deep＝深海色 */
+export function waterGLSL(): { ramp: string; shore: string; ink: string; deep: string } {
+  const f = (x: number): string => Number.isInteger(x) ? x.toFixed(1) : String(x), D = WATER.deep, S = WATER.shallow;
+  return { ramp: `vec3(${D.map((d, k) => `${f(d)}+t*${f(S[k] - d)}`).join(",")})/255.0`, shore: `vec3(${WATER.shore.map(f).join(",")})`,
+    ink: `vec3(${WATER.ink.map(f).join(",")})/255.0`, deep: `vec3(${D.map(f).join(",")})/255.0` };
+}
 /** 装饰噪声门（CPU 兜底直接调用；GL 经着色器模板注入同一组 FX 常数，两端同式）。
     细分场（侵蚀）的陆地上，装饰按「真坡或粗糙类型」渐入；水域(land=0)与粗格场(fine=0)恒 1
     ＝旧图/水面观感逐位。land/fine 取 [0,1]（land 由调用方按数据面高程 smoothstep 出连续过渡——

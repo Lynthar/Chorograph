@@ -4,17 +4,17 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { regenRivers } from "../src/ui/editops.ts";
+import { muteGenRiver, regenRivers, saveEdgeForm, syncGenRivers } from "../src/ui/editops.ts";
 import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, paintUpliftPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, outsideCount, pullIntoFrame, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
-import { buildGridCells, gridStepDeg } from "../src/core/grid.ts";
+import { buildGridCells, gridGeom, gridStepDeg } from "../src/core/grid.ts";
 import { DH_MAX_M } from "../src/core/elev.ts";
-import { blankWorld, genRiverKey } from "../src/core/world.ts";
+import { blankWorld, genRiverEdges, genRiverEdgesOf, genRiverKey, genTerrKey, riverCells } from "../src/core/world.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive, setTerrainStyle, terrainStyleSig,
   modeSig, paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, railToolOf, readOnlySig, redoWorld, revealLayersFor, selMembers, selSig, setRailTool, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
-import type { World, WorldNode } from "../src/core/types.ts";
+import type { Edge, Meta, World, WorldNode } from "../src/core/types.ts";
 
 /** 满经跨球面图幅：经度只折回不钳，测折回与舍入时用它（缺 bbox 的夹具落在 DEFAULT_BBOX 里） */
 const GLOBE = { 名称: "测试", bbox: { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 } };
@@ -221,16 +221,69 @@ describe("编辑操作内核", () => {
     assert.strictEqual(genRiverKey(w.meta), k0, "与河无关的设置不该触发重画（重画会让删掉的河复活）");
     w.meta.genSeed = 3;
     assert.notStrictEqual(genRiverKey(w.meta), k0);
-    const r = regenRivers(w);
+    const r = regenRivers(w, true);
     assert.strictEqual(r.removed, n0 - 1);
     assert.ok(w.edges.includes(kept) && w.edges.includes(mine), "改过的与手画的河原样留着");
     assert.strictEqual(w.edges.filter(e => e.gen).length, r.added);
     const g0 = w.edges.filter(e => e.gen), wmax = (es: typeof g0) => Math.max(...es.map(e => e.widthM!));
     w.meta.genWater = 1;
-    assert.ok(regenRivers(w).added > g0.length && wmax(w.edges.filter(e => e.gen)) > wmax(g0), "水量拉满：河更多、最宽的更宽");
+    assert.ok(regenRivers(w, false).added > g0.length && wmax(w.edges.filter(e => e.gen)) > wmax(g0), "水量拉满：河更多、最宽的更宽");
     w.meta.terrain = "plain";
-    assert.deepStrictEqual(regenRivers(w).added, 0);
+    assert.deepStrictEqual(regenRivers(w, true).added, 0);
     assert.deepStrictEqual(w.edges, [kept, mine]);
+  });
+  it("生成的河记住删改：删掉的不回来、改过的旁边不再冒一条、改了道的照画；同一份河再同步零写入；只挪河流滑杆不清记录，地形换了清", () => {
+    const w = blankWorld({ 名称: "甲", worldModel: "sphere", planetRadiusKm: 10000, terrain: "auto", genVer: 2, genStyle: "mono", genSeed: 2,
+      bbox: { lonMin: 100, lonMax: 112, latMin: 28, latMax: 37 } }, "2026-10-14");
+    const all = w.edges.slice(), long = (i: number) => all[i].pts!.length;
+    const [a, b] = [0, 1].map(k => all.map((_, i) => i).filter(i => long(i) >= 4)[k]);   // 两条够长的河
+    const delPts = all[a].pts!, editPts = all[b].pts!;
+    assert.ok(removeEdgeAt(w, w.edges.indexOf(all[a])));
+    assert.ok(w.genRiverOff && riverCells(w.meta, delPts).every(c => w.genRiverOff!.includes(c)), "删掉的河经过的格记进删改记录");
+    assert.ok(saveEdgeForm(w, w.edges.indexOf(all[b]), { 名称: "乙河", note: "", kv: "", since: "", until: "", widthM: String(all[b].widthM) }));
+    assert.ok(!("gen" in all[b]) && riverCells(w.meta, editPts).every(c => w.genRiverOff!.includes(c)), "表单一存就去标记、记进删改记录");
+    const again = genRiverEdges(w.meta, w.genRiverOff);
+    assert.strictEqual(again.length, all.length - 2, "同一份河重抽：删掉的那条与改过那条的「双胞胎」都不画");
+    assert.strictEqual(syncGenRivers(w, again), false, "与在图上的逐条相同：不改、不写");
+    const ver = w.edges;
+    assert.strictEqual(syncGenRivers(w, again.slice(1)), true);
+    assert.notStrictEqual(w.edges, ver, "换了就换新数组");
+    /* 改了道（整条挪开三格）照画；河头延长两格、主体原路的照压 */
+    const dy = 3 * gridGeom(w.meta).step, shift = (p: [number, number][]) => p.map(([x, y]) => [x, y + dy] as [number, number]);
+    const longer: [number, number][] = [[delPts[0][0] - 0.2, delPts[0][1]], [delPts[0][0] - 0.1, delPts[0][1]], ...delPts];
+    const kept = genRiverEdgesOf(w.meta, [{ pts: shift(delPts), widthM: 50 }, { pts: longer, widthM: 50 }], w.genRiverOff);
+    assert.strictEqual(kept.length, 1, "改了道的画、只延长了河头的不画");
+    assert.ok(kept[0].pts![0][1] !== delPts[0][1]);
+    /* 只挪河流滑杆：地形键不变、记录留着；换种子：地形键变、记录清掉 */
+    const tk = genTerrKey(w.meta), off = w.genRiverOff;
+    w.meta.genRiv = 1;
+    assert.strictEqual(genTerrKey(w.meta), tk); regenRivers(w, false);
+    assert.strictEqual(w.genRiverOff, off, "只挪滑杆不清删改记录");
+    w.meta.genSeed = 9;
+    assert.notStrictEqual(genTerrKey(w.meta), tk); regenRivers(w, true);
+    assert.ok(!("genRiverOff" in w), "地形换了，格号对不上新地形，记录作废");
+  });
+  it("muteGenRiver 只记生成的河；表单改了河宽就删逐点宽、没改留着", () => {
+    const w = blankWorld({ 名称: "甲", worldModel: "sphere", planetRadiusKm: 10000, terrain: "auto", genVer: 2, genStyle: "mono", genSeed: 2,
+      bbox: { lonMin: 100, lonMax: 112, latMin: 28, latMax: 37 } }, "2026-10-14");
+    const mine = addRiver(w, [[101, 30], [101.5, 30.2]]);
+    muteGenRiver(w, mine);
+    assert.ok(!("genRiverOff" in w), "手画的河删改不记");
+    const e: Edge = { type: "river", pts: [[101, 30], [101.5, 30.2]], widthM: 120, ws: [80, 120], mz: [0, 0] };
+    applyEdgeForm(e, { 名称: "", note: "", kv: "", since: "", until: "", widthM: "120" });
+    assert.deepStrictEqual([e.ws, e.mz], [[80, 120], [0, 0]], "河宽没改：逐点宽与曲流强度留着");
+    applyEdgeForm(e, { 名称: "", note: "", kv: "", since: "", until: "", widthM: "300" });
+    assert.ok(!("ws" in e) && !("mz" in e) && e.widthM === 300, "河宽改了：按整条一个宽、不弯（弯的波长随宽走）");
+  });
+  it("生成的河带曲流强度：抽出的条目照带 mz，只差 mz 的同一条河也要换（存档里的旧河拿到新的曲流）", () => {
+    const meta: Meta = { terrain: "auto", genVer: 2, genStyle: "mono", genSeed: 2, worldModel: "sphere", planetRadiusKm: 10000, bbox: { lonMin: 100, lonMax: 112, latMin: 28, latMax: 37 } };
+    const r = { pts: [[101, 30], [101.5, 30.2], [102, 30.1]] as [number, number][], widthM: 90, ws: [60, 90, 180], mz: [0, 7, 0] };
+    const [e] = genRiverEdgesOf(meta, [r], undefined);
+    assert.deepStrictEqual(e.mz, [0, 7, 0]);
+    const w = mkWorld({ edges: [e] });
+    assert.strictEqual(syncGenRivers(w, genRiverEdgesOf(meta, [r], undefined)), false, "同一份零写入");
+    assert.strictEqual(syncGenRivers(w, genRiverEdgesOf(meta, [{ ...r, mz: [0, 9, 0] }], undefined)), true, "只差 mz 也换");
+    assert.deepStrictEqual(w.edges[0].mz, [0, 9, 0]);
   });
   it("addAsset/removeAsset：幂等内嵌 + 连带删落章、空了删键", () => {
     const w = mkWorld({});

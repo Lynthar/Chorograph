@@ -376,6 +376,8 @@ export function mutateWorldLive(fn: (w: World) => void | boolean): void {
 
 /* —— 笔刷描画的空步回收：起笔即 push 一步撤销，若整笔零广播（涂已涂格/擦空白）则丢弃那步空快照 —— */
 let strokeVer = -1;
+/** 一笔正在画（beginStroke 之后、endStroke 之前）：这期间别的写入会让「空笔回收」误判（editVer 变了），宜收笔后再写 */
+export const inStroke = (): boolean => strokeVer >= 0;
 export function beginStroke(): void { pushHistoryOnce(); strokeVer = editVerSig.peek(); }
 export function endStroke(): void {
   if (strokeVer >= 0 && editVerSig.peek() === strokeVer) { hist.dropLast(); syncHistFlags(); }

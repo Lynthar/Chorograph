@@ -2,8 +2,9 @@
    视口里的块齐了才一起上屏（不出现半清半糊的拼贴），视口外的随到随上；编辑后旧块照旧显示、叠上粗格增量（同工作档的等待窗合成），
    视口里换了键的块也等视口齐了才一起换（不出现新旧拼贴）。块只进画面：规则场、读数与等高线不读这里。 */
 import { applyDelta, deltaOf, type CoarseDelta } from "../core/elev.ts";
-import { tileCells, tileCore, tileField, tileInput, tileKey, tilesInView, tileWeight, type TileLayer, type TilePlan } from "../core/tiles.ts";
+import { tileCells, tileCore, tileField, tileInput, tileKeyOf, tilesInView, tileWeight, type TileLayer, type TilePlan } from "../core/tiles.ts";
 import type { CoarseCarve, ErodeInput } from "../core/erode.ts";
+import type { NestSrc } from "../core/nested.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
 import type { RouteClient } from "../worker/routeClient.ts";
@@ -22,8 +23,9 @@ export interface TileDeps {
 export interface TileManager {
   /** 换图、换几何、本图不再分块：全部清空、块层下屏 */
   reset(): void;
-  /** 新一份全图工作档输入（同几何）：plan＝core/tiles.tilePlan 的结果，base＝这份输入出自的粗格场（增量合成的基准），key＝erodeKey(inp)（切割量按它在内存里留几份） */
-  setInput(inp: ErodeInput, plan: TilePlan, base: Float32Array, key: string): void;
+  /** 新一份全图工作档输入（同几何）：plan＝core/tiles.tilePlan 的结果，base＝这份输入出自的粗格场（增量合成的基准），key＝erodeKey(inp)（切割量按它在内存里留几份）；
+      nest＝这份输入出自的中尺度场给嵌套解的那份（带中尺度的图才有，有它块就走嵌套解） */
+  setInput(inp: ErodeInput, plan: TilePlan, base: Float32Array, key: string, nest?: NestSrc | null): void;
   /** 当前含涂改的粗格场与网格（每次重建都送）：在屏块按它补增量 */
   setCoarse(now: Float32Array, grid: Grid): void;
   /** 视口与缩放（每帧送，没变就不动） */
@@ -38,7 +40,7 @@ const CARVE_KEEP = 4;
 export const TILE_RETRY_MS = 5000;
 
 export function createTileManager(d: TileDeps, memCapBytes: number): TileManager {
-  let token = 0, plan: TilePlan | null = null, inp: ErodeInput | null = null, base: Float32Array | null = null, inpKey = "";
+  let token = 0, plan: TilePlan | null = null, inp: ErodeInput | null = null, base: Float32Array | null = null, inpKey = "", nest: NestSrc | null = null;
   let carve: CoarseCarve | null | undefined, keys: Map<number, string> | null = null;   // carve：undefined＝还没到，null＝中尺度图不要
   const carves = new Map<string, CoarseCarve>();   // erodeKey → 切割量（Map 的插入序当 LRU）
   let dead = false;   // 车道失败：停发单，等复位
@@ -140,12 +142,12 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
   }
   function pump(): void {
     while (!dead && plan && inp && carve !== undefined && keys && queue.size && inflight.size < Math.max(1, d.client.tileLanes)) {
-      const i = next()!, key = keys.get(i)!, t = token, p = plan, src = inp, cv = carve;
+      const i = next()!, key = keys.get(i)!, t = token, p = plan, src = inp, cv = carve, ns = nest;
       queue.delete(i); inflight.set(i, key);
       const lost = (e?: unknown): void => { if (t === token && keys?.get(i) === key) queue.add(i); fail(e); };   // 这一块回队，复位后接着算
       void d.cacheGet(key).then(async hit => {
         if (hit) { remember(key, hit); land(i, key, hit); return; }
-        const f = await d.client.erodeTile(tileInput(src, p, cv, i));
+        const f = await d.client.erodeTile(tileInput(src, p, cv, i, ns));
         if (!f) { lost(); return; }
         const core = tileCore(f, p, i);
         remember(key, core); d.cachePut(key, core);
@@ -159,7 +161,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
   function onCarve(cv: CoarseCarve | null): void {
     const p = plan!, src = inp!;
     carve = cv; keys = new Map();
-    for (const i of p.tiles) keys.set(i, tileKey(tileInput(src, p, cv, i)));
+    for (const i of p.tiles) keys.set(i, tileKeyOf(src, p, cv, i, nest));
     for (const [i, key] of keys) {
       const f = fresh.get(i);
       if (f && f.key !== key) fresh.delete(i);
@@ -185,17 +187,17 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
 
   return {
     reset() {
-      token++; plan = null; inp = null; base = null; carve = undefined; keys = null;
+      token++; plan = null; inp = null; base = null; nest = null; carve = undefined; keys = null;
       shown.clear(); published.clear(); held.clear(); fresh.clear(); queue.clear(); inflight.clear();
       disp = new Map(); dispFor = new Map(); vis = new Set();
       emit(null); updateBusy();
     },
-    setInput(nextInp, nextPlan, nextBase, key) {
+    setInput(nextInp, nextPlan, nextBase, key, nextNest) {
       token++;
       if (plan && (plan.geom.sx !== nextPlan.geom.sx || plan.geom.cols !== nextPlan.geom.cols || plan.geom.rows !== nextPlan.geom.rows)) {
         shown.clear(); published.clear(); held.clear(); fresh.clear(); disp = new Map(); dispFor = new Map(); emit(null);
       }
-      plan = nextPlan; inp = nextInp; base = nextBase; inpKey = key; carve = undefined; keys = null; queue.clear();
+      plan = nextPlan; inp = nextInp; base = nextBase; nest = nextNest ?? null; inpKey = key; carve = undefined; keys = null; queue.clear();
       const inPlan = new Set(nextPlan.tiles);
       for (const i of [...shown.keys()]) if (!inPlan.has(i)) { shown.delete(i); published.delete(i); held.delete(i); fresh.delete(i); }
       if (view) vis = visibleOf(nextPlan, view);

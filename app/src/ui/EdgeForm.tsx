@@ -4,7 +4,7 @@ import { useRef } from "preact/hooks";
 import { EDGE_STYLE, RIVER_TMPL, WALL_TMPL } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
 import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "./state.ts";
-import { applyEdgeForm } from "./editops.ts";
+import { saveEdgeForm } from "./editops.ts";
 import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
 import type { Edge } from "../core/types.ts";
 import { tget } from "../core/util.ts";
@@ -23,9 +23,7 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
 
   const save = () => {
     mutateWorld(w => {
-      const target = w.edges[idx];
-      if (!target) return;
-      applyEdgeForm(target, { 名称: val("ee_name"), note: val("ee_note"), kv: val("ee_kv"), since: timeVal("ee_since"), until: timeVal("ee_until"),
+      saveEdgeForm(w, idx, { 名称: val("ee_name"), note: val("ee_note"), kv: val("ee_kv"), since: timeVal("ee_since"), until: timeVal("ee_until"),
         widthM: e.type === "river" ? val("ee_width") : undefined,
         reverse: e.type === "wall"
           ? box.current?.querySelector("#ee_rev")?.getAttribute("aria-pressed") === "true"

@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildMesh, cellRand } from "../src/core/gen2mesh.ts";
-import { Heap, bandOf, steady, steadyBand, upliftSolve, type SteadyGraph, type SteadyInput, type SteadyResult, type UpliftRegion } from "../src/core/steady.ts";
+import { Heap, bandOf, floodTree, lowestTree, steady, steadyBand, upliftSolve, type SteadyGraph, type SteadyInput, type SteadyResult, type UpliftRegion } from "../src/core/steady.ts";
 
 const COLS = 90, ROWS = 70, KM = 5, n = COLS * ROWS, MAXIT = 300;
 const mesh = buildMesh(COLS, ROWS, 11), len = new Float64Array(mesh.nb.length);
@@ -159,6 +159,90 @@ describe(`河流功率律稳态：影响带重解与画抬升标定（源头修�
     assert.ok(bridges > 0, "没有桥——这一例没测到闭包");
     assert.strictEqual(flips, 0);
     assert.ok(loopFree(S.rcv));
+  });
+});
+
+/* 规范序的流向树每轮先试 lowestTree：逐轮对照「在上一轮的高程上洪泛」。零增量平地（U＝0 的一块）上节点与受水者等高，
+   平地里号最小的那格不排在任何邻居之后，lowestTree 必须退回洪泛 */
+const UZ = Float64Array.from(U);
+for (let r = 28; r <= 38; r++) for (let c = 30; c <= 44; c++) UZ[at(r, c)] = 0;
+const inpZ: SteadyInput = { ...inp, U: UZ }, baseZ = steady(G, inpZ, h0, { maxIt: MAXIT, tol: 0, canon: true });
+const live = (seen: Uint8Array): Int32Array => Int32Array.from({ length: n }, (_, i) => i).filter(i => seen[i] && !out[i]);
+/** 全图一轮洪泛的参照：够不到出口的节点成根（同 steady 规范序） */
+function floodRef(S: SteadyResult): { rcv: Int32Array; rl: Float64Array; seen: Uint8Array } {
+  const rcv = S.rcv.slice(), rl = S.rl.slice(), seen = new Uint8Array(n);
+  floodTree(G, out, S.h, rcv, rl, seen, new Heap(n), new Int32Array(n));
+  for (let i = 0; i < n; i++) if (!seen[i]) { rcv[i] = i; rl[i] = 0; }
+  return { rcv, rl, seen };
+}
+/** 带内一轮洪泛的参照：种子＝挨着带内陆地的带内出口，与沿 base 再不回带的带外节点；只发现带内陆地 */
+function bandRef(S: SteadyResult & { band: Uint8Array }, B: SteadyResult): { rcv: Int32Array; rl: Float64Array; ids: Int32Array; cand: Uint8Array } {
+  const inB = S.band, esc = new Int8Array(n).fill(-1), path: number[] = [];
+  for (let i0 = 0; i0 < n; i0++) {
+    let i = i0; path.length = 0;
+    while (esc[i] < 0) { if (inB[i]) { esc[i] = 0; break; } if (B.rcv[i] === i) { esc[i] = 1; break; } path.push(i); i = B.rcv[i]; }
+    for (const p of path) esc[p] = esc[i];
+  }
+  const ids = Int32Array.from({ length: n }, (_, i) => i).filter(i => inB[i] && !out[i]), cand = new Uint8Array(n), hp = new Heap(n), seen = new Uint8Array(n);
+  for (const i of ids) { cand[i] = 1; for (let e = G.nbOff[i]; e < G.nbOff[i + 1]; e++) { const j = G.nb[e]; if (esc[j] === 1 || (inB[j] && out[j])) { cand[j] = 2; seen[j] = 1; } } }
+  for (let i = 0; i < n; i++) if (cand[i] === 2) hp.push(S.h[i], i);
+  const rcv = S.rcv.slice(), rl = S.rl.slice();
+  while (hp.n) {
+    const i = hp.pop();
+    for (let e = G.nbOff[i]; e < G.nbOff[i + 1]; e++) { const j = G.nb[e]; if (!inB[j] || out[j] || seen[j]) continue; seen[j] = 1; rcv[j] = i; rl[j] = G.len[e]; hp.push(S.h[j], j); }
+  }
+  return { rcv, rl, ids, cand };
+}
+const pick = <T extends Int32Array | Float64Array>(a: T, ids: Int32Array): number[] => Array.from(ids, i => a[i]);
+
+describe(`河流功率律稳态：不走堆的流向树与洪泛逐轮逐位同（源头修正 ${HEAD}）`, () => {
+  it("全图：每一轮的流向与到下游边长＝在上一轮高程上洪泛；零增量平地上 lowestTree 退回过、其余轮次与洪泛同", () => {
+    assert.ok(baseZ.converged, `零增量平地 ${baseZ.iters} 轮未收敛`);
+    for (const [name, I, fbMin] of [["普通", inp, 0], ["零增量平地", inpZ, 1]] as const) {
+      let prev = steady(G, I, h0, { maxIt: 1, tol: 0, canon: true }), fb = 0, ok = 0;
+      for (let k = 1; !prev.converged; k++) {
+        const next = steady(G, I, h0, { maxIt: k + 1, tol: 0, canon: true }), F = floodRef(prev);
+        assert.deepStrictEqual(next.rcv, F.rcv, `${name}第 ${k + 1} 轮流向`); assert.deepStrictEqual(next.rl, F.rl, `${name}第 ${k + 1} 轮边长`);
+        const rcv = prev.rcv.slice(), rl = prev.rl.slice();
+        if (lowestTree(G, prev.h, rcv, rl, live(F.seen), null)) { ok++; assert.deepStrictEqual(rcv, F.rcv); assert.deepStrictEqual(rl, F.rl); } else fb++;
+        prev = next;
+      }
+      assert.ok(fb >= fbMin, `${name}：lowestTree 没退回过——夹具没测到平地`);
+      if (!fbMin) assert.ok(ok > 0 && fb === 0, `${name}：lowestTree 成 ${ok} 轮、退回 ${fb} 轮`);
+    }
+  });
+  it("影响带：每一轮的带内流向与边长＝在上一轮高程上带内洪泛；零增量平地上退回过", () => {
+    const addU = (U0: Float64Array, regs: UpliftRegion[], s: number[]): Float64Array => {
+      const o = Float64Array.from(U0); regs.forEach((r, k) => { for (let t = 0; t < r.idx.length; t++) o[r.idx[t]] += s[k] * r.w[t]; }); return o;
+    };
+    const zr = [disc(33, 37, 2, 0)];
+    for (const [name, I, B, bd, fbMin] of [
+      ["普通", { ...inp, U: addU(U, regions, [500, 300, 0]) }, base, band, 0],
+      ["零增量平地", { ...inpZ, U: addU(UZ, zr, [400]) }, baseZ, bandOf(G, support(zr), 60), 1],
+    ] as const) {
+      let prev = steadyBand(G, I, B, bd, 1), fb = 0, ok = 0;
+      for (let k = 1; !prev.converged; k++) {
+        const next = steadyBand(G, I, B, bd, k + 1), F = bandRef(prev, B);
+        assert.deepStrictEqual(pick(next.rcv, F.ids), pick(F.rcv, F.ids), `${name}第 ${k + 1} 轮带内流向`);
+        assert.deepStrictEqual(pick(next.rl, F.ids), pick(F.rl, F.ids), `${name}第 ${k + 1} 轮带内边长`);
+        const rcv = prev.rcv.slice(), rl = prev.rl.slice();
+        if (lowestTree(G, prev.h, rcv, rl, F.ids, F.cand)) { ok++; assert.deepStrictEqual(pick(rcv, F.ids), pick(F.rcv, F.ids)); assert.deepStrictEqual(pick(rl, F.ids), pick(F.rl, F.ids)); } else fb++;
+        prev = next;
+      }
+      assert.ok(fb >= fbMin, `${name}：带内 lowestTree 没退回过——夹具没测到平地`);
+      if (!fbMin) assert.ok(ok > 0 && fb === 0, `${name}：带内 lowestTree 成 ${ok} 轮、退回 ${fb} 轮`);
+    }
+  });
+  it("lowestTree：最低邻并列时取号小——整数跳数场（处处有严格更低的邻居、并列成片）上与洪泛逐位同", () => {
+    const hop = new Float64Array(n).fill(-1), q: number[] = [];
+    for (let i = 0; i < n; i++) if (out[i]) { hop[i] = 0; q.push(i); }
+    for (let t = 0; t < q.length; t++) { const i = q[t]; for (let e = G.nbOff[i]; e < G.nbOff[i + 1]; e++) { const j = G.nb[e]; if (hop[j] < 0) { hop[j] = hop[i] + 1; q.push(j); } } }
+    let ties = 0;
+    for (let i = 0; i < n; i++) { if (out[i]) continue; let c = 0; for (let e = G.nbOff[i]; e < G.nbOff[i + 1]; e++) if (hop[G.nb[e]] === hop[i] - 1) c++; if (c >= 2) ties++; }
+    assert.ok(ties > n / 4, `最低邻并列的节点只有 ${ties}`);
+    const S = { ...base, h: hop }, F = floodRef(S), rcv = base.rcv.slice(), rl = base.rl.slice();
+    assert.ok(lowestTree(G, hop, rcv, rl, live(F.seen), null));
+    assert.deepStrictEqual(rcv, F.rcv); assert.deepStrictEqual(rl, F.rl);
   });
 });
 }

@@ -19,7 +19,7 @@ import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues, worldCap } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
 import type { ErodeMode } from "../core/erode.ts";
-import { contourStepOf, terrainOpts } from "../render/renderer.ts";
+import { contourStepOf, riverSet, terrainOpts } from "../render/renderer.ts";
 import { PAPER } from "../render/material.ts";
 import { safeName, errText, newId } from "../core/util.ts";
 import { exportScaleFit, pngSetDpi } from "../core/png.ts";
@@ -583,7 +583,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       if (ctx.repaint) ctx.repaint(true);   // 叠加层按当前 DPR 重画且涂域一次算全（屏上那帧可能还在分帧首算）；地形随即再渲一次，同帧幂等
       const [vw, vh] = host.pxSize();
       const R = layersSig.peek().terrain ? ctx.R : null;
-      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v, zoneField(worldSig.peek())));
+      if (R) R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v, zoneField(worldSig.peek()), riverSet(ctx.meta, worldSig.peek(), yearSig.peek(), ctx.view.degPerPx)));
       const off = document.createElement("canvas");
       off.width = vw; off.height = vh;
       const g2 = off.getContext("2d")!;
@@ -817,7 +817,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     try {
       const [vw, vh] = host.pxSize();   // 可见区（画布可更大）
       if (!vw || !vh) return null;
-      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v, zoneField(worldSig.peek())));
+      if (layersSig.peek().terrain && ctx.R) ctx.R.render(host.viewBB(), terrainOpts(ctx.meta, ctx.view.degPerPx, layersSig.peek(), uiPrefsSig.peek().relief, terrainStyleSig.peek(), ctx.DPR, [vw, vh], contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleFieldSig.peek(), ctx.ruleField, host.viewBB()).v, zoneField(worldSig.peek()), riverSet(ctx.meta, worldSig.peek(), yearSig.peek(), ctx.view.degPerPx)));
       const tw = 280, th = 175, off = document.createElement("canvas");
       off.width = tw; off.height = th;
       const g2 = off.getContext("2d")!;

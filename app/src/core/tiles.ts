@@ -1,6 +1,8 @@
 /* 分块精修：含陆地的块各带余量单独侵蚀（core/erode 的窗口单）、只留块心；粗级切割量全图一份（erodeCarve）裁给各块，块与块才接得上。
+   带中尺度的 v2 图不侵蚀块，改走 core/nested 的嵌套解（单里带外层裁剪）。
    块只进画面：规则场、等高线与光标读数照旧走工作档——让它们读块，读数就随本机内存与计算进度变。 */
 import { erodeKey, upscaleOf, type CoarseCarve, type ErodeInput } from "./erode.ts";
+import { nestCrop, NEST_MARGIN, NEST_PAD, type NestSrc } from "./nested.ts";
 import type { ElevField } from "./elev.ts";
 import type { BBox } from "./types.ts";
 
@@ -14,7 +16,7 @@ export const TILE_MAX_X = 8;
 /** 裁给块的粗级切割量量化步长（抽象高程，约 3 cm）：粗级扩散把一处涂改的位级扰动传遍全图，不量化则任何一笔都让所有块换键重算 */
 export const CARVE_Q = 1 / 65536;
 /** 块的算法代号：块的取法（余量、块心、参照带）变了而侵蚀没变时换代，免得旧块还魂 */
-export const TILE_VER = 1;
+export const TILE_VER = 2;
 /** 一个块格占的 CSS 像素：低于 LO 不用块（亚像素起伏逐像素点采样会起颗粒），到 HI 全用；中间按缩放连续过渡＝缩放时不跳 */
 export const TILE_W_LO = 0.5, TILE_W_HI = 1.0;
 
@@ -80,10 +82,11 @@ function cropCarve(cv: CoarseCarve, lonMin: number, latMin: number, lonMax: numb
 }
 
 /** 块 i 的侵蚀单：父格窗口＝块心外扩 TILE_MARGIN（钳到图幅），倍率 plan.sx，四个窗口约定见 core/erode.ErodeWindow。
-    carve＝erodeCarve(inp) 的全图切割量；中尺度图（inp.mesoEnv）不跑粗级，传 null */
-export function tileInput(inp: ErodeInput, plan: TilePlan, carve: CoarseCarve | null, i: number): ErodeInput {
-  const g = plan.geom, { c0, r0, c1, r1 } = tileCells(g, i), M = TILE_MARGIN;
-  const a0 = Math.max(0, c0 - M), a1 = Math.min(g.cols, c1 + M), b0 = Math.max(0, r0 - M), b1 = Math.min(g.rows, r1 + M);
+    carve＝erodeCarve(inp) 的全图切割量；中尺度图（inp.mesoEnv）不跑粗级，传 null。
+    nest＝这份输入出自的外层解（带中尺度的图）：给了就是嵌套解的单——解的窗口外扩 NEST_MARGIN，单的裁剪再外扩 NEST_PAD、带外层裁剪，不带 win 与 mesoEnv */
+export function tileInput(inp: ErodeInput, plan: TilePlan, carve: CoarseCarve | null, i: number, nest?: NestSrc | null, keyOnly = false): ErodeInput {
+  const g = plan.geom, { c0, r0, c1, r1 } = tileCells(g, i), M = nest ? NEST_MARGIN : TILE_MARGIN, X = nest ? NEST_MARGIN + NEST_PAD : M;
+  const a0 = Math.max(0, c0 - X), a1 = Math.min(g.cols, c1 + X), b0 = Math.max(0, r0 - X), b1 = Math.min(g.rows, r1 + X);
   const w = a1 - a0, h = b1 - b0;
   const sub = <T extends Float32Array | Uint8Array>(a: T): T => {
     const o = new (a.constructor as new (n: number) => T)(w * h);
@@ -91,20 +94,32 @@ export function tileInput(inp: ErodeInput, plan: TilePlan, carve: CoarseCarve | 
     return o;
   };
   const lonMin = g.lonMin + a0 * g.pstep, latMin = g.latMin + b0 * g.pstep, lonMax = g.lonMin + a1 * g.pstep, latMax = g.latMin + b1 * g.pstep;
+  if (nest) {
+    const { mesoEnv: _m, lfDelta: _l, win: _w, ...rest } = inp;
+    const wa0 = Math.max(0, c0 - M), wa1 = Math.min(g.cols, c1 + M), wb0 = Math.max(0, r0 - M), wb1 = Math.min(g.rows, r1 + M);
+    return { ...rest, bb: { lonMin, latMin, lonMax, latMax }, cols: w, rows: h, elev0: sub(inp.elev0), water: sub(inp.water), wsurf: sub(inp.wsurf), hovGrid: sub(inp.hovGrid),
+      cap: w * h * g.sx * g.sx, axisMax: g.sx, acrit: plan.acrit, bandS: g.sx / plan.sxW, ...(inp.basin ? { basin: sub(inp.basin) } : {}),
+      nest: nestCrop(nest, wa0, wa1, wb0, wb1, a0, a1, b0, b1, g.sx, g.lonMin, g.latMin, g.pstep, !keyOnly) };
+  }
   const sc = inp.sphere ? [(inp.bb.lonMin + inp.bb.lonMax) / 2, (inp.bb.latMin + inp.bb.latMax) / 2] as const : null;
   return { ...inp, bb: { lonMin, latMin, lonMax, latMax }, cols: w, rows: h,
     elev0: sub(inp.elev0), water: sub(inp.water), wsurf: sub(inp.wsurf), hovGrid: sub(inp.hovGrid),
     cap: w * h * g.sx * g.sx, axisMax: g.sx, acrit: plan.acrit, bandS: g.sx / plan.sxW, ...(inp.mesoEnv ? { mesoEnv: sub(inp.mesoEnv) } : {}), ...(inp.basin ? { basin: sub(inp.basin) } : {}),
+    ...(inp.lfDelta ? { lfDelta: sub(inp.lfDelta) } : {}),
     win: { carve: carve ? cropCarve(carve, lonMin, latMin, lonMax, latMax) : null, refS: 1, sc, coast: true } };
 }
 
 /** 块缓存的键：窗口单的内容键（含窗口位置与裁过的切割量）＋块代号 */
 export function tileKey(tinp: ErodeInput): string { return erodeKey(tinp) + "~t" + TILE_VER; }
+/** 块 i 的键，与 tileKey(tileInput(…)) 一字不差：嵌套解的静态场按全图摘要进键，逐块裁它只为发单——一次算全部块键时省掉 */
+export function tileKeyOf(inp: ErodeInput, plan: TilePlan, carve: CoarseCarve | null, i: number, nest?: NestSrc | null): string {
+  return tileKey(tileInput(inp, plan, carve, i, nest, true));
+}
 
-/** 窗口单的产出 → 块心（去掉余量）。f 必须是 tileInput(…, i) 那一单的结果 */
+/** 窗口单的产出 → 块心（去掉余量）。f 必须是 tileInput(…, i) 那一单的结果：余量按产出的原点算，两种窗口单通用 */
 export function tileCore(f: ElevField, plan: TilePlan, i: number): Float32Array {
   const g = plan.geom, { c0, r0, c1, r1 } = tileCells(g, i), sx = g.sx;
-  const ox = (c0 - Math.max(0, c0 - TILE_MARGIN)) * sx, oy = (r0 - Math.max(0, r0 - TILE_MARGIN)) * sx;
+  const ox = (c0 - Math.round((f.bb.lonMin - g.lonMin) / g.pstep)) * sx, oy = (r0 - Math.round((f.bb.latMin - g.latMin) / g.pstep)) * sx;
   const w = (c1 - c0) * sx, h = (r1 - r0) * sx, out = new Float32Array(w * h);
   for (let r = 0; r < h; r++) out.set(f.data.subarray((oy + r) * f.cols + ox, (oy + r) * f.cols + ox + w), r * w);
   return out;

@@ -53,6 +53,10 @@ describe("静态守卫：单一真源", () => {
   it("晕渲光向只有 render/material.SUN 一份", () => {
     assert.deepStrictEqual(hitsOutside(/-?0\.6,\s*-?0\.6,\s*0\.9/, []), [], "光向又写成了字面量——两个渲染器读 material.SHADE_LIGHT");
   });
+  it("水面配色只有 render/material.WATER 一份", () => {
+    const re = /0\.55,\s*0\.72,\s*0\.75|\b38(\.0)?,\s*66(\.0)?,\s*86\b|\b40(\.0)?,\s*90(\.0)?,\s*132\b|\b100(\.0)?,\s*160(\.0)?,\s*198\b/;
+    assert.deepStrictEqual(hitsOutside(re, ["render/material.ts"]), [], "水色又写成了字面量——两个渲染器读 material.WATER，河口与湖面才接得上色");
+  });
   it("单飞行闸只有 shell/singleflight 一份", () => {
     assert.deepStrictEqual(hitsOutside(/\b\w*(busy|Busy|eroding)\s*=\s*true\b/, ["shell/singleflight.ts"]), [], "又手写了一份 busy/dirty 闸——走 singleFlight(run, refire)");
   });
@@ -61,8 +65,9 @@ describe("静态守卫：单一真源", () => {
 /* 生成器 v2 的跨引擎确定性：流向树会把 1 ULP 放大成整片流域翻转，而 Math.sin / exp / pow 这类函数各引擎可差 1 ULP——
    单测在 Node 里永远绿，只有在另一个浏览器上才翻，所以靠正则守住纪律。 */
 describe("静态守卫：生成器 v2 只用四则、开方与整数哈希", () => {
-  /* 生成链三个文件与各自许引的运行时模块（noise / relief / geo 内部都用 Math.sin 或 Math.cos，一个都不许进） */
-  const FILES: [string, string[]][] = [["core/gen2.ts", ["./constants.ts", "./gen2mesh.ts", "./steady.ts", "./types.ts"]], ["core/gen2mesh.ts", []], ["core/steady.ts", []]];
+  /* 生成链与块层嵌套解的文件、各自许引的运行时模块（noise / relief / geo / elev / erode 内部都用 Math.sin 或 Math.cos，一个都不许进） */
+  const FILES: [string, string[]][] = [["core/gen2.ts", ["./constants.ts", "./gen2mesh.ts", "./steady.ts", "./types.ts"]], ["core/gen2mesh.ts", []], ["core/steady.ts", []],
+    ["core/nested.ts", ["./constants.ts", "./gen2.ts", "./gen2mesh.ts", "./steady.ts"]]];
   for (const [f, allowed] of FILES) {
     const src = readFileSync(path.join(SRC, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     it(`${f} 不调超越函数`, () => {

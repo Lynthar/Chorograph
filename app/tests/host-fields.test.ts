@@ -5,14 +5,16 @@ import { describe, it, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createHost } from "../src/shell/host.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
-import { normalizeWorld } from "../src/core/world.ts";
-import { cellsVerSig, erodePhaseSig, mutateWorld, redoWorld, ruleFieldSig, undoWorld, yearSig } from "../src/ui/state.ts";
+import { genRiverEdges, genRiverEdgesOf, normalizeWorld } from "../src/core/world.ts";
+import { gridGeom } from "../src/core/grid.ts";
+import { beginStroke, canUndoSig, cellsVerSig, deleteEdgeIdx, editVerSig, endStroke, erodePhaseSig, mutateWorld, readOnlySig, redoWorld, ruleFieldSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import { waterSurface, type ElevField } from "../src/core/elev.ts";
 import type { ErodeInput } from "../src/core/erode.ts";
 import type { Meta, World } from "../src/core/types.ts";
 import type { FieldGeom } from "../src/core/elev.ts";
-import { gen2Meso, gen2Uplift, mesoKey as mesoKeyOf, mesoState, type UpliftCells } from "../src/core/gen2.ts";
+import { gen2Meso, gen2Uplift, mesoKey as mesoKeyOf, mesoState, riverParams, type UpliftCells } from "../src/core/gen2.ts";
+import { nestBaseOf, nestSolOf } from "../src/core/nested.ts";
 import type { MesoReply, UpliftReply } from "../src/worker/routeProto.ts";
 import { allComposites, terrainProps } from "../src/core/constants.ts";
 
@@ -392,12 +394,13 @@ describe("中尺度阶段（host）", () => {
     });
     const answer = (k: number): void => {
       const x = q[k], R = gen2Meso(x.meta, x.geom);
-      x.done = true; x.res({ base: R.base, env: R.env, cls: R.cls, basin: R.basin, water: R.water, sg: R.sg, iters: R.iters, converged: R.converged });
+      x.done = true; x.res({ base: R.base, env: R.env, cls: R.cls, basin: R.basin, water: R.water, rivers: R.rivers, sg: R.sg, iters: R.iters, converged: R.converged,
+        nest: { base: nestBaseOf(R.st), sol: nestSolOf(R.st, R.st.base, null) } });
       st.holds = mesoKeyOf(x.meta, x.geom);
     };
     const answerUp = (k: number): void => {
-      const x = uq[k], U = gen2Uplift(mesoState(x.meta, x.geom, gen2Meso(x.meta, x.geom).sg), x.cells);
-      x.done = true; x.res({ base: U.base, env: U.env, cls: U.cls, basin: U.basin, water: U.water, iters: U.iters, converged: U.converged });
+      const x = uq[k], S = mesoState(x.meta, x.geom, gen2Meso(x.meta, x.geom).sg), U = gen2Uplift(S, x.cells, riverParams(x.meta));
+      x.done = true; x.res({ base: U.base, env: U.env, cls: U.cls, basin: U.basin, water: U.water, rivers: U.rivers, iters: U.iters, converged: U.converged, nest: nestSolOf(S, U.sol, U.up) });
     };
     return { st, answer, answerUp };
   }
@@ -423,6 +426,27 @@ describe("中尺度阶段（host）", () => {
     assert.equal(seen.lastInp!.mesoEnv, mesoOf()!.env, "单里带包络");
     await tick(240, 6);
     assert.equal(ctx.ruleField!.cols, ctx.grid!.cols * 2, "工作档落地");
+  });
+  it("分块：中尺度到了，块单带外层裁剪（嵌套解）、不带包络；车道没有结果时块单照旧细级侵蚀（要切割量、不带裁剪）", async () => {
+    for (const fail of [false, true]) {
+      const { ctx } = mkCtx(), M = mesoRig(ctx), tilesIn: ErodeInput[] = [];
+      let carves = 0;
+      Object.assign(ctx.routeClient, {
+        tileLanes: 1,
+        erodeCarve: async (inp: ErodeInput) => { carves++; return { data: new Float32Array(inp.cols * inp.rows), geo: { bb: inp.bb, step: inp.step, cols: inp.cols, rows: inp.rows } }; },
+        erodeTile: (inp: ErodeInput) => { tilesIn.push(inp); return new Promise<ElevField | null>(() => {}); }
+      });
+      const host = createHost(ctx);
+      landWorld(ctx, V2(7, { gridN: 280 }), "v1", 3050);   // 280 列：工作档与精修都不到 8 倍，才分块
+      host.rebuildIfNeeded();
+      await flush();
+      if (fail) { M.st.q[0].done = true; M.st.q[0].res(null); } else M.answer(0);
+      await flush(); await tick(240, 6); await flush();
+      assert.ok(tilesIn.length >= 1, "发了块单");
+      const t = tilesIn[0];
+      if (!fail) { assert.ok(t.nest && !t.mesoEnv && !t.win, "嵌套解的块单"); assert.equal(carves, 0, "中尺度图不要切割量"); }
+      else { assert.ok(!t.nest && t.win, "宏观底的块单照旧"); assert.equal(carves, 1); }
+    }
   });
   it("车道没有结果（null）：这张图照旧用宏观底发单，不再等、不再要", async () => {
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
@@ -600,6 +624,64 @@ describe("中尺度阶段（host）", () => {
     assert.ok(seen.erodes > erodes0, "拨年＝换网格，走全路径发单");
     assert.equal(seen.lastInp!.mesoEnv, sgF.env, "全路径的单也取只带 Sg 的 Grid（侵蚀不看笔）");
     assert.notEqual(ctx.grid!.meso, sgF, "屏上仍是画抬升的解");
+  });
+  it("生成的河跟着中尺度场：落地就把带标记的河换成它抽的、手画的留着、不推撤销；同一份再核零写入；删掉的不回来", async () => {
+    const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx), w0 = V2();
+    w0.edges.push({ type: "river", pts: [[90, 30], [91, 31]], widthM: 50, gen: true }, { type: "river", pts: [[100, 40], [101, 41]] });   // 存档里的旧生成河与一条手画的
+    landWorld(ctx, w0, "v1", 3050);
+    host.rebuildIfNeeded(); await flush(); await tick(200);
+    assert.equal(worldSig.value!.edges.length, 2, "中尺度到之前留着存档里的河");
+    const undo0 = canUndoSig.value;
+    M.answer(0); await flush(); await tick(100);
+    const want = genRiverEdgesOf(ctx.meta, gen2Meso(ctx.meta, gridGeom(ctx.meta)).rivers, undefined), gen = worldSig.value!.edges.filter(e => e.gen);
+    assert.ok(want.length > 5);
+    assert.deepStrictEqual(gen, want, "带标记的河换成中尺度抽的");
+    assert.ok(worldSig.value!.edges.some(e => !e.gen && e.pts![0][0] === 100), "手画的留着");
+    assert.equal(canUndoSig.value, undo0, "不推撤销：河是场的函数，撤销换回旧场、河跟着换回");
+    const v = editVerSig.value;
+    host.rebuild(); await flush(); await tick(100);
+    assert.equal(editVerSig.value, v, "同一份再核：零写入（开图不白存一次）");
+    deleteEdgeIdx(worldSig.value!.edges.indexOf(gen[0]));
+    host.rebuildIfNeeded(); await flush();
+    assert.equal(worldSig.value!.edges.filter(e => e.gen).length, gen.length - 1, "删掉的不回来");
+  });
+  it("笔画中途不换河（会让空笔回收误判），收笔后再换；只读态不换", async () => {
+    const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
+    landWorld(ctx, V2(), "v1", 3050);
+    host.rebuildIfNeeded(); await flush(); await tick(200);
+    beginStroke();
+    M.answer(0); await flush(); await tick(100);
+    assert.equal(worldSig.value!.edges.length, 0, "笔画中途不写");
+    endStroke(); await tick(300);
+    assert.ok(worldSig.value!.edges.length > 5, "收笔后换上");
+    const { ctx: c2 } = mkCtx(), M2 = mesoRig(c2), h2 = createHost(c2);
+    readOnlySig.value = true;
+    try {
+      landWorld(c2, V2(), "v2", 3050);
+      h2.rebuildIfNeeded(); await flush(); await tick(200);
+      M2.answer(0); await flush(); await tick(300);
+      assert.equal(worldSig.value!.edges.length, 0, "只读态不写");
+    } finally { readOnlySig.value = false; }
+  });
+  it("挪河流滑杆：地形不重建，用同一份格子再要一单、只换河；车道没有结果时用宏观河兜底", async () => {
+    const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
+    landWorld(ctx, V2(), "v1", 3050);
+    host.rebuildIfNeeded(); await flush(); await tick(200);
+    M.answer(0); await flush(); await tick(100);
+    const n0 = worldSig.value!.edges.length, g0 = ctx.grid;
+    mutateWorld(w => { w.meta.genRiv = 1; });
+    host.rebuildIfNeeded(); await flush();
+    assert.equal(ctx.grid, g0, "地形不重建");
+    assert.equal(M.st.uq.length, 1, "要了一单重抽");
+    assert.equal(M.st.uq[0].cells.idx.length, 0, "零个区＝中尺度那份地形");
+    M.answerUp(0); await flush(); await tick(10);
+    assert.ok(worldSig.value!.edges.length > n0, `河流多少拉满：${n0} → ${worldSig.value!.edges.length} 条`);
+    const { ctx: c2 } = mkCtx(), M2 = mesoRig(c2), h2 = createHost(c2);
+    landWorld(c2, V2(), "v2", 3050);
+    h2.rebuildIfNeeded(); await flush();
+    M2.st.q[0].done = true; M2.st.q[0].res(null);
+    await flush(); await tick(100);
+    assert.deepStrictEqual(worldSig.value!.edges, genRiverEdges(c2.meta, undefined), "中尺度没有结果：宏观河兜底");
   });
   it("解不出：这一份不再等也不再要，侵蚀放行、屏上回到 Sg；下一笔照常再要", async () => {
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx);
