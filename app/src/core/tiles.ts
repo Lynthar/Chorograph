@@ -1,5 +1,5 @@
 /* 分块精修：含陆地的块各带余量单独侵蚀（core/erode 的窗口单）、只留块心；粗级切割量全图一份（erodeCarve）裁给各块，块与块才接得上。
-   带中尺度的 v2 图不侵蚀块，改走 core/nested 的嵌套解（单里带外层裁剪）。
+   带中尺度的 v2 图不侵蚀块，改走 core/nested 的嵌套解（单里带外层裁剪；工作档也是嵌套解时再带量化的工作档裁片当目标面）。
    块只进画面：规则场、等高线与光标读数照旧走工作档——让它们读块，读数就随本机内存与计算进度变。 */
 import { erodeKey, upscaleOf, type CoarseCarve, type ErodeInput } from "./erode.ts";
 import { nestCrop, NEST_MARGIN, NEST_PAD, type NestSrc } from "./nested.ts";
@@ -15,8 +15,8 @@ export const TILE_MARGIN = 8;
 export const TILE_MAX_X = 8;
 /** 裁给块的粗级切割量量化步长（抽象高程，约 3 cm）：粗级扩散把一处涂改的位级扰动传遍全图，不量化则任何一笔都让所有块换键重算 */
 export const CARVE_Q = 1 / 65536;
-/** 块的算法代号：块的取法（余量、块心、参照带）变了而侵蚀没变时换代，免得旧块还魂 */
-export const TILE_VER = 2;
+/** 块的算法代号：块的取法（余量、块心、参照带、目标面）变了而侵蚀没变时换代，免得旧块还魂 */
+export const TILE_VER = 3;
 /** 一个块格占的 CSS 像素：低于 LO 不用块（亚像素起伏逐像素点采样会起颗粒），到 HI 全用；中间按缩放连续过渡＝缩放时不跳 */
 export const TILE_W_LO = 0.5, TILE_W_HI = 1.0;
 
@@ -83,7 +83,8 @@ function cropCarve(cv: CoarseCarve, lonMin: number, latMin: number, lonMax: numb
 
 /** 块 i 的侵蚀单：父格窗口＝块心外扩 TILE_MARGIN（钳到图幅），倍率 plan.sx，四个窗口约定见 core/erode.ErodeWindow。
     carve＝erodeCarve(inp) 的全图切割量；中尺度图（inp.mesoEnv）不跑粗级，传 null。
-    nest＝这份输入出自的外层解（带中尺度的图）：给了就是嵌套解的单——解的窗口外扩 NEST_MARGIN，单的裁剪再外扩 NEST_PAD、带外层裁剪，不带 win 与 mesoEnv */
+    nest＝这份输入出自的外层解（带中尺度的图）：给了就是嵌套解的单——解的窗口外扩 NEST_MARGIN，单的裁剪再外扩 NEST_PAD、带外层裁剪（nest.work 给了再带工作档裁片），
+    不带 win、mesoEnv 与工作档单自己的全图裁剪 */
 export function tileInput(inp: ErodeInput, plan: TilePlan, carve: CoarseCarve | null, i: number, nest?: NestSrc | null, keyOnly = false): ErodeInput {
   const g = plan.geom, { c0, r0, c1, r1 } = tileCells(g, i), M = nest ? NEST_MARGIN : TILE_MARGIN, X = nest ? NEST_MARGIN + NEST_PAD : M;
   const a0 = Math.max(0, c0 - X), a1 = Math.min(g.cols, c1 + X), b0 = Math.max(0, r0 - X), b1 = Math.min(g.rows, r1 + X);

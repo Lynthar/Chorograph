@@ -24,7 +24,7 @@ export interface TileManager {
   /** 换图、换几何、本图不再分块：全部清空、块层下屏 */
   reset(): void;
   /** 新一份全图工作档输入（同几何）：plan＝core/tiles.tilePlan 的结果，base＝这份输入出自的粗格场（增量合成的基准），key＝erodeKey(inp)（切割量按它在内存里留几份）；
-      nest＝这份输入出自的中尺度场给嵌套解的那份（带中尺度的图才有，有它块就走嵌套解） */
+      nest＝这份输入出自的中尺度场给嵌套解的那份（带中尺度的图才有，有它块就走嵌套解；工作档也是嵌套解时 nest.work 带着它，块的目标面取它） */
   setInput(inp: ErodeInput, plan: TilePlan, base: Float32Array, key: string, nest?: NestSrc | null): void;
   /** 当前含涂改的粗格场与网格（每次重建都送）：在屏块按它补增量 */
   setCoarse(now: Float32Array, grid: Grid): void;
@@ -175,7 +175,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
   }
   function requestCarve(): void {
     const t = token, src = inp!, key = inpKey;
-    if (src.mesoEnv) { onCarve(null); return; }
+    if (src.mesoEnv || src.nest) { onCarve(null); return; }   // 中尺度图（工作档细级侵蚀或嵌套解）不跑粗级
     d.client.erodeCarve(src).then(cv => {
       if (t !== token || !plan) return;
       if (!cv) { fail(); return; }

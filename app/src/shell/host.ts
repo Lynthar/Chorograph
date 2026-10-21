@@ -4,7 +4,7 @@ import { buildGridCells, gridGeom, roadCellSet, type Grid } from "../core/grid.t
 import { isGen2, mesoKey, riverParams, type Gen2MesoField, type GenRiver, type UpliftCells } from "../core/gen2.ts";
 import { genRiverEdges, genRiverEdgesOf } from "../core/world.ts";
 import { buildElevField, coarseField, fieldMix, fieldPlusDelta, upliftCells, waterSurface, type ElevField } from "../core/elev.ts";
-import { erodeGate, erodeInput, erodeKey, ultraInput, upscaleOf, type ErodeInput, erodeMode } from "../core/erode.ts";
+import { erodeGate, erodeInput, erodeKey, ultraInput, upscaleOf, workNest, type ErodeInput, erodeMode } from "../core/erode.ts";
 import { tilePlan } from "../core/tiles.ts";
 import type { NestBase, NestSrc } from "../core/nested.ts";
 import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
@@ -326,7 +326,9 @@ export function createHost(ctx: ShellCtx): Host {
   /** 按 rebuild 同拍记下的原料组装这一轮的侵蚀单（每 buildN 至多一次） */
   function assemble(): void {
     if (pendInp) return;
-    pendInp = erodeInput(ctx.meta, pendHovs, pendGrid!, pendYear);
+    /* 带中尺度的 v2 图（细分 ≥ 2 倍）工作档走嵌套解（core/erode.workNest）：读数与等高线跟块层同一套谷网；不精修（ultraInput 对它返 null） */
+    const inp = erodeInput(ctx.meta, pendHovs, pendGrid!, pendYear), ns = pendGrid!.meso ? nestOf.get(pendGrid!.meso) : undefined;
+    pendInp = inp && ns ? workNest(inp, ns) : inp;
     /* 2026-09-02 起战略图同享精修档，但**预算减半**：大陆级图（105 万粗格）在全额预算下取 3×＝
        950 万细格、单次要跑一两分钟；减半后恰取 2×＝420 万，几秒可得，内存也只要一半。 */
     pendUInp = pendInp ? ultraInput(pendInp, ctx.meta.mapKind === "tactical" ? ULTRA_CAP : ULTRA_CAP / 2) : null;
@@ -376,7 +378,8 @@ export function createHost(ctx: ShellCtx): Host {
     /* 分块：画面场已有的倍率（精修档或工作档）不比块细才分块；计划为空＝本图不分块 */
     if (tilesOn()) {
       const plan = tilePlan(inp, TILE_BUDGET, uinp ? upscaleOf(uinp.cols, uinp.rows, uinp.cap, uinp.axisMax) : upscaleOf(inp.cols, inp.rows, inp.cap, inp.axisMax));
-      if (plan) tiles.setInput(inp, plan, baseC, ck, pendGrid && pendGrid.meso ? nestOf.get(pendGrid.meso) ?? null : null); else tiles.reset();
+      const ns = pendGrid && pendGrid.meso ? nestOf.get(pendGrid.meso) ?? null : null;   // 工作档是嵌套解时块的目标面取它（同一份输入落地的场）
+      if (plan) tiles.setInput(inp, plan, baseC, ck, ns && inp.nest ? { ...ns, work: { data: f.data, sx: inp.nest.sx } } : ns); else tiles.reset();
     }
     /* 胶囊在块编排之后定：视口里的块没换完，「已完成」欠着、块齐了再报；缓存命中静默，前一单被撤时亮着的「计算中」也收掉 */
     if (ultra) return;

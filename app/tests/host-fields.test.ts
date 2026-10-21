@@ -10,8 +10,8 @@ import { gridGeom } from "../src/core/grid.ts";
 import { beginStroke, canUndoSig, cellsVerSig, deleteEdgeIdx, editVerSig, endStroke, erodePhaseSig, mutateWorld, readOnlySig, redoWorld, ruleFieldSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import { waterSurface, type ElevField } from "../src/core/elev.ts";
-import type { ErodeInput } from "../src/core/erode.ts";
-import type { Meta, World } from "../src/core/types.ts";
+import { erodeKey, type ErodeInput } from "../src/core/erode.ts";
+import type { Edge, Meta, World } from "../src/core/types.ts";
 import type { FieldGeom } from "../src/core/elev.ts";
 import { gen2Meso, gen2Uplift, mesoKey as mesoKeyOf, mesoState, riverParams, type UpliftCells } from "../src/core/gen2.ts";
 import { nestBaseOf, nestSolOf } from "../src/core/nested.ts";
@@ -24,7 +24,7 @@ const els: Record<string, { dataset: Record<string, string>; value: string }> = 
   getElementById: (id: string) => (els[id] ||= { dataset: {}, value: "" })
 };
 
-/** 可辨认的假细分场：几何按 sx 细分，数据整幅填本单预算——谁读到了哪一档一目了然 */
+/** 可辨认的假细分场：几何按 sx 细分（嵌套解的单按它自己的倍率），数据整幅填本单预算——谁读到了哪一档一目了然 */
 const fakeField = (inp: ErodeInput, sx: number): ElevField => ({
   bb: inp.bb, step: inp.step / sx, cols: inp.cols * sx, rows: inp.rows * sx,
   data: new Float32Array(inp.cols * inp.rows * sx * sx).fill(inp.cap), eroded: true
@@ -40,7 +40,7 @@ function mkCtx(): { ctx: ShellCtx; seen: Seen } {
       setContext: () => {},
       erode: (inp: ErodeInput) => {
         seen.workCap = inp.cap; seen.erodes++; seen.lastInp = inp;
-        return seen.holdErode ? new Promise<ElevField | null>(res => { seen.releaseE = res; }) : Promise.resolve(fakeField(inp, 2));
+        return seen.holdErode ? new Promise<ElevField | null>(res => { seen.releaseE = res; }) : Promise.resolve(fakeField(inp, inp.nest ? inp.nest.sx : 2));
       },
       cancelErode: () => { if (seen.releaseE) { seen.erodeCancels++; seen.releaseE(null); seen.releaseE = undefined; } },
       erodeUltra: (inp: ErodeInput) => {
@@ -404,7 +404,7 @@ describe("中尺度阶段（host）", () => {
     };
     return { st, answer, answerUp };
   }
-  it("到之前不发侵蚀单、胶囊报计算中；到了换一个带它的新 Grid，发一单、单里带起伏包络", async () => {
+  it("到之前不发侵蚀单、胶囊报计算中；到了换一个带它的新 Grid，发一单：工作档走全图嵌套解（不带包络、不精修）", async () => {
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
     landWorld(ctx, V2(), "v1", 3050);
     host.rebuildIfNeeded();
@@ -423,9 +423,15 @@ describe("中尺度阶段（host）", () => {
     const names = allComposites(), cls = mesoOf()!.cls;
     assert.ok(ctx.grid!.cells.every((row, r) => row.every((t, c) => t === names[cls[r * ctx.grid!.cols + c]])), "底稿地类按中尺度重判");
     assert.equal(seen.erodes, 1, "只发一单");
-    assert.equal(seen.lastInp!.mesoEnv, mesoOf()!.env, "单里带包络");
+    const ne = seen.lastInp!.nest!;
+    assert.ok(ne && !("mesoEnv" in seen.lastInp!), "工作档单是嵌套解、不带包络");
+    assert.ok(ne.wx === 0 && ne.wy === 0 && ne.wcols === ctx.grid!.cols && ne.wrows === ctx.grid!.rows && ne.sx === 8, "全图一窗、倍率同细级侵蚀工作档（60 列＝8 倍）");
+    assert.deepEqual(ne.pk, [], "没画山：校峰区为空");
     await tick(240, 6);
-    assert.equal(ctx.ruleField!.cols, ctx.grid!.cols * 2, "工作档落地");
+    assert.equal(ctx.ruleField!.cols, ctx.grid!.cols * 8, "工作档落地");
+    await tick(6000);
+    assert.equal(seen.ultraCap, undefined, "工作档是嵌套解的图不发精修单");
+    assert.equal(ctx.elevField, ctx.ruleField, "画面＝工作档");
   });
   it("分块：中尺度到了，块单带外层裁剪（嵌套解）、不带包络；车道没有结果时块单照旧细级侵蚀（要切割量、不带裁剪）", async () => {
     for (const fail of [false, true]) {
@@ -444,7 +450,14 @@ describe("中尺度阶段（host）", () => {
       await flush(); await tick(240, 6); await flush();
       assert.ok(tilesIn.length >= 1, "发了块单");
       const t = tilesIn[0];
-      if (!fail) { assert.ok(t.nest && !t.mesoEnv && !t.win, "嵌套解的块单"); assert.equal(carves, 0, "中尺度图不要切割量"); }
+      if (!fail) {
+        assert.ok(t.nest && !t.mesoEnv && !t.win, "嵌套解的块单"); assert.equal(carves, 0, "中尺度图不要切割量");
+        const w = ctx.ruleField!, ne = t.nest;
+        assert.ok(ne.tgt && ne.tsx === 6 && w.cols === ctx.grid!.cols * 6, "工作档是嵌套解（280 列＝6 倍）：块单带它的裁片当目标面");
+        assert.equal(ne.tgt.length, t.cols * t.rows * 36, "裁片罩住单的整个裁剪");
+        assert.equal(ne.tgt[0], w.data[(ne.y0 * 6) * w.cols + ne.x0 * 6], "裁的是落地的工作档（整数值量化后不变）");
+        assert.equal(ne.pk, null, "块单不校峰");
+      }
       else { assert.ok(!t.nest && t.win, "宏观底的块单照旧"); assert.equal(carves, 1); }
     }
   });
@@ -531,7 +544,8 @@ describe("中尺度阶段（host）", () => {
     assert.ok(at(g) === "mountain" || at(g) === "alpine", `画到 3000 m 的格地类是 ${at(g)}`);
     assert.notEqual(ctx.grid!.meso, sgF);
     assert.equal(seen.erodes, erodes0 + 1, "发一单");
-    assert.equal(seen.lastInp!.mesoEnv, ctx.grid!.meso!.env, "单里是画抬升的包络");
+    const ne = seen.lastInp!.nest!;
+    assert.ok(ne.du && ne.pk!.length === 1 && ne.pk![0].T === 3000, "单里是画抬升的解：带抬升、一个校峰区、目标 3000 m");
   });
   it("画盆地走同一车道：盆底改了（格不变）也要再要一份解，不当成解过的那份", async () => {
     const { ctx } = mkCtx(), M = mesoRig(ctx);
@@ -606,15 +620,15 @@ describe("中尺度阶段（host）", () => {
     const { host, lon, lat } = await openV2(ctx, M, { erode: "base" });
     await tick(6000);
     const sgF = ctx.grid!.meso!, work = ctx.ruleField!, erodes0 = seen.erodes;
-    assert.equal(seen.lastInp!.mesoEnv, sgF.env, "前置：工作档出自 Sg");
-    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "前置：精修在屏");
+    assert.ok(seen.lastInp!.nest && !seen.lastInp!.nest.du && seen.lastInp!.hovGrid.every(v => v === 0), "前置：工作档出自 Sg（嵌套解，不带抬升与涂改）");
+    assert.equal(ctx.elevField, ctx.ruleField, "前置：不精修，画面＝工作档");
     paint(lon, lat, 3000); host.rebuild();
     await flush(); await tick(200);
     M.answerUp(0);
     await flush(); await tick(500);
     assert.notEqual(ctx.grid!.meso, sgF, "屏上换成画抬升的解");
     assert.equal(seen.erodes, erodes0, "侵蚀输入没变：不发单");
-    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "精修仍在屏（叠了抬升增量）");
+    assert.equal(ctx.elevField, ctx.ruleField, "画面＝规则场");
     assert.notEqual(ctx.ruleField!.data, work.data, "规则场＝工作档叠抬升增量");
     assert.equal(ruleFieldSig.value, ctx.ruleField, "立即落定");
     mutateWorld(w => { (w.heightOverrides ||= []).push({ lon, lat, dh: 0.2 }); }, { grid: true });
@@ -622,7 +636,7 @@ describe("中尺度阶段（host）", () => {
     assert.equal(seen.erodes, erodes0, "抬升在屏时再落旧式涂改：侵蚀的 Grid 仍是 Sg 那个，照旧走早退支");
     yearSig.value = 3051; host.rebuildIfNeeded(); await flush(); await tick(200);
     assert.ok(seen.erodes > erodes0, "拨年＝换网格，走全路径发单");
-    assert.equal(seen.lastInp!.mesoEnv, sgF.env, "全路径的单也取只带 Sg 的 Grid（侵蚀不看笔）");
+    assert.ok(seen.lastInp!.nest && !seen.lastInp!.nest.du, "全路径的单也取只带 Sg 的 Grid（侵蚀不看笔）");
     assert.notEqual(ctx.grid!.meso, sgF, "屏上仍是画抬升的解");
   });
   it("生成的河跟着中尺度场：落地就把带标记的河换成它抽的、手画的留着、不推撤销；同一份再核零写入；删掉的不回来", async () => {
@@ -644,6 +658,27 @@ describe("中尺度阶段（host）", () => {
     deleteEdgeIdx(worldSig.value!.edges.indexOf(gen[0]));
     host.rebuildIfNeeded(); await flush();
     assert.equal(worldSig.value!.edges.filter(e => e.gen).length, gen.length - 1, "删掉的不回来");
+  });
+  it("三角洲的分汊线随生成的河一起落地、进存档；删一条分汊线再核不回来，删主河不连带分汊线（gridN 480 多块种子 7）", async () => {
+    const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
+    landWorld(ctx, V2(7, { gridN: 480 }), "v1", 3050);
+    host.rebuildIfNeeded(); await flush(); await tick(200);
+    M.answer(0); await flush(); await tick(100);
+    const gen = (): Edge[] => worldSig.value!.edges.filter(e => e.gen), br = gen().filter(e => e.branch);
+    assert.ok(br.length >= 5 && br.every(e => e.type === "river" && Array.isArray(e.mz)), `分汊线 ${br.length} 条`);
+    const n0 = gen().length, b0 = br[0], pts0 = JSON.stringify(b0.pts);
+    deleteEdgeIdx(worldSig.value!.edges.indexOf(b0));
+    host.rebuild(); await flush(); await tick(100);
+    assert.equal(gen().length, n0 - 1);
+    assert.ok(!gen().some(e => JSON.stringify(e.pts) === pts0), "删掉的分汊线不回来");
+    /* 删主河：选一条首点挨着某条分汊线首点的主河 */
+    const near = (a: [number, number], b: [number, number]): boolean => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.3;
+    const bs = gen().filter(e => e.branch), mainR = gen().find(e => !e.branch && bs.some(b => e.pts!.some(p => near(p, b.pts![0]))))!;
+    assert.ok(mainR, "前提：有分汊线从主河上分出");
+    const nb = bs.length;
+    deleteEdgeIdx(worldSig.value!.edges.indexOf(mainR));
+    host.rebuild(); await flush(); await tick(100);
+    assert.equal(gen().filter(e => e.branch).length, nb, "删主河不连带分汊线");
   });
   it("笔画中途不换河（会让空笔回收误判），收笔后再换；只读态不换", async () => {
     const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
@@ -699,5 +734,32 @@ describe("中尺度阶段（host）", () => {
     paint(lon, lat, 2000); host.rebuild(); await flush(); await tick(100);
     assert.equal(M.st.uq.length, 2, "下一笔照常再要");
     assert.equal(seen.erodes, erodes1, "在等这一笔：不发单");
+  });
+  it("工作档嵌套解与本机内存无关：两种 deviceMemory 下工作档单同键、都不发精修单", async () => {
+    const nav = navigator as { deviceMemory?: number }, keys: string[] = [];
+    try {
+      for (const dm of [16, 4]) {
+        nav.deviceMemory = dm;
+        const { ctx, seen } = mkCtx(), M = mesoRig(ctx);
+        await openV2(ctx, M);
+        await tick(6000);
+        assert.ok(seen.lastInp!.nest, "工作档单是嵌套解");
+        assert.equal(seen.ultraCap, undefined, `deviceMemory ${dm}：不发精修单`);
+        keys.push(erodeKey(seen.lastInp!));
+      }
+    } finally { delete nav.deviceMemory; }
+    assert.equal(keys[0], keys[1], "工作档单（读数、等高线的来源）随本机内存变了");
+  });
+  it("关闭档：中尺度到了也不发工作档单（嵌套解也不跑），规则场是粗格且立即落定", async () => {
+    const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
+    landWorld(ctx, V2(7, { erode: "none" }), "v1", 3050);
+    host.rebuildIfNeeded();
+    await flush();
+    M.answer(0);
+    await flush(); await tick(240, 6); await tick(6000);
+    assert.ok(ctx.grid!.meso, "中尺度照常到（底稿要它）");
+    assert.equal(seen.erodes, 0, "关闭档不发单");
+    assert.equal(ctx.ruleField!.cols, ctx.grid!.cols, "规则场是粗格");
+    assert.equal(ruleFieldSig.value, ctx.ruleField, "立即落定");
   });
 });

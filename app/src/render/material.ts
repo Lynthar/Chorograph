@@ -2,7 +2,7 @@
    反照率抖动 / 坡度岩化敏感度。GL（uniform 数组）与 CPU 兜底（直接调用）共用同一张表与同一个
    八度门控——两端观感同构的判据收在这里，别在渲染器里各写一份数值。
    ⚠ 另立一张表、不给 LANDFORM/ECO/terrainProps 加字段（它们是平价逐位比对对象，同 NODE_CATS 之例）。 */
-import { CLIMATE, parseComposite, allComposites } from "../core/constants.ts";
+import { CLIMATE, SNOW_LAT_M, parseComposite, allComposites, snowLatM } from "../core/constants.ts";
 import { elevUnitM } from "../core/elev.ts";
 import { tget } from "../core/util.ts";
 import { kmPerDeg } from "../core/geo.ts";
@@ -61,15 +61,8 @@ export function materialTable(): Material[] { return allComposites().map(materia
     旧色阶 0.82 抽象档起发白，在标定 900m 的战术图上≈740m 即成雪山（井陉秋季 38°N 战场实证之病）；
     按米定雪线后战术图自然无雪。设了气候档（meta.climate）改用档值，见 snowSpec。 */
 export const SNOW_M = 2050;
-/** 地球气候雪线随 |纬度| 的参考曲线（米，分段线性）：赤道约 4800、副热带干旱带隆到 5200、45° 约 2900（阿尔卑斯）、
-    60° 约 1200（北欧）、极地贴海平面。只给图幅内的纬向梯度用，绝对值由气候档定；GL 由 snowLatGLSL() 生成同式。 */
-export const SNOW_LAT_M: readonly (readonly [number, number])[] = [[0, 4800], [20, 5200], [30, 4600], [45, 2900], [60, 1200], [70, 600], [80, 200], [90, 0]];
-export function snowLatM(absLat: number): number {
-  const K = SNOW_LAT_M, n = K.length - 1;
-  if (absLat <= K[0][0]) return K[0][1];
-  for (let i = 0; i < n; i++) { const a = K[i], b = K[i + 1]; if (absLat <= b[0]) return a[1] + (absLat - a[0]) / (b[0] - a[0]) * (b[1] - a[1]); }
-  return K[n][1];
-}
+/** 雪线曲线的真源在 core/constants（生成器的峰顶软上限同读），这里转出给渲染端；GL 由 snowLatGLSL() 生成同式 */
+export { SNOW_LAT_M, snowLatM };
 /** SNOW_LAT_M 生成的 GLSL：`float snowLatM(float a)`，a＝|纬度|（度），返回米 */
 export function snowLatGLSL(): string {
   const K = SNOW_LAT_M, n = K.length - 1, f = (x: number) => x.toFixed(1);

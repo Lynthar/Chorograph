@@ -1,5 +1,5 @@
 /* 寻路 Worker 协议（纯函数）：ctx=一次性上下文（网格重建与每次编辑后重发；grid 缺席＝沿用上一份），
-   route/legs=按 id 应答；erode=侵蚀重铸（自带全部输入、不依赖 ctx——纯函数直测；带 nest 的块单走 core/nested 的嵌套解，
+   route/legs=按 id 应答；erode=侵蚀重铸（自带全部输入、不依赖 ctx——纯函数直测；带 nest 的单（块单、v2 图的工作档单）走 core/nested 的嵌套解，
    且程序化预览无 world 时照样可算）；carve=只算粗级切割量（分块精修各块共用）；vfield=视线判定用的规则场（规则场落定时推送一次，
    viewshed 单只带观察者，sight 单带观察者 × 飞行目标，peaks 单算这份场的标高点峰表）；meso＝v2 图的中尺度稳态（带缓存的解就只派生），uplift＝在它上面解画抬升。
    协议层不碰 Worker API——node:test 直接测；入口(routeWorker.ts)与客户端(routeClient.ts)只做消息搬运。 */

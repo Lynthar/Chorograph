@@ -455,6 +455,15 @@ export function terrainProps(cell: string): TerrainProps {
 export const LANDFORM_ORDER: Landform[] = ["plain", "coast", "hill", "mountain", "alpine", "water"];
 export const ECO_ORDER: Ecotype[] = ["none", "forest", "grassland", "marsh", "desert", "salt"];
 
+/** 地球气候雪线随 |纬度| 的参考曲线（米，分段线性）：赤道约 4800、副热带干旱带隆到 5200、45° 约 2900（阿尔卑斯）、
+    60° 约 1200（北欧）、极地贴海平面。观感的雪线（material.snowSpec）与生成器的峰顶软上限（gen2.peakKneeM）同读这一条 */
+export const SNOW_LAT_M: readonly (readonly [number, number])[] = [[0, 4800], [20, 5200], [30, 4600], [45, 2900], [60, 1200], [70, 600], [80, 200], [90, 0]];
+export function snowLatM(absLat: number): number {
+  const K = SNOW_LAT_M, n = K.length - 1;
+  if (absLat <= K[0][0]) return K[0][1];
+  for (let i = 0; i < n; i++) { const a = K[i], b = K[i + 1]; if (absLat <= b[0]) return a[1] + (absLat - a[0]) / (b[0] - a[0]) * (b[1] - a[1]); }
+  return K[n][1];
+}
 /** 气候档 → 林线 treeM 与雪线 snowM（米，图幅中心纬度处；只进观感，不进规则；treeM null＝无林）。取地球各带实测量级：
     瑞典北部林线 650 / 冰川平衡线 1400～1500、阿尔卑斯 2200 / 不到 3000、南北纬 30°～20° 林线 3500～4000、尼泊尔南坡雪线约 5000、
     内热带雪线 4500～4800、干旱安第斯雪线 5800 以上、大盆地林线约 3500。缺键＝出厂 2050 雪线、无林线、不随纬度。 */

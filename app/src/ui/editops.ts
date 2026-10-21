@@ -9,7 +9,7 @@ import { newId, parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
 import { genRiverEdges, riverCells } from "../core/world.ts";
 import { TRACK_OK, isModern, setUnitPoint, unitKind, unitPos, type TrackKey } from "../core/units.ts";
-import { ALL_KINDS, CERTAINTY, UNIT_KINDS, armOptional, canonComposite, parseComposite } from "../core/constants.ts";
+import { ALL_KINDS, armOptional, canonComposite, CERTAINTY, MZ_MAX, parseComposite, UNIT_KINDS } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, NodeRange, Op, Owner, Phase, TerrainId, TerrainOverride, TrackPt, Unit, UpliftOverride, World, WorldNode } from "../core/types.ts";
 
@@ -130,6 +130,8 @@ export function muteGenRiver(w: World, e: Edge | undefined): void {
   w.genRiverOff = [...s].sort((a, b) => a - b);
 }
 const sameNums = (a: number[] | undefined, b: number[] | undefined): boolean => a === b || (!!a && !!b && a.length === b.length && a.every((v, i) => v === b[i]));
+/* 生成河的可选键只有 ws / mz / branch：branch 不单比，靠键数——分汊线恒带 mz 才成立（「有 mz 无 branch」与「有 branch 无 mz」键数相同）；
+   哪天分汊线不带 mz 了，这里要补比 branch，否则存档里的旧河换不成分汊线 */
 const sameGen = (a: Edge, b: Edge): boolean => a.widthM === b.widthM && sameNums(a.ws, b.ws) && sameNums(a.mz, b.mz) && Object.keys(a).length === Object.keys(b).length
   && !!a.pts && !!b.pts && a.pts.length === b.pts.length && a.pts.every((p, i) => p[0] === b.pts![i][0] && p[1] === b.pts![i][1]);
 /** 生成的河换成 add：逐条按值相同就不动（返回 false＝没改，开图时与存档逐字同就零写入）；非生成的连线保持原序，生成的河排在最后 */
@@ -209,7 +211,23 @@ export function applyNodeForm(n: WorldNode, v: NodeFormValues): void {
 
 /** 连线表单一次提交（旧 ee_save 语义；widthM=河流真宽米数，>0 存、空/非法删；
     reverse=工事齿面翻转（柱B），真存假删——缺省齿在画线方向左侧不落盘 */
-export interface EdgeFormValues { 名称: string; note: string; kv: string; since: string; until: string; widthM?: string; reverse?: boolean; certainty?: string }
+export interface EdgeFormValues { 名称: string; note: string; kv: string; since: string; until: string; widthM?: string; meander?: string; reverse?: boolean; certainty?: string }
+/** 表单「曲流」的档位（值＝整条的 mz）；"auto"＝随地形，生成河逐点的 mz 原样留着 */
+export const MEANDER_LEVELS: readonly { v: string; 名: string }[] = [{ v: "0", 名: "无" }, { v: "5", 名: "弱" }, { v: "7", 名: "中" }, { v: "9", 名: "强" }];
+/** 一条河当前的曲流档：没有 mz 或全 0＝"0"；有弯的点强度都一样＝那个数；逐点不同＝"auto" */
+export function meanderLevelOf(e: Edge): string {
+  const z = Array.isArray(e.mz) ? e.mz.filter(v => v > 0) : [];
+  if (!z.length) return "0";
+  return z.every(v => v === z[0]) ? String(z[0]) : "auto";
+}
+/** 按表单档位写 mz："auto" 不动、"0" 删键；档位只改有弯的点（汇合处与陡段钉住的 0 留着），没有曲流的河整条给（首尾由渲染端钉住） */
+export function setMeanderLevel(e: Edge, v: string): void {
+  if (v === "auto" || !Array.isArray(e.pts)) return;
+  const n = Math.round(+v);
+  if (!(n >= 1)) { delete e.mz; return; }
+  const k = Math.min(MZ_MAX, n), old = Array.isArray(e.mz) && e.mz.length === e.pts.length && e.mz.some(z => z > 0) ? e.mz : null;
+  e.mz = e.pts.map((_, i) => old ? (old[i] > 0 ? k : 0) : k);
+}
 /** 表单保存：生成的河先记进删改记录（一存就归用户，重抽不再在旁边冒一条一样的），再落表单 */
 export function saveEdgeForm(w: World, idx: number, v: EdgeFormValues): boolean {
   const e = w.edges[idx];
@@ -219,18 +237,19 @@ export function saveEdgeForm(w: World, idx: number, v: EdgeFormValues): boolean 
   return true;
 }
 export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
-  delete e.gen;   // 改过的河归用户：重新生成时不再替换
+  delete e.gen; delete e.branch;   // 改过的河归用户：重新生成时不再替换
   const nm = v.名称.trim(); if (nm) e.名称 = nm; else delete e.名称;
   const nt = v.note.trim(); if (nt) e.note = nt; else delete e.note;
   const kv = parseKV(v.kv);
   if (Object.keys(kv).length) e.字段 = kv; else delete e.字段;
   const s = parseFloat(v.since); if (isFinite(s)) e.since = s; else delete e.since;
   const u = parseFloat(v.until); if (isFinite(u)) e.until = u; else delete e.until;
-  if (v.widthM !== undefined) {   // 河宽改了就删逐点宽与曲流强度：用户填的是整条一个宽，弯的波长随宽走
+  if (v.widthM !== undefined) {   // 河宽改了就删逐点宽（用户填的是整条一个宽）；曲流强度与宽无关，留着
     const w = parseFloat(v.widthM), nw = w > 0 ? w : undefined;
-    if (nw !== e.widthM) { delete e.ws; delete e.mz; }
+    if (nw !== e.widthM) delete e.ws;
     if (nw) e.widthM = nw; else delete e.widthM;
   }
+  if (v.meander !== undefined) setMeanderLevel(e, v.meander);
   if (v.reverse !== undefined) { if (v.reverse) e.reverse = true; else delete e.reverse; }
   if (v.certainty !== undefined) setCertainty(e, v.certainty);
 }

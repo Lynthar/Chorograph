@@ -37,6 +37,16 @@ describe("块层嵌套解（core/nested）", () => {
     assert.ok(inp.water.includes(1) && inp.water.includes(0));
   });
 
+  it("不带目标面的块（整球这类工作档 1 倍的图）输出与键钉死：工作档改走嵌套解之后逐位不变", () => {
+    const { inp, plan, nest } = fix(), t = tileInput(inp, plan, null, plan.tiles[1], nest), f = field(plan.tiles[1]);
+    assert.ok(t.nest!.tgt === null && t.nest!.pk === null);
+    let x = 0x811c9dc5 | 0;
+    const u = new Uint32Array(f.data.buffer, f.data.byteOffset, f.data.length);
+    for (let i = 0; i < u.length; i++) x = Math.imul(x ^ u[i], 16777619);
+    assert.strictEqual((x >>> 0).toString(36), "1ohrhea");
+    assert.strictEqual(erodeKey(t), "e10p5v2a-av8yoy-htncnf");
+  });
+
   it("两次逐位同：同一单两次、结构化克隆后再解（Worker 收到的就是克隆）都一样；产出罩住块心、余量按产出原点去掉", () => {
     const { inp, plan, nest } = fix(), ti = plan.tiles[1], tinp = tileInput(inp, plan, null, ti, nest);
     const a = nestedField(tinp), b = nestedField(tinp), c = nestedField(structuredClone(tinp));
@@ -145,7 +155,7 @@ describe("块层嵌套解（core/nested）", () => {
     const sk = new Uint8Array(n), k0 = 10 * cols + 6; sk[k0] = 1 + 7 * 15 + 1 + 7;   // (6, 10) → (7, 10)
     const ne: NestInput = { wx: 2, wy: 2, wcols: 20, wrows: 16, x0: 0, y0: 0, gcols: cols, sx, lon0: 100, lat0: 30, step, seed: 31, kmd: 111, sphere: false,
       h: Float32Array.from({ length: n }, (_, k) => 100 + 10 * (k % cols)), sk, X: Float32Array.from({ length: n }, (_, k) => k % cols), Y: Float32Array.from({ length: n }, (_, k) => (k / cols) | 0),
-      fU: fill(0.5), du: null, kw: null, K: fill(1), P: fill(0), B: fill(0), bsig: "t" };
+      fU: fill(0.5), du: null, kw: null, K: fill(1), P: fill(0), B: fill(0), bsig: "t", tgt: null, tsx: 0, pk: null };
     const z = new Float32Array(n), syn: ErodeInput = { bb: { lonMin: 100, latMin: 30, lonMax: 100 + cols * step, latMax: 30 + rows * step }, step, cols, rows, elev0: fill(0.1), water: new Uint8Array(n), wsurf: z,
       amp: 0.7, seed: 1, sphere: false, cap: n * sx * sx, axisMax: sx, bandS: 1, acrit: 300, kmx: 111, kmy: 111, hovGrid: z, unitM: 2000, nest: ne };
     const { F } = nestSolve(syn), hit: number[] = [];

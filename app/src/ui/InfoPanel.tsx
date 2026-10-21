@@ -256,6 +256,7 @@ function EdgeCard({ e, idx, world }: { e: Edge; idx: number; world: World }) {
         <span class="tg" style={{ background: st.color }}>{st.名}</span>
         {certLabel(e.certainty) && <span class="tg" style={{ background: "var(--tg-neutral)" }}>{certLabel(e.certainty)}</span>}
         {e.gen === true && e.type === "river" && <span class="tg" style={{ background: "var(--tg-neutral)" }} title="生成器按地形与降水画的河。改了名称、宽度等就归你，之后改生成参数重画时不再替换它">自动生成</span>}
+        {e.gen === true && e.branch === true && e.type === "river" && <span class="tg" style={{ background: "var(--tg-neutral)" }} title="三角洲上主河之外的分汊河道：只是画出来的，不计水量">分汊</span>}
       </div>
       <div class="kv2">
         {!free && <><b>两端</b><span>{a ? a.名称 : e.from} ↔ {b ? b.名称 : e.to}</span></>}

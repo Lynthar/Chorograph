@@ -8,7 +8,7 @@ import { project, projectSeq, type Camera } from "../core/projection.ts";
 import { kmPerDeg } from "../core/geo.ts";
 import { meander } from "../core/geometry.ts";
 import { RIVER_WATER_PX, riverGeom, riverSD, riverWidest, type RiverGeom, type TerrainRivers } from "./rivers.ts";
-import { MEANDER_K, meanderFade } from "./meander.ts";
+import { MEANDER_LAM_MAX, meanderFade, meanderLamM } from "./meander.ts";
 import { FP_CORE, FP_KW, RIV_WIDTH } from "../core/constants.ts";
 import { waterMask } from "../core/elev.ts";
 import type { Grid } from "../core/grid.ts";
@@ -28,7 +28,7 @@ const tierPx = (wm: number): number => 1 + 1.6 * Math.min(1, Math.max(0, Math.lo
     真宽封顶在 widthM（它不计河口展宽）：只用来判线还是水面，展宽那一截推不过门槛 */
 export function riverShape(meta: Meta | undefined, cam: Camera, e: Edge): { pts: [number, number][]; px: number[]; tp: number[]; g: number[] } {
   const wm = +(e.widthM as number) || 0, pm = 1 / 1000 / kmPerDeg(meta) / cam.degPerPx, wx = riverWidest(e);
-  const G = riverGeom(meta, e, meanderFade(MEANDER_K * wx * pm) > 0 && nearView(cam, projectSeq(cam, e.pts!), meanderPad(wx, pm)));
+  const G = riverGeom(meta, e, meanderFade(wx * pm) > 0 && nearView(cam, projectSeq(cam, e.pts!), meanderPad(wx, pm)));
   const S = G.m ? meanderView(meta, cam, G) : G, px: number[] = [], tp: number[] = [];
   for (let k = 0; k < S.pts.length; k++) {
     const w = S.w[k];
@@ -36,18 +36,18 @@ export function riverShape(meta: Meta | undefined, cam: Camera, e: Edge): { pts:
   }
   return { pts: S.pts, px, tp, g: S.g };
 }
-/** 曲流离底线的最远处（px）：平底半宽封顶，外加一个波长的余量（点距、柔化） */
-const meanderPad = (wM: number, pm: number): number => (FP_CORE * FP_KW * wM / RIV_WIDTH * 1000 + MEANDER_K * wM) * pm + 16;
+/** 曲流离底线的最远处（px）：平底半宽封顶，外加最长的一个波长的余量（点距、柔化） */
+const meanderPad = (wM: number, pm: number): number => (FP_CORE * FP_KW * wM / RIV_WIDTH * 1000 + MEANDER_LAM_MAX * meanderLamM(wM)) * pm + 16;
 /** 折线外框外扩 pad 后碰不碰得到屏幕 */
 function nearView(cam: Camera, pp: [number, number][], pad: number): boolean {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const [x, y] of pp) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   return x1 + pad >= 0 && x0 - pad <= cam.w && y1 + pad >= 0 && y0 - pad <= cam.h;
 }
-/** 曲流按本帧缩放渐入：逐点偏移乘 meanderFade(弯的屏幕谷向波长)；整段不弯（含离屏幕超过最大横移的底线段）的点都在底线上，换回稀疏的底线点。
-    宽到画成水面的点恒是满幅（MEANDER_FADE_PX 的门），与地形渲染器读的满幅曲线是同一条 */
+/** 曲流按本帧缩放渐入：逐点偏移乘 meanderFade(河的屏幕真宽)；整段不弯（含离屏幕超过最大横移的底线段）的点都在底线上，换回稀疏的底线点。
+    宽到画成水面的点恒是满幅（MEANDER_FADE_WPX 的门），与地形渲染器读的满幅曲线是同一条 */
 function meanderView(meta: Meta | undefined, cam: Camera, G: RiverGeom): { pts: [number, number][]; w: number[]; g: number[] } {
-  const { base, bw, bg, M } = G.m!, kmpp = cam.degPerPx * kmPerDeg(meta), fOf = (w: number): number => meanderFade(MEANDER_K * w / 1000 / kmpp);
+  const { base, bw, bg, M } = G.m!, kmpp = cam.degPerPx * kmPerDeg(meta), fOf = (w: number): number => meanderFade(w / 1000 / kmpp);
   const bp = projectSeq(cam, base), pad = meanderPad(M.wmax, 1 / 1000 / kmpp), on = new Uint8Array(base.length);
   for (let j = 0; j < base.length - 1; j++) on[j] = nearView(cam, [bp[j], bp[j + 1]], pad) ? 1 : 0;
   const n = M.pts.length, fAt = (i: number): number => on[M.seg[i]] ? fOf(M.w[i]) : 0;
@@ -68,7 +68,8 @@ function meanderView(meta: Meta | undefined, cam: Camera, G: RiverGeom): { pts: 
   return { pts, w, g };
 }
 /** 折线 [a, b] 画成变宽带并进当前路径：每段一个梯形，内部顶点补圆（圆接头），capA / capB 时那一头也补圆。
-    子路径一律顺时针，非零环绕下是并集：半透明的一次填满不叠深 */
+    子路径一律顺时针，非零环绕下是并集：半透明的一次填满不叠深。梯形不 closePath（fill 隐式闭合）：
+    Chromium 里逐个 closePath 的代价随整条路径变长，缺省图上每帧多出约 40 ms、空闲时每 250 ms 一个长任务 */
 function addRibbon(ctx: CanvasRenderingContext2D, P: [number, number][], R: number[], a: number, b: number, capA: boolean, capB: boolean): void {
   for (let k = a; k < b; k++) {
     const [x0, y0] = P[k], [x1, y1] = P[k + 1], dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy);
@@ -77,7 +78,7 @@ function addRibbon(ctx: CanvasRenderingContext2D, P: [number, number][], R: numb
     let area = 0;
     for (let i = 0; i < 4; i++) area += q[i][0] * q[(i + 1) % 4][1] - q[(i + 1) % 4][0] * q[i][1];
     const o = area > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
-    ctx.moveTo(q[o[0]][0], q[o[0]][1]); for (let i = 1; i < 4; i++) ctx.lineTo(q[o[i]][0], q[o[i]][1]); ctx.closePath();
+    ctx.moveTo(q[o[0]][0], q[o[0]][1]); for (let i = 1; i < 4; i++) ctx.lineTo(q[o[i]][0], q[o[i]][1]);
   }
   for (let k = a; k <= b; k++) {
     if ((k === a && !capA) || (k === b && !capB)) continue;

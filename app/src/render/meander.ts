@@ -1,23 +1,35 @@
 /* 曲流：带逐点强度 mz 的河在柔化后的底线上合成弯道（Kinoshita 正弦生成曲线 θ = θ0·sin φ + J·θ0³·cos 3φ）。
    与缩放无关、只进画面：rivers.riverGeom 把它当这条河的几何，叠加层、拾取与两个地形渲染器同读；
-   叠加层按弯的屏幕波长把偏移渐入（edges.riverShape），宽到画成水面的段恒是满幅。 */
+   叠加层按河的屏幕真宽把偏移渐入（edges.riverShape），宽到画成水面的段恒是满幅。 */
 import { FP_CORE, FP_KW, MZ_MAX, RIV_WIDTH } from "../core/constants.ts";
 import { kmPerDeg, lonCos } from "../core/geo.ts";
 import type { Meta } from "../core/types.ts";
 
-/** 弯的谷向波长 ＝ 它 × 河宽（米制同比；弧长波长再除以 J0(θ0)） */
-export const MEANDER_K = 11;
-/** 最大偏角（度）：再乘每半个弯的深浅（MEANDER_DEPTH 倍到 1 倍随机）、河段的深浅（MEANDER_REACH 倍到 1 倍、多半靠近 1，
-    每 REACH_PERIODS 个弯一个随机值、其间平滑过渡）与 mz ÷ MZ_MAX */
-export const MEANDER_DEG = 100;
-const MEANDER_DEPTH = 0.7, MEANDER_REACH = 0.3, REACH_PERIODS = 3;
+/** 谷向波长 ÷ 河宽的两端：窄河（≤ MEANDER_W0 米）取 MEANDER_K_MAX、宽河（≥ MEANDER_W1 米）取 MEANDER_K_MIN，其间按 ln 河宽 smoothstep 过渡。
+    正弦生成曲线上窄河的这个倍数与「曲率半径 2–3 倍河宽」不可兼得，取倍数 */
+export const MEANDER_K_MAX = 21, MEANDER_K_MIN = 9;
+const MEANDER_W0 = 90, MEANDER_W1 = 500;
+const sstep = (x: number): number => { const t = x < 0 ? 0 : x > 1 ? 1 : x; return t * t * (3 - 2 * t); };
+/** 弯的谷向波长（米）＝倍数 × 河宽，随河宽单调不减：riverShape 按最宽处判要不要合成、点数预算按最窄处估，都靠这一点 */
+export function meanderLamM(wM: number): number {
+  const t = (Math.log(wM) - Math.log(MEANDER_W0)) / (Math.log(MEANDER_W1) - Math.log(MEANDER_W0));
+  return (MEANDER_K_MAX - (MEANDER_K_MAX - MEANDER_K_MIN) * sstep(t)) * wM;
+}
+/** 最大偏角（度）：再乘每半个弯的深浅（MEANDER_DEPTH 倍到 1 倍随机）、所在河段的深浅与 mz ÷ MZ_MAX */
+export const MEANDER_DEG = 90;
+const MEANDER_DEPTH = 0.6;
+/** 河段：每 REACH_LEN 个弯（随机）换一次深浅与波长倍率，末一个弯里 smoothstep 过渡到下一段。
+    REACH_STRAIGHT 的河段是直段（深浅 REACH_FLAT），其余在 [REACH_LO, 1] 均匀；波长倍率在 [REACH_LAM, 1/REACH_LAM] 对数均匀 */
+const REACH_LEN: readonly [number, number] = [3, 9], REACH_STRAIGHT = 0.4, REACH_FLAT = 0.08, REACH_LO = 0.35, REACH_LAM = 0.8;
+/** 河段波长倍率的上限：叠加层算曲线离底线的可见余量时按它放大一个波长 */
+export const MEANDER_LAM_MAX = 1 / REACH_LAM;
 /** 每半个弯的长短：谷向波长乘 [MEANDER_LEN, MEANDER_LEN + 2·(1 − MEANDER_LEN)] 间的随机数（均值 1） */
 const MEANDER_LEN = 0.6;
 /** 偏斜项系数 J（每条河随机取正负）：弯顶朝上游或下游歪 */
 const MEANDER_SKEW = 0.03;
-/** 叠加层按弯的屏幕谷向波长（px）渐入：不到前者不弯、到后者满幅（smoothstep）。
-    满幅的门必须 ≤ MEANDER_K × RIVER_WATER_PX：画成水面的段恒是满幅，线与水面才是同一条曲线 */
-export const MEANDER_FADE_PX: readonly [number, number] = [6, 12];
+/** 叠加层按河的屏幕真宽（px）渐入：不到前者的细线不弯、到后者满幅（smoothstep）。
+    满幅的门必须 ≤ RIVER_WATER_PX：画成水面的段恒是满幅，线与水面才是同一条曲线；细流只在放大到成了水面带时才弯 */
+export const MEANDER_FADE_WPX: readonly [number, number] = [1, 3];
 /** 每个弧长波长的输出点数（积分步长减半） */
 const N_ARC = 16;
 /** 单条河的曲流点数预算：手编档的极窄长河按比例放大波长，不让一条河撑出百万个点 */
@@ -39,9 +51,8 @@ export function chaikin1(v: number[]): number[] {
   }
   return v;
 }
-const sstep = (x: number): number => { const t = x < 0 ? 0 : x > 1 ? 1 : x; return t * t * (3 - 2 * t); };
-/** 叠加层的渐入系数：弯的屏幕谷向波长 lamPx（px）→ 0..1 */
-export const meanderFade = (lamPx: number): number => sstep((lamPx - MEANDER_FADE_PX[0]) / (MEANDER_FADE_PX[1] - MEANDER_FADE_PX[0]));
+/** 叠加层的渐入系数：河的屏幕真宽 wPx（px）→ 0..1 */
+export const meanderFade = (wPx: number): number => sstep((wPx - MEANDER_FADE_WPX[0]) / (MEANDER_FADE_WPX[1] - MEANDER_FADE_WPX[0]));
 /** 整数对 → [0,1) */
 function hash01(a: number, b: number): number {
   let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul((b + 0x632be5ab) | 0, 0xc2b2ae35);
@@ -66,8 +77,8 @@ export function meanderOf(meta: Meta | undefined, P: [number, number][], bw: num
   const n = P.length, m = mz.length;
   if (n < 2 || m < 2 || bw.length !== n || !mz.some(z => z > 0)) return null;
   const kpd = kmPerDeg(meta), U = new Float64Array(n), TX = new Float64Array(n), TY = new Float64Array(n);
-  let wmax = 0;
-  for (let j = 0; j < n; j++) { const v = bw[j]; if (!(v > 0) || !isFinite(v)) return null; if (v > wmax) wmax = v; }
+  let wmax = 0, wmin = Infinity;
+  for (let j = 0; j < n; j++) { const v = bw[j]; if (!(v > 0) || !isFinite(v)) return null; if (v > wmax) wmax = v; if (v < wmin) wmin = v; }
   for (let j = 0; j < n - 1; j++) {
     const dx = (P[j + 1][0] - P[j][0]) * kpd * lonCos(meta, (P[j][1] + P[j + 1][1]) / 2), dy = (P[j + 1][1] - P[j][1]) * kpd, L = Math.hypot(dx, dy);
     if (!isFinite(L)) return null;
@@ -96,7 +107,7 @@ export function meanderOf(meta: Meta | undefined, P: [number, number][], bw: num
   let jp = 0;
   const segAt = (u: number): number => { while (jp < n - 2 && U[jp + 1] <= u) jp++; while (jp > 0 && U[jp] > u) jp--; return jp; };   // U[j] ≤ u < U[j+1]（末段含 L）
   const lerpAt = (arr: ArrayLike<number>, u: number): number => { const j = segAt(u), d = U[j + 1] - U[j], f = d > 0 ? Math.max(0, Math.min(1, (u - U[j]) / d)) : 0; return arr[j] + (arr[j + 1] - arr[j]) * f; };
-  const lamV = (u: number): number => MEANDER_K * lerpAt(bw, u) / 1000;   // km
+  const lamV = (u: number): number => meanderLamM(lerpAt(bw, u)) / 1000;   // km
   const pins: { u: number; lam: number }[] = [];
   for (const k of pinK) {
     let u = k === 0 ? 0 : k === m - 1 ? L : NaN;
@@ -113,15 +124,20 @@ export function meanderOf(meta: Meta | undefined, P: [number, number][], bw: num
     for (let q = pp; q < pins.length && pins[q].u <= u + lmax; q++) { const d = Math.abs(u - pins[q].u); if (d < pins[q].lam) e *= sstep(d / pins[q].lam); }
     return e;
   };
-  /* 点数预算：按最窄处估，超了整条按比例放大波长 */
+  /* 点数预算：按最窄处与最短的河段波长估，超了整条按比例放大波长 */
+  const th = MEANDER_DEG * Math.PI / 180;
   let est = 0;
-  for (let j = 0; j < n - 1; j++) if (A[j] > 0 || A[j + 1] > 0) est += 2 * N_ARC * (U[j + 1] - U[j]) / (MEANDER_K * Math.min(bw[j], bw[j + 1]) / 1000) / j0(MEANDER_DEG * Math.PI / 180);
-  const reach = (q: number): number => { const r = hash01(seed ^ 0x5bd1e995, q); return 1 - (1 - MEANDER_REACH) * r * r; };
-  const lamS = est > MAX_PTS ? est / MAX_PTS : 1, th = MEANDER_DEG * Math.PI / 180, jsk = (hash01(seed, 1) < 0.5 ? -1 : 1) * MEANDER_SKEW;
+  for (let j = 0; j < n - 1; j++) if (A[j] > 0 || A[j + 1] > 0) est += 2 * N_ARC * (U[j + 1] - U[j]) / (meanderLamM(wmin) / 1000 * REACH_LAM) / j0(th);
+  const lamS = est > MAX_PTS ? est / MAX_PTS : 1, jsk = (hash01(seed, 1) < 0.5 ? -1 : 1) * MEANDER_SKEW;
   const dep = (h: number): number => MEANDER_DEPTH + (1 - MEANDER_DEPTH) * hash01(seed, 2 * h + 2), len = (h: number): number => MEANDER_LEN + 2 * (1 - MEANDER_LEN) * hash01(seed, 2 * h + 3);
+  /* 河段 q 的长（弯数）、深浅与波长倍率：各开自己的子序列 */
+  const rs = seed ^ 0x27d4eb2f;
+  const rLen = (q: number): number => REACH_LEN[0] + (REACH_LEN[1] - REACH_LEN[0]) * hash01(rs, 3 * q);
+  const rAmp = (q: number): number => { const r = hash01(rs, 3 * q + 1); return r < REACH_STRAIGHT ? REACH_FLAT : REACH_LO + (1 - REACH_LO) * (r - REACH_STRAIGHT) / (1 - REACH_STRAIGHT); };
+  const rLam = (q: number): number => Math.exp(Math.log(REACH_LAM) * (2 * hash01(rs, 3 * q + 2) - 1));
   /* 沿弧长积分（中点法，每输出点两步）；底线两段都不弯时一步跨到下一个底线点 */
   const oU: number[] = [0], oY: number[] = [0], oF: number[] = [];
-  let u = 0, y = 0, ph = 2 * Math.PI * hash01(seed, 7), st = 0;
+  let u = 0, y = 0, ph = 2 * Math.PI * hash01(seed, 7), st = 0, rq = 0, rEnd = 2 * Math.PI * rLen(0);
   oF.push(ph);
   while (u < L) {
     const j = segAt(u);
@@ -131,10 +147,12 @@ export function meanderOf(meta: Meta | undefined, P: [number, number][], bw: num
       oU.push(u); oY.push(y); oF.push(ph); st = 0;
       continue;
     }
+    while (ph >= rEnd) { rq++; rEnd += 2 * Math.PI * rLen(rq); }
+    const rb = sstep((ph - (rEnd - 2 * Math.PI)) / (2 * Math.PI));   // 末一个弯里过渡到下一段
+    const rf = rAmp(rq) + (rAmp(rq + 1) - rAmp(rq)) * rb, rl = rLam(rq) + (rLam(rq + 1) - rLam(rq)) * rb;
     const hl = (ph - Math.PI / 2) / Math.PI, h = Math.floor(hl), fr = sstep(hl - h);
-    const rl = ph / (2 * Math.PI * REACH_PERIODS), rq = Math.floor(rl), r0 = reach(rq), rf = r0 + (reach(rq + 1) - r0) * sstep(rl - rq);
     const a = lerpAt(A, u) * env(u), t0 = th * a * rf * (dep(h) + (dep(h + 1) - dep(h)) * fr);
-    const la = lamV(u) * lamS * (len(h) + (len(h + 1) - len(h)) * fr) / j0(t0), ds = la / (2 * N_ARC);
+    const la = lamV(u) * lamS * rl * (len(h) + (len(h + 1) - len(h)) * fr) / j0(t0), ds = la / (2 * N_ARC);
     const pm = ph + Math.PI * ds / la, tv = t0 * Math.sin(pm) + jsk * t0 * t0 * t0 * Math.cos(3 * pm);
     u += Math.cos(tv) * ds; y += Math.sin(tv) * ds; ph += 2 * Math.PI * ds / la;
     if (++st % 2 === 0 || u >= L) { oU.push(u); oY.push(y); oF.push(ph); }

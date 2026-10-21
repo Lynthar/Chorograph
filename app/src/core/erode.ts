@@ -16,7 +16,7 @@ import { kmPerDegXY } from "./geo.ts";
 import { activeAt } from "./time.ts";
 import { buildGridCells, stampRect, type Grid } from "./grid.ts";
 import type { BBox, HeightOverride, Meta } from "./types.ts";
-import { nestKeyParts, type NestInput } from "./nested.ts";
+import { nestCrop, nestKeyParts, type NestInput, type NestSrc } from "./nested.ts";
 
 /** 侵蚀计算档（meta.erode，设置弹层一行三选）：缺键与非法值＝all。
     all＝底图与涂改都侵蚀（落笔先见草稿，算完落地换真形）；base＝只侵蚀地类底图，高程涂改直接叠在定形后的场上
@@ -79,7 +79,7 @@ export interface ErodeInput {
   /** 地貌涂改造成的基面增量（粗格；陆格＝带涂改的 baseElev − 不带涂改的，水格 0）：粗级参照面与涂改盆掩码把它与高程涂改同算。
       只由 erodeInput 在粗级 λ > 0 的图上挂（没有增量不挂），只在有它时进 erodeKey；窗口单必须按窗裁，否则细级盆掩码按错格取样 */
   lfDelta?: Float32Array;
-  /** 块层嵌套解的外层裁剪（只由 core/tiles.tileInput 给带中尺度的图的块填；有它的单由 core/nested.nestedField 解，不走本模块）。只在有它时进 erodeKey */
+  /** 嵌套解的外层裁剪（core/tiles.tileInput 给带中尺度的图的块填、workNest 给工作档填；有它的单由 core/nested.nestedField 解，不走本模块）。只在有它时进 erodeKey */
   nest?: NestInput;
 }
 /** 粗级切割量（侵蚀后 − 侵蚀前，水域 0）与它的网格几何：只由参照细格定，同一份图的各档、各窗口共用 */
@@ -298,10 +298,25 @@ function landformDelta(m: Meta, grid: Grid): Float32Array | null {
     大战场时 sxU==sxW，同一几何在不同缓存键下整个重算一遍＝半分钟白算＋一条重复缓存；
     工作档场就是终态，host 对 null 的处置（不排精修）现成。 */
 export function ultraInput(inp: ErodeInput, ultraCap: number): ErodeInput | null {
+  if (inp.nest) return null;   // 工作档是嵌套解的图不精修：精修档是细级侵蚀，中景的谷会与工作档的等高线分家；放大后的细节归块层
   const sxW = upscaleOf(inp.cols, inp.rows, inp.cap, inp.axisMax);
   const sxU = upscaleOf(inp.cols, inp.rows, ultraCap, 16);
   if (sxU <= sxW) return null;
   return { ...inp, cap: ultraCap, axisMax: 16, acrit: inp.acrit * (sxU / sxW) * (sxU / sxW), bandS: sxU / sxW };
+}
+
+/** 工作档改走嵌套解的最低细分倍率：整球这类 1 倍的图细格比河道起始面积还粗（每个节点都成河道），照旧细级侵蚀 */
+export const WORK_NEST_MIN = 2;
+/**
+ * 带中尺度的 v2 图的工作档：全图一窗走块层同一套嵌套解（core/nested），倍率同本图的细级侵蚀工作档（只由常数预算定，与本机无关）；
+ * 倍率不到 WORK_NEST_MIN 原样返回。产出的单不带包络与粗级（嵌套解不读），带外层的全图裁剪与抬升到目标的各区（校峰）。
+ * @param nest 这份输入出自的中尺度场给嵌套解的那份（同一 Grid）：换一份就是另一张图的谷网
+ */
+export function workNest(inp: ErodeInput, nest: NestSrc): ErodeInput {
+  const sx = upscaleOf(inp.cols, inp.rows, inp.cap, inp.axisMax);
+  if (sx < WORK_NEST_MIN || inp.win || inp.nest) return inp;
+  const { mesoEnv: _m, lfDelta: _l, ...rest } = inp;
+  return { ...rest, nest: nestCrop({ base: nest.base, sol: nest.sol }, 0, inp.cols, 0, inp.rows, 0, inp.cols, 0, inp.rows, sx, inp.bb.lonMin, inp.bb.latMin, inp.step, true, true) };
 }
 
 /* —— 行滑动值噪声/fbm（2026-08-09 提速批）：erodeField 全部按行扫描——y 不变时 xi+1 的新四角

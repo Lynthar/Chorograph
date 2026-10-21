@@ -263,6 +263,7 @@ export function genRiverEdgesOf(meta: Meta, rivers: GenRiver[], off: number[] | 
     const e: Edge = { type: "river", pts: r.pts, widthM: r.widthM, gen: true };
     if (r.ws) e.ws = r.ws;
     if (r.mz) e.mz = r.mz;
+    if (r.branch) e.branch = true;
     out.push(e);
   }
   return out;

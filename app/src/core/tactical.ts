@@ -148,7 +148,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
       : (!!e.from && !!e.to && ids.has(e.from) && ids.has(e.to))
   )).map(e => {
     const c = strip(clone(e));
-    delete c.gen;   // 战术图不重新生成河，带进来的就是普通的河
+    delete c.gen; delete c.branch;   // 战术图不重新生成河，带进来的就是普通的河
     if (Array.isArray(c.pts)) c.pts = c.pts.map(p => [tx(p[0]), p[1]] as [number, number]);
     return c;
   });

@@ -5,7 +5,8 @@ import type { NestSol } from "../core/nested.ts";
 
 const st: RouteCtx = {};
 /** 嵌套解那份解的数组（都是回执新分配的，交出即不再读） */
-const nestBufs = (s: NestSol): ArrayBuffer[] => [s.h.buffer as ArrayBuffer, s.sk.buffer as ArrayBuffer, ...(s.up ? [s.up.idx.buffer as ArrayBuffer, s.up.du.buffer as ArrayBuffer, s.up.kw.buffer as ArrayBuffer] : [])];
+const nestBufs = (s: NestSol): ArrayBuffer[] => [s.h.buffer as ArrayBuffer, s.sk.buffer as ArrayBuffer, ...(s.up ? [s.up.idx.buffer as ArrayBuffer, s.up.du.buffer as ArrayBuffer, s.up.kw.buffer as ArrayBuffer,
+  ...s.up.regs.flatMap(r => [r.mem.buffer as ArrayBuffer, r.idx.buffer as ArrayBuffer, r.f.buffer as ArrayBuffer])] : [])];
 const scope = globalThis as unknown as {
   onmessage: ((e: { data: RouteRequest }) => void) | null;
   postMessage(m: unknown, transfer?: ArrayBufferLike[]): void;

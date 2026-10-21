@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { muteGenRiver, regenRivers, saveEdgeForm, syncGenRivers } from "../src/ui/editops.ts";
+import { muteGenRiver, regenRivers, saveEdgeForm, syncGenRivers, meanderLevelOf, setMeanderLevel } from "../src/ui/editops.ts";
 import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, paintUpliftPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, outsideCount, pullIntoFrame, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
@@ -273,7 +273,37 @@ describe("编辑操作内核", () => {
     applyEdgeForm(e, { 名称: "", note: "", kv: "", since: "", until: "", widthM: "120" });
     assert.deepStrictEqual([e.ws, e.mz], [[80, 120], [0, 0]], "河宽没改：逐点宽与曲流强度留着");
     applyEdgeForm(e, { 名称: "", note: "", kv: "", since: "", until: "", widthM: "300" });
-    assert.ok(!("ws" in e) && !("mz" in e) && e.widthM === 300, "河宽改了：按整条一个宽、不弯（弯的波长随宽走）");
+    assert.ok(!("ws" in e) && e.widthM === 300, "河宽改了：按整条一个宽");
+    assert.deepStrictEqual(e.mz, [0, 0], "曲流强度与宽无关，留着（弯的波长自己随宽走）");
+  });
+  it("表单的曲流档：缺席不动、随地形不动、无＝删键、档位只改有弯的点（汇合处与陡段的 0 留着）、没有曲流的河整条给", () => {
+    const F = { 名称: "", note: "", kv: "", since: "", until: "" };
+    const gen: Edge = { type: "river", pts: [[101, 30], [101.5, 30.2], [102, 30.1], [102.5, 30.3]], widthM: 120, mz: [0, 9, 0, 4] };
+    assert.strictEqual(meanderLevelOf(gen), "auto");
+    applyEdgeForm(gen, F);
+    assert.deepStrictEqual(gen.mz, [0, 9, 0, 4], "缺席不动");
+    applyEdgeForm(gen, { ...F, meander: "auto" });
+    assert.deepStrictEqual(gen.mz, [0, 9, 0, 4], "随地形不动");
+    applyEdgeForm(gen, { ...F, meander: "5" });
+    assert.deepStrictEqual(gen.mz, [0, 5, 0, 5], "档位只改有弯的点");
+    assert.strictEqual(meanderLevelOf(gen), "5");
+    applyEdgeForm(gen, { ...F, meander: "0" });
+    assert.ok(!("mz" in gen) && meanderLevelOf(gen) === "0", "无＝删键");
+    const mine: Edge = { type: "river", pts: [[101, 30], [101.5, 30.2], [102, 30.1]], widthM: 120 };
+    applyEdgeForm(mine, { ...F, meander: "9" });
+    assert.deepStrictEqual(mine.mz, [9, 9, 9], "手画的河整条给（首尾由渲染端钉住）");
+    applyEdgeForm(mine, { ...F, meander: "7", widthM: "300" });
+    assert.deepStrictEqual([mine.mz, mine.widthM], [[7, 7, 7], 300], "改宽与改档同一次提交都生效");
+    const flat: Edge = { type: "river", pts: [[101, 30], [101.5, 30.2]], widthM: 120, mz: [0, 0] };
+    setMeanderLevel(flat, "7");
+    assert.deepStrictEqual(flat.mz, [7, 7], "全 0 的河当没有曲流：整条给");
+    const custom: Edge = { type: "river", pts: [[101, 30], [101.5, 30.2], [102, 30.1]], widthM: 120, mz: [0, 6, 0] };
+    assert.strictEqual(meanderLevelOf(custom), "6", "档外的均匀强度按数报（表单另立自定义项）");
+    setMeanderLevel(custom, "12");
+    assert.deepStrictEqual(custom.mz, [0, 9, 0], "超出满档钳到 MZ_MAX");
+    const link: Edge = { type: "river", from: "a", to: "b" };
+    setMeanderLevel(link, "9");
+    assert.ok(!("mz" in link), "挂在地点上的河没有折线，不写 mz");
   });
   it("生成的河带曲流强度：抽出的条目照带 mz，只差 mz 的同一条河也要换（存档里的旧河拿到新的曲流）", () => {
     const meta: Meta = { terrain: "auto", genVer: 2, genStyle: "mono", genSeed: 2, worldModel: "sphere", planetRadiusKm: 10000, bbox: { lonMin: 100, lonMax: 112, latMin: 28, latMax: 37 } };
@@ -284,6 +314,36 @@ describe("编辑操作内核", () => {
     assert.strictEqual(syncGenRivers(w, genRiverEdgesOf(meta, [r], undefined)), false, "同一份零写入");
     assert.strictEqual(syncGenRivers(w, genRiverEdgesOf(meta, [{ ...r, mz: [0, 9, 0] }], undefined)), true, "只差 mz 也换");
     assert.deepStrictEqual(w.edges[0].mz, [0, 9, 0]);
+  });
+  /* 三角洲的分汊线当生成的河进存档：删了下次重抽不回来，删主河不连带分汊线；表单一存就归用户，两个标记一起去掉 */
+  it("分汊线：条目带 branch；只差 branch 也换；删一条分汊线重抽不回来、主河照画；删主河分汊线照画；表单一存去掉 gen 与 branch 并记进删改记录；换地形一起撤", () => {
+    const meta: Meta = { terrain: "auto", genVer: 2, genStyle: "mono", genSeed: 2, worldModel: "sphere", planetRadiusKm: 10000, bbox: { lonMin: 100, lonMax: 112, latMin: 28, latMax: 37 } };
+    meta.gridN = 160;
+    const main = { pts: [[101, 30], [101.6, 30.2], [102.2, 30.1], [102.8, 30.0], [103.4, 29.9]] as [number, number][], widthM: 200, ws: [150, 180, 200, 200, 400], mz: [0, 5, 9, 5, 0] };
+    const branch = { pts: [[102.2, 30.1], [102.6, 30.7], [103.0, 31.3], [103.4, 31.9]] as [number, number][], widthM: 80, ws: [80, 80, 80, 160], branch: true as const };
+    const fresh = (): Edge[] => genRiverEdgesOf(meta, [main, branch], undefined);
+    const [em, eb] = fresh();
+    assert.ok(em.gen === true && !("branch" in em) && eb.gen === true && eb.branch === true);
+    assert.strictEqual(syncGenRivers(mkWorld({ meta, edges: fresh() }), fresh()), false, "同一份零写入");
+    const plain = fresh(); delete plain[1].branch;
+    assert.strictEqual(syncGenRivers(mkWorld({ meta, edges: plain }), fresh()), true, "只差分汊线标记也换");
+    /* 删分汊线：它的格进删改记录，重抽时它不画、主河照画 */
+    const w1 = mkWorld({ meta, edges: fresh() });
+    assert.ok(removeEdgeAt(w1, 1));
+    const r1 = genRiverEdgesOf(meta, [main, branch], w1.genRiverOff);
+    assert.deepStrictEqual(r1.map(e => !!e.branch), [false], "删掉的分汊线不回来，主河照画");
+    /* 删主河：分汊线只在分汊点与它共格，照画 */
+    const w2 = mkWorld({ meta, edges: fresh() });
+    assert.ok(removeEdgeAt(w2, 0));
+    assert.deepStrictEqual(genRiverEdgesOf(meta, [main, branch], w2.genRiverOff).map(e => !!e.branch), [true], "删主河不连带分汊线");
+    /* 表单一存：归用户，两个标记都去掉，格进删改记录 */
+    const w3 = mkWorld({ meta, edges: fresh() });
+    assert.ok(saveEdgeForm(w3, 1, { 名称: "汊", note: "", kv: "", since: "", until: "", widthM: "80" }));
+    assert.ok(!("gen" in w3.edges[1]) && !("branch" in w3.edges[1]) && riverCells(meta, branch.pts).every(c => w3.genRiverOff!.includes(c)));
+    /* 设置里换地形：生成的河（含分汊线）一起撤、按新参数重画，改过的那条留着 */
+    w3.meta = { ...meta, genSeed: 9 };
+    regenRivers(w3, true);
+    assert.ok(w3.edges.some(e => e.名称 === "汊") && !w3.edges.some(e => e.branch), "换地形撤掉旧的分汊线（宏观河网没有三角洲），改过的留着");
   });
   it("addAsset/removeAsset：幂等内嵌 + 连带删落章、空了删键", () => {
     const w = mkWorld({});

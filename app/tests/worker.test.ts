@@ -1011,7 +1011,7 @@ describe("侵蚀的中尺度单（ErodeInput.mesoEnv）", () => {
     /* 钉现行输出：起伏封顶、不扭不羽、汇流微地形任一被改都会变（这条路径有意换代时才重钉，见 MESO_EALGO） */
     let x = 0x811c9dc5 | 0; const u = new Uint32Array(f1.data.buffer, f1.data.byteOffset, f1.data.length);
     for (let i = 0; i < u.length; i++) x = Math.imul(x ^ u[i], 16777619);
-    assert.strictEqual((x >>> 0).toString(36), "1u3c7e1");
+    assert.strictEqual((x >>> 0).toString(36), "10ixbwb");
     const plan = tilePlan(inp, 4e6, 0)!, keys = new Set<string>();
     assert.ok(plan && plan.tiles.length >= 2, "前提：至少两块");
     for (const t of plan.tiles.slice(0, 3)) {

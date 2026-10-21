@@ -2,23 +2,20 @@
    输出哈希是冻结的基线（同 worker.test 钉字面键）：改了生成数学就会红，换代要想清楚旧图会变成什么样。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildMacro, gen2Fine, gen2Meso, gen2Uplift, mesoSmoothOf, mesoState, type BasinWaters, type MesoState, upliftRegions, gen2Params, gen2Rivers, GEN2_SEED_MAX, isGen2, riverParams, type GenRiver, type Macro } from "../src/core/gen2.ts";
+import { buildMacro, gen2Fine, gen2Meso, gen2Uplift, mesoSmoothOf, mesoState, type BasinWaters, type MesoState, upliftRegions, gen2Params, gen2Rivers, GEN2_SEED_MAX, isGen2, riverParams, type GenRiver, type Macro, PEAK_KNEE_M, PEAK_SOFT_M, peakCapM, peakKneeM } from "../src/core/gen2.ts";
 import { buildGridCells, gridGeom } from "../src/core/grid.ts";
 import { Heap } from "../src/core/steady.ts";
 import { baseElev, waterSurface, NO_WATER, SHORE_E } from "../src/core/elev.ts";
 import { seedTerrain, GEN_SEED_MAX } from "../src/core/terrain.ts";
 import { allComposites, ECO_ORDER, LANDFORM_ORDER, MZ_MAX, terrainProps } from "../src/core/constants.ts";
 import { RIV_LOOP, riverSet } from "../src/render/rivers.ts";
+import { chaikinOpen } from "../src/core/geometry.ts";
 import type { Landform, Meta } from "../src/core/types.ts";
 import type { UpliftCells } from "../src/core/gen2.ts";
+import { BB, closedPits, dfltOf, RIV_MOUTH_X, v2 } from "./fixtures/gen2-maps.ts";
 
-const BB = { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 };
 /** 画抬升单的抽河参数（缺省两档滑杆、这组图幅）：只定画哪些河，地形不随它变 */
-/** 河口展宽的倍数（core/gen2 的 RIV_MOUTH） */
-const RIV_MOUTH_X = 2;
 const RP0 = riverParams({ terrain: "auto", genVer: 2, bbox: BB, worldModel: "sphere", planetRadiusKm: 10000 });
-const v2 = (style: "mono" | "multi" | "isles", seed: number, extra: Partial<Meta> = {}): Meta =>
-  ({ terrain: "auto", genVer: 2, genSeed: seed, genStyle: style, bbox: BB, worldModel: "sphere", planetRadiusKm: 10000, gridN: 240, ...extra });
 
 function fnv(h: number, bytes: Uint8Array): number {
   for (let i = 0; i < bytes.length; i++) { h ^= bytes[i]; h = Math.imul(h, 16777619); }
@@ -51,7 +48,7 @@ describe("生成器 v2：确定性", () => {
       mono: digest(v2("mono", 7)), multi: digest(v2("multi", 7)), isles: digest(v2("isles", 7)),
       flat: digest(v2("mono", 7, { worldModel: "flat", kmPerDeg: 111.19, bbox: { lonMin: 0, lonMax: 40, latMin: 0, latMax: 30 }, planetRadiusKm: undefined })),
       rivers: riverDigest(v2("multi", 7)),
-    }, { mono: "1bac1d29", multi: "deb1e73e", isles: "ff91a5a1", flat: "c19475bc", rivers: "b19d85d9" });
+    }, { mono: "6cce8d3", multi: "dea5adae", isles: "ff91a5a1", flat: "c19475bc", rivers: "e87d9d10" });
   });
   /* 规则宏观格的双线性在每条节点线上折出整列同号的二阶差分（一致度≈1，晕渲成直缝）；节点抖开后折痕随节点弯折。
      一致度＝某列（行）陆格上二阶差分减去 ±3 格两处的均值后 |Σ| ÷ Σ|·|，取全图最大：大片缓坡整体弯曲时处处同号，不减会误报；
@@ -195,11 +192,11 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
   });
   it("基底与包络哈希冻结（三档风格）", () => {
     assert.deepStrictEqual({ mono: mesoDigest(v2("mono", 7)), multi: mesoDigest(v2("multi", 7)), isles: mesoDigest(v2("isles", 7)) },
-      { mono: "eb97c0c2", multi: "611808c4", isles: "b7cd5cb8" });
+      { mono: "ae48ecad", multi: "632d71d2", isles: "b7cd5cb8" });
     const clsDigest = (m: Meta): string => fnv(2166136261, withMeso(m).R.cls).toString(16);
     /* 480 列那枚：起伏窗按公里取一个宏观格（这里半宽 3 格；240 列恰 1 格，窗口按格算也看不出来） */
     assert.deepStrictEqual({ mono: clsDigest(v2("mono", 7)), multi: clsDigest(v2("multi", 7)), isles: clsDigest(v2("isles", 7)), multi480: clsDigest(v2("multi", 7, { gridN: 480 })) },
-      { mono: "da44bb94", multi: "11918cfb", isles: "7b26354d", multi480: "d4ffcda" }, "中尺度重判的地类");
+      { mono: "73acd199", multi: "67e2fb9c", isles: "7b26354d", multi480: "111cb526" }, "中尺度重判的地类");
   });
   /* 缓存（mesocache）存的就是这份解：它变了而 MESO_VER 没加，旧图开图读到的旧解与现算对不上 */
   it("稳态解（Float64 高程与流向）哈希冻结（三档风格）：变了就要 MESO_VER + 1", () => {
@@ -228,7 +225,7 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
       const { R, F } = withMeso(v2(st, 7));
       let land = 0, same = 0, bad = 0;
       for (let i = 0; i < R.base.length; i++) {
-        const wet = F.sea[i] || F.lakeOf[i] >= 0;
+        const wet = R.sea[i] || F.lakeOf[i] >= 0;
         if (!(R.env[i] >= 0 && R.env[i] <= 1) || (wet && R.env[i] !== 0)) bad++;
         if (wet) continue;
         land++; if (R.base[i] === F.base[i]) same++;
@@ -241,7 +238,7 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
     for (const m of [v2("mono", 2), v2("multi", 7)]) {
       const stat = (gn: number): [number, number] => {
         const mm = { ...m, gridN: gn }, { R, F } = withMeso(mm), v: number[] = [], h: number[] = [];
-        for (let i = 0; i < R.base.length; i++) if (!(F.sea[i] || F.lakeOf[i] >= 0)) { v.push(R.base[i] * 2000); h.push(R.sg.h[i]); }
+        for (let i = 0; i < R.base.length; i++) if (!(R.sea[i] || F.lakeOf[i] >= 0)) { v.push(R.base[i] * 2000); h.push(R.sg.h[i]); }
         h.sort((a, b) => a - b);
         return [v.reduce((a, b) => a + b, 0) / v.length, h[Math.floor(0.99 * h.length)]];
       };
@@ -259,8 +256,8 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
       const off = (lf: Landform, e: number): boolean => lf === "alpine" ? e < 3000 : lf === "mountain" ? e < 900 || e >= 3000 : e >= 1500;
       let bad = 0, badMacro = 0, land = 0, salts = 0;
       for (let i = 0; i < R.cls.length; i++) {
-        const lf = LANDFORM_ORDER[(R.cls[i] / ne) | 0], eco = ECO_ORDER[R.cls[i] % ne], wet = F.sea[i] || F.lakeOf[i] >= 0;
-        assert.strictEqual(lf === "water", !!wet, "水格不随中尺度变");
+        const lf = LANDFORM_ORDER[(R.cls[i] / ne) | 0], eco = ECO_ORDER[R.cls[i] % ne], wet = R.sea[i] || F.lakeOf[i] >= 0;
+        assert.strictEqual(lf === "water", !!wet, "水格只有长成三角洲的海格转陆");
         if (wet) continue;
         const salt = terrainProps(F.cells[(i / cols) | 0][i % cols]).eco === "salt";
         assert.strictEqual(eco === "salt", salt, "盐滩不随中尺度变");
@@ -297,7 +294,7 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
     assert.strictEqual(at({ lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }, 6371), 1);
     const mid = at({ lonMin: 95, lonMax: 115, latMin: 28, latMax: 43 }, 6371);
     assert.ok(mid > 0.35 && mid < 0.9, `中图幅 ${mid}`);
-    const p99 = (gn: number): number => { const { R, F } = withMeso(v2("mono", 2, { gridN: gn })), v: number[] = []; for (let i = 0; i < R.base.length; i++) if (!(F.sea[i] || F.lakeOf[i] >= 0)) v.push(R.base[i]); v.sort((a, b) => a - b); return v[Math.floor(0.99 * v.length)]; };
+    const p99 = (gn: number): number => { const { R, F } = withMeso(v2("mono", 2, { gridN: gn })), v: number[] = []; for (let i = 0; i < R.base.length; i++) if (!(R.sea[i] || F.lakeOf[i] >= 0)) v.push(R.base[i]); v.sort((a, b) => a - b); return v[Math.floor(0.99 * v.length)]; };
     assert.ok(p99(240) < p99(480), "满档平滑下 35 km 格的峰比 17 km 格的低（同真实地形降分辨率）");
   });
 });
@@ -338,7 +335,7 @@ describe("生成器 v2：画抬升（gen2Uplift）", () => {
     assert.deepStrictEqual(B.base, A.base, "缓存命中与现算的起点解出两座山"); assert.deepStrictEqual(B.env, A.env);
     assert.deepStrictEqual(C.base, A.base);
     /* 量峰模板差一项，峰高只偏零点几米、到目标的 2% 判据看不出来：钉住整份输出 */
-    assert.strictEqual(fnv(fnv(2166136261, new Uint8Array(A.base.buffer)), new Uint8Array(A.env.buffer)).toString(16), "9509a6b7", "画抬升的基底与包络");
+    assert.strictEqual(fnv(fnv(2166136261, new Uint8Array(A.base.buffer)), new Uint8Array(A.env.buffer)).toString(16), "2273362e", "画抬升的基底与包络");
   });
   it("各区最高点（收尾之后的基底）到目标：平原两区、高过峰顶软上限的目标也到；已高过目标的区系数为 0", () => {
     const { g, st, um, spots } = setup(), { cols } = g;
@@ -521,6 +518,15 @@ describe("生成器 v2：画抬升（gen2Uplift）", () => {
     const S = gen2Uplift(st, basinsOf(sq(51, 129, -100)), RP0);
     assert.ok(S.water && S.water.list.some(x => x.kind === 1 && x.surfM < 0), JSON.stringify(S.water && S.water.list));
     assert.deepStrictEqual(waterBad(w, S), []);
+  });
+  /* 湖的 8 邻岸格钳在湖面以上：河贴着湖岸流过时，上游河槽要是刻到湖面以下，钳回去的那格就把上游围成坑 */
+  it("画盆地紧贴大河成外流湖：河道不刻到下游湖岸下界以下，最终地表两种判据都没有封闭洼地（多块种子 7 第 63 行第 62 列、盆底 3 m）", () => {
+    const w = worldOf("multi", 7), U = gen2Uplift(w.st, basinsOf(discAt(w, 63 * w.g.cols + 62, 2, 3)), RP0);
+    assert.ok(U.water && U.water.list.length === 1 && U.water.list[0].kind === 0, `前提：成外流湖 ${JSON.stringify(U.water && U.water.list)}`);
+    for (const G of [w.st.G, null]) {
+      const p = closedPits(w.m, U, G);
+      assert.strictEqual(p.n, 0, `${G ? "求解图" : "格心四邻"}：${p.n} 个陆格在封闭洼地里，最深 ${p.worst.toFixed(1)} m`);
+    }
   });
   it("画盆地贴着海、盆底 −200 m：被海灌进，与海连成一片、水面 0", () => {
     const w = worldOf("multi", 7), U = gen2Uplift(w.st, basinsOf(discAt(w, siteOf(w, "coast"), 3, -200)), RP0);
@@ -784,7 +790,7 @@ describe("生成器 v2：中尺度河网", () => {
       for (const r of R.rivers) for (let k = 1; k < r.pts.length - 1; k++) {
         const [x, y] = r.pts[k], c = Math.round((x - bb.lonMin) / step - 0.5), rr = Math.round((y - bb.latMin) / step - 0.5), i = rr * cols + c;
         let sum = 0, nn = 0;
-        for (const j of [i - 1, i + 1, i - cols, i + cols]) if (!F.sea[j] && F.lakeOf[j] < 0) { sum += R.base[j]; nn++; }
+        for (const j of [i - 1, i + 1, i - cols, i + cols]) if (!R.sea[j] && F.lakeOf[j] < 0) { sum += R.base[j]; nn++; }
         if (!nn) continue;
         all++; if (R.base[i] <= sum / nn) low++;
       }
@@ -793,40 +799,21 @@ describe("生成器 v2：中尺度河网", () => {
   });
   it("最终地表上没有封闭洼地：自海、湖与盐滩沿求解图填洼，陆格一格都填不起来（没成湖的洼地已填到溢出口）", () => {
     for (const [st, s] of FIX) {
-      const { R, F } = setOf(st, s), { nbOff, nb } = R.st.G, um = gen2Params(v2(st, s)).unitM, n = R.base.length;
-      const f = new Float64Array(n), seen = new Uint8Array(n), hp = new Heap(64);
-      for (let i = 0; i < n; i++) {
-        const lk = F.lakeOf[i];
-        f[i] = F.sea[i] ? 0 : lk >= 0 ? F.macro.lakeS[lk] : R.base[i] * um;
-        if (F.sea[i] || lk >= 0 || R.cls[i] % ECO_ORDER.length === ECO_ORDER.indexOf("salt")) { seen[i] = 1; hp.push(f[i], i); }
-      }
-      let pits = 0;
-      while (hp.n) { const i = hp.pop(); for (let e = nbOff[i]; e < nbOff[i + 1]; e++) { const j = nb[e]; if (seen[j]) continue; seen[j] = 1; if (f[j] < f[i] - 1e-3) { pits++; f[j] = f[i]; } hp.push(f[j], j); } }
-      assert.strictEqual(pits, 0, `${st} 种子 ${s}：${pits} 个陆格在封闭洼地里`);
+      const { m, R } = setOf(st, s), p = closedPits(m, R, R.st.G);
+      assert.strictEqual(p.n, 0, `${st} 种子 ${s}：${p.n} 个陆格在封闭洼地里`);
     }
   });
   /* 渲染端按格心双线性插值、地面只沿格边相通：流向斜跨一格的河道在画面上是一串封闭的坑，侵蚀细级还会把坑填平、刻出的河谷就没了 */
   it("格心双线性下也没有封闭洼地：自海、湖与盐滩按四邻填洼，陆格一格都填不起来", () => {
     for (const [st, s] of [...FIX, ["multi", 5] as const]) {   // 多块种子 5：有一步的阶梯要压过湖岸下界，得绕另一边
-      const { g: { cols, rows }, R, F } = setOf(st, s), um = gen2Params(v2(st, s)).unitM, n = R.base.length, salt = ECO_ORDER.indexOf("salt");
-      const f = new Float64Array(n), seen = new Uint8Array(n), hp = new Heap(64);
-      for (let i = 0; i < n; i++) {
-        const lk = F.lakeOf[i];
-        f[i] = F.sea[i] ? 0 : lk >= 0 ? F.macro.lakeS[lk] : R.base[i] * um;
-        if (F.sea[i] || lk >= 0 || R.cls[i] % ECO_ORDER.length === salt) { seen[i] = 1; hp.push(f[i], i); }
-      }
-      let pits = 0, worst = 0;
-      while (hp.n) {
-        const i = hp.pop(), r = (i / cols) | 0, c = i - r * cols;
-        for (const j of [c > 0 ? i - 1 : -1, c < cols - 1 ? i + 1 : -1, r > 0 ? i - cols : -1, r < rows - 1 ? i + cols : -1]) {
-          if (j < 0 || seen[j]) continue;
-          seen[j] = 1;
-          if (f[j] < f[i] - 1e-3) { pits++; worst = Math.max(worst, f[i] - f[j]); f[j] = f[i]; }
-          hp.push(f[j], j);
-        }
-      }
-      assert.strictEqual(pits, 0, `${st} 种子 ${s}：${pits} 个陆格在四邻封闭洼地里，最深 ${worst.toFixed(1)} m`);
+      const { m, R } = setOf(st, s), p = closedPits(m, R, null);
+      assert.strictEqual(p.n, 0, `${st} 种子 ${s}：${p.n} 个陆格在四邻封闭洼地里，最深 ${p.worst.toFixed(1)} m`);
     }
+  });
+  /* 四邻排水只认不高过本格的水与汇当出口：高原上的盐滩高过旁边的格，当它是出口，那一格就留成坑 */
+  it("高过本格的盐滩不是出口：单块种子 5 缺省图幅（2085 m 高原上挨着盐滩的一格）格心四邻没有封闭洼地", () => {
+    const { m, R } = dfltOf("mono", 5), p = closedPits(m, R, null);
+    assert.strictEqual(p.n, 0, `${p.n} 个陆格在四邻封闭洼地里，最深 ${p.worst.toFixed(1)} m`);
   });
   it("生成器的咸湖（内流）没有出湖的河，外流湖有：出湖的河首点在湖格格心", () => {
     const { g, R, F } = setOf("mono", 5), { cols, bb, step } = g;
@@ -874,10 +861,40 @@ describe("生成器 v2：中尺度河网", () => {
     for (let b = 0; b < s.nx * s.ny; b++) mx = Math.max(mx, s.idx[2 * b + 1]);
     assert.ok(s.n > 1000 && mx <= RIV_LOOP, `${s.n} 段、一桶最多 ${mx}`);
   });
+  /* 战略尺度的河线保弯：平滑只去节点尺度的锯齿、不缩谷尺度的弯，抽稀留住一两格的小弯——画出来的大河在百公里窗里仍弯，也不出折角 */
+  it("河线保弯：画出的大河（水面宽 ≥ 190 m，Chaikin 两遍后）100 km 窗弯曲度 ≥ 1.069；全部河的折线上转角 > 60° 的折角每 100 km 不到 0.3 个（gridN 480 多块种子 7、单块种子 5）", () => {
+    for (const [st, s] of [["multi", 7], ["mono", 5]] as const) {
+      const m = v2(st, s, { gridN: 480 }), R = gen2Meso(m, buildGridCells(m, [], 0)), kmd = gen2Params(m).kmd, BIG = 6 * Math.sqrt(1000);
+      const km = (a: [number, number], b: [number, number]): number => Math.hypot((b[0] - a[0]) * Math.cos((a[1] + b[1]) / 2 * Math.PI / 180), b[1] - a[1]) * kmd;
+      let sum = 0, win = 0, k60 = 0, tot = 0;
+      for (const r of R.rivers) {
+        const P = r.pts;
+        for (let k = 1; k < P.length; k++) {
+          tot += km(P[k - 1], P[k]);
+          if (k + 1 >= P.length) continue;
+          const cx = Math.cos(P[k][1] * Math.PI / 180), ux = (P[k][0] - P[k - 1][0]) * cx, uy = P[k][1] - P[k - 1][1], vx = (P[k + 1][0] - P[k][0]) * cx, vy = P[k + 1][1] - P[k][1];
+          if ((ux * vx + uy * vy) / (Math.hypot(ux, uy) * Math.hypot(vx, vy)) < 0.5) k60++;
+        }
+        if (r.widthM < BIG) continue;
+        /* 画出的折线每 1 km 取一点，100 km 弧长 ÷ 弦长，窗每 25 km 挪一次 */
+        const D = chaikinOpen(P, 2), S: [number, number][] = [D[0]];
+        let carry = 0;
+        for (let k = 1; k < D.length; k++) {
+          const L = km(D[k - 1], D[k]); if (!(L > 0)) continue;
+          let t = 1 - carry;
+          for (; t <= L; t += 1) S.push([D[k - 1][0] + (D[k][0] - D[k - 1][0]) * t / L, D[k - 1][1] + (D[k][1] - D[k - 1][1]) * t / L]);
+          carry = L - (t - 1);
+        }
+        for (let a = 0; a + 100 < S.length; a += 25) { sum += 100 / km(S[a], S[a + 100]); win++; }
+      }
+      assert.ok(win > 50 && sum / win >= 1.069, `${st} 种子 ${s}：${win} 个窗、弯曲度 ${(sum / win).toFixed(4)}`);
+      assert.ok(100 * k60 / tot < 0.3, `${st} 种子 ${s}：折角每 100 km ${(100 * k60 / tot).toFixed(2)} 个`);
+    }
+  });
   it("零抬升的画抬升单与中尺度单的河逐位同；河的指纹冻结（多块种子 7）", () => {
     const { R } = setOf("multi", 7);
     assert.deepStrictEqual(gen2Uplift(R.st, { idx: new Int32Array(0), peakM: new Float64Array(0) }, RP0).rivers, R.rivers);
-    assert.strictEqual(fnv(2166136261, new TextEncoder().encode(JSON.stringify(R.rivers))).toString(16), "e9837e4c");
+    assert.strictEqual(fnv(2166136261, new TextEncoder().encode(JSON.stringify(R.rivers))).toString(16), "719ac5ee");
   });
 });
 
@@ -966,7 +983,22 @@ describe("生成器 v2：板块骨架的构图", () => {
       assert.ok(wind >= k && isles >= 12, `${st} 种子 ${s}：曲折 ${wind.toFixed(2)}、小岛 ${isles}`);
     }
   });
-  it("峰顶软上限：陆地占比与山地多少拉满也不过 8.5 km", () => {
-    for (const st of ["mono", "multi"] as const) { const M = buildMacro(gen2Params(v2(st, 1, { genLand: 1, genMtn: 1 }))); let mx = 0; for (const v of M.h) if (v > mx) mx = v; assert.ok(mx < 8500, `${st} 最高 ${Math.round(mx)} m`); }
+  it("峰顶软上限随纬度：膝点＝雪线曲线 + 700 m（赤道恰 5.5 km、45° 3.6 km、极地 0.7 km，平面图恒 5.5 km）；拉满的整球图逐节点不过膝点 + 3 km，高纬最高峰低于低纬", () => {
+    assert.deepStrictEqual([0, 20, 45, 60, 90, -45].map(l => peakKneeM(true, l)), [5500, 5900, 3600, 1900, 700, 3600]);
+    assert.strictEqual(peakKneeM(false, 60), PEAK_KNEE_M);
+    assert.strictEqual(peakCapM(3000, 3600, 0), 3000, "膝点以下不动");
+    assert.strictEqual(peakCapM(9000, 3600, 1), 9000, "画抬升的涂抹格让开");
+    assert.ok(peakCapM(9000, 3600, 0) < 3600 + PEAK_SOFT_M && peakCapM(9000, 3600, 0) > peakCapM(6000, 3600, 0), "压缩单调且不过膝点 + 软度");
+    assert.ok(Math.abs(peakCapM(9000, 3600, 0.5) - (peakCapM(9000, 3600, 0) + 9000) / 2) < 1e-9, "软边按 kw 混合");
+    for (const st of ["mono", "multi"] as const) {
+      const p = gen2Params(v2(st, 1, { genLand: 1, genMtn: 1, bbox: { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 } })), M = buildMacro(p);
+      let hi = 0, lo = 0;
+      for (let i = 0; i < M.h.length; i++) {
+        const lat = M.lat0 + (M.mesh.Y[i] + 0.5) * M.dlat, knee = peakKneeM(p.sphere, lat);
+        assert.ok(M.h[i] < knee + PEAK_SOFT_M, `${st} 节点 ${i} 纬 ${lat.toFixed(1)} 高 ${Math.round(M.h[i])} m 过了膝点 + 软度 ${Math.round(knee + PEAK_SOFT_M)}`);
+        if (Math.abs(lat) >= 60) hi = Math.max(hi, M.h[i]); else if (Math.abs(lat) <= 30) lo = Math.max(lo, M.h[i]);
+      }
+      assert.ok(hi > 0 && lo > hi, `${st}：|纬| ≥ 60° 最高 ${Math.round(hi)} m 应低于 |纬| ≤ 30° 最高 ${Math.round(lo)} m`);
+    }
   });
 });

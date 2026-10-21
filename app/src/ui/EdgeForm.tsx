@@ -4,7 +4,7 @@ import { useRef } from "preact/hooks";
 import { EDGE_STYLE, RIVER_TMPL, WALL_TMPL } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
 import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "./state.ts";
-import { saveEdgeForm } from "./editops.ts";
+import { MEANDER_LEVELS, meanderLevelOf, saveEdgeForm } from "./editops.ts";
 import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
 import type { Edge } from "../core/types.ts";
 import { tget } from "../core/util.ts";
@@ -14,6 +14,7 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
   const tac = isTacSig.value;
   const cal = calOf((worldSig.value?.meta || {}).calendar);
   const st = tget(EDGE_STYLE, e.type) || { 名: e.type };
+  const mzRow = e.type === "river" && Array.isArray(e.pts), mzCur = mzRow ? meanderLevelOf(e) : "";
   const kvText = (e.字段 && Object.keys(e.字段).length)
     ? Object.entries(e.字段).map(([k, v]) => `${k}：${v}`).join("\n")
     : (e.type === "river" ? RIVER_TMPL : e.type === "wall" ? WALL_TMPL : "");
@@ -25,6 +26,7 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
     mutateWorld(w => {
       saveEdgeForm(w, idx, { 名称: val("ee_name"), note: val("ee_note"), kv: val("ee_kv"), since: timeVal("ee_since"), until: timeVal("ee_until"),
         widthM: e.type === "river" ? val("ee_width") : undefined,
+        meander: mzRow ? val("ee_mz") : undefined,
         reverse: e.type === "wall"
           ? box.current?.querySelector("#ee_rev")?.getAttribute("aria-pressed") === "true"
           : undefined,
@@ -47,6 +49,12 @@ export function EdgeForm({ e, idx }: { e: Edge; idx: number }) {
       {e.type === "river" && <div class="frow"><label for="ee_width">水面宽 米（留空＝示意细线；放大后按真实尺度显宽）</label>
         <input class="fld" id="ee_width" type="number" min={0} step={10}
           placeholder="如 200" defaultValue={e.widthM != null ? String(e.widthM) : ""} /></div>}
+      {mzRow && <div class="frow"><label for="ee_mz">曲流（弯的波长随水面宽；没填水面宽不弯）</label>
+        <select class="fld" id="ee_mz">
+          {mzCur === "auto" && <option value="auto" selected>随地形（生成时逐点定）</option>}
+          {MEANDER_LEVELS.map(o => <option value={o.v} selected={mzCur === o.v}>{o.名}</option>)}
+          {mzCur !== "auto" && !MEANDER_LEVELS.some(o => o.v === mzCur) && <option value={mzCur} selected>（自定义 {mzCur}）</option>}
+        </select></div>}
       {e.type === "wall" && <div class="frow"><label id="ee_rev_lab">齿面（缺省在画线方向左侧；岸线惯例＝齿朝水）</label>
         <div class="chips" role="group" aria-labelledby="ee_rev_lab"><button type="button" class="ch tr" id="ee_rev" aria-pressed={e.reverse ? "true" : "false"}
           onClick={ev => { const b = ev.currentTarget as HTMLButtonElement; b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true"); }}>翻转齿面</button></div></div>}
