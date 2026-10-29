@@ -17,8 +17,8 @@ export const TILE_MAX_X = 8;
 export const CARVE_Q = 1 / 65536;
 /** 块的算法代号：块的取法（余量、块心、参照带、目标面）变了而侵蚀没变时换代，免得旧块还魂 */
 export const TILE_VER = 3;
-/** 一个块格占的 CSS 像素：低于 LO 不用块（亚像素起伏逐像素点采样会起颗粒），到 HI 全用；中间按缩放连续过渡＝缩放时不跳 */
-export const TILE_W_LO = 0.5, TILE_W_HI = 1.0;
+/** 一个块格占的 CSS 像素：不足一像素不用块（块里的起伏逐像素点采样＝整片颗粒），到 HI 全用；中间按缩放连续过渡＝缩放时不跳 */
+export const TILE_W_LO = 1.0, TILE_W_HI = 2.0;
 
 /** 块网格的几何：原点与父格同源；step＝块格（度）＝pstep/sx；块 i 覆盖父格 [tx·P, tx·P+P) × [ty·P, ty·P+P)，贴图幅右上边的块会窄一些 */
 export interface TileGeom { lonMin: number; latMin: number; pstep: number; P: number; sx: number; step: number; nx: number; ny: number; cols: number; rows: number }

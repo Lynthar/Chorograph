@@ -118,10 +118,10 @@ describe("分块精修（core/tiles）", () => {
     }
   });
 
-  it("权重随一个块格的 CSS 像素连续过渡：半像素以下不用、一像素起全用", () => {
-    assert.strictEqual(tileWeight(0.4), 0);
-    assert.strictEqual(tileWeight(1.2), 1);
+  it("权重随一个块格的 CSS 像素连续过渡：不足一像素不用、两像素起全用", () => {
+    assert.strictEqual(tileWeight(0.99), 0);
+    assert.strictEqual(tileWeight(2.2), 1);
     let prev = -1;
-    for (let v = 0.5; v <= 1; v += 0.05) { const w = tileWeight(v); assert.ok(w >= prev); prev = w; }
+    for (let v = 1; v <= 2; v += 0.05) { const w = tileWeight(v); assert.ok(w >= prev); prev = w; }
   });
 });

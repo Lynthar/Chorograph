@@ -2,11 +2,11 @@
    夹具是真实尺度的小图幅（格边约 6.7 km、块倍率 8），同缺省大陆图的细格大小；整张图的块只解一次、各条共用 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { gen2Meso, gen2Uplift, mesoKey, riverParams, type Gen2Meso } from "../src/core/gen2.ts";
+import { bandMultAt, gen2Meso, gen2Uplift, mesoKey, pointOf, riverParams, type Gen2Meso } from "../src/core/gen2.ts";
 import { buildGridCells, gridGeom, type Grid } from "../src/core/grid.ts";
 import { elevBilinear, SHORE_E, WATER_EPS, type ElevField } from "../src/core/elev.ts";
 import { erodeField, erodeInput, erodeKey, type ErodeInput } from "../src/core/erode.ts";
-import { NEST_MARGIN, NEST_PAD, nestBaseOf, nestedField, nestSolOf, nestSolve, resample, type NestInput, type NestSrc } from "../src/core/nested.ts";
+import { FLOOR_MAX_KM, NEST_MARGIN, NEST_PAD, UPLIFT_ACH_KM2, UPLIFT_T, VF_MIN_KM2, nestBaseOf, nestedField, nestHistory, nestSolOf, nestSolve, resample, type NestInput, type NestSrc } from "../src/core/nested.ts";
 import { Heap } from "../src/core/steady.ts";
 import { tileCells, tileCore, tileInput, tileKey, tileKeyOf, tilePlan, type TilePlan } from "../src/core/tiles.ts";
 import { handleRouteMsg, type RouteCtx } from "../src/worker/routeProto.ts";
@@ -37,14 +37,33 @@ describe("块层嵌套解（core/nested）", () => {
     assert.ok(inp.water.includes(1) && inp.water.includes(0));
   });
 
-  it("不带目标面的块（整球这类工作档 1 倍的图）输出与键钉死：工作档改走嵌套解之后逐位不变", () => {
+  it("不带目标面的块（整球这类工作档 1 倍的图）输出与键钉死", () => {
     const { inp, plan, nest } = fix(), t = tileInput(inp, plan, null, plan.tiles[1], nest), f = field(plan.tiles[1]);
     assert.ok(t.nest!.tgt === null && t.nest!.pk === null);
     let x = 0x811c9dc5 | 0;
     const u = new Uint32Array(f.data.buffer, f.data.byteOffset, f.data.length);
     for (let i = 0; i < u.length; i++) x = Math.imul(x ^ u[i], 16777619);
-    assert.strictEqual((x >>> 0).toString(36), "1ohrhea");
-    assert.strictEqual(erodeKey(t), "e10p5v2a-av8yoy-htncnf");
+    assert.strictEqual((x >>> 0).toString(36), "9o7u1r");
+    assert.strictEqual(erodeKey(t), "e10p5v2a-4zzswn-1242z64");
+  });
+
+  it("岩性带按细格心取：块里 K 对父 K 双线性之比＝抖动 × 带函数在细格心的值（带规格、折皱带占比随静态场交下来）", () => {
+    const { inp, plan, nest } = fix(), tinp = tileInput(inp, plan, null, plan.tiles[5], nest), ne = tinp.nest!, { F } = nestSolve(tinp), { FC, FR, gc0, gr0, fs } = F, { sx } = ne, { cols, rows } = tinp;
+    assert.ok(ne.bandN > 0 && ne.umax > 0 && ne.fG.length === cols * rows, "带规格与折皱带占比在单里");
+    const bil = (f: ArrayLike<number>, fx: number, fy: number): number => {
+      const c0 = Math.max(0, Math.min(cols - 1, Math.floor(fx))), r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy))), c1 = Math.min(cols - 1, c0 + 1), r1 = Math.min(rows - 1, r0 + 1);
+      const tx = Math.max(0, Math.min(1, fx - c0)), ty = Math.max(0, Math.min(1, fy - r0)), a = f[r0 * cols + c0], b = f[r0 * cols + c1], c = f[r1 * cols + c0], d = f[r1 * cols + c1];
+      return (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * ty;
+    };
+    let banded = 0, n = 0;
+    for (let r = 0; r < FR; r += 7) for (let c = 0; c < FC; c += 7) {
+      const i = r * FC + c; if (F.wat[i]) continue;
+      const gc = gc0 + c, gr = gr0 + r, cx = (gc + 0.5) / sx - 0.5 - ne.x0, cy = (gr + 0.5) / sx - 0.5 - ne.y0, lon = ne.lon0 + (gc + 0.5) * fs, lat = ne.lat0 + (gr + 0.5) * fs;
+      const band = bandMultAt(ne, bil(ne.fU, cx, cy) / ne.umax, bil(ne.fG, cx, cy), pointOf(ne, lon, lat), ne.seed), jit = F.K[i] / (bil(ne.K, cx, cy) * band);
+      assert.ok(jit > 0.8 - 1e-9 && jit < 1.2 + 1e-9, `细格 ${i}：去掉带之后剩 ${jit}，不是 ±20% 的抖动`);
+      n++; if (band !== 1) banded++;
+    }
+    assert.ok(n > 2000 && banded > 0, `抽样 ${n} 格、显带 ${banded}`);
   });
 
   it("两次逐位同：同一单两次、结构化克隆后再解（Worker 收到的就是克隆）都一样；产出罩住块心、余量按产出原点去掉", () => {
@@ -144,8 +163,8 @@ describe("块层嵌套解（core/nested）", () => {
     for (const a of [1, 400]) {   // 同一棵树换格面积：门槛跟着格面积走
       const cols = 5, n = 10, area = new Float64Array(n).fill(a), out = new Uint8Array(n); out[8] = 1; out[9] = 1;   // 8 是水（出口）却还指向下游
       const rcv = Int32Array.from({ length: n }, (_, i) => i === 9 ? 9 : i + 1), A = Float64Array.from([1, 2, 3, 3.99, 4, 7, 9, 12, 20, 30], x => x * a);
-      const st = { pr: { g: { cols }, area, inp: { out } } } as unknown as Parameters<typeof nestSolOf>[0];
-      const s = nestSolOf(st, { h: new Float64Array(n), rcv, A }, null);
+      const st = { pr: { g: { cols }, area, inp: { out, K: new Float64Array(n).fill(1) } } } as unknown as Parameters<typeof nestSolOf>[0];
+      const s = nestSolOf(st, { h: new Float64Array(n), rcv, A, rl: new Float64Array(n).fill(1) }, null);
       assert.deepStrictEqual(Array.from(s.sk, v => v ? 1 : 0), [0, 0, 0, 0, 1, 1, 1, 1, 0, 0], `格面积 ${a} km²`);
       assert.strictEqual(s.sk[5], 1 + 7 * 15 + 1 + 7, "受水者在右邻：编码 dx=+1、dy=0");
       assert.strictEqual(s.sk[4], 1 + 8 * 15 - 4 + 7, "行末的受水者在下一行行首：dx=−4、dy=+1");
@@ -153,9 +172,9 @@ describe("块层嵌套解（core/nested）", () => {
     /* 一条骨架边画进细格：节点那一格恰为外层解、受水者那一格恰为它的解，中间沿边单调；别的细格（窗口边除外）不是出口 */
     const cols = 24, rows = 20, n = cols * rows, sx = 4, step = 0.06, fill = (v: number): Float32Array => new Float32Array(n).fill(v);
     const sk = new Uint8Array(n), k0 = 10 * cols + 6; sk[k0] = 1 + 7 * 15 + 1 + 7;   // (6, 10) → (7, 10)
-    const ne: NestInput = { wx: 2, wy: 2, wcols: 20, wrows: 16, x0: 0, y0: 0, gcols: cols, sx, lon0: 100, lat0: 30, step, seed: 31, kmd: 111, sphere: false,
+    const ne: NestInput = { wx: 2, wy: 2, wcols: 20, wrows: 16, x0: 0, y0: 0, gcols: cols, sx, lon0: 100, lat0: 30, step, seed: 31, kmd: 111, sphere: false, umax: 1, bandN: 0, fG: fill(0),
       h: Float32Array.from({ length: n }, (_, k) => 100 + 10 * (k % cols)), sk, X: Float32Array.from({ length: n }, (_, k) => k % cols), Y: Float32Array.from({ length: n }, (_, k) => (k / cols) | 0),
-      fU: fill(0.5), du: null, kw: null, K: fill(1), P: fill(0), B: fill(0), bsig: "t", tgt: null, tsx: 0, pk: null };
+      fU: fill(0.5), du: null, kw: null, K: fill(1), P: fill(0), B: fill(0), tauUp: fill(0), A: fill(1), bsig: "t", tgt: null, tsx: 0, pk: null };
     const z = new Float32Array(n), syn: ErodeInput = { bb: { lonMin: 100, latMin: 30, lonMax: 100 + cols * step, latMax: 30 + rows * step }, step, cols, rows, elev0: fill(0.1), water: new Uint8Array(n), wsurf: z,
       amp: 0.7, seed: 1, sphere: false, cap: n * sx * sx, axisMax: sx, bandS: 1, acrit: 300, kmx: 111, kmy: 111, hovGrid: z, unitM: 2000, nest: ne };
     const { F } = nestSolve(syn), hit: number[] = [];
@@ -174,6 +193,44 @@ describe("块层嵌套解（core/nested）", () => {
     }
     assert.ok(cnt > 300, `骨架节点 ${cnt}`);
     assert.strictEqual(nr.h[0], Math.fround(R.sg.h[nr.y0 * fix().grid.cols + nr.x0]), "裁的是外层稳态解 Sg");
+  });
+
+  it("老面：抬升暂态的 τ 自海湖 0 起、窗边与骨架钉外层的；老面占陆格一两成到九成之间、只在 τ > t 的河道与它们的坡面上，缩完沿树仍单调；画的山（kw 1）不缩", () => {
+    const { inp, plan, nest } = fix(), tinp = tileInput(inp, plan, null, plan.tiles[5], nest), { F, G, sol } = nestSolve(tinp), h0 = Float64Array.from(sol.h);
+    const H = nestHistory(F, G, sol), { rcv } = sol, n = F.FC * F.FR;
+    let water0 = true, pinned = 0, moved = 0, land = 0;
+    for (let i = 0; i < n; i++) { if (F.wat[i] && F.tauUpOut[i] !== 0) water0 = false; if (F.out[i] && !F.wat[i] && F.tauUpOut[i] > 0) pinned++; if (!F.wat[i]) { land++; if (sol.h[i] !== h0[i]) moved++; } }
+    assert.ok(water0 && pinned > 500, `水格 τ 全 0、钉了 τ 的陆出口 ${pinned}`);
+    assert.ok(H.rel > 0.02 && H.rel < 0.9 && moved / land > 0.02, `老面份额 ${H.rel.toFixed(3)}、动了的陆格 ${(100 * moved / land).toFixed(1)}%`);
+    for (let i = 0; i < n; i++) {
+      const j = rcv[i]; if (j === i) continue;
+      assert.ok(sol.h[i] >= sol.h[j] - 1e-9, `缩完逆坡：格 ${i}`);
+      if (sol.h[i] !== h0[i]) assert.ok(sol.h[i] <= h0[i] + 1e-9 && (H.Af[i] < UPLIFT_ACH_KM2 || H.tauUp[i] > UPLIFT_T), "老面只降不升、河道上只在 τ > t 处");
+    }
+    /* 画的山：软边权重 1 的格不缩（同一单加一份 kw 全 1 的画抬升，解不变、老面份额归零） */
+    const ne = tinp.nest!, kw1 = { ...tinp, nest: { ...ne, kw: new Float32Array(tinp.cols * tinp.rows).fill(1) } }, S1 = nestSolve(kw1), H1 = nestHistory(S1.F, S1.G, S1.sol);
+    assert.ok(S1.F.kw && S1.F.kw.every(v => v === 1) && S1.sol.h.every((v, i) => v === h0[i]), "kw 全 1：解一格不动");
+    assert.strictEqual(H1.rel, H.rel, "状态照判（老面份额同），只是不缩");
+  });
+
+  it("谷底：汇流 ≥ 30 km² 的河道两侧归最近的河道格、取它的高（不低于所在父格的水面、只降不升）；画的盆地与目标面块不盖", () => {
+    const { inp, plan, nest } = fix(), ti = plan.tiles[5], tinp = tileInput(inp, plan, null, ti, nest), { F, G, sol } = nestSolve(tinp), H = nestHistory(F, G, sol), o = field(ti).data, n = F.FC * F.FR;
+    let nvf = 0, ok = 0, bad = 0;
+    for (let i = 0; i < n; i++) {
+      const t = H.vfi[i]; if (t < 0) continue;
+      nvf++;
+      assert.ok(!F.wat[i] && !F.wat[t] && H.Af[t] >= VF_MIN_KM2, "谷底格或它归属的河道格是水、或河道不够宽");
+      const ws = tinp.wsurf[F.par[i]], v = o[t] < ws ? ws : o[t];
+      if (o[i] <= v + 1e-6) ok++; else bad++;
+    }
+    assert.ok(nvf > 500 && bad === 0, `谷底格 ${nvf}，高过归属河道的 ${bad}`);
+    const km = F.fs * 6371 * Math.PI / 180;
+    assert.ok(km < FLOOR_MAX_KM / 2, "夹具的细格要比谷底半径上限小，谷底才展得出");
+    /* 目标面是工作档的块、工作档单（带校峰区）：不留老面不展谷底（两级各留一份对不上；工作档的输出钉在 worknest.test 里） */
+    const w2 = nestedField({ ...tinp, nest: { ...tinp.nest!, pk: [] } }).data;
+    let diff = 0, lower = 0;
+    for (let i = 0; i < n; i++) { if (w2[i] !== o[i]) diff++; if (H.vfi[i] >= 0 && o[i] < w2[i] - 1e-6) lower++; }
+    assert.ok(diff > 1000 && lower > 100, `带校峰区的单与块的产出不同的细格 ${diff}、块里被谷底压低的 ${lower}`);
   });
 
   it("细格流向没有 10 km 以上的直段（抖动四边形网；规则网格上的流向沿格轴排成直谷）", () => {

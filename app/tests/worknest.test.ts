@@ -93,7 +93,7 @@ describe("工作档嵌套解（core/erode.workNest）", () => {
     const { w, WN } = fix();
     const b = nestedField(w), c = nestedField(structuredClone(w));
     assert.ok(WN.data.every((v, i) => v === b.data[i] && v === c.data[i]), "同一单解出两样");
-    assert.strictEqual(fieldHash(WN), "1qpn6pm");
+    assert.strictEqual(fieldHash(WN), "k9rccx");
   });
 
   it("块与工作档之差：目标面取工作档的块，山地块心细格对工作档 p90 不到旧块（目标面取父基底）的 80%；父格均值之差 p90 < 40 m", () => {

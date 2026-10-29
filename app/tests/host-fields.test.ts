@@ -356,7 +356,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
       bbox: { lonMin: 100, lonMax: 115, latMin: 30, latMax: 40 } } }), "s1", 3050);
     host.rebuildIfNeeded();
     const g = ctx.grid!, lon = g.bb.lonMin + 96 * g.step, lat = g.bb.latMin + 96 * g.step;
-    Object.assign(ctx.view, { lon0: lon, lat0: lat, degPerPx: g.step / 8 });   // 块 6（第二行第二列）中央，一个块格一个 CSS 像素
+    Object.assign(ctx.view, { lon0: lon, lat0: lat, degPerPx: g.step / 16 });   // 块 6（第二行第二列）中央，一个块格两个 CSS 像素
     host.syncTiles();
     await flush();
     assert.equal(erodePhaseSig.value, "ultra", "工作档算完、视口里的块还没到：报精修中");

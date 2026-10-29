@@ -971,13 +971,10 @@ describe("侵蚀的中尺度单（ErodeInput.mesoEnv）", () => {
     /* 单块种子 5 南部是副热带荒漠：最干的一片低地上画盆，水量不够成湖、盆底成盐滩 */
     const md: Meta = { ...m, genStyle: "mono", genSeed: 5 }, gd = buildGridCells(md, [], 0), Rd = gen2Meso(md, gd), st = mesoState(md, gd, Rd.sg);
     const out = st.pr.inp.out, fM = st.pr.fM, { cols, rows } = gd, um = 2000;
-    let k0 = -1;
-    for (let r = 4; r < rows - 4; r++) for (let c = 4; c < cols - 4; c++) {
-      let ok = Rd.base[r * cols + c] * um < 800;
-      for (let dr = -4; dr <= 4 && ok; dr++) for (let dc = -4; dc <= 4; dc++) if (out[(r + dr) * cols + c + dc]) { ok = false; break; }
-      if (ok && (k0 < 0 || fM[r * cols + c] < fM[k0])) k0 = r * cols + c;
-    }
-    assert.ok(k0 >= 0, "夹具应有一片低平陆地");
+    /* 第 17 行第 30 列：探针扫出的极干低地（水汽 0.02、基底约 320 m、周围 4 格全陆），画 −100 m 的盆成盐滩；最干那几格的盆集水够多、积成咸湖 */
+    const k0 = 17 * cols + 30;
+    assert.ok(Rd.base[k0] * um < 800 && fM[k0] < 0.05, "夹具的那一格该是极干低地");
+    for (let dr = -4; dr <= 4; dr++) for (let dc = -4; dc <= 4; dc++) assert.ok(!out[k0 + dr * cols + dc], "周围 4 格全陆");
     const fidx: number[] = [];
     for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) fidx.push(k0 + dr * cols + dc);
     const U = gen2Uplift(st, { idx: new Int32Array(0), peakM: new Float64Array(0), fidx: Int32Array.from(fidx).sort(), floorM: new Float64Array(9).fill(-100) }, riverParams(md));
@@ -1011,7 +1008,7 @@ describe("侵蚀的中尺度单（ErodeInput.mesoEnv）", () => {
     /* 钉现行输出：起伏封顶、不扭不羽、汇流微地形任一被改都会变（这条路径有意换代时才重钉，见 MESO_EALGO） */
     let x = 0x811c9dc5 | 0; const u = new Uint32Array(f1.data.buffer, f1.data.byteOffset, f1.data.length);
     for (let i = 0; i < u.length; i++) x = Math.imul(x ^ u[i], 16777619);
-    assert.strictEqual((x >>> 0).toString(36), "10ixbwb");
+    assert.strictEqual((x >>> 0).toString(36), "dl78ic");
     const plan = tilePlan(inp, 4e6, 0)!, keys = new Set<string>();
     assert.ok(plan && plan.tiles.length >= 2, "前提：至少两块");
     for (const t of plan.tiles.slice(0, 3)) {

@@ -2,14 +2,14 @@
    全图一窗就是工作档（core/erode.workNest），块的目标面随之取工作档；整球（工作档 1 倍）的块目标面取父基底，工作档与别的图照旧走 core/erode。
    ⚠ 跨引擎逐位确定（同 core/gen2）：只用四则、开方、floor 与整数哈希；窗口里的一切按全图细格号与全图坐标取，相邻两窗的公共格才同值。 */
 import { SHORE_E, WATER_EPS } from "./constants.ts";
-import { BOWL_MAX, MESO_ACRIT_KM2, MESO_HEAD, MESO_KAPPA_M, MESO_PLAIN_U0, MESO_PLAIN_U1, MESO_U_MIN, cosD, peakCapM, peakKneeM, pointOf, type MesoState, type UpliftPeak } from "./gen2.ts";
+import { BAND_BEND, BAND_BEND_KM, BAND_CONTRAST, BAND_KM, BOWL_MAX, MESO_ACRIT_KM2, MESO_HEAD, MESO_KAPPA_M, MESO_PLAIN_U0, MESO_PLAIN_U1, MESO_U_MIN, bandMultAt, cosD, peakCapM, peakKneeM, pointOf, type MesoState, type UpliftPeak } from "./gen2.ts";
 import { cellRand } from "./gen2mesh.ts";
 import { steady, type SteadyGraph, type SteadyResult } from "./steady.ts";
 import type { ElevField } from "./elev.ts";
 import type { ErodeInput } from "./erode.ts";
 
 /** 算法代号：嵌套解的流程或常数变了加一（只进带 nest 的单的键） */
-export const NEST_VER = 2;
+export const NEST_VER = 4;
 /** 每窗向外多解的父格：骨架之外的谷与坡要在这之内定形，不够则相邻两窗在块心交界上对不上 */
 export const NEST_MARGIN = 8;
 /** 骨架源点在窗口外再取几个父格：三角网的边（流向的一步）最多跨三格，窗外三格的节点流进窗里的那段要画上 */
@@ -34,6 +34,13 @@ const LOW_PASSES = 3;
 const NEST_AMP_REF = 0.7;
 /** 种子偏移：K 抖动、初值扰动、节点抖动各用一路 */
 const SEED_K = 4242, SEED_H0 = 17, SEED_JIT = 99;
+/** 历史（抬升暂态）：抬升从 UPLIFT_R·U 变到 U 之后过了 UPLIFT_T（τ 的单位＝Σ 边长/(K√A)，膝点以 K√A 自海湖上溯），
+    河道（汇流 ≥ UPLIFT_ACH_KM2 km²）τ ≤ t 的已到稳态、之上留老面（相对膝点按 r 缩）；坡面随它流入的河道。只给工作档 1 倍的图的块（见 nestedField） */
+export const UPLIFT_T = 6, UPLIFT_R = 0.2, UPLIFT_ACH_KM2 = 5;
+/** 冲积谷底：汇流 ≥ VF_MIN_KM2 的河道两侧 VF_KM·√A/2 公里内归最近的河道格取其高；宽封顶 FLOOR_MAX_KM、只夷平河床上方 FLOOR_MAX_M 米以内、不跨水 */
+export const VF_KM = 0.06, VF_MIN_KM2 = 30, FLOOR_MAX_KM = 8, FLOOR_MAX_M = 30;
+/** τ 的「无穷」（湖、够不到海的根）：有限值，双线性不出 NaN */
+const TAU_INF = 1e6;
 /** 块的目标面（工作档裁片）的量化步长（抽象高程，约 3 cm）：工作档在远处的位级扰动不许让所有块换键 */
 export const NEST_TGT_Q = 1 / 65536;
 /** 工作档嵌套解的代号：全图一窗那条路径（校峰等）的流程或常数变了加一（只进工作档单的键） */
@@ -45,14 +52,16 @@ const CAL_STEPS = 32;
 export interface NestBase {
   cols: number; rows: number;
   X: Float32Array; Y: Float32Array; fU: Float32Array; fK: Float32Array; fP: Float32Array; fB: Float32Array;
-  /** 生成器种子（gen2 的 seed × 31）、每度公里、球面 */
-  seed: number; kmd: number; sphere: boolean;
+  /** 生成器种子（gen2 的 seed × 31）、每度公里、球面；岩性带规格（gen2.BandSpec，细格的 K 按自己的格心再乘一次） */
+  seed: number; kmd: number; sphere: boolean; umax: number; bandN: number;
+  /** 折皱带占比（Macro.fold 插到网格）：岩性带只长在它上面 */
+  fG: Float32Array;
 }
 /** 抬升到目标的一区（同 gen2.UpliftPeak）：T 目标峰高（米）· mem 涂抹格 · idx / f 支撑格与软边权重；格号是全图父格 */
 export interface NestPeak { T: number; mem: Int32Array; idx: Int32Array; f: Float32Array }
-/** 外层的一份解：h 稳态高程（米）· sk 骨架边（0＝不是，否则受水者的格偏移编码）·
+/** 外层的一份解：h 稳态高程（米）· sk 骨架边（0＝不是，否则受水者的格偏移编码）· tauUp 抬升暂态的 τ（海湖 0 起）· A 汇流（km²）·
     up 画抬升叠的抬升（宏观单位）与软边权重（稀疏、格号升序）、抬升到目标的各区（没画山为 null） */
-export interface NestSol { h: Float32Array; sk: Uint8Array; up: { idx: Int32Array; du: Float32Array; kw: Float32Array; regs: NestPeak[] } | null }
+export interface NestSol { h: Float32Array; sk: Uint8Array; tauUp: Float32Array; A: Float32Array; up: { idx: Int32Array; du: Float32Array; kw: Float32Array; regs: NestPeak[] } | null }
 /** 宿主裁剪的来源：静态场与当前那份解；work＝落地的工作档（工作档也是嵌套解时，sx 倍细分），块的目标面取它 */
 export interface NestSrc { base: NestBase; sol: NestSol; work?: { data: Float32Array; sx: number } }
 /** 一窗的外层裁剪（ErodeInput.nest）。单的父格范围是窗口外扩 NEST_PAD 再钳到图幅，基底、水面、水域、盆地与涂改都按它裁；只解窗口那一块。
@@ -64,8 +73,10 @@ export interface NestInput {
   x0: number; y0: number; gcols: number; sx: number;
   /** 全图原点（度）与父格边长：细格的经纬一律按全图细格号算 */
   lon0: number; lat0: number; step: number;
-  seed: number; kmd: number; sphere: boolean;
+  seed: number; kmd: number; sphere: boolean; umax: number; bandN: number; fG: Float32Array;
   h: Float32Array; sk: Uint8Array; X: Float32Array; Y: Float32Array; fU: Float32Array; du: Float32Array | null; kw: Float32Array | null; K: Float32Array; P: Float32Array; B: Float32Array;
+  /** 外层的抬升暂态 τ 与汇流（裁剪）：窗边与骨架钉它们，细级的老面与谷底才与外层同一口径 */
+  tauUp: Float32Array; A: Float32Array;
   bsig: string;
   /** 块单的目标面：裁剪上的工作档（tsx 倍细分、按 NEST_TGT_Q 量化）；工作档不是嵌套解为 null（目标面取父基底） */
   tgt: Float32Array | null; tsx: number;
@@ -76,15 +87,16 @@ export interface NestInput {
 /** 中尺度求解状态 → 静态场（拷贝，回执可整份交出） */
 export function nestBaseOf(st: MesoState): NestBase {
   const { pr, G } = st, { cols, rows } = pr.g;
-  return { cols, rows, X: G.X.slice(), Y: G.Y.slice(), fU: Float32Array.from(pr.fU), fK: Float32Array.from(pr.fK), fP: Float32Array.from(pr.fP), fB: Float32Array.from(pr.fB),
-    seed: pr.p.seed * 31, kmd: pr.p.kmd, sphere: pr.p.sphere };
+  return { cols, rows, X: G.X.slice(), Y: G.Y.slice(), fU: Float32Array.from(pr.fU), fK: Float32Array.from(pr.fK), fP: Float32Array.from(pr.fP), fB: Float32Array.from(pr.fB), fG: Float32Array.from(pr.fG),
+    seed: pr.p.seed * 31, kmd: pr.p.kmd, sphere: pr.p.sphere, umax: pr.band.umax, bandN: pr.band.bandN };
 }
 /**
- * 一份外层稳态解（h / rcv / A 同 steady：中尺度的 Sg 或画抬升的解）→ 嵌套用的解：骨架＝非出口、流向不指自己、汇流面积 ≥ NEST_SKEL_CELLS 个本格面积。
- * 骨架的树与高程必须出自同一份稳态解：换成收尾后最终地表的流向树（抽河的那棵），平原与过渡带上骨架会比四周高出一截成墙、成坑，两窗交界差到上百米
+ * 一份外层稳态解（h / rcv / A / rl 同 steady）→ 嵌套用的解：骨架＝非出口、流向不指自己、汇流面积 ≥ NEST_SKEL_CELLS 个本格面积；τ 自海湖 0 起沿树累加
+ * （K 取求解用的那份：骨架钉的 τ 与细级累加的要一个口径，否则老面占比随级漂）。骨架的树与高程必须出自同一份稳态解：换成收尾后最终地表的流向树，
+ * 平原与过渡带上骨架会比四周高出一截成墙、成坑，两窗交界差到上百米
  */
-export function nestSolOf(st: MesoState, sol: { h: Float64Array; rcv: Int32Array; A: Float64Array }, up: { du: Float64Array; kw: Float64Array; regs: UpliftPeak[] } | null): NestSol {
-  const { pr } = st, { cols } = pr.g, { h, rcv, A } = sol, n = rcv.length, area = pr.area, out = pr.inp.out, sk = new Uint8Array(n);
+export function nestSolOf(st: MesoState, sol: { h: Float64Array; rcv: Int32Array; A: Float64Array; rl: Float64Array }, up: { du: Float64Array; kw: Float64Array; regs: UpliftPeak[] } | null): NestSol {
+  const { pr } = st, { cols } = pr.g, { h, rcv, A, rl } = sol, n = rcv.length, area = pr.area, out = pr.inp.out, sk = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     const j = rcv[i]; if (j === i || out[i] || !(A[i] >= NEST_SKEL_CELLS * area[i])) continue;
     const dx = (j % cols) - (i % cols), dy = ((j / cols) | 0) - ((i / cols) | 0);
@@ -97,7 +109,32 @@ export function nestSolOf(st: MesoState, sol: { h: Float64Array; rcv: Int32Array
     u = { idx: Int32Array.from(idx), du: Float32Array.from(idx, i => up.du[i]), kw: Float32Array.from(idx, i => up.kw[i]),
       regs: up.regs.map(r => ({ T: r.T, mem: Int32Array.from(r.mem), idx: Int32Array.from(r.idx), f: Float32Array.from(r.f) })) };
   }
-  return { h: Float32Array.from(h), sk, up: u };
+  const seed = new Float64Array(n);
+  for (let i = 0; i < n; i++) seed[i] = out[i] ? 0 : TAU_INF;
+  return { h: Float32Array.from(h), sk, tauUp: Float32Array.from(treeTau(rcv, rl, A, pr.inp.K, seed)), A: Float32Array.from(A), up: u };
+}
+
+/** 树序（父先于子）：根（指自己）在前，再按受水者的孩子表展开；返回排进去的个数（够不到根的节点不在里面） */
+function treeOrder(rcv: Int32Array): { order: Int32Array; no: number } {
+  const n = rcv.length, cnt = new Int32Array(n + 1), ch = new Int32Array(n), fill = new Int32Array(n), order = new Int32Array(n);
+  for (let i = 0; i < n; i++) if (rcv[i] !== i) cnt[rcv[i] + 1]++;
+  for (let i = 0; i < n; i++) cnt[i + 1] += cnt[i];
+  fill.set(cnt.subarray(0, n));
+  for (let i = 0; i < n; i++) if (rcv[i] !== i) ch[fill[rcv[i]]++] = i;
+  let no = 0;
+  for (let i = 0; i < n; i++) if (rcv[i] === i) order[no++] = i;
+  for (let q = 0; q < no; q++) { const i = order[q]; for (let k = cnt[i]; k < cnt[i + 1]; k++) order[no++] = ch[k]; }
+  return { order, no };
+}
+/** 树上自根起的溯源时间 τ_i = τ_rcv + rl_i/(K_i·√A_i)：膝点以 K√A 上溯，到 i 的时刻；seed 给根（海湖 0、够不到海 TAU_INF），封顶 TAU_INF */
+export function treeTau(rcv: Int32Array, rl: Float64Array, A: Float64Array, K: ArrayLike<number>, seed: Float64Array): Float64Array {
+  const n = rcv.length, tau = new Float64Array(n), { order, no } = treeOrder(rcv);
+  for (let q = 0; q < no; q++) {
+    const i = order[q], j = rcv[i];
+    tau[i] = j === i ? seed[i] : tau[j] + rl[i] / (K[i] * Math.sqrt(A[i]));
+    if (tau[i] > TAU_INF) tau[i] = TAU_INF;
+  }
+  return tau;
 }
 
 /** 只算键用的裁剪里静态场的占位（键拿 bsig 代替它们）：这样的裁剪发不得单 */
@@ -138,8 +175,9 @@ export function nestCrop(src: NestSrc, a0: number, a1: number, b0: number, b1: n
       for (let t = lo; t < idx.length && idx[t] < g1; t++) { const k = r * w + idx[t] - g0; du[k] = S.up.du[t]; kw[k] = S.up.kw[t]; if (du[k] !== 0) anyDu = true; if (kw[k] > 0) anyKw = true; }
     }
   }
-  return { wx: a0, wy: b0, wcols: a1 - a0, wrows: b1 - b0, x0, y0, gcols: gc, sx, lon0, lat0, step, seed: B.seed, kmd: B.kmd, sphere: B.sphere,
-    h: sub(S.h), sk: sub(S.sk), X: st(B.X), Y: st(B.Y), fU: st(B.fU), du: anyDu ? du : null, kw: anyKw ? kw : null, K: st(B.fK), P: st(B.fP), B: st(B.fB), bsig: baseSig(B),
+  return { wx: a0, wy: b0, wcols: a1 - a0, wrows: b1 - b0, x0, y0, gcols: gc, sx, lon0, lat0, step, seed: B.seed, kmd: B.kmd, sphere: B.sphere, umax: B.umax, bandN: B.bandN,
+    h: sub(S.h), sk: sub(S.sk), X: st(B.X), Y: st(B.Y), fU: st(B.fU), fG: st(B.fG), du: anyDu ? du : null, kw: anyKw ? kw : null, K: st(B.fK), P: st(B.fP), B: st(B.fB),
+    tauUp: sub(S.tauUp), A: sub(S.A), bsig: baseSig(B),
     tgt, tsx, pk: work ? (S.up ? S.up.regs : []) : null };
 }
 /* 静态场的内容摘要（FNV-1a 双流，按 NestBase 实例记忆）：静态场只随 mesoKey 变，逐块哈希它的裁剪是白花主线程 */
@@ -148,7 +186,7 @@ function baseSig(B: NestBase): string {
   const hit = sigMemo.get(B);
   if (hit) return hit;
   let a = 0x811c9dc5 | 0, b = 0x6c62272e | 0;
-  for (const f of [B.X, B.Y, B.fU, B.fK, B.fP, B.fB]) {
+  for (const f of [B.X, B.Y, B.fU, B.fK, B.fP, B.fB, B.fG]) {
     const u = new Uint32Array(f.buffer, f.byteOffset, f.length);
     let la = Math.imul(a ^ u.length, 16777619), lb = Math.imul(b ^ u.length, 0x85ebca6b);
     for (let i = 0; i < u.length; i++) { const x = u[i]; la = Math.imul(la ^ (x & 0xffff), 16777619); la = Math.imul(la ^ (x >>> 16), 16777619); lb = Math.imul(lb ^ (x >>> 16), 0x85ebca6b); lb = Math.imul(lb ^ (x & 0xffff), 0x85ebca6b); }
@@ -161,9 +199,10 @@ function baseSig(B: NestBase): string {
 /** 进 erodeKey 的数据：标量与常数一段、静态场摘要一段，其余数组逐个（基底、水面等随 ErodeInput 另进键） */
 export function nestKeyParts(ne: NestInput): (Uint32Array | Uint8Array)[] {
   const head = new Float64Array([NEST_VER, NEST_MARGIN, NEST_REACH, NEST_PAD, NEST_SKEL_CELLS, SK_R, NEST_JIT, NEST_KJIT, NEST_ITERS, HILL_KM2, HILL_PASSES, HILL_K, LOW_PASSES, NEST_AMP_REF,
-    SEED_K, SEED_H0, SEED_JIT, ne.wx, ne.wy, ne.wcols, ne.wrows, ne.x0, ne.y0, ne.gcols, ne.sx, ne.lon0, ne.lat0, ne.step, ne.seed, ne.kmd, ne.sphere ? 1 : 0, ne.du ? 1 : 0, ne.kw ? 1 : 0]);
+    SEED_K, SEED_H0, SEED_JIT, UPLIFT_T, UPLIFT_R, UPLIFT_ACH_KM2, VF_KM, VF_MIN_KM2, FLOOR_MAX_KM, FLOOR_MAX_M, TAU_INF, BAND_KM, BAND_CONTRAST, BAND_BEND_KM, BAND_BEND,
+    ne.wx, ne.wy, ne.wcols, ne.wrows, ne.x0, ne.y0, ne.gcols, ne.sx, ne.lon0, ne.lat0, ne.step, ne.seed, ne.kmd, ne.sphere ? 1 : 0, ne.umax, ne.bandN, ne.du ? 1 : 0, ne.kw ? 1 : 0]);
   const v = (a: Float32Array): Uint32Array => new Uint32Array(a.buffer, a.byteOffset, a.length);
-  const parts: (Uint32Array | Uint8Array)[] = [new Uint32Array(head.buffer), Uint32Array.from(ne.bsig, ch => ch.charCodeAt(0)), v(ne.h), ne.sk, ...(ne.du ? [v(ne.du)] : []), ...(ne.kw ? [v(ne.kw)] : [])];
+  const parts: (Uint32Array | Uint8Array)[] = [new Uint32Array(head.buffer), Uint32Array.from(ne.bsig, ch => ch.charCodeAt(0)), v(ne.h), ne.sk, v(ne.tauUp), v(ne.A), ...(ne.du ? [v(ne.du)] : []), ...(ne.kw ? [v(ne.kw)] : [])];
   /* 只在有它们时追加：不带目标面的块单、整球图的块键与之前一字不差 */
   if (ne.tgt) parts.push(new Uint32Array(new Float64Array([ne.tsx, NEST_TGT_Q]).buffer), v(ne.tgt));
   if (ne.pk) {
@@ -272,17 +311,63 @@ export function resample(G: { nbOff: Int32Array; nb: Int32Array; jx: Float64Arra
   return o;
 }
 
-/** 解一窗要的细格量：父格号 par（单的裁剪里）、细格水 wat、出口 out 与出口高程 hOut（米）、窗口原点（全图细格）与细格边 */
-export interface NestFine { FC: number; FR: number; gc0: number; gr0: number; fs: number; par: Int32Array; wat: Uint8Array; out: Uint8Array; hOut: Float64Array }
+/** 解一窗要的细格量：父格号 par（单的裁剪里）、细格水 wat、出口 out 与出口高程 hOut（米）、窗口原点（全图细格）与细格边；
+    K 求解用的 K、tauUpOut / Apin 钉住的格（窗边、骨架）从外层取的 τ 与汇流（其余 0）、kw 画抬升的软边权重（没画山为 null） */
+export interface NestFine { FC: number; FR: number; gc0: number; gr0: number; fs: number; par: Int32Array; wat: Uint8Array; out: Uint8Array; hOut: Float64Array; K: Float64Array; tauUpOut: Float64Array; Apin: Float64Array; kw: Float64Array | null }
 
 /**
  * 一窗的嵌套解：inp 是 core/tiles.tileInput 带 nest 的块单（裁剪上的基底、水与水面、盆地掩码、高程涂改，外加外层裁剪）。
+ * 历史与谷底只给 tgt 与 pk 都为 null 的单（工作档 1 倍的图的块）：目标面是工作档的块再留一遍老面，膝点与工作档的对不上（河在工作档上是谷的 85% → 67%）。
  * @returns 窗口（nest.wx / wy / wcols / wrows）的细格场，抽象单位、同 erodeField 的产出
  */
 export function nestedField(inp: ErodeInput): ElevField {
-  const ne = inp.nest!, { F, G, sol } = nestSolve(inp), lonMin = ne.lon0 + ne.wx * ne.step, latMin = ne.lat0 + ne.wy * ne.step;
-  return { data: nestFinish(inp, G, sol.h, sol.A, F), cols: F.FC, rows: F.FR, step: F.fs, eroded: true,
+  const ne = inp.nest!, { F, G, sol } = nestSolve(inp), H = ne.tgt || ne.pk ? null : nestHistory(F, G, sol), lonMin = ne.lon0 + ne.wx * ne.step, latMin = ne.lat0 + ne.wy * ne.step;
+  return { data: nestFinish(inp, G, sol.h, sol.A, F, H ? H.vfi : null), cols: F.FC, rows: F.FR, step: F.fs, eroded: true,
     bb: { lonMin, latMin, lonMax: lonMin + ne.wcols * ne.step, latMax: latMin + ne.wrows * ne.step } };
+}
+
+/** 解之后、收尾之前：tauUp 本级每细格的抬升暂态 τ · Af 汇流（钉住的格取外层的）· vfi 谷底归属（取谁的高，细格号，−1 无）· rel 老面占陆格的份额 */
+export interface NestHistory { tauUp: Float64Array; Af: Float64Array; vfi: Int32Array; rel: number }
+/** 老面（就地改 sol.h，沿树父先于子）：河道（Af ≥ UPLIFT_ACH_KM2）看自己的 τ、坡面随它流入的河道（坡面的 τ 按小 A 累加会把紧挨河道的坡面判成老面），
+    τ > t 的相对膝点（路径上最后一个已调整的格）按 r 缩、两段连续；钉住的根以自己的高程为基准；画的山是新抬升，按软边权重 kw 免缩。
+    谷底归属：河道两侧 VF_KM·√Af/2 公里内归最近的河道格（同距归低的；归最低的成马赛克），收尾盖章时取它的高 */
+export function nestHistory(F: NestFine, G: NestGraph, sol: SteadyResult): NestHistory {
+  const { FC, FR, out, wat, K, tauUpOut, Apin, kw } = F, { rcv, rl, A, h } = sol, n = FC * FR;
+  /* 汇流：钉住的格（骨架、窗边）取外层交来的（它知道河真正的汇流），其余取本级森林的（骨架之间的小流域，局部） */
+  const Af = Float64Array.from(A);
+  for (let i = 0; i < n; i++) if (out[i] && Apin[i] > A[i]) Af[i] = Apin[i];
+  const tauUp = treeTau(rcv, rl, A, K, tauUpOut), { order, no } = treeOrder(rcv), ref = new Float64Array(n), st = new Uint8Array(n);
+  let nRel = 0, nLand = 0;
+  for (let q = 0; q < no; q++) {
+    const i = order[q], j = rcv[i];
+    if (j === i) { ref[i] = h[i]; st[i] = !wat[i] && tauUp[i] > UPLIFT_T ? 1 : 0; continue; }
+    nLand++;
+    const rel = Af[i] >= UPLIFT_ACH_KM2 ? tauUp[i] > UPLIFT_T : st[j] === 1;
+    if (!rel) { ref[i] = h[i]; continue; }
+    st[i] = 1; nRel++;
+    ref[i] = st[j] ? ref[j] : h[j];
+    const r = kw ? UPLIFT_R + (1 - UPLIFT_R) * kw[i] : UPLIFT_R;
+    if (r < 1) h[i] = ref[i] + r * (h[i] - ref[i]);   // 画的山（kw 1）一个字不动：ref + 1·(h − ref) 会差一两个 ULP
+  }
+  /* 谷底的归属：宽随流量但有上限（大河的下切谷与河曲带也就几公里到十公里，不是整片平原）；只夷平河床上方 FLOOR_MAX_M 以内的（阶地与冲积面，不削山）；
+     不跨水（隔着海湾的低地不是这条河的谷底；谷底宽按 √A 展、24 万 km² 的干流能展出 29 km 的盘，跨过海湾把对岸压到河床高）。半径不到一格的河什么都不展 */
+  const vfi = new Int32Array(n).fill(-1), d2v = new Float64Array(n).fill(Infinity);
+  for (let i = 0; i < n; i++) {
+    if (wat[i] || !(Af[i] >= VF_MIN_KM2)) continue;
+    const ci = i % FC, ri = (i - ci) / FC, cellKm = Math.sqrt(G.area[i]), Rkm = VF_KM * Math.sqrt(Af[i]) / 2, R = (Rkm < FLOOR_MAX_KM / 2 ? Rkm : FLOOR_MAX_KM / 2) / cellKm, Ri = Math.floor(R);
+    if (Ri < 1) continue;
+    for (let dr = -Ri; dr <= Ri; dr++) for (let dc = -Ri; dc <= Ri; dc++) {
+      const d2 = dr * dr + dc * dc; if (d2 > R * R) continue;
+      const r = ri + dr, c = ci + dc; if (r < 0 || c < 0 || r >= FR || c >= FC) continue;
+      const j = r * FC + c; if (wat[j] || out[j] || j === i || h[j] - h[i] > FLOOR_MAX_M) continue;
+      const adr = dr < 0 ? -dr : dr, adc = dc < 0 ? -dc : dc, steps = adr > adc ? adr : adc;
+      let cross = false;
+      for (let s = 1; s < steps && !cross; s++) { const rr = ri + Math.floor(dr * s / steps + 0.5), cc = ci + Math.floor(dc * s / steps + 0.5); if (wat[rr * FC + cc]) cross = true; }
+      if (cross) continue;
+      if (d2 < d2v[j] || (d2 === d2v[j] && h[i] < h[vfi[j]])) { d2v[j] = d2; vfi[j] = i; }
+    }
+  }
+  return { tauUp, Af, vfi, rel: nLand ? nRel / nLand : 0 };
 }
 /**
  * 收尾之前的那一步：出口＝细格水（水陆交界一圈按基底与水面的等值线定，高程取水面）、窗口外圈（取磨平的外层解）与骨架（高程沿外层解线性插），
@@ -305,6 +390,7 @@ export function nestSolve(inp: ErodeInput): { F: NestFine; G: NestGraph; sol: St
   const hB = Float64Array.from(ne.h);
   blur3(hB, cols, rows);   // 初值：外层解磨平一个父格
   const U = new Float64Array(n), K = new Float64Array(n), out = new Uint8Array(n), hOut = new Float64Array(n), h0 = new Float64Array(n), area = new Float64Array(n), wat = new Uint8Array(n), par = new Int32Array(n);
+  const tauUpOut = new Float64Array(n), Apin = new Float64Array(n), { tauUp: tauUpP, A: AP } = ne, kwF = ne.kw ? new Float64Array(n) : null;   // 水格 τ 0；窗边与骨架从外层取
   const kmF = fs * ne.kmd, sd = ne.seed;
   for (let r = 0; r < FR; r++) {
     const gr = gr0 + r, lat = ne.lat0 + (gr + 0.5) * fs, cy = (gr + 0.5) / sx - 0.5 - ne.y0, a = kmF * (ne.sphere ? Math.max(0.05, cosD(lat)) : 1) * kmF;
@@ -313,10 +399,12 @@ export function nestSolve(inp: ErodeInput): { F: NestFine; G: NestGraph; sol: St
       par[i] = k; area[i] = a;
       wat[i] = shore[k] ? (bil(elev0, cols, rows, cx, cy) < wsurf[k] - WATER_EPS ? 1 : 0) : water[k];
       U[i] = bil(Uc, cols, rows, cx, cy);
-      K[i] = bil(ne.K, cols, rows, cx, cy) * (1 - NEST_KJIT / 2 + NEST_KJIT * cellRand(gi, sd + SEED_K));
+      K[i] = bil(ne.K, cols, rows, cx, cy) * (1 - NEST_KJIT / 2 + NEST_KJIT * cellRand(gi, sd + SEED_K))
+        * bandMultAt(ne, bil(ne.fU, cols, rows, cx, cy) / ne.umax, bil(ne.fG, cols, rows, cx, cy), pointOf(ne, ne.lon0 + (gc + 0.5) * fs, lat), sd);   // 岩性带按细格心取（ne.K 不含带）
+      if (kwF) kwF[i] = bil(ne.kw!, cols, rows, cx, cy);
       const hb = bil(hB, cols, rows, cx, cy);
       if (wat[i]) { out[i] = 1; hOut[i] = wsurf[k] * um; h0[i] = hOut[i]; }
-      else if (r === 0 || c === 0 || r === FR - 1 || c === FC - 1) { out[i] = 1; hOut[i] = hb; h0[i] = hb; }
+      else if (r === 0 || c === 0 || r === FR - 1 || c === FC - 1) { out[i] = 1; hOut[i] = hb; h0[i] = hb; tauUpOut[i] = bil(tauUpP, cols, rows, cx, cy); Apin[i] = bil(AP, cols, rows, cx, cy); }
       else h0[i] = hb + 1e-3 * cellRand(gi, sd + SEED_H0);
     }
   }
@@ -326,7 +414,7 @@ export function nestSolve(inp: ErodeInput): { F: NestFine; G: NestGraph; sol: St
     const kc = (y - ne.y0) * cols + x - ne.x0, code = ne.sk[kc]; if (!code) continue;
     const jxp = x + (code - 1) % SK_W - SK_R, jyp = y + Math.floor((code - 1) / SK_W) - SK_R;
     if (jxp < ne.x0 || jyp < ne.y0 || jxp >= ne.x0 + cols || jyp >= ne.y0 + rows) continue;
-    const jc = (jyp - ne.y0) * cols + jxp - ne.x0, ha = ne.h[kc], hz = ne.h[jc];
+    const jc = (jyp - ne.y0) * cols + jxp - ne.x0, ha = ne.h[kc], hz = ne.h[jc], ua = tauUpP[kc], uz = tauUpP[jc], Aa = AP[kc], Az = AP[jc];
     const xa = (ne.X[kc] + 0.5) * sx - 0.5, ya = (ne.Y[kc] + 0.5) * sx - 0.5, xb = (ne.X[jc] + 0.5) * sx - 0.5, yb = (ne.Y[jc] + 0.5) * sx - 0.5;
     const ax = xb > xa ? xb - xa : xa - xb, ay = yb > ya ? yb - ya : ya - yb, L = 1 - Math.floor(-2 * (ax > ay ? ax : ay));
     for (let t = 0; t <= L; t++) {
@@ -334,12 +422,12 @@ export function nestSolve(inp: ErodeInput): { F: NestFine; G: NestGraph; sol: St
       if (c < 1 || r < 1 || c >= FC - 1 || r >= FR - 1) continue;
       const i = r * FC + c; if (wat[i]) continue;
       const hv = ha + (hz - ha) * s;
-      if (!out[i] || hv < hOut[i]) { out[i] = 1; hOut[i] = hv; h0[i] = hv; }
+      if (!out[i] || hv < hOut[i]) { out[i] = 1; hOut[i] = hv; h0[i] = hv; tauUpOut[i] = ua + (uz - ua) * s; Apin[i] = Aa + (Az - Aa) * s; }
     }
   }
   const G = nestGraph(FC, FR, gc0, gr0, FCg, fs, ne, area);
   const sol = steady(G, { U, K, acrit: MESO_ACRIT_KM2, out, hOut, head: MESO_HEAD }, h0, { maxIt: NEST_ITERS, tol: 0, canon: true });
-  return { F: { FC, FR, gc0, gr0, fs, par, wat, out, hOut }, G, sol };
+  return { F: { FC, FR, gc0, gr0, fs, par, wat, out, hOut, K, tauUpOut, Apin, kw: kwF }, G, sol };
 }
 
 /**
@@ -357,8 +445,8 @@ function nestTarget(inp: ErodeInput, F: NestFine, land: Uint8Array): Float64Arra
   return t;
 }
 
-/** 收尾（同中尺度收尾的细格版）：挪回格心 → 坡面扩散 → 加高原、软上限、扣盆地 → 低通校正到目标面（nestTarget）→ 平原渐变与起伏权重 → 水陆钳制 */
-function nestFinish(inp: ErodeInput, G: NestGraph, hs: Float64Array, A: Float64Array, F: NestFine): Float32Array {
+/** 收尾（同中尺度收尾的细格版）：挪回格心 → 坡面扩散 → 加高原、软上限、扣盆地 → 低通校正到目标面（nestTarget）→ 平原渐变与起伏权重 → 水陆钳制 → 谷底盖章（vfi） */
+function nestFinish(inp: ErodeInput, G: NestGraph, hs: Float64Array, A: Float64Array, F: NestFine, vfi: Int32Array | null): Float32Array {
   const ne = inp.nest!, { cols, rows, wsurf, hovGrid, basin, unitM: um } = inp, sx = ne.sx, { FC, FR, gc0, gr0, par, wat, out } = F, n = FC * FR;
   const h = resample(G, hs, out, FC);
   const h2 = new Float64Array(n);
@@ -373,19 +461,19 @@ function nestFinish(inp: ErodeInput, G: NestGraph, hs: Float64Array, A: Float64A
   const fine = new Float64Array(n), w = new Float64Array(n), hov = new Float64Array(n);
   let noHov = true;   // 目标面是工作档时它已带着高程涂改：再叠一次就是两份
   if (!ne.tgt) for (let k = 0; k < hovGrid.length && noHov; k++) if (hovGrid[k] !== 0) noHov = false;
-  const bm = basin ? Float32Array.from(basin, v => v & 1) : null;
+  const bm = basin ? Float32Array.from(basin, v => v & 1) : null, inB = bm && vfi ? new Uint8Array(n) : null;
   for (let r = 0; r < FR; r++) {
     const cy = (gr0 + r + 0.5) / sx - 0.5 - ne.y0, knee = peakKneeM(ne.sphere, ne.lat0 + (gr0 + r + 0.5) * ne.step / sx);   // 膝点随这一行细格的纬度，同 gen2 收尾
     for (let c = 0; c < FC; c++) {
       const i = r * FC + c, cx = (gc0 + c + 0.5) / sx - 0.5 - ne.x0;
-      const kwv = ne.kw ? bil(ne.kw, cols, rows, cx, cy) : 0;
+      const kwv = F.kw ? F.kw[i] : 0;
       let v = peakCapM(h[i] + bil(ne.P, cols, rows, cx, cy), knee, kwv);
       const b = bil(ne.B, cols, rows, cx, cy);
       v -= b < BOWL_MAX * v ? b : BOWL_MAX * v;
       fine[i] = (v > 1 ? v : 1) / um;
       let wu = sstep((bil(ne.fU, cols, rows, cx, cy) + (ne.du ? bil(ne.du, cols, rows, cx, cy) : 0) - MESO_PLAIN_U0) / (MESO_PLAIN_U1 - MESO_PLAIN_U0));
       if (kwv > wu) wu = kwv;
-      if (bm) wu *= 1 - bil(bm, cols, rows, cx, cy);   // 画的盆地：盆底与盆沿照目标面
+      if (bm) { const bv = bil(bm, cols, rows, cx, cy); wu *= 1 - bv; if (inB && bv > 0) inB[i] = 1; }   // 画的盆地：盆底与盆沿照目标面，谷底也不盖进去
       w[i] = wu;
       if (!noHov) hov[i] = bil(hovGrid, cols, rows, cx, cy);
     }
@@ -405,6 +493,16 @@ function nestFinish(inp: ErodeInput, G: NestGraph, hs: Float64Array, A: Float64A
     const v = T[i] + hov[i] + a, fl = wsurf[k] - WATER_EPS + 1e-4;
     o[i] = v > fl ? v : fl;
     if (z0) z0[i] = T[i] + a;
+  }
+  /* 谷底：归属了河道格的格取它的高（只降不升、不低于所在父格的水面——河口的河床可以在海面下，冲积面不能）；河道格自己已含低通校正与起伏，谷底面沿河连续 */
+  if (vfi) for (let pass = 0; pass < 8; pass++) {   // 河道格自己也可能归属更宽的河：盖到不动为止，不然先盖的格留在归属河道盖章前的高
+    let moved = false;
+    for (let i = 0; i < n; i++) {
+      const t = vfi[i]; if (t < 0 || (inB && inB[i])) continue;
+      const ws = wsurf[par[i]], v = o[t] < ws ? ws : o[t];
+      if (v < o[i]) { o[i] = v; moved = true; }
+    }
+    if (!moved) break;
   }
   if (z0) peakCal(inp, F, o, z0, hov);
   return o;

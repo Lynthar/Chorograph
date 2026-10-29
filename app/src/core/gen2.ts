@@ -134,7 +134,7 @@ interface Plate { S: Pt; N: Pt; r: number; edge: number; area: number; L: number
 /** 边界类型：汇聚 / 离散 / 转换 */
 type Bound = "conv" | "div" | "trans";
 interface Pair { type: Bound; s: number; u: number }
-interface Scene { c: Float64Array; U: Float64Array; rift: Uint8Array; sdk: Float64Array; act: Float64Array; hw: Float64Array; mid: Float64Array; pen: Float64Array; plateaus: { C: Pt; ax: Pt; r: number; h: number }[]; basins: { C: Pt; r: number; d: number }[]; warpKm: number; wind: [number, number] }
+interface Scene { c: Float64Array; U: Float64Array; fold: Float64Array; rift: Uint8Array; sdk: Float64Array; act: Float64Array; hw: Float64Array; mid: Float64Array; pen: Float64Array; plateaus: { C: Pt; ax: Pt; r: number; h: number }[]; basins: { C: Pt; r: number; d: number }[]; warpKm: number; wind: [number, number] }
 /** 宏观格几何：节点 i 落在格 (i % cols, ⌊i / cols⌋) 里、确切位置是三角网的 (mesh.X[i], mesh.Y[i])，P 是它的图上点；
     dx / dy 是名义格距（节点面积与逐列扫掠用），len 是三角网邻接边的实际长度（km，与 mesh.nb 同序） */
 interface MacroGeom { cols: number; rows: number; dlon: number; dlat: number; dx: Float64Array; dy: number; P: Pt[]; mesh: Gen2Mesh; len: Float64Array }
@@ -320,7 +320,7 @@ function buildScene(p: Gen2Params, ks: number, G: MacroGeom): Scene {
   for (const [d, s] of [[dCoast, kCoast], [dAnd, sAnd], [dCol, sCol], [dArc, sArc], [dRift, oRift], [dTr, Z6()], [dBA, sBA]] as [Float64Array, Float64Array][]) distField(d, s, lab, G);
 
   /* 6. 陆地度 c 与抬升 U */
-  const c = new Float64Array(n), U = new Float64Array(n), rift = new Uint8Array(n), isl = p.style === "isles";
+  const c = new Float64Array(n), U = new Float64Array(n), fold = new Float64Array(n), rift = new Uint8Array(n), isl = p.style === "isles";
   /* 活动度 0..1：俯冲带、岛弧、火山岛与构造性海岸——海岸陡、陆架窄、噪声小（被动边缘为 0） */
   const act = new Float64Array(n);
   for (let i = 0; i < n; i++) act[i] = Math.max(dAnd[i] < Infinity ? 1 - sstep((dAnd[i] - 150) / 450) : 0, dBA[i] < Infinity ? 0.7 * (1 - sstep((dBA[i] - 250) / 300)) : 0);
@@ -369,9 +369,9 @@ function buildScene(p: Gen2Params, ks: number, G: MacroGeom): Scene {
       rift[i] = kCoast[i] === 1 && dCoast[i] < 600 * ks ? 1 : kCoast[i] === 2 && dCoast[i] < 400 ? 2 : 0;
     } else c[i] = -1;
     if (isl) c[i] += 0.5 * fbm3(Pi.x, Pi.y, Pi.z, 500 * ks, 5, sd + 5);   // 群岛：洋面上散布的岛也进骨架（骨架陆地凑不够目标时分位阈值会沉进大洋）
-    let u = 0;
-    if (dAnd[i] < Infinity) u += (0.7 + 0.6 * sAnd[i]) * bump((dAnd[i] - Dand) / Wand);
-    if (dCol[i] < Infinity) u += (0.6 + 0.5 * sCol[i]) * bump(dCol[i] / Wcol);
+    let u = 0, uf = 0;   // uf＝折皱带那份抬升：碰撞带全算、贴岸山脉算一半（核是岩浆弧、前陆才是褶皱冲断带），岛弧、裂谷肩、转换带、热点不算
+    if (dAnd[i] < Infinity) { const v = (0.7 + 0.6 * sAnd[i]) * bump((dAnd[i] - Dand) / Wand); u += v; uf += 0.5 * v; }
+    if (dCol[i] < Infinity) { const v = (0.6 + 0.5 * sCol[i]) * bump(dCol[i] / Wcol); u += v; uf += v; }
     if (dRift[i] < Infinity) u += 0.25 * bump((dRift[i] - oRift[i] - 90) / Wsh);
     if (dTr[i] < Infinity && A.cont) u += 0.22 * bump(dTr[i] / Wtr);
     if (dArc[i] < Infinity) {
@@ -382,7 +382,7 @@ function buildScene(p: Gen2Params, ks: number, G: MacroGeom): Scene {
       const seg = clamp01(0.75 + 1.3 * fbm3(Pi.x, Pi.y, Pi.z, 380, 2, sd + 53)), b = bump((dBA[i] - 170) / W(115)) * seg;
       c[i] += 1.9 * b; u += (0.75 + 0.5 * sBA[i]) * b;
     }
-    U[i] = u * mtnK;
+    U[i] = u * mtnK; fold[i] = uf * mtnK;
   }
 
   /* 7. 热点链：顺板块在热点处的运动方向排开，越老越低（同板块的链方向相同）；落在陆上的照样抬升 */
@@ -420,8 +420,9 @@ function buildScene(p: Gen2Params, ks: number, G: MacroGeom): Scene {
     for (let t = 0; t < 12; t++) { const X = P[pick(R, xs)], d = sub(X, A0), e = Math.abs(Math.sqrt(dot(d, d)) - 1000 * ks); if (e < bs) { bs = e; B0 = X; } }
     const M = onSurf({ x: (A0.x + B0.x) / 2 + (R() - 0.5) * 300 * ks, y: (A0.y + B0.y) / 2 + (R() - 0.5) * 300 * ks, z: (A0.z + B0.z) / 2 + (p.sphere ? (R() - 0.5) * 300 * ks : 0) });
     const B: Band = { pts: [A0, M, B0], w: 200 + 120 * R(), s: 0.55 * mtnK };
-    for (let i = 0; i < n; i++) if (lab[i] === k) U[i] += bandVal(B, P[i]);
+    for (let i = 0; i < n; i++) if (lab[i] === k) { const v = bandVal(B, P[i]); U[i] += v; fold[i] += v; }
   });
+  for (let i = 0; i < n; i++) fold[i] = U[i] > 0 ? (fold[i] < U[i] ? fold[i] / U[i] : 1) : 0;   // 折皱带占比 0..1，随后的热点链只加 U 不加它
   const plateaus: Scene["plateaus"] = [], basins: Scene["basins"] = [];
   const Rt = rs(11);
   if (!isl && Rt() < 0.3 + 0.5 * p.mtn) {
@@ -583,7 +584,7 @@ function buildScene(p: Gen2Params, ks: number, G: MacroGeom): Scene {
     act.set(tmp);
   }
   const Rw = rs(15), wg = norm({ x: Rw() - 0.5, y: Rw() - 0.5, z: 0 });
-  return { c, U, rift, sdk, act, hw, mid, pen, plateaus, basins, warpKm: (isl ? 160 : 260) * ks, wind: [wg.x, wg.y] };
+  return { c, U, fold, rift, sdk, act, hw, mid, pen, plateaus, basins, warpKm: (isl ? 160 : 260) * ks, wind: [wg.x, wg.y] };
 }
 
 /** 图幅的名义宽高（km，球面按中纬折经向）：构图缩放与河的起画水量都按它对缺省图幅的面积比 */
@@ -612,6 +613,7 @@ export interface Macro {
   kmPerS: number;                           // 海侧陆地度每单位折多少公里（陆架按它把宽度换成陆地度）
   iters: number;
   U: Float64Array; K: Float64Array;         // 稳态求解用的抬升（含陆地低抬升底）与可蚀性（含逐节点抖动）：中尺度稳态插到细格照用
+  fold: Float64Array;                       // 抬升里折皱带那份的占比 0..1（碰撞带、古老造山带、半份贴岸山脉）：岩性带只长在这上面
   hRel: Float64Array;                       // 稳态解（乘 KAPPA_M 之前，海 0）
   plat: Float64Array; bowl: Float64Array;   // 高原叠加与沉降盆地的扣减量（米）
 }
@@ -762,7 +764,7 @@ export function buildMacro(p: Gen2Params): Macro {
     const sl = j === i ? 0.05 : Math.max(0.05, (sf[i] - (land[j] ? sf[j] : 0)) / rl[i]);   // 米/km
     wet[i] = fr.Q[i] / sl;   // 水量 ÷ 坡度：干处不沿大河长沼泽
   }
-  return { cols, rows, lon0: bb.lonMin, lat0: bb.latMin, dlon, dlat, dx, dy, mesh, rcv, acc: A, q: fr.Q, salt, lakeEnd, s, land, h, lake, lakeS, relief, moist, wet, shelf: shelfW, camp, cwarp, mid: Float64Array.from(sc.mid, v => Math.min(v, 1e6)), coastLam, coastK, kmPerS: (isl ? 160 : CO_LOUT) * ks, iters, U, K, hRel, plat, bowl };
+  return { cols, rows, lon0: bb.lonMin, lat0: bb.latMin, dlon, dlat, dx, dy, mesh, rcv, acc: A, q: fr.Q, salt, lakeEnd, s, land, h, lake, lakeS, relief, moist, wet, shelf: shelfW, camp, cwarp, mid: Float64Array.from(sc.mid, v => Math.min(v, 1e6)), coastLam, coastK, kmPerS: (isl ? 160 : CO_LOUT) * ks, iters, U, K, fold: sc.fold, hRel, plat, bowl };
 }
 /** 峰顶软上限：膝点以上按 x/(1+x/软度) 压缩，渐近膝点 + 软度（3 km）。球面图的膝点随纬度＝雪线曲线 + PEAK_ABOVE_SNOW_M（赤道恰 PEAK_KNEE_M）：
     最高峰随雪线往极地下降、高程面积在雪线之下堆积；平面图没有气候纬度，膝点恒 PEAK_KNEE_M */
@@ -1448,7 +1450,7 @@ function landStencil(i: number, a: number, out: Uint8Array, cols: number, rows: 
 }
 
 /** 中尺度算法代号：中尺度的数学或常数变了就加一，缓存键随之换代（旧解不许还魂） */
-export const MESO_VER = 2;
+export const MESO_VER = 3;
 /** 中尺度稳态的解：高程（米）与流向。缓存这两样就够——汇流面积由流向重积（treeArea），与现解逐位同 */
 export interface Gen2Sg { h: Float64Array; rcv: Int32Array }
 /** 中尺度的产出（网格分辨率）：base＝连续基底（抽象单位；水格照 gen2Fine.base）· env＝起伏包络 0..1（水格 0）·
@@ -1463,18 +1465,80 @@ export function mesoKey(meta: Meta, g: FieldGeom): string {
   return "m" + MESO_VER + ":" + JSON.stringify([gen2Params(meta), g.bb, g.step, g.cols, g.rows]);
 }
 
+/* —— 岩性带：褶皱带里硬软岩层平行造山带，K 按带分档。带的坐标取宏观抬升 U/Umax（等值线平行造山带），每 1/bandN 一条，
+   叠两个倍频的三维噪声当褶皱弯曲，带号整数哈希查五档倍率表。静态场，中尺度与块层同一函数、各在自己的格心取 —— */
+/** 目标带宽（km）· 最硬对最软 ＝ c² · 弯曲波长（km）· 弯曲幅度（带数；|弯| 中位约 0.24 条带） */
+export const BAND_KM = 8, BAND_CONTRAST = 3.2, BAND_BEND_KM = 60, BAND_BEND = 1.16;
+/** 带只属于造山带：U/Umax 低于 U0 倍率恒 1、到 U1 满幅渐入（低地与平台整片落在同一带号上，不渐入＝半张图的低地拿同一个倍率）；带数的梯度中位也只看 U0 以上 */
+export const BAND_U0 = 0.1, BAND_U1 = 0.2;
+/** 折皱带里也只有一部分露出成层岩性：按 BAND_VAR_KM 尺度的噪声开关，约四成折皱带满幅、其余不显 */
+export const BAND_VAR_KM = 1500;
+const BAND_TAB = [1 / BAND_CONTRAST, 1 / Math.sqrt(BAND_CONTRAST), 1, Math.sqrt(BAND_CONTRAST), BAND_CONTRAST];
+/** 带规格：umax＝宏观抬升最大值 · bandN＝U/Umax 从 0 到 1 切几条带（0＝没有带，倍率恒 1） */
+export interface BandSpec { umax: number; bandN: number }
+const bandMemo = new WeakMap<Macro, BandSpec>();
+/** 带数按目标带宽与 U/Umax 的梯度中位数反推：陆地节点（U > 0.1·Umax）各按邻点最小二乘求切面梯度（法向加一项压住），取 |∇| 的中位。只随宏观，换网格不变 */
+export function bandSpecOf(M: Macro, p: Gen2Params): BandSpec {
+  const hit = bandMemo.get(M);
+  if (hit) return hit;
+  const { mesh, U, land, lon0, lat0, dlon, dlat } = M, n = U.length, g: number[] = [];
+  let umax = 0;
+  for (let i = 0; i < n; i++) if (U[i] > umax) umax = U[i];
+  if (umax > 0) {
+    const P: Pt[] = new Array(n), Us = new Float64Array(n);
+    for (let i = 0; i < n; i++) P[i] = pointOf(p, lon0 + (mesh.X[i] + 0.5) * dlon, lat0 + (mesh.Y[i] + 0.5) * dlat);
+    for (let i = 0; i < n; i++) {   // 磨半格再求梯度：中尺度场就是按半个宏观格磨过的，节点间的抖动不算带
+      let s = 0, m = 0;
+      for (let e = mesh.nbOff[i]; e < mesh.nbOff[i + 1]; e++) { s += U[mesh.nb[e]]; m++; }
+      Us[i] = m ? 0.5 * U[i] + 0.5 * s / m : U[i];
+    }
+    for (let i = 0; i < n; i++) {
+      if (!land[i] || U[i] < BAND_U0 * umax) continue;
+      const a = P[i], N = p.sphere ? norm(a) : { x: 0, y: 0, z: 1 };
+      let axx = 0, axy = 0, axz = 0, ayy = 0, ayz = 0, azz = 0, bx = 0, by = 0, bz = 0;
+      for (let e = mesh.nbOff[i]; e < mesh.nbOff[i + 1]; e++) {
+        const b = P[mesh.nb[e]], x = b.x - a.x, y = b.y - a.y, z = b.z - a.z, du = (Us[mesh.nb[e]] - Us[i]) / umax;
+        axx += x * x; axy += x * y; axz += x * z; ayy += y * y; ayz += y * z; azz += z * z; bx += du * x; by += du * y; bz += du * z;
+      }
+      const t = axx + ayy + azz;   // 法向压项按邻点距离的量级给：邻点都近乎在切面上，不压则法向分量把噪声放大
+      axx += t * N.x * N.x; axy += t * N.x * N.y; axz += t * N.x * N.z; ayy += t * N.y * N.y; ayz += t * N.y * N.z; azz += t * N.z * N.z;
+      const det = axx * (ayy * azz - ayz * ayz) - axy * (axy * azz - ayz * axz) + axz * (axy * ayz - ayy * axz);
+      if (!(det > 0)) continue;
+      const gx = (bx * (ayy * azz - ayz * ayz) - axy * (by * azz - ayz * bz) + axz * (by * ayz - ayy * bz)) / det;
+      const gy = (axx * (by * azz - ayz * bz) - bx * (axy * azz - ayz * axz) + axz * (axy * bz - by * axz)) / det;
+      const gz = (axx * (ayy * bz - by * ayz) - axy * (axy * bz - by * axz) + bx * (axy * ayz - ayy * axz)) / det;
+      const m = Math.sqrt(gx * gx + gy * gy + gz * gz);
+      if (m > 0) g.push(m);
+    }
+  }
+  g.sort((a, b) => a - b);
+  const gm = g.length ? g[g.length >> 1] : 0, spec = { umax, bandN: gm > 0 ? 1 / (BAND_KM * gm) : 0 };
+  bandMemo.set(M, spec);
+  return spec;
+}
+/** 一点的岩性带 K 倍率：uRel＝U/Umax · g＝折皱带占比（Macro.fold 插到这一点）· P＝图上点（km）；seed 同中尺度（gen2 的 seed × 31） */
+export function bandMultAt(sp: BandSpec, uRel: number, g: number, P: Pt, seed: number): number {
+  if (!(sp.bandN > 0) || !(uRel > BAND_U0) || !(g > 0)) return 1;
+  const V = BAND_VAR_KM, v = sstep((noise3(P.x / V, P.y / V, P.z / V, seed + 1204) + 0.05) / 0.2);
+  if (!(v > 0)) return 1;
+  const L = BAND_BEND_KM, L3 = BAND_BEND_KM / 3;
+  const bend = BAND_BEND * (noise3(P.x / L, P.y / L, P.z / L, seed + 1201) + 0.5 * noise3(P.x / L3, P.y / L3, P.z / L3, seed + 1202));
+  const u = uRel > 1 ? 1 : uRel, b = Math.floor(u * sp.bandN + bend), w = sstep((uRel - BAND_U0) / (BAND_U1 - BAND_U0)) * (g > 1 ? 1 : g) * v;
+  return 1 + w * (BAND_TAB[Math.floor(cellRand(b + 1048576, seed + 1203) * 5)] - 1);
+}
+
 /** 中尺度求解的准备（网格分辨率）：插值并磨平的宏观场、出口与水面、稳态输入与初值。同一 meta 与几何确定 */
-export interface MesoPrep { p: Gen2Params; g: FieldGeom; M: Macro; F: Gen2Fine; fU: Float64Array; fK: Float64Array; fP: Float64Array; fB: Float64Array; fM: Float64Array; inp: SteadyInput; h0: Float64Array; area: Float64Array; gen: number }
+export interface MesoPrep { p: Gen2Params; g: FieldGeom; M: Macro; F: Gen2Fine; fU: Float64Array; fK: Float64Array; fP: Float64Array; fB: Float64Array; fM: Float64Array; fG: Float64Array; inp: SteadyInput; h0: Float64Array; area: Float64Array; gen: number; band: BandSpec }
 function mesoPrep(meta: Meta, g: FieldGeom): MesoPrep {
-  const p = gen2Params(meta), M = gen2Macro(meta), F = gen2Fine(meta, g);
+  const p = gen2Params(meta), M = gen2Macro(meta), F = gen2Fine(meta, g), band = bandSpecOf(M, p);
   const { bb, step, cols, rows } = g, n = cols * rows, sd = p.seed * 31;
-  const fU = new Float64Array(n), fK = new Float64Array(n), fP = new Float64Array(n), fB = new Float64Array(n), fH = new Float64Array(n), fM = new Float64Array(n);
+  const fU = new Float64Array(n), fK = new Float64Array(n), fP = new Float64Array(n), fB = new Float64Array(n), fH = new Float64Array(n), fM = new Float64Array(n), fG = new Float64Array(n);
   scanMesh(M, rows, cols, r => (bb.latMin + (r + 0.5) * step - M.lat0) / M.dlat - 0.5, c => (bb.lonMin + (c + 0.5) * step - M.lon0) / M.dlon - 0.5, (c, r, I, W) => {
     const i = r * cols + c;
-    fU[i] = at3(M.U, I, W); fK[i] = at3(M.K, I, W); fP[i] = at3(M.plat, I, W); fB[i] = at3(M.bowl, I, W); fH[i] = at3(M.hRel, I, W); fM[i] = at3(M.moist, I, W);
+    fU[i] = at3(M.U, I, W); fK[i] = at3(M.K, I, W); fP[i] = at3(M.plat, I, W); fB[i] = at3(M.bowl, I, W); fH[i] = at3(M.hRel, I, W); fM[i] = at3(M.moist, I, W); fG[i] = at3(M.fold, I, W);
   });
   const rb = Math.round(MESO_SMOOTH * M.dy / (step * p.kmd));
-  for (const f of [fU, fK, fP, fB, fH, fM]) boxBlur3(f, cols, rows, rb);
+  for (const f of [fU, fK, fP, fB, fH, fM, fG]) boxBlur3(f, cols, rows, rb);
   /* 节点面积（名义格面积）；求解时才建细格三角网（节点位置取图上点的弦长） */
   const area = new Float64Array(n), kmy = step * p.kmd;
   for (let r = 0; r < rows; r++) {
@@ -1486,10 +1550,12 @@ function mesoPrep(meta: Meta, g: FieldGeom): MesoPrep {
   for (let i = 0; i < n; i++) {
     const lk = F.lakeOf[i];
     if (F.sea[i] || lk >= 0) { out[i] = 1; hOut[i] = lk >= 0 ? M.lakeS[lk] : 0; }
-    U[i] = MESO_KAPPA_M * (fU[i] > MESO_U_MIN ? fU[i] : MESO_U_MIN); K[i] = fK[i] * (0.8 + 0.4 * cellRand(i, sd + 913));
+    U[i] = MESO_KAPPA_M * (fU[i] > MESO_U_MIN ? fU[i] : MESO_U_MIN);
+    const r = (i / cols) | 0, c = i - r * cols;   // 岩性带在格心取（fK 不含带：块层按自己的细格心再取一次）
+    K[i] = fK[i] * (0.8 + 0.4 * cellRand(i, sd + 913)) * bandMultAt(band, fU[i] / band.umax, fG[i], pointOf(p, bb.lonMin + (c + 0.5) * step, bb.latMin + (r + 0.5) * step), sd);
     h0[i] = out[i] ? hOut[i] : MESO_KAPPA_M * fH[i] + 1e-3 * cellRand(i, sd + 17);
   }
-  return { p, g, M, F, fU, fK, fP, fB, fM, inp: { U, K, acrit: MESO_ACRIT_KM2, out, hOut, head: MESO_HEAD }, h0, area, gen: mesoGenOf(p) };
+  return { p, g, M, F, fU, fK, fP, fB, fM, fG, inp: { U, K, acrit: MESO_ACRIT_KM2, out, hOut, head: MESO_HEAD }, h0, area, gen: mesoGenOf(p), band };
 }
 /** 中尺度三角网：求解图，外加汇流微地形（米，见 RIV_MICRO_*）与节点位置（格坐标，格 (q, r) 的格心在 (q, r)） */
 export interface MesoGraph extends SteadyGraph { micro: Float64Array; X: Float32Array; Y: Float32Array }
@@ -2595,7 +2661,7 @@ function mesoRivers(pr: MesoPrep, rt: MesoRoute, rp: RiverParams, base: Float32A
 /** 抬升到了目标的一区（标定系数 > 0）：T 目标峰高（米）· mem 涂抹格（升序）· idx / f 支撑格与软边权重——工作档嵌套解按它把细格的峰校到 T */
 export interface UpliftPeak { T: number; mem: Int32Array; idx: Int32Array; f: Float64Array }
 /** sol＝这份解本身（零个区即 Sg）· up＝收尾叠的抬升、软边权重与抬升到目标的各区（零个区为 null）：块层与工作档的嵌套解照它们 */
-export interface Gen2Uplift extends MesoOut { s: Float64Array; iters: number; converged: boolean; sol: { h: Float64Array; rcv: Int32Array; A: Float64Array }; up: { du: Float64Array; kw: Float64Array; regs: UpliftPeak[] } | null }
+export interface Gen2Uplift extends MesoOut { s: Float64Array; iters: number; converged: boolean; sol: { h: Float64Array; rcv: Int32Array; A: Float64Array; rl: Float64Array }; up: { du: Float64Array; kw: Float64Array; regs: UpliftPeak[] } | null }
 /**
  * 画抬升：按 upliftRegions 分区，定树标定让各区最高点（收尾之后的高程）恰到目标，不抬就已到目标的区不抬。
  * @param rp 抽河参数（riverParams）：只定画哪些河、多宽，地形不随它变
@@ -2603,11 +2669,11 @@ export interface Gen2Uplift extends MesoOut { s: Float64Array; iters: number; co
  */
 export function gen2Uplift(st: MesoState, cells: UpliftCells, rp: RiverParams): Gen2Uplift {
   const { pr, G, base: B } = st, n = B.h.length, { regions, kw, src, peakAdd, fw } = upliftRegions(st, cells), bas = basinRegions(st, cells);
-  if (!regions.length) return { ...mesoFinish(st, B.h, B.A, bas.length ? { du: new Float64Array(n), kw: new Float64Array(n), bas } : null, rp), s: new Float64Array(0), iters: 0, converged: true, sol: { h: B.h, rcv: B.rcv, A: B.A }, up: null };
+  if (!regions.length) return { ...mesoFinish(st, B.h, B.A, bas.length ? { du: new Float64Array(n), kw: new Float64Array(n), bas } : null, rp), s: new Float64Array(0), iters: 0, converged: true, sol: { h: B.h, rcv: B.rcv, A: B.A, rl: B.rl }, up: null };
   const S = upliftSolve(G, pr.inp, B, bandOf(G, src, BAND_MARGIN_KM), regions, peakAdd, MESO_MAXIT);
   const du = new Float64Array(n);
   regions.forEach((r, k) => { for (let t = 0; t < r.idx.length; t++) du[r.idx[t]] += S.s[k] * r.w[t] / MESO_KAPPA_M; });
   const regs: UpliftPeak[] = [];
   regions.forEach((r, k) => { if (S.s[k] > 0) regs.push({ T: r.target, mem: r.peak, idx: r.idx, f: fw[k] }); });
-  return { ...mesoFinish(st, S.h, S.A, { du, kw, bas }, rp), s: S.s, iters: S.iters, converged: S.converged, sol: { h: S.h, rcv: S.rcv, A: S.A }, up: { du, kw, regs } };
+  return { ...mesoFinish(st, S.h, S.A, { du, kw, bas }, rp), s: S.s, iters: S.iters, converged: S.converged, sol: { h: S.h, rcv: S.rcv, A: S.A, rl: S.rl }, up: { du, kw, regs } };
 }

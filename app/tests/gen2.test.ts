@@ -2,7 +2,7 @@
    输出哈希是冻结的基线（同 worker.test 钉字面键）：改了生成数学就会红，换代要想清楚旧图会变成什么样。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildMacro, gen2Fine, gen2Meso, gen2Uplift, mesoSmoothOf, mesoState, type BasinWaters, type MesoState, upliftRegions, gen2Params, gen2Rivers, GEN2_SEED_MAX, isGen2, riverParams, type GenRiver, type Macro, PEAK_KNEE_M, PEAK_SOFT_M, peakCapM, peakKneeM } from "../src/core/gen2.ts";
+import { BAND_CONTRAST, BAND_U0, BAND_U1, bandMultAt, bandSpecOf, buildMacro, gen2Fine, gen2Macro, gen2Meso, gen2Uplift, mesoSmoothOf, mesoState, type BasinWaters, type MesoState, upliftRegions, gen2Params, gen2Rivers, GEN2_SEED_MAX, isGen2, riverParams, type GenRiver, type Macro, PEAK_KNEE_M, PEAK_SOFT_M, peakCapM, peakKneeM, pointOf } from "../src/core/gen2.ts";
 import { buildGridCells, gridGeom } from "../src/core/grid.ts";
 import { Heap } from "../src/core/steady.ts";
 import { baseElev, waterSurface, NO_WATER, SHORE_E } from "../src/core/elev.ts";
@@ -12,6 +12,7 @@ import { RIV_LOOP, riverSet } from "../src/render/rivers.ts";
 import { chaikinOpen } from "../src/core/geometry.ts";
 import type { Landform, Meta } from "../src/core/types.ts";
 import type { UpliftCells } from "../src/core/gen2.ts";
+import { cellRand } from "../src/core/gen2mesh.ts";
 import { BB, closedPits, dfltOf, RIV_MOUTH_X, v2 } from "./fixtures/gen2-maps.ts";
 
 /** 画抬升单的抽河参数（缺省两档滑杆、这组图幅）：只定画哪些河，地形不随它变 */
@@ -192,11 +193,33 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
   });
   it("基底与包络哈希冻结（三档风格）", () => {
     assert.deepStrictEqual({ mono: mesoDigest(v2("mono", 7)), multi: mesoDigest(v2("multi", 7)), isles: mesoDigest(v2("isles", 7)) },
-      { mono: "ae48ecad", multi: "632d71d2", isles: "b7cd5cb8" });
+      { mono: "5cfe708d", multi: "2181f95e", isles: "80e0bbfc" });
     const clsDigest = (m: Meta): string => fnv(2166136261, withMeso(m).R.cls).toString(16);
     /* 480 列那枚：起伏窗按公里取一个宏观格（这里半宽 3 格；240 列恰 1 格，窗口按格算也看不出来） */
     assert.deepStrictEqual({ mono: clsDigest(v2("mono", 7)), multi: clsDigest(v2("multi", 7)), isles: clsDigest(v2("isles", 7)), multi480: clsDigest(v2("multi", 7, { gridN: 480 })) },
-      { mono: "73acd199", multi: "67e2fb9c", isles: "7b26354d", multi480: "111cb526" }, "中尺度重判的地类");
+      { mono: "5aebd670", multi: "e48cab47", isles: "2d74ccc9", multi480: "1a8c6970" }, "中尺度重判的地类");
+  });
+  it("岩性带：规格只随宏观（240 与 480 列同一份）；造山带里 K 对去抖动基底之比只落五档、带渐入以下恒 1", () => {
+    const m = v2("multi", 7), sp = bandSpecOf(gen2Macro(m), gen2Params(m)), sp2 = bandSpecOf(gen2Macro(v2("multi", 7, { gridN: 480 })), gen2Params(m));
+    assert.ok(sp.umax > 0 && sp.bandN > 10 && sp.bandN < 1000, `带规格 ${JSON.stringify(sp)}`);
+    assert.deepStrictEqual(sp2, sp, "带数随网格变了——规格该从宏观取");
+    const { pr } = withMeso(m).R.st, { fU, fG, fK, inp: { K, out }, g: { bb, step, cols } } = pr, P = gen2Params(m), sd = P.seed * 31, c = BAND_CONTRAST;
+    const tab = [1 / c, 1 / Math.sqrt(c), 1, Math.sqrt(c), c], hit = [0, 0, 0, 0, 0];
+    let flat = 0, oro = 0, on = 0, full = 0;
+    for (let i = 0; i < K.length; i++) {
+      if (out[i]) continue;
+      const ratio = K[i] / (fK[i] * (0.8 + 0.4 * cellRand(i, sd + 913))), u = fU[i] / sp.umax, r = (i / cols) | 0, cc = i - r * cols;
+      const want = bandMultAt(sp, u, fG[i], pointOf(P, bb.lonMin + (cc + 0.5) * step, bb.latMin + (r + 0.5) * step), sd);
+      assert.ok(Math.abs(ratio - want) < 1e-9 * want, `格 ${i}：K 对基底之比 ${ratio}，带函数在格心给 ${want}`);
+      if (u <= BAND_U0) { assert.strictEqual(want, 1, `低地格 ${i} 倍率 ${want}`); flat++; continue; }
+      oro++;
+      if (want !== 1) on++;
+      const k = tab.findIndex(t => Math.abs(want - t) < 1e-9 * t);
+      if (k >= 0 && k !== 2 && u >= BAND_U1) { full++; hit[k]++; }
+    }
+    assert.ok(flat > 1000 && oro > 1000, `低地 ${flat}、造山带 ${oro}`);
+    assert.ok(on / oro > 0.1 && on / oro < 0.7, `造山带里显带的占 ${(100 * on / oro).toFixed(0)}%——带该是少数造山带的事，不是全部`);
+    assert.ok(full > 200 && hit.every((v, k) => k === 2 || v > 0), `满幅四档各有：${hit}`);
   });
   /* 缓存（mesocache）存的就是这份解：它变了而 MESO_VER 没加，旧图开图读到的旧解与现算对不上 */
   it("稳态解（Float64 高程与流向）哈希冻结（三档风格）：变了就要 MESO_VER + 1", () => {
@@ -205,7 +228,7 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
       return fnv(fnv(2166136261, new Uint8Array(sg.h.buffer, sg.h.byteOffset, sg.h.byteLength)), new Uint8Array(sg.rcv.buffer, sg.rcv.byteOffset, sg.rcv.byteLength)).toString(16);
     };
     assert.deepStrictEqual({ mono: sgDigest(v2("mono", 7)), multi: sgDigest(v2("multi", 7)), isles: sgDigest(v2("isles", 7)) },
-      { mono: "d55658f7", multi: "801f6ed5", isles: "19bebbb2" });
+      { mono: "1ef0ed7e", multi: "667b55f0", isles: "97afe965" });
   });
   it("湖面＝溢出口不受影响：挂上中尺度后水面逐格不变；水格基底 ≤ 水面 + SHORE_E、陆格 ≥ 0", () => {
     /* 多块种子 5：有湖面高过旁边河道的湖，四邻排水的阶梯在那里压不过湖岸 */
@@ -335,7 +358,7 @@ describe("生成器 v2：画抬升（gen2Uplift）", () => {
     assert.deepStrictEqual(B.base, A.base, "缓存命中与现算的起点解出两座山"); assert.deepStrictEqual(B.env, A.env);
     assert.deepStrictEqual(C.base, A.base);
     /* 量峰模板差一项，峰高只偏零点几米、到目标的 2% 判据看不出来：钉住整份输出 */
-    assert.strictEqual(fnv(fnv(2166136261, new Uint8Array(A.base.buffer)), new Uint8Array(A.env.buffer)).toString(16), "2273362e", "画抬升的基底与包络");
+    assert.strictEqual(fnv(fnv(2166136261, new Uint8Array(A.base.buffer)), new Uint8Array(A.env.buffer)).toString(16), "c82dd10e", "画抬升的基底与包络");
   });
   it("各区最高点（收尾之后的基底）到目标：平原两区、高过峰顶软上限的目标也到；已高过目标的区系数为 0", () => {
     const { g, st, um, spots } = setup(), { cols } = g;
@@ -465,10 +488,10 @@ describe("生成器 v2：画抬升（gen2Uplift）", () => {
     return f;
   };
   it("画盆地（湿处）成外流湖、湖面恰是溢出口；半干处成咸湖、湖面低于溢出口；新水域只经 cells 生效，渲染端算出的水面＝读数表、湖床、岸格、隔一格都守住", () => {
-    /* 咸湖那处是多块种子 7 第 56 行第 20 列的半干低地（水汽 0.25；探针扫出来的，生成器冻结则恒成立）；多块种子 7 最干处画 200 m 的盆落在坡上、
+    /* 咸湖那处是多块种子 7 第 70 行第 40 列的半干低地（水汽 0.30；探针扫出来的，生成器冻结则恒成立）；多块种子 7 最干处画 200 m 的盆落在坡上、
        区内最低那格成一格大的洼地，平衡面积不到一格却一淹就满——湖面到了溢出口，算外流湖 */
     for (const [st, seed, pick, R0, T, want] of [["mono", 5, "wet", 3, 200, 0], ["multi", 7, "semi", 4, 0, 1], ["multi", 7, "dry", 3, 200, 0]] as const) {
-      const w = worldOf(st, seed), site = pick === "semi" ? 56 * w.g.cols + 20 : siteOf(w, pick);
+      const w = worldOf(st, seed), site = pick === "semi" ? 70 * w.g.cols + 40 : siteOf(w, pick);
       const U = gen2Uplift(w.st, basinsOf(discAt(w, site, R0, T)), RP0), out = w.st.pr.inp.out;
       assert.ok(U.water && U.water.list.some(x => x.kind === want), `${st}${seed}：${JSON.stringify(U.water && U.water.list)}`);
       const f = fillOf(w, U);
@@ -484,9 +507,9 @@ describe("生成器 v2：画抬升（gen2Uplift）", () => {
       assert.deepStrictEqual(waterBad(w, U), []);
     }
   });
-  it("画的咸湖没有盐滩外圈也是汇流终点：有河流进湖、没有出湖的河（多块种子 7 第 47 行第 29 列、两个河流滑杆拉满；外圈有盐滩时盐滩本身就是终点，测不出来）", () => {
+  it("画的咸湖没有盐滩外圈也是汇流终点：有河流进湖、没有出湖的河（多块种子 7 第 70 行第 40 列、两个河流滑杆拉满；外圈有盐滩时盐滩本身就是终点，测不出来）", () => {
     const w = worldOf("multi", 7), { g: { cols, bb, step }, st } = w, out = st.pr.inp.out;
-    const U = gen2Uplift(st, basinsOf(discAt(w, 47 * cols + 29, 4, 0)), riverParams({ ...w.m, genRiv: 1, genWater: 1 })), B = U.basin!;
+    const U = gen2Uplift(st, basinsOf(discAt(w, 70 * cols + 40, 4, 0)), riverParams({ ...w.m, genRiv: 1, genWater: 1 })), B = U.basin!;
     assert.ok(U.water && U.water.list.length === 1 && U.water.list[0].kind === 1 && !B.some(v => (v & 2) !== 0), `前提：成没有盐滩外圈的咸湖 ${JSON.stringify(U.water && U.water.list)}`);
     const water = LANDFORM_ORDER.indexOf("water");
     const byLake = (p: [number, number]): boolean => {
@@ -894,7 +917,7 @@ describe("生成器 v2：中尺度河网", () => {
   it("零抬升的画抬升单与中尺度单的河逐位同；河的指纹冻结（多块种子 7）", () => {
     const { R } = setOf("multi", 7);
     assert.deepStrictEqual(gen2Uplift(R.st, { idx: new Int32Array(0), peakM: new Float64Array(0) }, RP0).rivers, R.rivers);
-    assert.strictEqual(fnv(2166136261, new TextEncoder().encode(JSON.stringify(R.rivers))).toString(16), "719ac5ee");
+    assert.strictEqual(fnv(2166136261, new TextEncoder().encode(JSON.stringify(R.rivers))).toString(16), "71405b2e");
   });
 });
 

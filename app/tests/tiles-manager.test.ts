@@ -19,10 +19,10 @@ const INP = input(), PLAN = tilePlan(INP, 1e12, 0)!, G = PLAN.geom;
 const COARSE = new Float32Array(GRID.cols * GRID.rows);
 const feed = (m: TileManager, inp: ErodeInput, plan = tilePlan(inp, 1e12, 0)!, base: Float32Array = COARSE): void => m.setInput(inp, plan, base, erodeKey(inp));
 
-/** 块号 → 该块的视口（缩放＝一块格一个 CSS 像素，块权重满） */
+/** 块号 → 该块的视口（缩放＝一块格两个 CSS 像素，块权重满） */
 const viewOf = (i: number): [BBox, number] => {
   const { c0, r0, c1, r1 } = tileCells(G, i);
-  return [{ lonMin: G.lonMin + (c0 + 2) * G.pstep, lonMax: G.lonMin + (c1 - 2) * G.pstep, latMin: G.latMin + (r0 + 2) * G.pstep, latMax: G.latMin + (r1 - 2) * G.pstep }, G.step];
+  return [{ lonMin: G.lonMin + (c0 + 2) * G.pstep, lonMax: G.lonMin + (c1 - 2) * G.pstep, latMin: G.latMin + (r0 + 2) * G.pstep, latMax: G.latMin + (r1 - 2) * G.pstep }, G.step / 2];
 };
 /** 窗口单 → 块号（按窗口原点对：块心外扩 TILE_MARGIN、钳到图幅） */
 const tileOf = (inp: ErodeInput): number => {
@@ -90,7 +90,7 @@ describe("分块精修的编排（shell/tiles）", () => {
     assert.ok([...r.last()!.tiles].every(([i, a]) => a[0] === i), "块号对得上块心");
   });
 
-  it("整幅视图（块格不到半像素）：照样在后台算，但不报忙", async () => {
+  it("整幅视图（块格不到一像素）：照样在后台算，但不报忙", async () => {
     const r = rig();
     r.m.setCoarse(COARSE, GRID);
     r.m.setView({ lonMin: BB.lonMin, lonMax: BB.lonMax, latMin: BB.latMin, latMax: BB.latMax }, G.step * 4);
