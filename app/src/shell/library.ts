@@ -261,8 +261,9 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
        就会把它写进新图的基准。今天没有在冲突未决时切图的路径，但这条与清基准是同一个道理。 */
     saveConflictSig.value = null;
     tabs.setMap(tabMapKey(ctx.source, ctx.mapId));   // 向别的标签打招呼（同图即互相提醒）
-    /* 没有快照视角时 ctx.view 是深链写的或上一张图的，一样要按这张图取景 */
-    host.setView(p.view ? { lon0: p.view.lon0, lat0: p.view.lat0, degPerPx: p.view.degPerPx ?? undefined } : ctx.view);
+    /* 没有快照视角时 ctx.view 是深链写的或上一张图的，一样要按这张图取景；缩放恒带上（快照没有就取当前的），好钳到这张图的放大上限 */
+    const v = p.view ?? ctx.view;
+    host.setView({ lon0: v.lon0, lat0: v.lat0, degPerPx: v.degPerPx ?? ctx.view.degPerPx });
     dl.urlView = dl.urlYear = false;      // URL 直达只压制首次打开
     host.rebuildIfNeeded(); refreshLib();   // 兜底（正常已在批末建过、键相符＝零开销）
     noteOutside(p.world);

@@ -17,7 +17,8 @@ import { terrMetaKey } from "../ui/history.ts";
 import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { ShellCtx } from "./ctx.ts";
-import { clampView, viewCosK, type Camera } from "../core/projection.ts";
+import { clampView, minDppFor, viewCosK, type Camera } from "../core/projection.ts";
+import { lonCos } from "../core/geo.ts";
 import { frameView } from "../core/frame.ts";
 import type { BBox, HeightOverride, Meta, TerrainOverride, World } from "../core/types.ts";
 
@@ -34,8 +35,11 @@ export interface Host {
   cosk(): number;
   /** 当前帧相机（投影/拾取共用参数包） */
   cam(): Camera;
-  /** 写相机的唯一入口：clampView（坏值与球面折回）→ 图页取景（core/frame.frameView）；缺 degPerPx＝不改缩放 */
+  /** 写相机的唯一入口：clampView（坏值与球面折回）→ 图页取景（core/frame.frameView）。
+      带 degPerPx＝设缩放，放大那头钳到 dppRange().min；缺＝只挪位置、不改缩放（可见区变了重新取景就走这一支） */
   setView(v: { lon0: number; lat0: number; degPerPx?: number }): void;
+  /** 缩放两头（度/像素）：min＝放大到底（core/projection.minDppFor），max＝缩小到底（全图整屏留一成余量，且不低于本图的开图缩放） */
+  dppRange(): { min: number; max: number };
   /** 重建地形网格与高程场并上传渲染器（无世界=程序化兜底参数） */
   rebuild(): void;
   /** 年份/换图/地形版本变化时才重建（builtFor 去重键） */
@@ -66,8 +70,9 @@ export function createHost(ctx: ShellCtx): Host {
       canvas.style.height = ov.style.height = `${H / dpr}px`;
     }
     /* 可见区变了取景就变（检查器滑开后图廓不许因视口变窄而越界）。开图前不钳：ctx.meta 还是占位图幅，
-       深链写进 ctx.view 的坐标会被拉到占位图幅上，等 setWorld 按真图幅取景 */
-    if (worldSig.peek()) setView(ctx.view);
+       深链写进 ctx.view 的坐标会被拉到占位图幅上，等 setWorld 按真图幅取景。
+       只递位置不递缩放：放大上限里的小图护栏随可见区变，递了＝检查器一滑开画面自己退一档 */
+    if (worldSig.peek()) setView({ lon0: ctx.view.lon0, lat0: ctx.view.lat0 });
     /* 立即同步补画：ResizeObserver 回调跑在当帧 rAF 之后——重分配后的空画布若等下一帧才画，空白帧会先被合成上屏；
        没重分配时取景也已随可见区变，同帧画上免得地图慢一拍才归中。 */
     if (ctx.repaint) ctx.repaint();
@@ -563,12 +568,19 @@ export function createHost(ctx: ShellCtx): Host {
     const [w, h] = cssSize();
     return { lon0: ctx.view.lon0, lat0: ctx.view.lat0, degPerPx: ctx.view.degPerPx, w, h, flat: ctx.meta.worldModel === "flat" };
   }
+  /* 缩小到底＝全图恰好整屏 × 1.1（没有图幅或可见区时退回 0.5）；放大到底喂的是这个纯 fit，不含存档里的 degPerPx0 */
+  function dppRange(): { min: number; max: number } {
+    const bb = ctx.meta.bbox, [w, h] = cssSize();
+    const fit = bb && w > 0 && h > 0
+      ? Math.max((bb.lonMax - bb.lonMin) * lonCos(ctx.meta, (bb.latMin + bb.latMax) / 2) / w, (bb.latMax - bb.latMin) / h) * 1.1 : 0.5;
+    return { min: minDppFor(ctx.meta, fit), max: Math.max(fit, ctx.meta.view?.degPerPx0 || 0) };
+  }
   function setView(v: { lon0: number; lat0: number; degPerPx?: number }): void {
     const [w, h] = cssSize();
-    const degPerPx = v.degPerPx ?? ctx.view.degPerPx;
+    const degPerPx = v.degPerPx == null ? ctx.view.degPerPx : Math.max(v.degPerPx, dppRange().min);
     const c = frameView({ ...clampView(v, ctx.meta), degPerPx }, ctx.meta, w, h);
     ctx.view.lon0 = c.lon0; ctx.view.lat0 = c.lat0; ctx.view.degPerPx = degPerPx;
   }
   function syncTiles(): void { tiles.setView(viewBB(), ctx.view.degPerPx); }
-  return { resize, cssSize, pxSize, viewBB, cosk, cam, setView, rebuild: () => rebuild(), rebuildIfNeeded, syncTiles };
+  return { resize, cssSize, pxSize, viewBB, cosk, cam, setView, dppRange, rebuild: () => rebuild(), rebuildIfNeeded, syncTiles };
 }

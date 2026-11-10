@@ -2,7 +2,7 @@
    浏览左拖/中键/Space+左拖=平移；编辑·选择空白拖=框选（Shift=强制框选）；
    按住地点/布景/部队=拖移；连线可点点或拖拽成线；其余工具空白按下只作点击。
    模块内闭持全部拖拽/笔迹瞬态；frame 经 PointerView 只读画线笔迹/框选/光标位。 */
-import { unproject, minDppFor, zoomAtView, panByView, viewCosK } from "../core/projection.ts";
+import { unproject, zoomAtView, panByView, viewCosK } from "../core/projection.ts";
 import { frameRectsPx, inFrame, mapFrame } from "../core/frame.ts";
 import { ALL_KINDS, CERTAINTY, EDGE_STYLE, EVENT_TYPES, NODE_STYLE, UNIT_STATUS, DECOR_BASE, ECO, canonComposite, parseComposite, terrainProps } from "../core/constants.ts";
 import { paintStep } from "../core/territory.ts";
@@ -11,7 +11,7 @@ import { BRUSH_NOTCHES, brushRadiusCells, brushDabStepDeg, interpolatePath } fro
 import { adjacentPhaseT, ownerAt, phasesOf } from "../core/time.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { elevUnitM, elevSmooth, heightStepM, upliftOn } from "../core/elev.ts";
-import { distKm, lonCos } from "../core/geo.ts";
+import { distKm } from "../core/geo.ts";
 import { esc, fmtKm, tget } from "../core/util.ts";
 import { edgeLenKm, polylineKm, rdp } from "../core/geometry.ts";
 import { pickEdge, pickNode, pickOp, nodesInBox, layerOn } from "../render/overlay.ts";
@@ -79,22 +79,13 @@ export interface PointerDeps {
 
 export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, deps: PointerDeps): PointerView {
   const { canvas } = ctx;
-  const { cam, cssSize, cosk, rebuild, setView } = host;
+  const { cam, cssSize, cosk, rebuild, setView, dppRange } = host;
   const { hideHome } = libio;
-
-  /* 缩小到底（最大 度/像素）＝全图恰好整屏 × 1.1 余量：v0.14 硬编码 0.5 与图无关，
-     战术图 bbox 0.24° 时形同无限制（可缩到全图不足半屏）。无 bbox 退回 0.5。 */
-  const fitDpp = (): number => {
-    const meta = ctx.meta, bb = meta?.bbox, [w, h] = cssSize();
-    if (!bb || !(w > 0 && h > 0)) return 0.5;
-    const cosLat = lonCos(meta, (bb.latMin + bb.latMax) / 2);
-    return Math.max((bb.lonMax - bb.lonMin) * cosLat / w, (bb.latMax - bb.latMin) / h) * 1.1;
+  /** 缩放到光标（滚轮 / 双击 / ＋－）：两头钳在本图的缩放范围内 */
+  const zoomAt = (x: number, y: number, f: number): void => {
+    const [w, h] = cssSize(), z = dppRange();
+    setView(zoomAtView(ctx.view, ctx.meta, w, h, x, y, f, z.max, z.min));
   };
-  /* 传给 zoomAtView 的两头。缩小那头另**不低于该图默认开图缩放 degPerPx0**（免开图即被钳进）；
-     放大那头走 core 的 minDppFor（比例尺档位 + 小图护栏 + 物理地板）。⚠ 喂它的是**纯 fitDpp**
-     而不是 maxDppFit()——degPerPx0 是存档里的自由数值，手编一个大的会连带放松放大这一头。 */
-  const maxDppFit = (): number => Math.max(fitDpp(), ctx.meta?.view?.degPerPx0 || 0);
-  const minDppFit = (): number => minDppFor(ctx.meta, fitDpp());
 
   /* 悬停速览提示（v0.14 #tip）：部队/地点/连线 hover 出小卡；拖动/绘制时隐藏。
      部队优先同 clickAt 之序（画在最上层者先答），故战术图上悬停部队即知可点。 */
@@ -1048,10 +1039,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       return;
     }
     /* ＋/－=以画布中心缩放；方向键=编辑模式选中地点微调（否则平移）；WASD=平移（v0.14） */
-    const zoomCenter = (f: number): void => {
-      const [w, h] = cssSize();
-      setView(zoomAtView(ctx.view, ctx.meta, w, h, w / 2, h / 2, f, maxDppFit(), minDppFit()));
-    };
+    const zoomCenter = (f: number): void => { const [w, h] = cssSize(); zoomAt(w / 2, h / 2, f); };
     if (e.key === "+" || e.key === "=") { zoomCenter(0.8); return; }
     if (e.key === "-") { zoomCenter(1.25); return; }
     const panKey = ({ w: [0, -1], W: [0, -1], s: [0, 1], S: [0, 1], a: [-1, 0], A: [-1, 0], d: [1, 0], D: [1, 0],
@@ -1063,7 +1051,8 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         nudgeSel(e.key);   // 编辑模式选中地点(含框选集)：方向键=微调位置（WASD 仍是平移）
         return;
       }
-      setView(panByView(ctx.view, ctx.meta, panKey[0], panKey[1]));
+      const p = panByView(ctx.view, ctx.meta, panKey[0], panKey[1]);
+      setView({ lon0: p.lon0, lat0: p.lat0 });
       return;
     }
     if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && modeSig.value === "edit" && /^Digit[1-7]$/.test(e.code)) {
@@ -1146,14 +1135,12 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
         return;
       }
     }
-    const [w, h] = cssSize();
-    setView(zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.deltaY < 0 ? 0.85 : 1.18, maxDppFit(), minDppFit()));   // v0.14 缩放步进
+    zoomAt(e.offsetX, e.offsetY, e.deltaY < 0 ? 0.85 : 1.18);   // v0.14 缩放步进
   }, { passive: false });
   /* 双击=放大（Shift+双击=缩小；仅浏览——工具模式下双击是两次点击，v0.14） */
   canvas.addEventListener("dblclick", e => {
     if (modeSig.peek() !== "browse") return;
-    const [w, h] = cssSize();
-    setView(zoomAtView(ctx.view, ctx.meta, w, h, e.offsetX, e.offsetY, e.shiftKey ? 1.5 : 0.62, maxDppFit(), minDppFit()));
+    zoomAt(e.offsetX, e.offsetY, e.shiftKey ? 1.5 : 0.62);
   });
   addEventListener("keyup", e => { if (e.key === " ") { spaceHeld = false; if (!drag) canvas.style.cursor = ""; } });
   addEventListener("blur", () => { spaceHeld = false; if (!drag) canvas.style.cursor = ""; });

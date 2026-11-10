@@ -158,3 +158,33 @@ describe("编排 effect × host 重建计数（开图批末恰建一次）", () 
     unwire = wireOrchestration(ctx, host);  // 归位给 afterEach（重复 unwire 无害但保持对称）
   });
 });
+
+/* 快照视角、复位、跳转与深链都从 setView 进：带缩放的一律钳到本图的放大上限。
+   不带缩放的只挪位置——可见区变窄（检查器滑开）也走 setView，那时改缩放＝画面自己退一档。 */
+describe("相机缩放钳制（host.setView）", () => {
+  const GLOBE = (): World => normalizeWorld({ meta: { 名称: "球", worldModel: "sphere", terrain: "plain", planetRadiusKm: 10000, gridN: 1732,
+    bbox: { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 } } });
+  let ctx: ShellCtx, host: Host;
+  beforeEach(() => {
+    (els as Record<string, object>).canvasWrap = { dataset: {}, value: "", clientWidth: 1440, clientHeight: 900 };
+    ({ ctx } = mkCtx());
+    host = createHost(ctx);
+    landWorld(ctx, GLOBE(), "g1", 3050);
+  });
+  afterEach(() => { delete els.canvasWrap; });
+
+  it("带缩放：比放大上限细的钳到上限，上限以内的原样", () => {
+    const { min, max } = host.dppRange();
+    assert.ok(min < max, "前提：两头不倒挂");
+    host.setView({ lon0: 0, lat0: 0, degPerPx: min / 5 });
+    assert.equal(ctx.view.degPerPx, min);
+    host.setView({ lon0: 0, lat0: 0, degPerPx: min * 3 });
+    assert.equal(ctx.view.degPerPx, min * 3);
+  });
+  it("不带缩放：只挪位置，缩放一个字不动", () => {
+    const z = ctx.view.degPerPx = host.dppRange().min / 5;
+    host.setView({ lon0: 10, lat0: 5 });
+    assert.equal(ctx.view.degPerPx, z);
+    assert.deepEqual([ctx.view.lon0, ctx.view.lat0], [10, 5]);
+  });
+});

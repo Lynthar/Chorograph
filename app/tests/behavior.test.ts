@@ -14,8 +14,9 @@ import { peakTable, pickPeaks, waterSpots, type PickOpts } from "../src/core/spo
 import { handleRouteMsg } from "../src/worker/routeProto.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
-import { ELEV, MZ_MAX } from "../src/core/constants.ts";
-import { clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
+import { ELEV, MZ_MAX, RANK_KM_PX } from "../src/core/constants.ts";
+import { ZOOM_CELL_PX, clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
+import { TILE_MAX_X } from "../src/core/tiles.ts";
 import { esc, errText, fmtKm, hexA, newId, parseKV, safeName } from "../src/core/util.ts";
 import { ALL_KINDS, ARM_OPT_KINDS, EDGE_STYLE, EYE_M, EYE_M_KIND, EYE_M_NODE, FIRE_DIRECT_KIND, LEGACY_KIND, MODERN_KINDS, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
 import { fmtStrength, nodeEyeM, parseStrength, rangeDirect, setUnitPoint, unitAltAt, unitFireDirect, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
@@ -2781,6 +2782,31 @@ describe("缩放极限 minDppFor（比例尺档位 + 小图护栏 + 物理地板
       assert.ok(isFinite(v) && v > 0, `fit=${f} 应有有限正值`);
       assert.ok(Math.abs(kmPx(STRAT, v) - 50 / 110) < 1e-9);
     }
+  });
+
+  /* 战略图另按数据封顶：块层最细一档的格（类型格 ÷ TILE_MAX_X）占到 ZOOM_CELL_PX 个 CSS 像素为止。
+     期望值由夹具按图幅与列数自己算；上面「战略大图」那条同时锁着出厂格边（6.67 km）的图不受它影响。 */
+  const GLOBE: Meta = { worldModel: "sphere", planetRadiusKm: 10000, gridN: 1732,
+    bbox: { lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 } };              // 整球图：一格 36 km
+  const dataCap = (cellDeg: number): number => cellDeg / TILE_MAX_X / ZOOM_CELL_PX;
+  it("格边被闸放粗的大图按数据封顶", () => {
+    const fit = fitOf(GLOBE), v = minDppFor(GLOBE, fit), cap = dataCap(360 / 1732);
+    assert.ok(kmPx(GLOBE, cap) > 50 / 110, "前提：这张图的数据上限比 50km 档粗");
+    assert.ok(Math.abs(v - cap) < 1e-12);
+    assert.ok(v < fit / 10, "仍有十倍以上可放大");
+  });
+  it("数据上限让不过小图护栏：格再粗也保十倍可放大", () => {
+    const COARSE: Meta = { worldModel: "sphere", planetRadiusKm: 6371, gridN: 4,
+      bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } };              // 4° 的图 1°/格
+    const fit = fitOf(COARSE);
+    assert.ok(dataCap(1) > fit, "前提：只按数据封顶，放大极限会落在缩小极限之外");
+    assert.ok(Math.abs(minDppFor(COARSE, fit) - fit / 10) < 1e-12);
+  });
+  it("数据上限不粗过地点显隐最严一档：大星球的整球图放大到底，每一级地点都出得来", () => {
+    const BIG: Meta = { ...GLOBE, planetRadiusKm: 40000 };                       // 一格 145 km
+    const strict = Math.min(...RANK_KM_PX), v = minDppFor(BIG, fitOf(BIG));
+    assert.ok(kmPx(BIG, dataCap(360 / 1732)) > strict, "前提：只按数据封顶，最小一级地点永远不显示");
+    assert.ok(Math.abs(kmPx(BIG, v) - strict) < 1e-9);
   });
 });
 
