@@ -9,7 +9,7 @@ import { migrateFromLocalStorage, migrateFolderHandle } from "../data/migrate.ts
 import { fsSupported, folderList, folderReadWorldAt, folderWriteWorld, folderCreate, folderRemove, folderMtime, fcachePatch, fcacheRemove }
   from "../data/folder.ts";
 import { isStaleError, staleError, type StaleInfo } from "../data/guard.ts";
-import { blankWorld, clampWorldBBox, countsOf, normalizeWorld } from "../core/world.ts";
+import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, sampleWorld } from "../core/world.ts";
 import { convertGeoJSON, GEO_CAPS, padBBox, scanGeoJSON, type GeoMapping, type GeoResult, type GeoScan } from "../core/geojson.ts";
 import { paintStep } from "../core/territory.ts";
 import { zoneField } from "../core/climzone.ts";
@@ -49,14 +49,7 @@ declare global {
 /** 仓库根样例世界的未校验 JSON（入库/normalizeWorld 前的原料） */
 type SampleWorld = { meta?: Meta } & Record<string, unknown>;
 
-/** 内置示例大陆原料（「从内置示例新建」与「↺ 重置为内置示例」共用）。
-    ⚠ 空数组必须带齐（与 blankWorld 同形）——validateWorld 要求档形完整,此前两处各写一份
-    meta-only 字面量,被 2026-07-10 加的导入校验整体拦死（「缺少 nodes 数组」）,按钮点了只弹错。 */
-const sampleWorld = (): SampleWorld => ({
-  meta: { 名称: "示例大陆", worldModel: "sphere", planetRadiusKm: 10000, kmPerDeg: 111,
-    terrain: "sample", bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } },
-  factions: [], nodes: [], edges: [], decor: [], terrainOverrides: []
-});
+const today = (): string => new Date().toISOString().slice(0, 10);
 
 export interface LibraryIO {
   autosave: Autosave;
@@ -400,7 +393,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       return fn;
     } else {
       /* ⚠ 入库失败必须说话：此前直接 await create()，配额满时这条 promise 无人接——点「创建此地图」
-         「从内置示例新建」界面纹丝不动、零反馈，终结为一条 unhandledrejection；而文件夹分支同一
+         或示例按钮界面纹丝不动、零反馈，终结为一条 unhandledrejection；而文件夹分支同一
          动作是有 alert 的。同一个动作在两个来源下响与不响不该不对称。 */
       let id: string;
       try { id = (await ctx.lib!.create(w)).id; }
@@ -503,7 +496,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     /* 只读闸放在库级创建之前：子图先 create 再回写父图，只挡后一步＝#ro=1&gentac= 的链接一点开就往读者图库塞图 */
     if (readOnlySig.peek()) { showToast("这是只读分享的地图，不能从它生成战术图　可先「↓ 存入我的图库」"); return false; }
     const world = createTacticalWorld(worldSig.peek()!, ev, dia || 60,
-      { parentMapId: ctx.mapId, yearNow: yearSig.peek(), today: new Date().toISOString().slice(0, 10), erode });
+      { parentMapId: ctx.mapId, yearNow: yearSig.peek(), today: today(), erode });
     let newId: string | null = null, link: NonNullable<WorldNode["tacmap"]> | null = null;
     if (ctx.source === "folder" && ctx.folderDir) {
       const fn = await folderCreate(ctx.folderDir, world, (f, p) => { fcachePatch(ctx.fcache, ctx.folderDir!.name, f, p); });
@@ -697,11 +690,11 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       if (ctx.repaint) ctx.repaint();
       showToast(`已导出 ${ph.length} 帧`);
     },
-    /* 设置弹层「↺ 重置为内置示例」：重置为内置程序化示例大陆 */
+    /* 设置弹层「↺ 重置为内置示例」：重置为内置示例大陆（单块那张） */
     async resetToSample() {
       if (!confirm("把当前地图的内容重置为内置示例数据？\n可用 Ctrl+Z 撤销；其他地图不受影响。")) return;
       closeSettings();
-      libActions.replaceCurrent(sampleWorld(), "内置示例数据");
+      libActions.replaceCurrent(sampleWorld("mono", today()), "内置示例数据");
     },
     importGeoFile(file, from) {
       openGeoImport(file, from).catch(e => alert(`「${file.name}」读取失败：${errText(e)}`));
@@ -722,8 +715,8 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       const a = document.createElement("a"); a.href = url; a.download = (ctx.meta.名称 || "world") + ".json"; a.click();
       URL.revokeObjectURL(url);
     },
-    async newFromSample() {
-      await importWorld(sampleWorld(), "内置示例");
+    async newFromSample(kind = "mono") {
+      await importWorld(sampleWorld(kind, today()), "内置示例");
     },
     /* 只读分享链接：整张图压进 hash，对方点开即看——不经服务端，也不留副本在任何地方。
        视角/纪年/选中一并带上，让对方看到的正是你现在看到的这一眼。 */

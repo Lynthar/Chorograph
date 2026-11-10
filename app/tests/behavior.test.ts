@@ -25,7 +25,7 @@ import { RIVER_WATER_PX, riverSet, riverThr } from "../src/render/rivers.ts";
 import { facingHandlePx, pickFacingHandle, unitSpots } from "../src/render/units.ts";
 import { changedBox, coastInk, planTile, sameGeom, tileCovers, unionBB, wrapCopies } from "../src/render/terrainCPU.ts";
 import { drawFactions, type LoopBudget } from "../src/render/factions.ts";
-import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, WORLD_KM_PER_DEG, WORLD_RADIUS_KM } from "../src/core/world.ts";
+import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, sampleWorld, SAMPLE_WORLDS, WORLD_KM_PER_DEG, WORLD_RADIUS_KM } from "../src/core/world.ts";
 import { BAKE_CAP, blankTacticalWorld, createTacticalWorld } from "../src/core/tactical.ts";
 import { reliefSeedOf } from "../src/core/relief.ts";
 import { MAX_RUN_DIM, eachPaintCenter, paintCellSet, paintDims, paintStep, resamplePaintRuns, runsDims, territoryLoops } from "../src/core/territory.ts";
@@ -3244,5 +3244,19 @@ describe("画抬升的数据口径（upliftOverrides）", () => {
   it("时间轴范围罩住画抬升的时段", () => {
     const r = yearRangeOf({ meta: {}, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [], upliftOverrides: [{ lon: 1, lat: 1, peakM: 1, since: 500, until: 600 }] } as World, NaN);
     assert.ok(r.min <= 500 && r.max >= 600, `实得 ${r.min}–${r.max}`);
+  });
+});
+
+describe("内置示例", () => {
+  for (const kind of ["mono", "multi"] as const) it(`${kind}：过导入校验，是带起伏、盖了网格章的自动生成图，只带生成的河`, () => {
+    const w = sampleWorld(kind, "2026-01-01"), m = w.meta;
+    const v = validateWorld(JSON.parse(JSON.stringify(w)));
+    assert.equal(v.ok, true);
+    assert.deepEqual(v.warnings, []);
+    assert.deepEqual([m.terrain, m.genVer, m.genStyle, m.genSeed], ["auto", 2, SAMPLE_WORLDS[kind].genStyle, SAMPLE_WORLDS[kind].genSeed]);
+    assert.ok((m.relief ?? 0) > 0);
+    assert.equal(m.gridN, autoGridN(m));
+    assert.deepEqual([w.nodes.length, w.factions.length], [0, 0]);
+    assert.ok(w.edges.length > 0 && w.edges.every(e => e.gen === true));
   });
 });

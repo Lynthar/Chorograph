@@ -1,6 +1,6 @@
 /* 浏览器冒烟（node scripts/e2e.mjs，CI 与本地共用，零依赖）：
    起本地 HTTP 供 dist/ → 无头 Chrome/Edge 经 CDP 驱动，锁「boot 无声悬死」一类
-   node:test 够不着的整链回归：启动到图库 → 「从内置示例新建」建图并打开（create→IDB→
+   node:test 够不着的整链回归：启动到图库 → 从内置示例建图并打开（create→IDB→
    网格→首帧）→ 顶栏出图名；再走一遍只读分享整链（#ro=1&d= 开图→写入门全关→
    「存入我的图库」接管成可编辑）——那些门全在 .tsx 里，node:test 持不到；全程零未捕获异常、零 console.error、#err 空。
    另锁一条渲染契约：推演底图（#base=flat）下像素颜色＝底栏读数那一格（GL 与 CPU 兜底各走一遍）——
@@ -32,10 +32,18 @@ const BAD_NESTED = JSON.stringify({
   nodes: [{ id: "e1", type: "event", evtype: "battle", lon: 108, lat: 36, 名称: "会战", year: 3107, arrows: [null] }],
   edges: [], decor: [], terrainOverrides: []
 });
+/* 旧式示例大陆：逐格比对、CPU 连笔补画与 GL 丢失恢复三段要一张不带异步地形阶段、高程笔是旧笔的图 */
+const FLAT_NAME = "旧式示例";
+const FLAT_WORLD = JSON.stringify({
+  meta: { 名称: FLAT_NAME, worldModel: "sphere", planetRadiusKm: 10000, kmPerDeg: 111,
+    terrain: "sample", bbox: { lonMin: 82, lonMax: 130, latMin: 22, latMax: 54 } },
+  factions: [], nodes: [], edges: [], decor: [], terrainOverrides: []
+});
 const server = createServer((req, res) => {
   const name = (req.url || "/").split("?")[0].replace(/^\/+/, "") || "index.html";
   if (name === "shared.html") { res.writeHead(200, { "content-type": MIME[".html"] }); res.end(sharedHtml); return; }
   if (name === "bad-nested.json") { res.writeHead(200, { "content-type": MIME[".json"] }); res.end(BAD_NESTED); return; }
+  if (name === "flat-sample.json") { res.writeHead(200, { "content-type": MIME[".json"] }); res.end(FLAT_WORLD); return; }
   const file = path.join(DIST, path.basename(name));
   if (!existsSync(file)) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, { "content-type": MIME[path.extname(file)] || "application/octet-stream" });
@@ -129,10 +137,13 @@ await until("新建弹层", `!!document.querySelector('#settings button[title^="
 await evalJs(`document.querySelector('#settings button[title^="以内置示例"]').click()`);
 await until("示例图建成并打开（顶栏出图名）", `(t => t && t !== '—')(document.getElementById('crumbName')?.textContent)`);
 await until("画布有尺寸", `(c => c && c.width > 0 && c.height > 0)(document.getElementById('map'))`);
+/* 内置示例是自动生成的图，地形分几段异步落地；下面三段换到旧式示例上做（#sample 建进图库，之后按图名开） */
+await send("Page.navigate", { url: `${origin}/?b=${Math.random().toString(36).slice(2)}#sample=flat-sample.json` });
+await until("旧式示例建成并打开", `document.getElementById('crumbName')?.textContent === ${JSON.stringify(FLAT_NAME)} && (c => c && c.width > 0)(document.getElementById('map'))`);
 /* —— 推演底图逐格一致：像素颜色＝底栏读数那一格。撒点合成 pointermove 读 #ftCoord 的地貌名，
    同一帧 drawImage(#map) 取像素（帧循环的 rAF 先于本帧注册，故先重画后取样），与 terrainProps.color 比。
    观感底图有意把地类边界揉开最多约一格半，推演底图是把这条差异收回零的那一档——GL 与 CPU 兜底各验一遍。 —— */
-const mapName = await evalJs(`document.getElementById('crumbName').textContent`);
+const mapName = FLAT_NAME;
 const nameColor = new Map(allComposites().map(c => { const p = terrainProps(c); return [p.名, p.color]; }));
 const hexRGB = (h) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
 const FLAT_SAMPLE = `(async () => {
@@ -181,7 +192,7 @@ const waitRepaint = async (label, h0) => {
 await send("Page.navigate", { url: `${origin}/?b=${Math.random().toString(36).slice(2)}#map=${encodeURIComponent(mapName)}&force=cpu` });
 await until("CPU 观感底图开图", `document.getElementById('crumbName')?.textContent === ${JSON.stringify(mapName)} && (c => c && c.width > 0)(document.getElementById('map'))`);
 await erodeQuiet("CPU 开图落定");
-/* 比对要有区分力：示例大陆缺省无起伏（大片平台，窗边算错也看不出）→ 开「自然」；侵蚀计算选「仅底图」——
+/* 比对要有区分力：旧式示例缺省无起伏（大片平台，窗边算错也看不出）→ 开「自然」；侵蚀计算选「仅底图」——
    缺省档收笔后侵蚀落地会整幅重画，最后上屏的就不是补画了 */
 await evalJs(`document.getElementById('btnSettings').click()`);
 await until("设置弹层（地势起伏）", `!!document.getElementById('sw_relief')`);

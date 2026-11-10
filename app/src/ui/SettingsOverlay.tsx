@@ -437,8 +437,9 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
       <div class="mo-body" onInput={bumpRo}>
       {create && !from && (
         <div class="setrow" style={{ paddingBottom: "10px", borderBottom: "1px solid var(--q-ln)" }}><label>内置示例</label>
-          <button type="button" class="tbtn" title="以内置示例大陆新开一张地图" onClick={() => { closeSettings(); acts?.newFromSample(); }}>📜 从内置示例新建</button>
-          <span class="sub">一张现成的示例大陆，点一下直接建好打开</span>
+          <button type="button" class="tbtn" title="以内置示例（单块大陆）新开一张地图" onClick={() => { closeSettings(); acts?.newFromSample("mono"); }}>📜 示例 · 单块大陆</button>
+          <button type="button" class="tbtn" title="以内置示例（多块大陆）新开一张地图" onClick={() => { closeSettings(); acts?.newFromSample("multi"); }}>📜 示例 · 多块大陆</button>
+          <span class="sub">两张自动生成的示例，点一下直接建好打开</span>
         </div>
       )}
       {!create && (

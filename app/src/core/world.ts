@@ -6,7 +6,7 @@ import { autoGridN, gridGeom } from "./grid.ts";
 import { gen2Params, gen2Rivers, isGen2, type GenRiver } from "./gen2.ts";
 import { parseStrength } from "./units.ts";
 import { tget } from "./util.ts";
-import type { BBox, CalendarCfg, Climate, Edge, GenStyle, Meta, TerrainMode, World, WorldModel } from "./types.ts";
+import { DEFAULT_BBOX, type BBox, type CalendarCfg, type Climate, type Edge, type GenStyle, type Meta, type TerrainMode, type World, type WorldModel } from "./types.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- 入参是任意外部 JSON，宽松索引即语义 */
 
@@ -233,6 +233,22 @@ export function blankWorld(s: BlankWorldSpec, today: string): World {
   w.meta.gridN = autoGridN(w.meta);
   w.edges = genRiverEdges(w.meta);   // 网格几何要等 gridN 盖章
   return w as World;
+}
+
+/** 内置示例的两张图：出厂缺省参数下选定的种子，纯自动生成、不带地点与派系 */
+export const SAMPLE_WORLDS = {
+  mono: { 名称: "示例大陆", genStyle: "mono", genSeed: 6 },
+  multi: { 名称: "示例大陆 · 多块", genStyle: "multi", genSeed: 6 }
+} as const;
+export type SampleKind = keyof typeof SAMPLE_WORLDS;
+
+/** 内置示例世界。与「新建地图」走同一个出生点，网格盖章与生成河同新建的图 */
+export function sampleWorld(kind: SampleKind, today: string): World {
+  const s = SAMPLE_WORLDS[kind];
+  const w = blankWorld({ 名称: s.名称, worldModel: "sphere", planetRadiusKm: 10000, terrain: "auto", bbox: { ...DEFAULT_BBOX },
+    genVer: 2, genStyle: s.genStyle, genSeed: s.genSeed, genLand: 0.5, genMtn: 0.5, genIsl: 0.5, genRiv: 0.5, genWater: 0.5, relief: 0.7 }, today);
+  w.meta.说明 = "（内置示例：自动生成）";
+  return w;
 }
 
 /** 折线经过的格（这张图的地形网格；每段按不超过半格的步长取样，升序去重）：删改记录与重抽时的比对同用这一份 */

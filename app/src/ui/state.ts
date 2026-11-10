@@ -9,7 +9,7 @@ import { batch, computed, effect, signal } from "@preact/signals";
 import { EDGE_STYLE, LAYERS, PRESETS } from "../core/constants.ts";
 import { calOf, monthsOf, parseWhenForm, ymdOverflow, type CalendarSpec } from "../core/calendar.ts";
 import { yearRangeOf } from "../core/time.ts";
-import { normalizeWorld } from "../core/world.ts";
+import { normalizeWorld, type SampleKind } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
 import { removeDecor, removeEdgeAt, removeFaction, removeNode, removeUnit } from "./editops.ts";
 import type { CalTemplate } from "../data/calstore.ts";
@@ -114,7 +114,7 @@ export interface LibView {
 export const libViewSig = signal<LibView>({ available: false, open: false, source: "browser", folderName: null, fsSupported: false, mapId: null, entries: [] });
 export interface LibActions {
   toggle(): void; open(id: string): void; remove(id: string): void;
-  importFiles(files: File[]): void; exportCurrent(): void; newFromSample(): void;
+  importFiles(files: File[]): void; exportCurrent(): void; newFromSample(kind?: SampleKind): void;
   importGeoFile(file: File, from: "lib" | "map"): void;   // 「导入 GeoJSON」：扫描后开弹层定映射，再落成新图或并入当前图
   createWorld(w: World): void;                          // 设置弹层「创建此地图」→ 入库并打开
   replaceCurrent(json: unknown, srcName: string): void; // 设置弹层「导入 JSON」→ 替换当前图内容（可撤销）
