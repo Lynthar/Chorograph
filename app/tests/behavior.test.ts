@@ -1995,11 +1995,11 @@ describe("战术图生成（快照烘焙）", () => {
   });
   const ev = { id: "evHL", 名称: "会战", type: "event", evtype: "battle", lon: 112.0, lat: 34.5, year: 3107 } as WorldNode;
 
-  it("生成器画的河带进战术图后是普通的河：去掉 gen 与分汊线标记，水面宽照留", () => {
+  it("生成器画的河带进战术图后是普通的河：去掉 gen 标记，水面宽照留", () => {
     const src = srcWorld();
-    src.edges.push({ type: "river", pts: [[111.5, 34.5], [112.5, 34.52]], widthM: 120, gen: true, branch: true });
+    src.edges.push({ type: "river", pts: [[111.5, 34.5], [112.5, 34.52]], widthM: 120, gen: true });
     const e = createTacticalWorld(src, ev, 200, {}).edges.find(x => x.type === "river")!;
-    assert.ok(e && !("gen" in e) && !("branch" in e) && e.widthM === 120);
+    assert.ok(e && !("gen" in e) && e.widthM === 120);
   });
   it("meta：mapKind/battleYear/tacSpan/parent/名称/继承字段/view；子图恒平面+盖章（⚠ 期望有意翻转,2026-08-13 平面化）", () => {
     const w = createTacticalWorld(srcWorld(), ev, 200, { parentMapId: "m1", today: "2026-07-05" });

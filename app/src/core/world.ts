@@ -102,6 +102,8 @@ export function normalizeWorld(w: unknown): World {
       return op.pts.length >= 2;   // op 无 from/to 可回退，有效点不足 2 剔整条
     });
   });
+  /* 旧档里带 branch 的生成河（河口分汊线）生成器已不再产，载入即丢：只读分享不重抽河，留着会画在海上 */
+  o.edges = o.edges.filter((e: any) => !(isRec(e) && e.gen === true && e.branch === true));
   o.edges.forEach((e: any) => {   // 自由画河道折线 pts 净化（同 ops.pts 防御）：剔非法坐标、不足 2 点删键；旧 from/to 边无 pts 零影响
     if (e.pts == null) { delete e.ws; delete e.mz; return; }
     /* 逐点河宽与曲流强度随 pts 一起剔；长度对不上或有坏值就删键（整条退回 widthM、不弯）——留着错位的值，渲染与拾取会读到别的点。
@@ -279,7 +281,6 @@ export function genRiverEdgesOf(meta: Meta, rivers: GenRiver[], off: number[] | 
     const e: Edge = { type: "river", pts: r.pts, widthM: r.widthM, gen: true };
     if (r.ws) e.ws = r.ws;
     if (r.mz) e.mz = r.mz;
-    if (r.branch) e.branch = true;
     out.push(e);
   }
   return out;

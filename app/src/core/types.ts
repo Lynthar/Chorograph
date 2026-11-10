@@ -149,7 +149,6 @@ export interface Edge extends Timed {
   ws?: number[];              // 逐点水面宽（米，与 pts 等长）：生成的河沿程变宽；表单改了 widthM 就删（改成整条一个宽）
   mz?: number[];              // 逐点曲流强度（整数 0..MZ_MAX，与 pts 等长）：渲染端照它在折线上合成弯道（生成的河不合成）；表单的曲流档改它、改宽不删
   gen?: true;                 // 生成器画的河：改了生成参数时只替换带它的；用户一改就删（改过的河归用户）
-  branch?: true;              // 生成器画的三角洲分汊河道（与 gen 同在同删）：只画，不进汇流、不计水量
   reverse?: boolean;          // 工事齿面翻转：缺省齿在画线方向左侧（同作战线防线齿之例；岸线惯例＝齿朝水）
   certainty?: Certainty;      // 可靠性（柱B）：缺键=确证；推断/传说走虚线+淡显（同地点之规）
   字段?: Record<string, string>;

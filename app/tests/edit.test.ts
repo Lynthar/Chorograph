@@ -10,7 +10,7 @@ import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/uni
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridGeom, gridStepDeg } from "../src/core/grid.ts";
 import { DH_MAX_M } from "../src/core/elev.ts";
-import { blankWorld, genRiverEdges, genRiverEdgesOf, genRiverKey, genTerrKey, riverCells } from "../src/core/world.ts";
+import { blankWorld, genRiverEdges, genRiverEdgesOf, genRiverKey, genTerrKey, normalizeWorld, riverCells } from "../src/core/world.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive, setTerrainStyle, terrainStyleSig,
   modeSig, paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, railToolOf, readOnlySig, redoWorld, revealLayersFor, selMembers, selSig, setRailTool, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
@@ -326,35 +326,17 @@ describe("编辑操作内核", () => {
     assert.strictEqual(syncGenRivers(w, genRiverEdgesOf(meta, [{ ...r, mz: [0, 9, 0] }], undefined)), true, "只差 mz 也换");
     assert.deepStrictEqual(w.edges[0].mz, [0, 9, 0]);
   });
-  /* 三角洲的分汊线当生成的河进存档：删了下次重抽不回来，删主河不连带分汊线；表单一存就归用户，两个标记一起去掉 */
-  it("分汊线：条目带 branch；只差 branch 也换；删一条分汊线重抽不回来、主河照画；删主河分汊线照画；表单一存去掉 gen 与 branch 并记进删改记录；换地形一起撤", () => {
+  /* 旧档：生成器曾在河口画过分汊线（带 branch 的生成河），现已不产。只读分享不重抽河，所以载入规整时就丢 */
+  it("旧档的分汊线：载入规整丢掉带 gen 与 branch 的边，主河与用户的河留着；规整后与新抽的河同一份＝零写入", () => {
     const meta: Meta = { terrain: "auto", genVer: 2, genStyle: "mono", genSeed: 2, worldModel: "sphere", planetRadiusKm: 10000, bbox: { lonMin: 100, lonMax: 112, latMin: 28, latMax: 37 } };
     meta.gridN = 160;
     const main = { pts: [[101, 30], [101.6, 30.2], [102.2, 30.1], [102.8, 30.0], [103.4, 29.9]] as [number, number][], widthM: 200, ws: [150, 180, 200, 200, 400], mz: [0, 5, 9, 5, 0] };
-    const branch = { pts: [[102.2, 30.1], [102.6, 30.7], [103.0, 31.3], [103.4, 31.9]] as [number, number][], widthM: 80, ws: [80, 80, 80, 160], branch: true as const };
-    const fresh = (): Edge[] => genRiverEdgesOf(meta, [main, branch], undefined);
-    const [em, eb] = fresh();
-    assert.ok(em.gen === true && !("branch" in em) && eb.gen === true && eb.branch === true);
-    assert.strictEqual(syncGenRivers(mkWorld({ meta, edges: fresh() }), fresh()), false, "同一份零写入");
-    const plain = fresh(); delete plain[1].branch;
-    assert.strictEqual(syncGenRivers(mkWorld({ meta, edges: plain }), fresh()), true, "只差分汊线标记也换");
-    /* 删分汊线：它的格进删改记录，重抽时它不画、主河照画 */
-    const w1 = mkWorld({ meta, edges: fresh() });
-    assert.ok(removeEdgeAt(w1, 1));
-    const r1 = genRiverEdgesOf(meta, [main, branch], w1.genRiverOff);
-    assert.deepStrictEqual(r1.map(e => !!e.branch), [false], "删掉的分汊线不回来，主河照画");
-    /* 删主河：分汊线只在分汊点与它共格，照画 */
-    const w2 = mkWorld({ meta, edges: fresh() });
-    assert.ok(removeEdgeAt(w2, 0));
-    assert.deepStrictEqual(genRiverEdgesOf(meta, [main, branch], w2.genRiverOff).map(e => !!e.branch), [true], "删主河不连带分汊线");
-    /* 表单一存：归用户，两个标记都去掉，格进删改记录 */
-    const w3 = mkWorld({ meta, edges: fresh() });
-    assert.ok(saveEdgeForm(w3, 1, { 名称: "汊", note: "", kv: "", since: "", until: "", widthM: "80" }));
-    assert.ok(!("gen" in w3.edges[1]) && !("branch" in w3.edges[1]) && riverCells(meta, branch.pts).every(c => w3.genRiverOff!.includes(c)));
-    /* 设置里换地形：生成的河（含分汊线）一起撤、按新参数重画，改过的那条留着 */
-    w3.meta = { ...meta, genSeed: 9 };
-    regenRivers(w3, true);
-    assert.ok(w3.edges.some(e => e.名称 === "汊") && !w3.edges.some(e => e.branch), "换地形撤掉旧的分汊线（宏观河网没有三角洲），改过的留着");
+    const fresh = (): Edge[] => genRiverEdgesOf(meta, [main], undefined);
+    const branch = { type: "river", pts: [[102.2, 30.1], [102.6, 30.7], [103.0, 31.3], [103.4, 31.9]], widthM: 80, ws: [80, 80, 80, 160], mz: [0, 9, 9, 0], gen: true, branch: true };
+    const mine = { type: "river", 名称: "汊", pts: [[101, 31], [102, 31.2]], widthM: 60, branch: true };   // 没有 gen：是用户的河，不丢
+    const w = normalizeWorld({ meta, factions: [], nodes: [], edges: [...fresh(), branch, mine] });
+    assert.deepStrictEqual(w.edges.map(e => [!!e.gen, e.名称 || ""]), [[true, ""], [false, "汊"]]);
+    assert.strictEqual(syncGenRivers(w, fresh()), false, "分汊线丢掉之后主河与新抽的逐字同，不必写盘");
   });
   it("addAsset/removeAsset：幂等内嵌 + 连带删落章、空了删键", () => {
     const w = mkWorld({});

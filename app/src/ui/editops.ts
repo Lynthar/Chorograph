@@ -130,8 +130,7 @@ export function muteGenRiver(w: World, e: Edge | undefined): void {
   w.genRiverOff = [...s].sort((a, b) => a - b);
 }
 const sameNums = (a: number[] | undefined, b: number[] | undefined): boolean => a === b || (!!a && !!b && a.length === b.length && a.every((v, i) => v === b[i]));
-/* 生成河的可选键只有 ws / mz / branch：branch 不单比，靠键数——分汊线恒带 mz 才成立（「有 mz 无 branch」与「有 branch 无 mz」键数相同）；
-   哪天分汊线不带 mz 了，这里要补比 branch，否则存档里的旧河换不成分汊线 */
+/* 生成河的可选键只有 ws / mz：逐项比过再比键数，存档里多带或少带一个键的旧河也算不同、照换 */
 const sameGen = (a: Edge, b: Edge): boolean => a.widthM === b.widthM && sameNums(a.ws, b.ws) && sameNums(a.mz, b.mz) && Object.keys(a).length === Object.keys(b).length
   && !!a.pts && !!b.pts && a.pts.length === b.pts.length && a.pts.every((p, i) => p[0] === b.pts![i][0] && p[1] === b.pts![i][1]);
 /** 生成的河换成 add：逐条按值相同就不动（返回 false＝没改，开图时与存档逐字同就零写入）；非生成的连线保持原序，生成的河排在最后 */
@@ -237,7 +236,7 @@ export function saveEdgeForm(w: World, idx: number, v: EdgeFormValues): boolean 
   return true;
 }
 export function applyEdgeForm(e: Edge, v: EdgeFormValues): void {
-  delete e.gen; delete e.branch;   // 改过的河归用户：重新生成时不再替换
+  delete e.gen;   // 改过的河归用户：重新生成时不再替换
   const nm = v.名称.trim(); if (nm) e.名称 = nm; else delete e.名称;
   const nt = v.note.trim(); if (nt) e.note = nt; else delete e.note;
   const kv = parseKV(v.kv);

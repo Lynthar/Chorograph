@@ -193,11 +193,11 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
   });
   it("基底与包络哈希冻结（三档风格）", () => {
     assert.deepStrictEqual({ mono: mesoDigest(v2("mono", 7)), multi: mesoDigest(v2("multi", 7)), isles: mesoDigest(v2("isles", 7)) },
-      { mono: "5cfe708d", multi: "2181f95e", isles: "80e0bbfc" });
+      { mono: "dbd21042", multi: "68e5cb8b", isles: "80e0bbfc" });
     const clsDigest = (m: Meta): string => fnv(2166136261, withMeso(m).R.cls).toString(16);
     /* 480 列那枚：起伏窗按公里取一个宏观格（这里半宽 3 格；240 列恰 1 格，窗口按格算也看不出来） */
     assert.deepStrictEqual({ mono: clsDigest(v2("mono", 7)), multi: clsDigest(v2("multi", 7)), isles: clsDigest(v2("isles", 7)), multi480: clsDigest(v2("multi", 7, { gridN: 480 })) },
-      { mono: "5aebd670", multi: "e48cab47", isles: "2d74ccc9", multi480: "1a8c6970" }, "中尺度重判的地类");
+      { mono: "5e4d9141", multi: "bd7ffe64", isles: "2d74ccc9", multi480: "83703c85" }, "中尺度重判的地类");
   });
   it("岩性带：规格只随宏观（240 与 480 列同一份）；造山带里 K 对去抖动基底之比只落五档、带渐入以下恒 1", () => {
     const m = v2("multi", 7), sp = bandSpecOf(gen2Macro(m), gen2Params(m)), sp2 = bandSpecOf(gen2Macro(v2("multi", 7, { gridN: 480 })), gen2Params(m));
@@ -248,7 +248,7 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
       const { R, F } = withMeso(v2(st, 7));
       let land = 0, same = 0, bad = 0;
       for (let i = 0; i < R.base.length; i++) {
-        const wet = R.sea[i] || F.lakeOf[i] >= 0;
+        const wet = F.sea[i] || F.lakeOf[i] >= 0;
         if (!(R.env[i] >= 0 && R.env[i] <= 1) || (wet && R.env[i] !== 0)) bad++;
         if (wet) continue;
         land++; if (R.base[i] === F.base[i]) same++;
@@ -261,7 +261,7 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
     for (const m of [v2("mono", 2), v2("multi", 7)]) {
       const stat = (gn: number): [number, number] => {
         const mm = { ...m, gridN: gn }, { R, F } = withMeso(mm), v: number[] = [], h: number[] = [];
-        for (let i = 0; i < R.base.length; i++) if (!(R.sea[i] || F.lakeOf[i] >= 0)) { v.push(R.base[i] * 2000); h.push(R.sg.h[i]); }
+        for (let i = 0; i < R.base.length; i++) if (!(F.sea[i] || F.lakeOf[i] >= 0)) { v.push(R.base[i] * 2000); h.push(R.sg.h[i]); }
         h.sort((a, b) => a - b);
         return [v.reduce((a, b) => a + b, 0) / v.length, h[Math.floor(0.99 * h.length)]];
       };
@@ -279,8 +279,8 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
       const off = (lf: Landform, e: number): boolean => lf === "alpine" ? e < 3000 : lf === "mountain" ? e < 900 || e >= 3000 : e >= 1500;
       let bad = 0, badMacro = 0, land = 0, salts = 0;
       for (let i = 0; i < R.cls.length; i++) {
-        const lf = LANDFORM_ORDER[(R.cls[i] / ne) | 0], eco = ECO_ORDER[R.cls[i] % ne], wet = R.sea[i] || F.lakeOf[i] >= 0;
-        assert.strictEqual(lf === "water", !!wet, "水格只有长成三角洲的海格转陆");
+        const lf = LANDFORM_ORDER[(R.cls[i] / ne) | 0], eco = ECO_ORDER[R.cls[i] % ne], wet = F.sea[i] || F.lakeOf[i] >= 0;
+        assert.strictEqual(lf === "water", !!wet, "生成器的水格与中尺度的水类逐格对应");
         if (wet) continue;
         const salt = terrainProps(F.cells[(i / cols) | 0][i % cols]).eco === "salt";
         assert.strictEqual(eco === "salt", salt, "盐滩不随中尺度变");
@@ -317,7 +317,7 @@ describe("生成器 v2：中尺度稳态（gen2Meso）", () => {
     assert.strictEqual(at({ lonMin: -180, lonMax: 180, latMin: -90, latMax: 90 }, 6371), 1);
     const mid = at({ lonMin: 95, lonMax: 115, latMin: 28, latMax: 43 }, 6371);
     assert.ok(mid > 0.35 && mid < 0.9, `中图幅 ${mid}`);
-    const p99 = (gn: number): number => { const { R, F } = withMeso(v2("mono", 2, { gridN: gn })), v: number[] = []; for (let i = 0; i < R.base.length; i++) if (!(R.sea[i] || F.lakeOf[i] >= 0)) v.push(R.base[i]); v.sort((a, b) => a - b); return v[Math.floor(0.99 * v.length)]; };
+    const p99 = (gn: number): number => { const { R, F } = withMeso(v2("mono", 2, { gridN: gn })), v: number[] = []; for (let i = 0; i < R.base.length; i++) if (!(F.sea[i] || F.lakeOf[i] >= 0)) v.push(R.base[i]); v.sort((a, b) => a - b); return v[Math.floor(0.99 * v.length)]; };
     assert.ok(p99(240) < p99(480), "满档平滑下 35 km 格的峰比 17 km 格的低（同真实地形降分辨率）");
   });
 });
@@ -358,7 +358,7 @@ describe("生成器 v2：画抬升（gen2Uplift）", () => {
     assert.deepStrictEqual(B.base, A.base, "缓存命中与现算的起点解出两座山"); assert.deepStrictEqual(B.env, A.env);
     assert.deepStrictEqual(C.base, A.base);
     /* 量峰模板差一项，峰高只偏零点几米、到目标的 2% 判据看不出来：钉住整份输出 */
-    assert.strictEqual(fnv(fnv(2166136261, new Uint8Array(A.base.buffer)), new Uint8Array(A.env.buffer)).toString(16), "c82dd10e", "画抬升的基底与包络");
+    assert.strictEqual(fnv(fnv(2166136261, new Uint8Array(A.base.buffer)), new Uint8Array(A.env.buffer)).toString(16), "3354502e", "画抬升的基底与包络");
   });
   it("各区最高点（收尾之后的基底）到目标：平原两区、高过峰顶软上限的目标也到；已高过目标的区系数为 0", () => {
     const { g, st, um, spots } = setup(), { cols } = g;
@@ -813,7 +813,7 @@ describe("生成器 v2：中尺度河网", () => {
       for (const r of R.rivers) for (let k = 1; k < r.pts.length - 1; k++) {
         const [x, y] = r.pts[k], c = Math.round((x - bb.lonMin) / step - 0.5), rr = Math.round((y - bb.latMin) / step - 0.5), i = rr * cols + c;
         let sum = 0, nn = 0;
-        for (const j of [i - 1, i + 1, i - cols, i + cols]) if (!R.sea[j] && F.lakeOf[j] < 0) { sum += R.base[j]; nn++; }
+        for (const j of [i - 1, i + 1, i - cols, i + cols]) if (!F.sea[j] && F.lakeOf[j] < 0) { sum += R.base[j]; nn++; }
         if (!nn) continue;
         all++; if (R.base[i] <= sum / nn) low++;
       }
@@ -837,6 +837,14 @@ describe("生成器 v2：中尺度河网", () => {
   it("高过本格的盐滩不是出口：单块种子 5 缺省图幅（2085 m 高原上挨着盐滩的一格）格心四邻没有封闭洼地", () => {
     const { m, R } = dfltOf("mono", 5), p = closedPits(m, R, null);
     assert.strictEqual(p.n, 0, `${p.n} 个陆格在四邻封闭洼地里，最深 ${p.worst.toFixed(1)} m`);
+  });
+  /* 缺省图幅一格 6.67 km，阶梯比 240 列的夹具细得多：四邻排水在这档格子上也要压得下去。
+     多块种子 7 留着两格的坑：一对等高的 4 邻格，流向树上的受水者比它们高 0.3 m，gridDrain 换最低邻格换到了对方 */
+  it("缺省图幅（多块种子 7、多块种子 3）格心四邻没有封闭洼地（多块种子 7 容两格）", () => {
+    for (const s of [7, 3]) {
+      const { m, R } = dfltOf("multi", s), p = closedPits(m, R, null);
+      assert.ok(p.n <= (s === 7 ? 2 : 0), `多块种子 ${s}：${p.n} 个陆格在四邻封闭洼地里，最深 ${p.worst.toFixed(1)} m`);
+    }
   });
   it("生成器的咸湖（内流）没有出湖的河，外流湖有：出湖的河首点在湖格格心", () => {
     const { g, R, F } = setOf("mono", 5), { cols, bb, step } = g;
@@ -917,7 +925,7 @@ describe("生成器 v2：中尺度河网", () => {
   it("零抬升的画抬升单与中尺度单的河逐位同；河的指纹冻结（多块种子 7）", () => {
     const { R } = setOf("multi", 7);
     assert.deepStrictEqual(gen2Uplift(R.st, { idx: new Int32Array(0), peakM: new Float64Array(0) }, RP0).rivers, R.rivers);
-    assert.strictEqual(fnv(2166136261, new TextEncoder().encode(JSON.stringify(R.rivers))).toString(16), "71405b2e");
+    assert.strictEqual(fnv(2166136261, new TextEncoder().encode(JSON.stringify(R.rivers))).toString(16), "95e3bed0");
   });
 });
 

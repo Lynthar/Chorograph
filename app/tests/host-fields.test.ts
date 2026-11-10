@@ -11,7 +11,7 @@ import { beginStroke, canUndoSig, cellsVerSig, deleteEdgeIdx, editVerSig, endStr
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import { waterSurface, type ElevField } from "../src/core/elev.ts";
 import { erodeKey, type ErodeInput } from "../src/core/erode.ts";
-import type { Edge, Meta, World } from "../src/core/types.ts";
+import type { Meta, World } from "../src/core/types.ts";
 import type { FieldGeom } from "../src/core/elev.ts";
 import { gen2Meso, gen2Uplift, mesoKey as mesoKeyOf, mesoState, riverParams, type UpliftCells } from "../src/core/gen2.ts";
 import { nestBaseOf, nestSolOf } from "../src/core/nested.ts";
@@ -658,27 +658,6 @@ describe("中尺度阶段（host）", () => {
     deleteEdgeIdx(worldSig.value!.edges.indexOf(gen[0]));
     host.rebuildIfNeeded(); await flush();
     assert.equal(worldSig.value!.edges.filter(e => e.gen).length, gen.length - 1, "删掉的不回来");
-  });
-  it("三角洲的分汊线随生成的河一起落地、进存档；删一条分汊线再核不回来，删主河不连带分汊线（gridN 480 多块种子 7）", async () => {
-    const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
-    landWorld(ctx, V2(7, { gridN: 480 }), "v1", 3050);
-    host.rebuildIfNeeded(); await flush(); await tick(200);
-    M.answer(0); await flush(); await tick(100);
-    const gen = (): Edge[] => worldSig.value!.edges.filter(e => e.gen), br = gen().filter(e => e.branch);
-    assert.ok(br.length >= 5 && br.every(e => e.type === "river" && Array.isArray(e.mz)), `分汊线 ${br.length} 条`);
-    const n0 = gen().length, b0 = br[0], pts0 = JSON.stringify(b0.pts);
-    deleteEdgeIdx(worldSig.value!.edges.indexOf(b0));
-    host.rebuild(); await flush(); await tick(100);
-    assert.equal(gen().length, n0 - 1);
-    assert.ok(!gen().some(e => JSON.stringify(e.pts) === pts0), "删掉的分汊线不回来");
-    /* 删主河：选一条首点挨着某条分汊线首点的主河 */
-    const near = (a: [number, number], b: [number, number]): boolean => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.3;
-    const bs = gen().filter(e => e.branch), mainR = gen().find(e => !e.branch && bs.some(b => e.pts!.some(p => near(p, b.pts![0]))))!;
-    assert.ok(mainR, "前提：有分汊线从主河上分出");
-    const nb = bs.length;
-    deleteEdgeIdx(worldSig.value!.edges.indexOf(mainR));
-    host.rebuild(); await flush(); await tick(100);
-    assert.equal(gen().filter(e => e.branch).length, nb, "删主河不连带分汊线");
   });
   it("笔画中途不换河（会让空笔回收误判），收笔后再换；只读态不换", async () => {
     const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
