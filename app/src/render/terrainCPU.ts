@@ -8,10 +8,10 @@
    数据同形的改动（笔刷）只补画变了的那片，补画与整幅重画逐字节相同。
    推演底图（opts.flat）例外：逐屏幕像素直接栅格化、不走瓦片（贴图重采样会让格边像素取到邻格）。 */
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
-import { terrainProps } from "../core/constants.ts";
-import { elevBilinear, elevSmooth, coarseField, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
+import { terrainProps, compositeIndex } from "../core/constants.ts";
+import { elevBilinear, elevSmooth, coarseField, waterMask, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
 import { zoneColMix, zoneTreeMix, zoneWeightsAt, ZONE_N, type ZoneWeights } from "./zones.ts";
-import { climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, ALB_ROT, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, WATER, type ClimLook } from "./material.ts";
+import { blendSharp, climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, shoreElev, ALB_ROT, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, WATER, type ClimLook } from "./material.ts";
 import { riverDirty, riverSD } from "./rivers.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
@@ -91,6 +91,15 @@ export function coastInk(d: Uint8ClampedArray, elev: Float32Array, wsv: Float32A
     const k = WATER.inkA * n / 16, q = (py * W + px) * 4, I = WATER.ink;
     d[q] += (I[0] - d[q]) * k; d[q + 1] += (I[1] - d[q + 1]) * k; d[q + 2] += (I[2] - d[q + 2]) * k;
   }
+}
+/** 岸值（同 GL shoreAt）：四角类型格水陆标志的双线性，陆占比 − 0.5（>0 画成陆）。fx/fy 以格心为整数点；出格取边格，wrapC＝整圈图的列首尾相接。
+    格心上恒为 ±0.5＝每个类型格的中心不换边：单格的岛、湖、海峡都留得住，河口点（在水格格心）不上岸 */
+export function shoreAt(water: Uint8Array, cols: number, rows: number, fx: number, fy: number, wrapC: boolean): number {
+  const i0 = Math.floor(fx);
+  let c0 = Math.max(0, Math.min(cols - 1, i0)), c1 = Math.min(cols - 1, c0 + 1), tx = Math.max(0, Math.min(1, fx - c0));
+  if (wrapC) { c0 = ((i0 % cols) + cols) % cols; c1 = (c0 + 1) % cols; tx = fx - i0; }
+  const r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy))), r1 = Math.min(rows - 1, r0 + 1), ty = Math.max(0, Math.min(1, fy - r0));
+  return (water[r0 * cols + c0] ? 0 : (1 - tx) * (1 - ty)) + (water[r0 * cols + c1] ? 0 : tx * (1 - ty)) + (water[r1 * cols + c0] ? 0 : (1 - tx) * ty) + (water[r1 * cols + c1] ? 0 : tx * ty) - 0.5;
 }
 /** 两份同形数组的变化包围盒（行主序、每格 stride 个数）：[c0, r0, c1, r1] 闭区间，无变化 null（导出以便单测） */
 export function changedBox(a: ArrayLike<number>, b: ArrayLike<number>, cols: number, rows: number, stride = 1): number[] | null {
@@ -221,7 +230,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   let cellMat: Float32Array | null = null;
   let cellTint: Float32Array | null = null;
   let cellTintHas: Uint8Array | null = null;
+  let cellIdx: Uint8Array | null = null;    // 逐格复合索引（色界锐化按它合并同类）
   let cellWS: Float32Array | null = null;   // 每格水面高程（core/elev.waterSurface；海 0／内陆湖岸线高）
+  let cellWater: Uint8Array | null = null;  // 每格水域掩码（core/elev.waterMask，按 Grid 记忆的共享只读数组）
 
   /* 高程场恒备：未传入时按 ELEV[类型] 合成（旧行为）；双线性统一走 core/elev.elevBilinear（与光标读数同源） */
   const fieldOfTypes = (g: Grid): Float32Array => {
@@ -259,6 +270,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   /* 域扭曲后的四角双线性材质/色调（同 GL matAt；逐像素两趟调用故写进复用对象 MT，免 GC）。
      rx/ry=图幅局部坐标（lon-lonMin, lat-latMin） */
   const MT = { tr: 0, tg: 0, tb: 0, tintW: 0, c: 0, d: 0, r: 0, m: 0, rough: 0, albVar: 0, rock: 0 };
+  const MW = new Float64Array(4), MI = new Int32Array(4), MK = new Int32Array(4);   // 四角权重、复合索引与格号（复用，免 GC）
   function matAt(rx: number, ry: number): void {
     const g = grid!, step = g.step, cols = g.cols, rows = g.rows;
     const wf = FX.warpF / step;   // 同 GL warpOf：双频、幅度 <半格
@@ -273,13 +285,15 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const fx = rwx / step - 0.5, fy = rwy / step - 0.5;
     const c0 = Math.max(0, Math.min(cols - 1, Math.floor(fx))), r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy)));
     const c1 = Math.min(cols - 1, c0 + 1), r1 = Math.min(rows - 1, r0 + 1);
-    const tx = sstep(0.22, 0.78, Math.max(0, Math.min(1, fx - c0)));   // 过渡压窄到约半格（同 GL）
-    const ty = sstep(0.22, 0.78, Math.max(0, Math.min(1, fy - r0)));
+    const tx = Math.max(0, Math.min(1, fx - c0)), ty = Math.max(0, Math.min(1, fy - r0));
+    for (let i = 0; i < 4; i++) {
+      MK[i] = (i >= 2 ? r1 : r0) * cols + ((i === 1 || i === 3) ? c1 : c0); MI[i] = cellIdx![MK[i]];
+      MW[i] = (i === 1 || i === 3 ? tx : 1 - tx) * (i >= 2 ? ty : 1 - ty);
+    }
+    blendSharp(MW, MI);   // 同类合并后锐化（同 GL）：色界走双线性过半的线，过渡约半格
     MT.tr = 0; MT.tg = 0; MT.tb = 0; MT.tintW = 0; MT.c = 0; MT.d = 0; MT.r = 0; MT.m = 0; MT.rough = 0; MT.albVar = 0; MT.rock = 0;
     for (let i = 0; i < 4; i++) {
-      const cc = (i === 1 || i === 3) ? c1 : c0, rr = i >= 2 ? r1 : r0;
-      const wi = (i === 1 || i === 3 ? tx : 1 - tx) * (i >= 2 ? ty : 1 - ty);
-      const k = rr * cols + cc, k7 = k * 7;
+      const wi = MW[i], k = MK[i], k7 = k * 7;
       if (cellTintHas![k]) { MT.tr += cellTint![k * 3] * wi; MT.tg += cellTint![k * 3 + 1] * wi; MT.tb += cellTint![k * 3 + 2] * wi; MT.tintW += wi; }
       MT.c += cellMat![k7] * wi; MT.d += cellMat![k7 + 1] * wi; MT.r += cellMat![k7 + 2] * wi; MT.m += cellMat![k7 + 3] * wi;
       MT.rough += cellMat![k7 + 4] * wi; MT.albVar += cellMat![k7 + 5] * wi; MT.rock += cellMat![k7 + 6] * wi;
@@ -387,6 +401,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const texW0 = FX.texW / pxpd;   // 纹理疏密逐像素乘，故基值在外
     const eroded = field!.eroded ? 1 : 0;   // 场经侵蚀（同 GL uEroded）：装饰按坡门控、宏观 fbm4 降到 1/4
     const fine = field!.step < grid!.step * 0.999 || eroded ? 1 : 0;   // 装饰噪声门只在细分/侵蚀场生效（粗格=旧图逐位契约）
+    const wrapC = !!opts.wrap && grid!.bb.lonMax - grid!.bb.lonMin > 359.99;   // 岸值的列环绕（同 GL）
     const elev = new Float32Array(W * H), esh = new Float32Array(W * H), ed = new Float32Array(W * H), cav = new Float32Array(W * H);
     const wsv = new Float32Array(W * H);   // 逐像素水面（同 GL：与晕渲高程同取扭曲后坐标）
     const mgx = new Float32Array(W * H), mgy = new Float32Array(W * H);   // 宏观场坡（±1 格、无噪声；同 GL mn）
@@ -423,6 +438,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         e += (fbm(lonW * 1.1, latW * 1.1) - 0.5) * rough * 2 * decoK;
         if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp * decoK;
       }
+      e = shoreElev(e, wsv[i], shoreAt(cellWater!, grid!.cols, grid!.rows, (rx + wx) / step - 0.5, (ry + wy) / step - 0.5, wrapC));   // 画面的水陆由岸值定（同 GL shoreFix）；岸线墨与趟二的法线都读它
       elev[i] = e;
       /* 纹理疏密（同 GL；见 FX.texPatchF 头注）：世界锚定两八度低频调制，同一片林/沼/山有疏有密 */
       const pf = FX.texPatchF / step;
@@ -540,7 +556,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
 
   /** 把上传前后两份数据的差异折成经纬矩形（外扩到每个像素取样所及：扭曲 + 宏观坡 ±1 格 + 双线性与帐篷平滑）；
       网格或场换了形状＝"all"（整块重画） */
-  function changedSince(p: { g: Grid; f: ElevField; r: ElevField; ws: Float32Array; mat: Float32Array; tint: Float32Array; has: Uint8Array }): BBox[] | "all" {
+  function changedSince(p: { g: Grid; f: ElevField; r: ElevField; ws: Float32Array; water: Uint8Array; mat: Float32Array; tint: Float32Array; has: Uint8Array }): BBox[] | "all" {
     const g = grid!, f = field!, r = rule!;
     if (g !== p.g && !sameGeom(g, p.g)) return "all";
     const m = g.step * 3 + Math.max(f.step, r.step) * 2, out: BBox[] = [];
@@ -554,6 +570,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       add(changedBox(a.data, b.data, b.cols, b.rows), b);
     }
     if (p.ws !== cellWS) add(changedBox(p.ws, cellWS!, g.cols, g.rows), g);
+    if (p.water !== cellWater) add(changedBox(p.water, cellWater!, g.cols, g.rows), g);
     if (p.mat !== cellMat) {
       add(changedBox(p.mat, cellMat!, g.cols, g.rows, 7), g); add(changedBox(p.tint, cellTint!, g.cols, g.rows, 3), g);
       add(changedBox(p.has, cellTintHas!, g.cols, g.rows), g);
@@ -584,15 +601,15 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   return {
     canvas, kind: "cpu",
     uploadGrid(g: Grid, wsurf: Float32Array, f?: ElevField, r?: ElevField) {
-      const prev = tiles.length && grid ? { g: grid, f: field!, r: rule!, ws: cellWS!, mat: cellMat!, tint: cellTint!, has: cellTintHas! } : null;
+      const prev = tiles.length && grid ? { g: grid, f: field!, r: rule!, ws: cellWS!, water: cellWater!, mat: cellMat!, tint: cellTint!, has: cellTintHas! } : null;
       const sameGrid = g === grid;
-      grid = g; field = f || coarseField(g, fieldOfTypes(g)); rule = r || field; cellWS = wsurf;
+      grid = g; field = f || coarseField(g, fieldOfTypes(g)); rule = r || field; cellWS = wsurf; cellWater = waterMask(g);
       if (!sameGrid) {   // 同一 Grid 实例＝只动了高程，逐格材质/色调不变
         const n = g.rows * g.cols;   // 逐格材质/色调预算（renderTile 每像素四角查表）
-        cellMat = new Float32Array(n * 7); cellTint = new Float32Array(n * 3); cellTintHas = new Uint8Array(n);
+        cellMat = new Float32Array(n * 7); cellTint = new Float32Array(n * 3); cellTintHas = new Uint8Array(n); cellIdx = new Uint8Array(n);
         for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {
           const k = r * g.cols + c, cell = g.cells[r][c], m = materialFor(cell), t = terrainProps(cell).tint;
-          cellMat.set([m.canopy, m.dune, m.ridge, m.marsh, m.rough, m.albVar, m.rock], k * 7);
+          cellMat.set([m.canopy, m.dune, m.ridge, m.marsh, m.rough, m.albVar, m.rock], k * 7); cellIdx[k] = compositeIndex(cell);
           if (t) { cellTint.set(t, k * 3); cellTintHas[k] = 1; }
         }
       }

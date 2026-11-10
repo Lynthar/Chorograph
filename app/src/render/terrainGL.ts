@@ -16,7 +16,7 @@
    ⚠ 噪声坐标一律用图幅局部坐标（ll-网格原点），深放大高频档才不在 fp32 下失谐；
    ⚠ fwidth 只喂 e/es 两个一致控制流值，材质分支里不得调用。 */
 import { terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT } from "../core/constants.ts";
-import { climRampGLSL, materialTable, rampGLSL, snowLatGLSL, waterGLSL, ALB_ROT, CLIM_STOPS, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, POOL_ROT, SHADE_LIGHT, WATER } from "./material.ts";
+import { climRampGLSL, materialTable, rampGLSL, shoreGLSL, snowLatGLSL, waterGLSL, ALB_ROT, CLIM_STOPS, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, POOL_ROT, SHADE_LIGHT, WATER } from "./material.ts";
 import { riverGLSL, riverTexels, RIV_TEX_W, type RiverSet } from "./rivers.ts";
 import { zoneGLSL, zoneLookTexels, ZLOOK_W, ZONE_N, type ZoneWeights } from "./zones.ts";
 import type { Grid } from "../core/grid.ts";
@@ -79,7 +79,7 @@ uniform highp isampler2D uRIdx;   // 各桶（起点, 段数）+ 桶内段号 R3
 uniform vec3 uTColor[${COMPOSITE_COUNT}];   // 各复合平色＝terrainProps.color（推演底图用；G 通道即复合索引）
 uniform vec3 uTint[${COMPOSITE_COUNT}];     // 各复合生态色调（无=vec3(-1)）
 uniform vec4 uMatA[${COMPOSITE_COUNT}];     // 材质纹理权重(canopy,dune,ridge,marsh)——render/material.ts 真源
-uniform vec4 uMatB[${COMPOSITE_COUNT}];     // (微起伏rough, 反照率抖动albVar, 岩化rock, 0)
+uniform vec4 uMatB[${COMPOSITE_COUNT}];     // (微起伏rough, 反照率抖动albVar, 岩化rock, 水域1/陆0)
 out vec4 fragColor;
 
 /* 细节噪声：整数哈希(PCG2D)值噪声 */
@@ -171,12 +171,16 @@ Mat matAt(vec2 rw){   // rw=已扭曲的局部坐标（调用方算一次 warp�
   ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uGridDim-1);
   ivec2 c1=min(c0+1, uGridDim-1);
   vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
-  t=smoothstep(0.22,0.78,t);   // 过渡压窄到约半格：斑块边缘有机而不晕开
   vec4 w=vec4((1.0-t.x)*(1.0-t.y), t.x*(1.0-t.y), (1.0-t.x)*t.y, t.x*t.y);
+  ivec4 tc;
+  for(int i=0;i<4;i++) tc[i]=int(texelFetch(uGrid, ivec2((i==1||i==3)?c1.x:c0.x, (i>=2)?c1.y:c0.y), 0).g+0.5);
+  // 同类合并后按占比平方加权（material.blendSharp 同式）：色界走双线性过半的那条线，过渡仍约半格宽
+  vec4 ws4; float wsum=0.0;
+  for(int i=0;i<4;i++){ float W=0.0; for(int j=0;j<4;j++) if(tc[j]==tc[i]) W+=w[j]; ws4[i]=w[i]*W*W; wsum+=ws4[i]; }
+  w=ws4/wsum;
   Mat m; m.tint=vec3(0.0); m.tintW=0.0; m.tw=vec4(0.0); m.rough=0.0; m.albVar=0.0; m.rock=0.0;
   for(int i=0;i<4;i++){
-    ivec2 cc=ivec2((i==1||i==3)?c1.x:c0.x, (i>=2)?c1.y:c0.y);
-    int ti=int(texelFetch(uGrid,cc,0).g+0.5);
+    int ti=tc[i];
     float wi=w[i];
     vec3 tn=uTint[ti];
     if(tn.x>=0.0){ m.tint+=tn*(wi/255.0); m.tintW+=wi; }
@@ -277,6 +281,21 @@ ${snowLatGLSL()}
 ${climRampGLSL()}
 ${zoneGLSL()}
 ${riverGLSL()}
+${shoreGLSL()}
+/* 岸值：四角类型格水陆标志的双线性，陆占比−0.5（rw＝已扭曲的局部坐标） */
+float shoreAt(vec2 rw){
+  vec2 f=rw/uGridBB.z-0.5;
+  ivec2 i0=ivec2(floor(f)), c0=clamp(i0, ivec2(0), uGridDim-1), c1=min(c0+1, uGridDim-1);
+  vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
+  if(uWrap==1 && uGridSpan.x>359.99){ c0.x=(i0.x+uGridDim.x)%uGridDim.x; c1.x=(c0.x+1)%uGridDim.x; t.x=f.x-float(i0.x); }
+  vec4 w=vec4((1.0-t.x)*(1.0-t.y), t.x*(1.0-t.y), (1.0-t.x)*t.y, t.x*t.y);
+  float L=0.0;
+  for(int i=0;i<4;i++){
+    float g=texelFetch(uGrid, ivec2((i==1||i==3)?c1.x:c0.x, (i>=2)?c1.y:c0.y), 0).g;
+    if(uMatB[int(g+0.5)].w<0.5) L+=w[i];
+  }
+  return L-0.5;
+}
 vec3 elevRamp(float e,float ws,float dl){
   if(e<ws-0.02){ float t=clamp((e-ws+0.35)/0.33,0.0,1.0); return ${WG.ramp}; }
   if(uClimN>0) return climRamp(e,dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移）
@@ -294,6 +313,7 @@ void main(){
   float ad=fwidth(er)*uDPR+1e-7;  // 等高线线宽（CSS 像素锚定）：两种底图共用，故在 uMode 分支之前取（分支内 fwidth 未定义，软渲返 0）
   vec2 gd=vec2(dFdx(er),dFdy(er));   // 规则场制图面屏幕梯度（间曲线沿等值线切虚线）；与 fwidth 同处取＝一致控制流
   vec3 col; float ws, e;
+  float shs=0.5;   // 岸值（观感底图才取；推演底图恒 0.5＝不描岸线）
   float rsd=1e9;   // 到当水画的河面的有向距离（像素，负＝在河里；1e9＝附近没有）：只在观感底图取
   if(uMode==1){
     /* 推演底图：所在格的类型平色（uTColor＝terrainProps.color），不扭曲、不晕渲、不铺纹理——
@@ -310,6 +330,7 @@ void main(){
   vec2 llw=ll+wp;
   gWarp=wp;   // 此后的采样全属扭曲族
   ws=wsAt(llw);   // 水陆判据、深浅色与近岸带的基准（内陆湖不在海平面）；与晕渲高程同取扭曲后坐标
+  vec2 rws=rel+wp; shs=shoreAt(rws);   // 画面的水陆由岸值定；五个采样点各取各的，法线才是同一张面的差分
   Mat mt=matAt(rel+wp+warp2Of(rel));   // 色调/材质权重中心取一次，五点采样共用（边界差 1px 可忽略）
   float dLat=uSnowLat*(snowLatM(abs(ll.y))-uSnowRef)*uSnowUnit;   // 球面图气候带的纬度改正：雪线、林线、色阶同一个
   /* 宏观场坡先行（±1 格、无噪声）：①光照里再计一份基础坡，压低噪声皱纹话语权；
@@ -337,11 +358,11 @@ void main(){
                 smoothstep(float(${FX.decoRoughLo}),float(${FX.decoRoughHi}),mt.rough)*(1.0-uEroded));
   float decoK=1.0+(dk0-1.0)*smoothstep(ws-0.02,ws+0.02,cd.x)*fine;
   float tb; if(uTW>0.0 && tileBil(llw-uGridBB.xy,tb)) decoK*=1.0-uTW;   // 块里的起伏是真算的：装饰噪声随块退场，否则同一波段画两遍
-  e=eAt(llw, roughEff, decoK);
-  float eL=eAt(llw+vec2(-px,0.0),roughEff,decoK)+texAt(rel+vec2(-px,0.0),twEff)*texW;
-  float eR=eAt(llw+vec2( px,0.0),roughEff,decoK)+texAt(rel+vec2( px,0.0),twEff)*texW;
-  float eU=eAt(llw+vec2(0.0, py),roughEff,decoK)+texAt(rel+vec2(0.0, py),twEff)*texW;
-  float eD=eAt(llw+vec2(0.0,-py),roughEff,decoK)+texAt(rel+vec2(0.0,-py),twEff)*texW;
+  e=shoreFix(eAt(llw, roughEff, decoK), ws, shs);
+  float eL=shoreFix(eAt(llw+vec2(-px,0.0),roughEff,decoK),ws,shoreAt(rws+vec2(-px,0.0)))+texAt(rel+vec2(-px,0.0),twEff)*texW;
+  float eR=shoreFix(eAt(llw+vec2( px,0.0),roughEff,decoK),ws,shoreAt(rws+vec2( px,0.0)))+texAt(rel+vec2( px,0.0),twEff)*texW;
+  float eU=shoreFix(eAt(llw+vec2(0.0, py),roughEff,decoK),ws,shoreAt(rws+vec2(0.0, py)))+texAt(rel+vec2(0.0, py),twEff)*texW;
+  float eD=shoreFix(eAt(llw+vec2(0.0,-py),roughEff,decoK),ws,shoreAt(rws+vec2(0.0,-py)))+texAt(rel+vec2(0.0,-py),twEff)*texW;
   float nrm=4.5*(uPXPD/14.0)*uGain;
   vec3 nv=vec3((eL-eR)*nrm,(eU-eD)*nrm,1.0);
   /* 0.3214=nrm 对基础坡度的响应系数之半（2·nrm/uPXPD ÷2），两套法线同量纲可直接相加 */
@@ -409,14 +430,14 @@ void main(){
     col*=1.0+(wv-0.5)*float(${FX.waveAmp})*gate(LW.x);
   }
   }
-  // 岸线（只给观感底图；推演底图的水陆界就是格边，按高程描线会与格边错位）。fwidth 在分支外取＝一致控制流
-  float aa=fwidth(e)+1e-6;
-  float coast=1.0-smoothstep(0.0, aa*1.4, abs(e-ws+0.02));
-  if(rsd<1e8) coast=1.0-smoothstep(0.0,1.4,abs(min((e-ws+0.02)/aa,rsd)));   // 河与湖海并成一片水：岸线只描并集的边（按像素距）
+  // 岸线（只给观感底图）描在岸值过零处：按高程梯度描会把重采样前的台阶再描一遍。fwidth 在分支外取＝一致控制流
+  float sdc=shs/(fwidth(shs)+1e-6);   // 到岸线的有向像素距（陆正水负）
+  float coast=1.0-smoothstep(0.0,1.4,abs(sdc));
+  if(rsd<1e8) coast=1.0-smoothstep(0.0,1.4,abs(min(sdc,rsd)));   // 河与湖海并成一片水：岸线只描并集的边（按像素距）
   col=mix(col, ${WG.ink}, coast*${WATER.inkA}*(1.0-float(uMode)));
   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
-  if(uContour==1 && er>=ws-0.02 && rsd>=0.0 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
-    // 等高线画在规则场制图面 er（晕渲是画，等高线是尺），按 contourK 着墨。
+  if(uContour==1 && er>=ws-0.02 && shs>=0.0 && rsd>=0.0 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){
+    // 等高线画在规则场制图面 er（晕渲是画，等高线是尺），按 contourK 着墨；岸线重采样后画面成水的像素不画（同 CPU：线只叠在陆地分支里）。
     // 间曲线的浮现门看 ±10 px 差分的**粗坡**，不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍、平地上永远开不了门；
     // 虚线相位锚网格原点的像素坐标（平移不爬动），对 ±切向对称（CPU 的 y 轴反向也同相）
     // 线落在等距的**整数倍**上（高程自海面 0 起算，与光标读数同一把尺）：早先 +0.02 是为让最低那条压住水陆界，
@@ -632,7 +653,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform3fv(U("uTint[0]"), comps.flatMap(cc => { const t = terrainProps(cc).tint; return t ? [t[0], t[1], t[2]] : [-1, -1, -1]; }));
     const mats = materialTable();    // 渲染材质（同序；render/material.ts 真源，CPU 兜底同表）
     gl.uniform4fv(U("uMatA[0]"), mats.flatMap(m => [m.canopy, m.dune, m.ridge, m.marsh]));
-    gl.uniform4fv(U("uMatB[0]"), mats.flatMap(m => [m.rough, m.albVar, m.rock, 0]));
+    gl.uniform4fv(U("uMatB[0]"), mats.flatMap((m, i) => [m.rough, m.albVar, m.rock, terrainProps(comps[i]).lf === "water" ? 1 : 0]));
     return true;
   }
   /* 纹理边长上限（2026-08-31 审查）：精修档 axisMax=16 只按总格数与单轴倍率封顶，不看设备能力——

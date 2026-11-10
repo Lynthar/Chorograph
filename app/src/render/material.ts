@@ -2,7 +2,7 @@
    反照率抖动 / 坡度岩化敏感度。GL（uniform 数组）与 CPU 兜底（直接调用）共用同一张表与同一个
    八度门控——两端观感同构的判据收在这里，别在渲染器里各写一份数值。
    ⚠ 另立一张表、不给 LANDFORM/ECO/terrainProps 加字段（它们是平价逐位比对对象，同 NODE_CATS 之例）。 */
-import { CLIMATE, SNOW_LAT_M, parseComposite, allComposites, snowLatM } from "../core/constants.ts";
+import { CLIMATE, SNOW_LAT_M, WATER_EPS, parseComposite, allComposites, snowLatM } from "../core/constants.ts";
 import { elevUnitM } from "../core/elev.ts";
 import { tget } from "../core/util.ts";
 import { kmPerDeg } from "../core/geo.ts";
@@ -369,10 +369,41 @@ export function waterGLSL(): { ramp: string; shore: string; ink: string; deep: s
   return { ramp: `vec3(${D.map((d, k) => `${f(d)}+t*${f(S[k] - d)}`).join(",")})/255.0`, shore: `vec3(${WATER.shore.map(f).join(",")})`,
     ink: `vec3(${WATER.ink.map(f).join(",")})/255.0`, deep: `vec3(${D.map(f).join(",")})/255.0` };
 }
+const SHARP = new Float64Array(4);
+/** 四角权重按「同类合并后的占比平方」锐化（就地改 w；t＝四角的复合索引；GL matAt 同式）。
+    色界走双线性过半的那条线、过渡仍约半格宽；把坐标压窄来收窄过渡，色界就退回类型格的直角台阶 */
+export function blendSharp(w: Float64Array, t: Int32Array): void {
+  let s = 0;
+  for (let i = 0; i < 4; i++) { let W = 0; for (let j = 0; j < 4; j++) if (t[j] === t[i]) W += w[j]; s += SHARP[i] = w[i] * W * W; }
+  for (let i = 0; i < 4; i++) w[i] = SHARP[i] / s;
+}
+/** 岸线重采样的常数（抽象高程）：lift＝贴岸处陆地至少高出、水至少低于判据线这么多，在 liftT 个岸值内升满；capK＝贴岸一小段的起坡上限 */
+export const SHORE = { lift: 0.0015, liftT: 0.05, capK: 1 } as const;
+/**
+ * 把画面高程挪到重采样后的岸线两侧（观感底图；CPU 直接调用，GL 由 shoreGLSL 生成同式）。
+ * 类型格的水陆是直角台阶，画面改按四角水陆标志的双线性插值过半定岸；规则场、读数与推演底图不走这里。
+ * @param s 岸值＝四角陆占比 − 0.5：>0 画成陆、<0 画成水，画面的水陆只由它定
+ * @returns 高程落在 s 那一侧（陆 ≥ 判据线、水严格低于），离岸处原样返回 e；贴岸按 s 起坡、对 e 与 s 连续——邻像素差分出的法线不在岸边起假崖
+ */
+export function shoreElev(e: number, ws: number, s: number): number {
+  const t = Math.abs(s), k = 1 - 2 * t, wl = ws - WATER_EPS;
+  const lift = Math.min(SHORE.lift * t / SHORE.liftT, SHORE.lift) * k + 1e-5, cap = SHORE.capK * t / Math.max(k, 1e-6);
+  const d = s > 0 ? e - wl : wl - e, f = Math.min(Math.max(d, lift), cap);
+  return f === d ? e : s > 0 ? wl + f : wl - f;
+}
+/** shoreElev 的 GLSL（函数名 shoreFix，同式） */
+export function shoreGLSL(): string {
+  return `float shoreFix(float e,float ws,float s){
+  float t=abs(s), k=1.0-2.0*t, wl=ws-${WATER_EPS};
+  float lift=min(${SHORE.lift / SHORE.liftT}*t,${SHORE.lift})*k+1e-5, cap=${SHORE.capK.toFixed(1)}*t/max(k,1e-6);
+  float d=s>0.0 ? e-wl : wl-e, f=min(max(d,lift),cap);
+  return f==d ? e : (s>0.0 ? wl+f : wl-f);
+}`;
+}
 /** 装饰噪声门（CPU 兜底直接调用；GL 经着色器模板注入同一组 FX 常数，两端同式）。
     细分场（侵蚀）的陆地上，装饰按「真坡或粗糙类型」渐入；水域(land=0)与粗格场(fine=0)恒 1
     ＝旧图/水面观感逐位。land/fine 取 [0,1]（land 由调用方按数据面高程 smoothstep 出连续过渡——
-    硬分支会在岸线处给 e 造出阶跃，fwidth 海岸带即出毛边）。 */
+    硬分支会在岸线处给 e 造出阶跃，邻像素差分出的法线在岸边起一道假棱）。 */
 export function decoGate(smac: number, matRough: number, land: number, fine: number): number {
   const dk = Math.max(sstep01(FX.decoSlopeLo, FX.decoSlopeHi, smac), sstep01(FX.decoRoughLo, FX.decoRoughHi, matRough));
   return 1 + (dk - 1) * land * fine;

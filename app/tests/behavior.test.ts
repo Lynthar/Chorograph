@@ -14,7 +14,7 @@ import { peakTable, pickPeaks, waterSpots, type PickOpts } from "../src/core/spo
 import { handleRouteMsg } from "../src/worker/routeProto.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
-import { ELEV, MZ_MAX, RANK_KM_PX } from "../src/core/constants.ts";
+import { ELEV, MZ_MAX, NO_WATER, RANK_KM_PX, WATER_EPS } from "../src/core/constants.ts";
 import { ZOOM_CELL_PX, clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
 import { TILE_MAX_X } from "../src/core/tiles.ts";
 import { esc, errText, fmtKm, hexA, newId, parseKV, safeName } from "../src/core/util.ts";
@@ -24,7 +24,7 @@ import { astar, computeRoute } from "../src/core/route.ts";
 import { drawEdges, riverShape, wallTeeth } from "../src/render/edges.ts";
 import { RIVER_WATER_PX, riverSet, riverThr } from "../src/render/rivers.ts";
 import { facingHandlePx, pickFacingHandle, unitSpots } from "../src/render/units.ts";
-import { changedBox, coastInk, planTile, sameGeom, tileCovers, unionBB, wrapCopies } from "../src/render/terrainCPU.ts";
+import { changedBox, coastInk, planTile, sameGeom, shoreAt, tileCovers, unionBB, wrapCopies } from "../src/render/terrainCPU.ts";
 import { drawFactions, type LoopBudget } from "../src/render/factions.ts";
 import { blankWorld, clampWorldBBox, countsOf, normalizeWorld, sampleWorld, SAMPLE_WORLDS, WORLD_KM_PER_DEG, WORLD_RADIUS_KM } from "../src/core/world.ts";
 import { BAKE_CAP, blankTacticalWorld, createTacticalWorld } from "../src/core/tactical.ts";
@@ -33,7 +33,7 @@ import { MAX_RUN_DIM, eachPaintCenter, paintCellSet, paintDims, paintStep, resam
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
-import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, beachOf, decoGate, exagFor, marshGate, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, SHADE_LIGHT, shadeGain, slopeKOf, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
+import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, beachOf, decoGate, exagFor, marshGate, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, blendSharp, shoreElev, shoreGLSL, SHADE_LIGHT, shadeGain, slopeKOf, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
 import { terrainOpts, contourStepOf } from "../src/render/renderer.ts";
 import { CLIMATE, CLIMATE_ORDER, allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/ui/stamps.ts";
@@ -821,6 +821,49 @@ describe("CPU 兜底瓦片复用判定", () => {
     const flat = new Uint8ClampedArray(W * H * 4).fill(200);
     coastInk(flat, new Float32Array(W * H).fill(1), wsv, W, H, 1.5);
     assert.ok(flat.every(v => v === 200), "全是陆地＝一个像素都不动");
+  });
+  /* 岸线重采样（观感底图）：类型格的水陆是直角台阶，画面按四角水陆标志的双线性过半定岸。坐标以格心为整数点 */
+  it("岸值：格心不换边，45° 踏步贴着对角线走，单格岛与单格湖都还在，整圈图在首尾两列之间接得上", () => {
+    const mask = (cols: number, rows: number, land: (c: number, r: number) => boolean): Uint8Array =>
+      Uint8Array.from({ length: cols * rows }, (_, i) => land(i % cols, (i / cols) | 0) ? 0 : 1);
+    let seed = 7; const rnd = (): number => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const R = mask(12, 9, () => rnd() < 0.5);
+    for (let r = 0; r < 9; r++) for (let c = 0; c < 12; c++) assert.strictEqual(shoreAt(R, 12, 9, c, r, false), R[r * 12 + c] ? -0.5 : 0.5, `格心 (${c},${r})`);
+    const S = mask(10, 10, (c, r) => c + r >= 8);
+    for (const [x, y] of [[3.5, 4], [4, 3.5], [2.5, 5], [6, 1.5]]) assert.strictEqual(shoreAt(S, 10, 10, x, y, false), 0, `岸线过水陆两格格心连线的中点 (${x},${y})`);
+    for (let k = 0; k <= 60; k++) { const x = 1 + k * 0.1; assert.ok(Math.abs(shoreAt(S, 10, 10, x, 7.5 - x, false)) < 0.07, `对角线上 x=${x.toFixed(1)}：岸贴着这条线走，踏步的直角没了`); }
+    for (const [name, M] of [["岛", mask(7, 7, (c, r) => c === 3 && r === 3)], ["湖", mask(7, 7, (c, r) => !(c === 3 && r === 3))]] as const) {
+      let n = 0;
+      for (let y = 0; y < 7 * 32; y++) for (let x = 0; x < 7 * 32; x++) if ((shoreAt(M, 7, 7, (x + 0.5) / 32 - 0.5, (y + 0.5) / 32 - 0.5, false) > 0) === (name === "岛")) n++;
+      assert.ok(n / 1024 > 0.5 && n / 1024 < 1, `单格${name}画出来 ${(n / 1024).toFixed(2)} 格：比一格小、不塌到半格以下`);
+    }
+    const Wm = mask(8, 3, c => c === 7);   // 只有末列是陆：整圈图上它与首列相邻
+    assert.strictEqual(shoreAt(Wm, 8, 3, 7.5, 1, true), 0, "首尾两列正中是岸");
+    assert.strictEqual(shoreAt(Wm, 8, 3, -0.25, 1, true), shoreAt(Wm, 8, 3, 7.75, 1, true), "越过图幅西边＝从东边数过来的同一点");
+    assert.strictEqual(shoreAt(Wm, 8, 3, 7.5, 1, false), 0.5, "不是整圈图就取边格，不与对边相接");
+  });
+  it("岸线重采样的高程：水陆只由岸值定，离岸原样返回，贴岸处两侧都收到判据线上、随岸值连续", () => {
+    for (const ws of [0, 0.45]) for (const e of [ws - 0.5, ws - 0.03, ws - 0.0199, ws + 0.3]) for (const s of [-0.5, -0.3, -0.01, 0.01, 0.3, 0.5])
+      assert.strictEqual(shoreElev(e, ws, s) >= ws - WATER_EPS, s > 0, `e=${e} ws=${ws} s=${s}`);
+    assert.ok(Object.is(shoreElev(0.37, 0, 0.5), 0.37) && Object.is(shoreElev(-0.2, 0, -0.5), -0.2), "四角同为陆或同为水：原样");
+    assert.ok(Object.is(shoreElev(-0.05, NO_WATER, 0.5), -0.05), "没有水邻的干盆地（水面＝NO_WATER）低于海面也原样");
+    for (const e of [0.4, -0.3]) for (const s of [-1e-4, 1e-4]) assert.ok(Math.abs(shoreElev(e, 0, s) + WATER_EPS) < 1e-3, `贴岸 e=${e} s=${s}：山与海床都收到岸上，不起假崖`);
+    for (const e of [0.4, 0.001, -0.3]) {
+      let prev = shoreElev(e, 0, -0.2);
+      for (let k = -199; k <= 200; k++) { const v = shoreElev(e, 0, k / 1000); assert.ok(Math.abs(v - prev) < 5e-3, `e=${e} s=${k / 1000} 一步跳了 ${Math.abs(v - prev)}`); prev = v; }
+    }
+    assert.match(shoreGLSL(), /float shoreFix\(float e,float ws,float s\)/);
+    assert.ok(!/undefined|NaN/.test(shoreGLSL()), "GLSL 里的常数都展开了");
+  });
+  it("色界锐化：权重和为 1，同类先合并再比占比，两类各半时不偏，四角同类原样", () => {
+    const run = (w: number[], t: number[]): number[] => { const W = Float64Array.from(w); blendSharp(W, Int32Array.from(t)); return [...W]; };
+    const a = run([0.3, 0.4, 0.3, 0], [5, 9, 5, 9]);
+    assert.ok(Math.abs(a.reduce((x, y) => x + y, 0) - 1) < 1e-12);
+    assert.ok(a[0] + a[2] > 0.7, "两个同类的角合起来占六成，锐化后明显占优（各算各的会输给四成的那一类）");
+    assert.strictEqual(a[0], a[2]);
+    const h = run([0.25, 0.25, 0.25, 0.25], [1, 2, 1, 2]);
+    assert.ok(Math.abs(h[0] + h[2] - 0.5) < 1e-12, "色界就在占比过半的那条线上");
+    assert.deepStrictEqual(run([0.1, 0.2, 0.3, 0.4], [7, 7, 7, 7]).map(v => +v.toFixed(12)), [0.1, 0.2, 0.3, 0.4]);
   });
   it("planTile：请求超像素预算时记录请求分辨率——下一帧同口径复用（记录封顶值则永判重建）", () => {
     const vb = { lonMin: 100, lonMax: 110, latMin: 35, latMax: 40 };
