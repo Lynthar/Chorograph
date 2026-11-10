@@ -62,6 +62,13 @@ describe("曲流：几何", () => {
     assert.strictEqual(riverGeom(flat, { ...e, mz: [0, 0, 0, 0] }).m, null, "全 0 不弯");
     assert.strictEqual(riverGeom(flat, { ...e, mz: undefined }).m, null);
   });
+  it("生成的河不合成曲流：带 gen 的只画底线，同一条河归了用户才弯", () => {
+    const e = straight([0, 9, 9, 9, 9, 0]), G = riverGeom(flat, e), g = riverGeom(flat, { ...e, gen: true });
+    assert.ok(G.m, "归用户的河有曲流");
+    assert.strictEqual(g.m, null);
+    assert.deepStrictEqual(g.pts, G.m!.base, "画的就是底线");
+    assert.deepStrictEqual(riverShape(flat, camAt(dppFor(6)), { ...e, gen: true }).pts, G.m!.base, "叠加层在满幅的缩放下也是底线");
+  });
 });
 
 describe("曲流：叠加层渐入、水面与拾取", () => {

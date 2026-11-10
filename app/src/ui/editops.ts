@@ -212,11 +212,11 @@ export function applyNodeForm(n: WorldNode, v: NodeFormValues): void {
 /** 连线表单一次提交（旧 ee_save 语义；widthM=河流真宽米数，>0 存、空/非法删；
     reverse=工事齿面翻转（柱B），真存假删——缺省齿在画线方向左侧不落盘 */
 export interface EdgeFormValues { 名称: string; note: string; kv: string; since: string; until: string; widthM?: string; meander?: string; reverse?: boolean; certainty?: string }
-/** 表单「曲流」的档位（值＝整条的 mz）；"auto"＝随地形，生成河逐点的 mz 原样留着 */
+/** 表单「曲流」的档位（值＝整条的 mz）；"auto"＝随地形，逐点不同的 mz 原样留着 */
 export const MEANDER_LEVELS: readonly { v: string; 名: string }[] = [{ v: "0", 名: "无" }, { v: "5", 名: "弱" }, { v: "7", 名: "中" }, { v: "9", 名: "强" }];
-/** 一条河当前的曲流档：没有 mz 或全 0＝"0"；有弯的点强度都一样＝那个数；逐点不同＝"auto" */
+/** 一条河当前的曲流档：生成的河（不画弯）、没有 mz 或全 0＝"0"；有弯的点强度都一样＝那个数；逐点不同＝"auto" */
 export function meanderLevelOf(e: Edge): string {
-  const z = Array.isArray(e.mz) ? e.mz.filter(v => v > 0) : [];
+  const z = !e.gen && Array.isArray(e.mz) ? e.mz.filter(v => v > 0) : [];
   if (!z.length) return "0";
   return z.every(v => v === z[0]) ? String(z[0]) : "auto";
 }

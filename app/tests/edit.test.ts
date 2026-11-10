@@ -305,6 +305,17 @@ describe("编辑操作内核", () => {
     setMeanderLevel(link, "9");
     assert.ok(!("mz" in link), "挂在地点上的河没有折线，不写 mz");
   });
+  it("生成的河在表单里报「无」；一存就归用户：照「无」存仍不弯，选了档位按生成时哪里有弯来给", () => {
+    const F = { 名称: "", note: "", kv: "", since: "", until: "" };
+    const mk = (): Edge => ({ type: "river", gen: true, pts: [[101, 30], [101.5, 30.2], [102, 30.1], [102.5, 30.3]], widthM: 120, mz: [0, 9, 0, 4] });
+    const a = mk();
+    assert.strictEqual(meanderLevelOf(a), "0");
+    applyEdgeForm(a, { ...F, meander: meanderLevelOf(a) });
+    assert.ok(!("gen" in a) && !("mz" in a), "原样保存：归用户，仍不弯");
+    const b = mk();
+    applyEdgeForm(b, { ...F, meander: "7" });
+    assert.deepStrictEqual([b.gen, b.mz], [undefined, [0, 7, 0, 7]], "选了档位：汇合处的 0 留着");
+  });
   it("生成的河带曲流强度：抽出的条目照带 mz，只差 mz 的同一条河也要换（存档里的旧河拿到新的曲流）", () => {
     const meta: Meta = { terrain: "auto", genVer: 2, genStyle: "mono", genSeed: 2, worldModel: "sphere", planetRadiusKm: 10000, bbox: { lonMin: 100, lonMax: 112, latMin: 28, latMax: 37 } };
     const r = { pts: [[101, 30], [101.5, 30.2], [102, 30.1]] as [number, number][], widthM: 90, ws: [60, 90, 180], mz: [0, 7, 0] };

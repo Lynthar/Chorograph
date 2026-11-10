@@ -30,10 +30,10 @@ export interface RiverGeom {
 }
 const geomMemo = new WeakMap<Edge, { pts: unknown; ws: unknown; mz: unknown; wm: unknown; mk: string; G: RiverGeom }>();
 /** 底线：球面图先把经度接成连续的（跨 ±180° 不横穿），Chaikin 两遍柔化，逐点宽 ws 同式插值（没有就整条 widthM）。
-    带合法 mz（与 pts 等长）的河再在底线上合成曲流（render/meander），按边对象与它读的每个字段记忆；
+    归用户的河带合法 mz（与 pts 等长）时再在底线上合成曲流（render/meander），按边对象与它读的每个字段记忆；生成的河只画底线。
     meander＝false 只要底线（叠加层在整条河都弯不起来的缩放下用，不为它合成曲流） */
 export function riverGeom(meta: Meta | undefined, e: Edge, meander = true): RiverGeom {
-  const raw = e.pts!, mz = meander && Array.isArray(e.mz) && e.mz.length === raw.length ? e.mz : null, mk = mz ? `${(meta || {}).worldModel}|${kmPerDeg(meta)}` : "";
+  const raw = e.pts!, mz = meander && !e.gen && Array.isArray(e.mz) && e.mz.length === raw.length ? e.mz : null, mk = mz ? `${(meta || {}).worldModel}|${kmPerDeg(meta)}` : "";
   const hit = mz ? geomMemo.get(e) : undefined;
   if (hit && hit.pts === raw && hit.ws === e.ws && hit.mz === mz && hit.wm === e.widthM && hit.mk === mk) return hit.G;
   const src: [number, number][] = [raw[0]];
