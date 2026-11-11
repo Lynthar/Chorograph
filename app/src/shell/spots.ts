@@ -1,9 +1,9 @@
-/* 标高点编排：标高点层开着时，落定的规则场（ui/state.ruleFieldSig）一换引用，就把它交 Worker 算全场峰表，结果进 spotTableSig。
+/* 标高点编排：标高点层开着时，落定的规则场（app/state.ruleFieldSig）一换引用，就把它交 Worker 算全场峰表，结果进 spotTableSig。
    峰表要对整场排序（百万格约 0.1 s），在帧里同步算＝每次落定一个长任务；演算中与在飞期间沿用上一份。
    并发形制同视域：单飞行闸 + seq 令牌，换图与撤销重做（换 meta 对象）作废在飞的单。 */
 import { effect } from "@preact/signals-core";
 import { layerOn } from "../render/overlay.ts";
-import { worldSig, layersSig, ruleFieldSig, spotTableSig } from "../ui/state.ts";
+import { worldSig, layersSig, ruleFieldSig, spotTableSig } from "../app/state.ts";
 import { singleFlight } from "./singleflight.ts";
 import { viewFieldOf } from "./viewshed.ts";
 import type { RuleField } from "../core/elev.ts";

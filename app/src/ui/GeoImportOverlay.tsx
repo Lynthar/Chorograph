@@ -4,7 +4,7 @@ import { useRef, useState } from "preact/hooks";
 import { GEO_LINE_TYPES, guessMapping, guessNodeType, type GeoLineType, type GeoMapping } from "../core/geojson.ts";
 import { EDGE_STYLE, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE } from "../core/constants.ts";
 import { useModalFocus } from "./modal.ts";
-import { geoImportSig, type GeoImportReq } from "./state.ts";
+import { geoImportSig, type GeoImportReq } from "../app/state.ts";
 
 /** 某个属性键的前几个互异值（类型映射与派系分组的行内提示用）。
     只扫前 SCAN_HEAD 个要素：这行提示每次改选都重算，为它遍历六万条要素不值得。 */

@@ -6,7 +6,7 @@
    更早已统一）——别再另起名（ARM_NAME 之训：同一件事两个名字就是下一处漂移）。 */
 import { Fragment } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { loadStageSig, type LoadStageState } from "./state.ts";
+import { loadStageSig, type LoadStageState } from "../app/state.ts";
 
 const STEP_W = [10, 45, 78, 94];   // 各步骤进度条宽 %（无真实进度源，按流水线阶段走）
 

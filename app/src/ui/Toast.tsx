@@ -1,7 +1,7 @@
 /* toast：底部居中（时间坞上方），停留 2.6s；成功绿点/错误朱点；
    「撤销」金键＝把时间倒回去（undoWorld）；action＝逃生门（如保存失败→立即导出）。 */
 import { useEffect, useState } from "preact/hooks";
-import { toastSig, undoWorld } from "./state.ts";
+import { toastSig, undoWorld } from "../app/state.ts";
 
 export function Toast() {
   const msg = toastSig.value;

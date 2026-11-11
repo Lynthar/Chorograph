@@ -1,7 +1,7 @@
 /* 开始界面 · 图库（UI 1:1 还原 v0.14 #home/renderHome）：全屏墨蓝底 + 宣纸 .mapcard 网格。
    视图走 libViewSig（来源/条目/当前图），动作经 libActionsSig 回外壳（开图/删除/导入/链接文件夹）；
    「🆕 新建地图」开设置弹层的 create 模式（对齐旧 hmNew→toggleSettings(true,"create")）。 */
-import { calOverlaySig, importOpenSig, libActionsSig, libViewSig, openSettings, prefsOpenSig } from "./state.ts";
+import { calOverlaySig, importOpenSig, libActionsSig, libViewSig, openSettings, prefsOpenSig } from "../app/state.ts";
 
 function fmtTime(ts?: number): string {
   if (!ts) return "—";

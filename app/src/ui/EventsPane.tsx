@@ -4,8 +4,8 @@
 import { EVENT_TYPES } from "../core/constants.ts";
 import { calOf, fmtDayTime, fmtMD, fmtT, fmtWhen, fromT, type CalendarSpec } from "../core/calendar.ts";
 import { evCurrentAt, evFutureAt, phaseIndexAt, phasesOf } from "../core/time.ts";
-import { addPhaseAt, removePhaseAt, renamePhase } from "./editops.ts";
-import { clearOpSel, flyReqSig, isTacSig, mutateWorld, selSig, showToast, stopPlay, worldSig, yearSig, readOnlySig } from "./state.ts";
+import { addPhaseAt, removePhaseAt, renamePhase } from "../app/editops.ts";
+import { clearOpSel, flyReqSig, isTacSig, mutateWorld, selSig, showToast, stopPlay, worldSig, yearSig, readOnlySig } from "../app/state.ts";
 import type { World } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 

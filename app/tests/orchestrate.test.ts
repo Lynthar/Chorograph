@@ -10,7 +10,7 @@ import { landWorld, wireOrchestration, wireRoute } from "../src/shell/orchestrat
 import { normalizeWorld } from "../src/core/world.ts";
 import { unitLegs } from "../src/core/units.ts";
 import { gridVerSig, hoverSig, landedRuleField, modeSig, mutateWorld, mutateWorldLive, routeBusySig, routePtsSig, routeResSig, ruleFieldSig,
-  selSig, unitLegsSig, worldSig, yearSig } from "../src/ui/state.ts";
+  selSig, unitLegsSig, worldSig, yearSig } from "../src/app/state.ts";
 import type { RuleField } from "../src/core/elev.ts";
 import type { ComputedRoute } from "../src/core/route.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";

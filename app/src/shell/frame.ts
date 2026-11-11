@@ -12,12 +12,12 @@ import { drawPaintCells, drawBrushRing, drawSelectBox, drawClimZones } from "../
 import { paintStep } from "../core/territory.ts";
 import { zoneField, zoneStep } from "../core/climzone.ts";
 import { brushRadiusCells } from "../core/brush.ts";
-import { dataLon } from "../ui/editops.ts";
+import { dataLon } from "../app/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig, terrainAxisSig, terrainAxisOf, isTacSig,
   routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, landedRuleField, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, tilesDownSig, readOnlySig, uiPrefsSig, terrainStyleSig }
-  from "../ui/state.ts";
+  from "../app/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
 import type { Host } from "./host.ts";

@@ -10,7 +10,7 @@ import { signal } from "@preact/signals";
 import type { JSX } from "preact";
 import { calOf, fmtDayTime, fmtMD, fmtT, fmtYear, fromT, monthLabel, monthsOf, yearMonthOf, type CalendarSpec } from "../core/calendar.ts";
 import { evCurrentAt, phaseIndexAt, phasesOf } from "../core/time.ts";
-import { isTacSig, playingSig, rangeSig, stopPlay, subDaySig, timeStep, togglePlay, toggleSubDay, worldSig, yearSig } from "./state.ts";
+import { isTacSig, playingSig, rangeSig, stopPlay, subDaySig, timeStep, togglePlay, toggleSubDay, worldSig, yearSig } from "../app/state.ts";
 import { buildMarks, hourWindow, quantTime, subTicks, type EvMark } from "./timedock.ts";
 
 /** 主轨实测宽（聚簇/避让的像素判定；ResizeObserver 更新，未测得前用 800 估） */

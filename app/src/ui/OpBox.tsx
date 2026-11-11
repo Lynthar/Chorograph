@@ -4,8 +4,8 @@
    部队/标注用非受控输入 + key=选中标识：切换选中即重置，实时输入不被重渲打断（IME 友好）。 */
 import { useRef, useState } from "preact/hooks";
 import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
-import { clearOpSel, isTacSig, mutateWorld, opEdit, opSelSig, parseWhenInput, worldSig } from "./state.ts";
-import { removeOp } from "./editops.ts";
+import { clearOpSel, isTacSig, mutateWorld, opEdit, opSelSig, parseWhenInput, worldSig } from "../app/state.ts";
+import { removeOp } from "../app/editops.ts";
 
 export function OpBox() {
   const sel = opSelSig.value;

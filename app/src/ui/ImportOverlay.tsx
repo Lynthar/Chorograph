@@ -2,7 +2,7 @@
    两张卡的标题沿用旧入口名，与图内设置的同名入口对得上。 */
 import { useRef } from "preact/hooks";
 import { useModalFocus } from "./modal.ts";
-import { importOpenSig, libActionsSig } from "./state.ts";
+import { importOpenSig, libActionsSig } from "../app/state.ts";
 
 const close = (): void => { importOpenSig.value = false; };
 

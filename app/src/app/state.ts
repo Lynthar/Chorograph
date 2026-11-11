@@ -12,7 +12,7 @@ import { yearRangeOf } from "../core/time.ts";
 import { normalizeWorld, type SampleKind } from "../core/world.ts";
 import { createHistory, terrKey } from "./history.ts";
 import { removeDecor, removeEdgeAt, removeFaction, removeNode, removeUnit } from "./editops.ts";
-import type { CalTemplate } from "../data/calstore.ts";
+import { loadTemplates, type CalTemplate } from "../data/calstore.ts";
 import type { Climate } from "../core/types.ts";
 import type { GeoMapping, GeoScan } from "../core/geojson.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
@@ -172,6 +172,8 @@ export const helpOpenSig = signal(false);
 /* 历法弹层与本机模板（2026-08-19）：模板是建图时的模具，存 localStorage，见 data/calstore 头注 */
 export const calOverlaySig = signal(false);
 export const calTemplatesSig = signal<CalTemplate[]>([]);
+/** 启动时把本机模板灌进信号（boot 调用一次） */
+export function initCalTemplates(): void { calTemplatesSig.value = loadTemplates(); }
 /** 界面偏好弹层（本机偏好，图库页与图内设置两处进）与图库页的导入弹层 */
 export const prefsOpenSig = signal(false);
 export const importOpenSig = signal(false);

@@ -2,7 +2,7 @@
    从设置弹层进来时叠在它上面，关掉回到设置。 */
 import { useRef } from "preact/hooks";
 import { useModalFocus } from "./modal.ts";
-import { prefsOpenSig, RELIEF_STEPS, setUiPrefs, uiPrefsSig } from "./state.ts";
+import { prefsOpenSig, RELIEF_STEPS, setUiPrefs, uiPrefsSig } from "../app/state.ts";
 
 const close = (): void => { prefsOpenSig.value = false; };
 

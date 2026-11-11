@@ -10,8 +10,8 @@
 import { useRef, useState } from "preact/hooks";
 import { ALL_KINDS, ARC_DEG, ARM_NAME, MODERN_KINDS, RADAR_M, RADAR_TGT_M, UNIT_KINDS, armOptional } from "../core/constants.ts";
 import { DEPTH_RATIO, isModern, unitArm, unitEyeM, unitFireDirect, unitFireKm, unitFootKm, unitKind } from "../core/units.ts";
-import { applyUnitForm } from "./editops.ts";
-import { deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, showToast, warnNumInput, worldSig } from "./state.ts";
+import { applyUnitForm } from "../app/editops.ts";
+import { deleteUnitAt, inspEditSig, isTacSig, modeSig, mutateWorld, showToast, warnNumInput, worldSig } from "../app/state.ts";
 import type { Arm, Unit } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 

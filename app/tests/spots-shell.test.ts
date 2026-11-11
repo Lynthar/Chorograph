@@ -7,7 +7,7 @@ import { landWorld } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
 import { buildGridCells } from "../src/core/grid.ts";
 import { coarseField, type RuleField } from "../src/core/elev.ts";
-import { layersSig, ruleFieldSig, spotTableSig } from "../src/ui/state.ts";
+import { layersSig, ruleFieldSig, spotTableSig } from "../src/app/state.ts";
 import type { PeakTable } from "../src/core/spots.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import type { World } from "../src/core/types.ts";

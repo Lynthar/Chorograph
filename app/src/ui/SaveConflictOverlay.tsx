@@ -7,7 +7,7 @@
 
    动作全部来自信号里的回调（同 toast 的 action 之规）：组件不碰库 IO。 */
 import { useRef } from "preact/hooks";
-import { saveConflictSig } from "./state.ts";
+import { saveConflictSig } from "../app/state.ts";
 import { useModalFocus } from "./modal.ts";
 
 /* 只给时分会说出错话——守卫自己列举的场景就含「另一台机器／网盘同步」，完全可能差好几天。

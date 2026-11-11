@@ -11,9 +11,9 @@ import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { tileCacheGet, tileCachePut } from "../data/tilecache.ts";
 import { mesoCacheGet, mesoCachePut } from "../data/mesocache.ts";
 import { createTileManager } from "./tiles.ts";
-import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig, tilesDownSig, cellsVerSig, inStroke, mutateWorldLive, readOnlySig, selSig } from "../ui/state.ts";
-import { syncGenRivers } from "../ui/editops.ts";
-import { terrMetaKey } from "../ui/history.ts";
+import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig, tilesDownSig, cellsVerSig, inStroke, mutateWorldLive, readOnlySig, selSig } from "../app/state.ts";
+import { syncGenRivers } from "../app/editops.ts";
+import { terrMetaKey } from "../app/history.ts";
 import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -134,7 +134,7 @@ export function createHost(ctx: ShellCtx): Host {
   const ULTRA_CAP = (dm ?? 0) >= 8 ? 10_500_000 : 5_250_000;
   const ULTRA_IDLE_MS = 6000;   // 静置这么久才发精修单——单要跑半分钟，窗太短＝零星编辑不断点燃注定作废的后台计算
   let ultraTimer: ReturnType<typeof setTimeout> | undefined;
-  /* 相位胶囊（ui/state.erodePhaseSig，本模块独写）：只在真演算时亮，缓存命中静默；done 2s 自动归位 */
+  /* 相位胶囊（app/state.erodePhaseSig，本模块独写）：只在真演算时亮，缓存命中静默；done 2s 自动归位 */
   let doneTimer: ReturnType<typeof setTimeout> | undefined;
   const setPhase = (p: "idle" | "work" | "ultra" | "done"): void => {
     erodePhaseSig.value = p;

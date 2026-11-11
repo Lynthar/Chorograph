@@ -5,7 +5,7 @@ import { measureLegs } from "../core/route.ts";
 import { fmtKm } from "../core/util.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushRadiusCells, fmtBrushKm } from "../core/brush.ts";
 import { upliftOn } from "../core/elev.ts";
-import { brushEraseSig, brushSizeSig, brushSmoothSig, decorEraseSig, decorSizeSig, editSubSig, isTacSig, modeSig, routePtsSig, routeResSig, terrainAxisOf, terrainAxisSig, worldSig } from "./state.ts";
+import { brushEraseSig, brushSizeSig, brushSmoothSig, decorEraseSig, decorSizeSig, editSubSig, isTacSig, modeSig, routePtsSig, routeResSig, terrainAxisOf, terrainAxisSig, worldSig } from "../app/state.ts";
 
 export function FpropsBar() {
   const mode = modeSig.value, sub = editSubSig.value;

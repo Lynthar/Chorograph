@@ -7,7 +7,7 @@ import { MeasurePane } from "./MeasurePane.tsx";
 import { DrawPane } from "./DrawPane.tsx";
 import { UnitsPane } from "./UnitsPane.tsx";
 import { LayersPane } from "./LayersPane.tsx";
-import { drawerOpenSig, editSubSig, layersOpenSig, modeSig, railToolOf, worldSig, type RailTool } from "./state.ts";
+import { drawerOpenSig, editSubSig, layersOpenSig, modeSig, railToolOf, worldSig, type RailTool } from "../app/state.ts";
 
 const TITLES: Record<RailTool | "layers", [string, string]> = {
   browse: ["览", "事件时间线"],

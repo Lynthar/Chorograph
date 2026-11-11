@@ -7,7 +7,7 @@ import { createHost } from "../src/shell/host.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
 import { genRiverEdges, genRiverEdgesOf, normalizeWorld } from "../src/core/world.ts";
 import { gridGeom } from "../src/core/grid.ts";
-import { beginStroke, canUndoSig, cellsVerSig, deleteEdgeIdx, editVerSig, endStroke, erodePhaseSig, mutateWorld, readOnlySig, redoWorld, ruleFieldSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
+import { beginStroke, canUndoSig, cellsVerSig, deleteEdgeIdx, editVerSig, endStroke, erodePhaseSig, mutateWorld, readOnlySig, redoWorld, ruleFieldSig, undoWorld, worldSig, yearSig } from "../src/app/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import { waterSurface, type ElevField } from "../src/core/elev.ts";
 import { erodeKey, type ErodeInput } from "../src/core/erode.ts";

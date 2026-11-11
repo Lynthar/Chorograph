@@ -3,7 +3,7 @@
    战术专属层沿旧语义只在战术图出现（带「战术」小签）。 */
 import { LAYERS, PRESETS } from "../core/constants.ts";
 import { isModern } from "../core/units.ts";
-import { applyPreset, isTacSig, layersSig, setTerrainStyle, terrainStyleSig, toggleLayer, worldSig } from "./state.ts";
+import { applyPreset, isTacSig, layersSig, setTerrainStyle, terrainStyleSig, toggleLayer, worldSig } from "../app/state.ts";
 
 /** UI 层改名 */
 const RENAME: Record<string, string> = {

@@ -71,6 +71,41 @@ describe("静态守卫：单一真源", () => {
   });
 });
 
+/* 分层依赖只许自下而上：core < worker < data < render < app < shell < ui。
+   按源码文本取相对 import 的说明符，import type、export … from 与动态 import 同算。 */
+describe("静态守卫：分层依赖", () => {
+  /** 每条相对 import：[源文件, 说明符, 目标（相对 src/）] */
+  const edges = walk(SRC).flatMap(abs => {
+    const f = path.relative(SRC, abs).replace(/\\/g, "/");
+    const src = readFileSync(abs, "utf8");
+    const re = /^\s*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']|^\s*import\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gm;
+    return [...src.matchAll(re)].map(m => m[1] ?? m[2] ?? m[3]).filter(s => s.startsWith("."))
+      .map(s => [f, s, path.posix.join(path.posix.dirname(f), s)] as const);
+  });
+  /** from 目录下引到 bad(目标顶层目录) 为真的边，allow 里的「源文件 → 目标」不计 */
+  const crossing = (from: string, bad: (top: string) => boolean, allow: string[] = []): string[] =>
+    edges.filter(([f, , t]) => f.startsWith(from + "/") && bad(t.split("/")[0]) && !allow.includes(`${f} → ${t}`))
+      .map(([f, s]) => `${f} import 了 "${s}"`);
+  const none = (hits: string[], why: string) => assert.deepStrictEqual(hits, [], `${why}\n${hits.join("\n")}`);
+
+  it("core/ 只引 core/ 内部（import type 也算）", () => {
+    none(crossing("core", d => d !== "core"),
+      "core 是最底层的纯逻辑，Worker 与 node:test 直接加载它——引上层会把渲染、状态或外壳一起拖进去：");
+  });
+  it("app/ 不引 shell/ 与 ui/", () => {
+    none(crossing("app", d => d === "shell" || d === "ui"),
+      "app 是应用状态与写入口层，外壳与组件都依赖它——它反引 shell / ui 就成环：");
+  });
+  it("ui/ 不引 shell/", () => {
+    none(crossing("ui", d => d === "shell"),
+      "shell/boot 挂载组件，组件与外壳之间只经 app 层的信号与写入口交换——组件反引外壳就成环：");
+  });
+  it("shell/ 不引 ui/，组合根 boot.ts 挂载组件的那一条除外", () => {
+    none(crossing("shell", d => d === "ui", ["shell/boot.ts → ui/mount.tsx"]),
+      "外壳在组件之下，只有组合根 shell/boot.ts 挂载组件——别的外壳模块要组件的东西，先把它下沉到 app/：");
+  });
+});
+
 /* 生成器 v2 的跨引擎确定性：流向树会把 1 ULP 放大成整片流域翻转，而 Math.sin / exp / pow 这类函数各引擎可差 1 ULP——
    单测在 Node 里永远绿，只有在另一个浏览器上才翻，所以靠正则守住纪律。 */
 describe("静态守卫：生成器 v2 只用四则、开方与整数哈希", () => {

@@ -1,6 +1,6 @@
 /* 外壳共享可变态：原 main.ts 顶层散置的 let 集中为单一 ctx 对象，
    host/library/pointer/frame/boot 各 shell 模块经同一引用协作（原地读写，无副本无广播）。
-   刻意不进 signals（对齐 ui/state.ts 头注）：相机 view / 网格 grid 拖拽与 rAF 每帧读写，
+   刻意不进 signals（对齐 app/state.ts 头注）：相机 view / 网格 grid 拖拽与 rAF 每帧读写，
    普通对象直读；低频 UI 态才走 signals。 */
 import type { Meta } from "../core/types.ts";
 import type { Grid } from "../core/grid.ts";

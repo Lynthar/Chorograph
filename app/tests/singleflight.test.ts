@@ -41,6 +41,7 @@ describe("单飞行闸 singleFlight", () => {
       assert.equal(err.mock.callCount(), 1, "拒绝要响");
       assert.equal(refires, 1, "拒绝后 dirty 照样补发");
       g.fire(); assert.equal(runs, 2, "拒绝后闸已放");
+      await flush();   // 第二单拿的还是那个已拒绝的 promise：让它的拒绝臂在 console 还被接管时跑完
     } finally { err.mock.restore(); }
   });
   it("run 同步抛：同样记录并放闸（否则这条车道永哑）", async () => {

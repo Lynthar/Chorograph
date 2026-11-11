@@ -2,17 +2,17 @@
    组件 .tsx 不进 node:test（类型剥离不转 JSX）——表单交互靠截图与真机，此处锁逻辑。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createHistory, terrKey, UNDO_MAX } from "../src/ui/history.ts";
+import { createHistory, terrKey, UNDO_MAX } from "../src/app/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { muteGenRiver, regenRivers, saveEdgeForm, syncGenRivers, meanderLevelOf, setMeanderLevel } from "../src/ui/editops.ts";
-import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, paintUpliftPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, outsideCount, pullIntoFrame, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/ui/editops.ts";
+import { muteGenRiver, regenRivers, saveEdgeForm, syncGenRivers, meanderLevelOf, setMeanderLevel } from "../src/app/editops.ts";
+import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, paintUpliftPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, outsideCount, pullIntoFrame, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/app/editops.ts";
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
 import { buildGridCells, gridGeom, gridStepDeg } from "../src/core/grid.ts";
 import { DH_MAX_M } from "../src/core/elev.ts";
 import { blankWorld, genRiverEdges, genRiverEdgesOf, genRiverKey, genTerrKey, normalizeWorld, riverCells } from "../src/core/world.ts";
 import { applyPreset, canRedoSig, canUndoSig, deleteEdgeIdx, deleteFactionAt, deleteNodeAt, editSubSig, editVerSig, gridVerSig, IMPL_LAYERS, layersSig, linkTypeSig, mutateWorld, mutateWorldLive, setTerrainStyle, terrainStyleSig,
-  modeSig, paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, railToolOf, readOnlySig, redoWorld, revealLayersFor, selMembers, selSig, setRailTool, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/ui/state.ts";
+  modeSig, paintFactionSig, paintLayerSig, pickEditSub, pickLinkType, pushHistoryOnce, railToolOf, readOnlySig, redoWorld, revealLayersFor, selMembers, selSig, setRailTool, setWorldState, subDaySig, timeStep, toastSig, undoWorld, worldSig, yearSig } from "../src/app/state.ts";
 import { EVENT_TYPES, LAYERS, PRESETS } from "../src/core/constants.ts";
 import type { Edge, Meta, World, WorldNode } from "../src/core/types.ts";
 
@@ -487,7 +487,7 @@ describe("编辑操作内核", () => {
     assert.ok(w.heightOverrides!.every(o => o.dh === -0.02));
   });
   it("地貌笔＝重定基面：涂到之处清当刻手雕高程；生态轴不清、橡皮不清、时段外不清（2026-08-08）", async () => {
-    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    const { paintTerrainAt } = await import("../src/app/editops.ts");
     const M = { worldModel: "sphere", terrain: "plain", gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;   // 4 列＝1°/格
     const g = buildGridCells(M, [], 3000);
     const mk = () => {
@@ -516,7 +516,7 @@ describe("编辑操作内核", () => {
     assert.strictEqual(acc.n, 2, "收笔回执的计数＝本笔各次调用真清掉的雕痕之和（生态轴不计）");
   });
   it("涂改块尺寸 ov.step：格细于 1° 就记（对齐旧 paintAt·存档格式兼容）", async () => {
-    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    const { paintTerrainAt } = await import("../src/app/editops.ts");
     /* ⚠ **期望有意翻转**（2026-08-12 强制自动档）：判据一直是「缺 step 键＝按 1° 粗块解读」，
        从前战略图的格恰好就是 1° 所以不必记；自动档后战略图的格也恒细于 1°，于是两个图种都记。
        仍不记键的只剩「格恰好 1° 或更粗」——48° 图幅写死 48 列即是，也正是黄金基准夹具的形状。 */
@@ -542,7 +542,7 @@ describe("编辑操作内核", () => {
     assert.ok(!("step" in sw2.heightOverrides![0]), "恰 1° 的高程涂改不带 step 键");
   });
   it("战略图开了网格密度即记 step——不记的话烘焙成战术图时会按 1° 粗块盖章（面积三十几倍）", async () => {
-    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    const { paintTerrainAt } = await import("../src/app/editops.ts");
     /* 判据自 2026-08-12 起是「格细于 1°」而非「是不是战术图」：缺 step 键＝按 1° 粗块解读
        （grid/erode/elev 三处 `+(o.step) || step` 与 core/tactical 烘焙的 `|| 1` 同规）。 */
     const dm = { gridN: 192, bbox: { lonMin: 100, lonMax: 148, latMin: 30, latMax: 62 } } as never as import("../src/core/types.ts").Meta;
@@ -555,7 +555,7 @@ describe("编辑操作内核", () => {
     assert.strictEqual(dw.heightOverrides![0].step, +dg.step.toFixed(7), "高程涂改同规则");
   });
   it("细格 step 量化不扩格（2026-08 审查修正）：涂1格重建恰1格；旧4位量化章擦得掉、并得进", async () => {
-    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    const { paintTerrainAt } = await import("../src/app/editops.ts");
     /* 缺省半径(10000km)母图烘出的战术格边 0.000573°——toFixed(4)=0.0006 向上偏 4.7%，旧写法在
        重建端被 1.001 容差判成粗块：一格涂改扩成 2×2、橡皮擦不掉、高程同格不合并（探针实证）。 */
     const m = { mapKind: "tactical", worldModel: "flat", kmPerDeg: 174.5329, gridN: 60, terrain: "plain",
@@ -582,7 +582,7 @@ describe("编辑操作内核", () => {
     assert.strictEqual(w.heightOverrides[0].step, +g.step.toFixed(7), "并入时把量化 step 校直");
   });
   it("splitOverridesToStep 已删（2026-08-13 冻结批）：尺寸/密度创建后冻结,「改图幅=改格边」的迁移路不存在了", async () => {
-    const ops = await import("../src/ui/editops.ts");
+    const ops = await import("../src/app/editops.ts");
     assert.ok(!("splitOverridesToStep" in ops), "冻结后不该再有涂改拆分入口——它复活即说明有人重新打开了改图幅的路");
   });
   it("applyEdgeForm：河宽 widthM——>0 存、空/非法删、不传不动", () => {
@@ -664,7 +664,7 @@ describe("signals 变更管线", () => {
     assert.strictEqual(worldSig.value!.nodes[0].lon, 1, "一次撤销回到拖动前");
   });
   it("笔刷空步回收：beginStroke 后无广播 → endStroke 丢弃空快照；有改动则保留", async () => {
-    const { beginStroke, endStroke } = await import("../src/ui/state.ts");
+    const { beginStroke, endStroke } = await import("../src/app/state.ts");
     setWorldState(mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }] }));
     assert.strictEqual(canUndoSig.value, false);
     // 空笔：起笔 push 一步，整笔无广播（模拟涂已涂格/擦空白）→ 回收
@@ -778,7 +778,7 @@ describe("单对象删除 helper（即时删 + 精准清选中；三门面带可
 
 describe("派系与涂域", () => {
   it("addFaction：调色板轮转；removeFaction 连带清理归属/沿革/作战线side", async () => {
-    const { addFaction, removeFaction, FAC_PALETTE } = await import("../src/ui/editops.ts");
+    const { addFaction, removeFaction, FAC_PALETTE } = await import("../src/app/editops.ts");
     const w = mkWorld({
       nodes: [
         { id: "a", type: "city", lon: 1, lat: 2, faction: "f1" },
@@ -799,7 +799,7 @@ describe("派系与涂域", () => {
     assert.deepStrictEqual(w.factions.map(f => f.id), ["f2", nf.id]);
   });
   it("applyFactionForm：空值删键、名称/颜色回退保留", async () => {
-    const { applyFactionForm } = await import("../src/ui/editops.ts");
+    const { applyFactionForm } = await import("../src/app/editops.ts");
     const f = { id: "f", 名称: "旧名", color: "#111111", 阵营: "旧营", note: "旧注" } as never as import("../src/core/types.ts").Faction;
     applyFactionForm(f, { 名称: "  ", color: "", 阵营: "", since: "3000", until: "abc", note: "", link: "L" });
     assert.strictEqual(f.名称, "旧名");
@@ -809,7 +809,7 @@ describe("派系与涂域", () => {
     assert.strictEqual(f.link, "L");
   });
   it("涂域位图：层(cells/runs 双认)↔位图↔runs 往返稳定（2026-08-13 尺度定形批,存档读旧写新）", async () => {
-    const { maskFromLayer, runsFromMask } = await import("../src/ui/paint.ts");
+    const { maskFromLayer, runsFromMask } = await import("../src/app/paint.ts");
     const { paintCellSet } = await import("../src/core/territory.ts");
     const pd = 0.5;
     const cells: [number, number][] = [[100.25, 30.25], [82.25, 22.25], [129.75, 53.75]];
@@ -831,7 +831,7 @@ describe("派系与涂域", () => {
     assert.strictEqual(r2.d[2], 3, "len=3");
   });
   it("brushMask：圆盘半径/越界裁剪/橡皮/无变化返回 false", async () => {
-    const { paintDims, maskFromLayer, brushMask } = await import("../src/ui/paint.ts");
+    const { paintDims, maskFromLayer, brushMask } = await import("../src/app/paint.ts");
     const dims = paintDims({});
     const m = maskFromLayer({}, { cells: [] }, 0.5);
     const count = () => m.data.reduce((a: number, b: number) => a + b, 0);
@@ -845,8 +845,8 @@ describe("派系与涂域", () => {
     assert.ok(count() > 0 && count() < 49, "贴角落笔＝越界半盘被裁剪");
   });
   it("ensurePaintLayer / removePaintLayer / setPaintLayerSpan", async () => {
-    const { ensurePaintLayer } = await import("../src/ui/paint.ts");
-    const { removePaintLayer, setPaintLayerSpan } = await import("../src/ui/editops.ts");
+    const { ensurePaintLayer } = await import("../src/app/paint.ts");
+    const { removePaintLayer, setPaintLayerSpan } = await import("../src/app/editops.ts");
     const f = { id: "f" } as never as import("../src/core/types.ts").Faction;
     const i0 = ensurePaintLayer(f, 0);
     assert.strictEqual(i0, 0);
@@ -876,7 +876,7 @@ describe("作战线", () => {
     assert.notStrictEqual(r, two, "<3 点返回副本");
   });
   it("addOp / removeOp：挂事件点 ops[]、返回下标、空则删键、非事件=null", async () => {
-    const { addOp, removeOp } = await import("../src/ui/editops.ts");
+    const { addOp, removeOp } = await import("../src/app/editops.ts");
     const w = mkWorld({ nodes: [
       { id: "e", type: "event", evtype: "battle", lon: 1, lat: 2, year: 3000 },
       { id: "c", type: "city", lon: 0, lat: 0 }
@@ -893,7 +893,7 @@ describe("作战线", () => {
     assert.ok(!("ops" in w.nodes[0]), "最后一条删除后 ops 整键删除");
   });
   it("选中/编辑管线：selectOp 联动 selSig；一次选中多改=一步撤销；reverse 翻转；clearOpSel 复位", async () => {
-    const { opSelSig, selectOp, clearOpSel, opEdit } = await import("../src/ui/state.ts");
+    const { opSelSig, selectOp, clearOpSel, opEdit } = await import("../src/app/state.ts");
     setWorldState(mkWorld({ nodes: [
       { id: "e", type: "event", evtype: "battle", lon: 1, lat: 2, year: 3000,
         ops: [{ kind: "defense", pts: [[1, 2], [3, 4]], side: null, troop: "", label: "", w: 3 }] }
@@ -921,7 +921,7 @@ describe("作战线", () => {
     assert.strictEqual(opSelSig.value, null);
   });
   it("随时编辑表单：同目标重选不复位 inspEdit，目标变化才复位（桌面打磨批 P2）", async () => {
-    const { inspEditSig, selectOp } = await import("../src/ui/state.ts");
+    const { inspEditSig, selectOp } = await import("../src/app/state.ts");
     setWorldState(mkWorld({ nodes: [
       { id: "e", type: "event", evtype: "battle", lon: 1, lat: 2, year: 3000,
         ops: [{ kind: "attack", pts: [[1, 2], [3, 4]], side: null, troop: "", label: "", w: 3 }] },
@@ -941,7 +941,7 @@ describe("作战线", () => {
 
 describe("地形涂改", () => {
   it("paintTerrainAt：圆盘笔刷改格、经 buildGridCells 生效、同格重涂不堆叠、橡皮回种子、空擦无变化", async () => {
-    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    const { paintTerrainAt } = await import("../src/app/editops.ts");
     const { buildGridCells } = await import("../src/core/grid.ts");
     const meta = { gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } };   // 4×4 战略网格（写死 4 列＝step=1）
     const lon = 101.5, lat = 31.5, c = 1, r = 1;                                    // 落在 (r1,c1) 格中心
@@ -969,7 +969,7 @@ describe("地形涂改", () => {
     assert.strictEqual(paintTerrainAt(mkWorld({ meta }), g0, 3000, lon, lat, other, 1, true), false, "橡皮擦空格无变化");
   });
   it("paintTerrainAt 单轴：生态轴改生态留地貌、地貌轴改地貌留生态、生态 none 清生态", async () => {
-    const { paintTerrainAt } = await import("../src/ui/editops.ts");
+    const { paintTerrainAt } = await import("../src/app/editops.ts");
     const { buildGridCells } = await import("../src/core/grid.ts");
     const meta = { terrain: "plain" as const, gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } };   // 初稿全 plain，4 列＝1°/格
     const lon = 101.5, lat = 31.5, r = 1, c = 1;
@@ -1027,7 +1027,7 @@ describe("图幅：点对象钳进图廓、图外对象计数与移入", () => {
 
 describe("布景 + 框选", () => {
   it("addDecor / removeDecor：挂 decor[]、四位小数（同 addNode 期望翻转）、id 唯一、空则删键", async () => {
-    const { addDecor, removeDecor } = await import("../src/ui/editops.ts");
+    const { addDecor, removeDecor } = await import("../src/app/editops.ts");
     const w = mkWorld();
     const d0 = addDecor(w, 100.12345, 30.9876, "tree", 1.5);
     assert.strictEqual(d0.kind, "tree");
@@ -1044,7 +1044,7 @@ describe("布景 + 框选", () => {
     assert.strictEqual(w.decor.length, 0, "删空后留空数组（decor 为必备字段）");
   });
   it("moveDecor：改经纬（经度折回、四位小数，同 addNode 期望翻转）、缺失 id 无操作", async () => {
-    const { addDecor, moveDecor } = await import("../src/ui/editops.ts");
+    const { addDecor, moveDecor } = await import("../src/app/editops.ts");
     const w = mkWorld();
     const d = addDecor(w, 100, 30, "tree", 1);
     moveDecor(w, d.id, 105.98765, 31.12345);
@@ -1054,7 +1054,7 @@ describe("布景 + 框选", () => {
     assert.strictEqual(w.decor.length, 1);
   });
   it("selDecor / selMultiDecor：按 id 取回布景、缺失跳过、类型不符返回空", async () => {
-    const { selDecor, selMultiDecor } = await import("../src/ui/state.ts");
+    const { selDecor, selMultiDecor } = await import("../src/app/state.ts");
     const w = mkWorld();
     w.decor = [{ id: "a", kind: "tree", lon: 1, lat: 2 }, { id: "b", kind: "pine", lon: 3, lat: 4 }] as never;
     assert.strictEqual(selDecor(w, { kind: "decor", id: "b" })?.id, "b");
@@ -1093,13 +1093,13 @@ describe("布景 + 框选", () => {
       ["d1", "r1", "t1"], "生态=无（keep 空）＝盘内生态散布全扫，山峰仍豁免");
   });
   it("selMulti：按 id 顺序取回地点、缺失跳过", async () => {
-    const { selMulti } = await import("../src/ui/state.ts");
+    const { selMulti } = await import("../src/app/state.ts");
     const w = mkWorld({ nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }, { id: "b", type: "city", lon: 3, lat: 4 }] });
     assert.deepStrictEqual(selMulti(w, { kind: "multi", ids: ["b", "没有", "a"] }).map(n => n.id), ["b", "a"]);
     assert.deepStrictEqual(selMulti(w, { kind: "node", id: "a" }), [], "非 multi 返回空");
   });
   it("框选批量删：removeNode 逐个连带清理连线", async () => {
-    const { removeNode } = await import("../src/ui/editops.ts");
+    const { removeNode } = await import("../src/app/editops.ts");
     const w = mkWorld({
       nodes: [{ id: "a", type: "city", lon: 1, lat: 2 }, { id: "b", type: "city", lon: 3, lat: 4 }, { id: "c", type: "city", lon: 5, lat: 6 }],
       edges: [{ from: "a", to: "b", type: "road" }, { from: "b", to: "c", type: "road" }]

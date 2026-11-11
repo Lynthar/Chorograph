@@ -2,7 +2,7 @@
    正文以实测快捷键/工具轨为真源重写（2026-07；帮助是交互契约，错的比没有更糟）——
    改快捷键或子工具时**此处必须同步**。关闭：按钮 / Esc（外壳 keydown）/ 点遮罩空白。 */
 import { useRef } from "preact/hooks";
-import { helpOpenSig } from "./state.ts";
+import { helpOpenSig } from "../app/state.ts";
 import { useModalFocus } from "./modal.ts";
 
 const HELP_HTML = `

@@ -10,7 +10,7 @@ import { landWorld } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
 import { buildGridCells } from "../src/core/grid.ts";
 import { coarseField, type RuleField } from "../src/core/elev.ts";
-import { detectSig, layersSig, mutateWorld, ruleFieldSig, toastSig, visFailSig, visMaskSig, worldSig, yearSig } from "../src/ui/state.ts";
+import { detectSig, layersSig, mutateWorld, ruleFieldSig, toastSig, visFailSig, visMaskSig, worldSig, yearSig } from "../src/app/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import type { SightReq, SightRes, VisReq, VisRes } from "../src/worker/routeProto.ts";
 import type { VisMask } from "../src/core/viewshed.ts";

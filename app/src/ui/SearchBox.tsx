@@ -4,7 +4,7 @@
 import { signal } from "@preact/signals";
 import { EDGE_STYLE, NODE_STYLE } from "../core/constants.ts";
 import { activeAt } from "../core/time.ts";
-import { flyReqSig, selSig, worldSig, yearSig } from "./state.ts";
+import { flyReqSig, selSig, worldSig, yearSig } from "../app/state.ts";
 import type { Edge, Faction, World, WorldNode } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 

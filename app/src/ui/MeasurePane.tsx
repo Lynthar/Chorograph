@@ -6,7 +6,7 @@ import { distKm } from "../core/geo.ts";
 import { measureLegs } from "../core/route.ts";
 import { fmtKm } from "../core/util.ts";
 import type { Arm, Meta } from "../core/types.ts";
-import { armSig, modeSig, routeBusySig, routePtsSig, routeResSig, setMode, setRailTool, editSubSig, worldSig } from "./state.ts";
+import { armSig, modeSig, routeBusySig, routePtsSig, routeResSig, setMode, setRailTool, editSubSig, worldSig } from "../app/state.ts";
 
 function Measure({ meta }: { meta: Meta }) {
   const pts = routePtsSig.value;

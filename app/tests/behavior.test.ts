@@ -36,7 +36,7 @@ import { legendItems } from "../src/render/legend.ts";
 import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, beachOf, decoGate, exagFor, marshGate, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, blendSharp, shoreElev, shoreGLSL, SHADE_LIGHT, shadeGain, slopeKOf, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
 import { terrainOpts, contourStepOf } from "../src/render/renderer.ts";
 import { CLIMATE, CLIMATE_ORDER, allComposites } from "../src/core/constants.ts";
-import { poolInsert } from "../src/ui/stamps.ts";
+import { poolInsert } from "../src/app/stamps.ts";
 import type { Edge, Meta, World, WorldNode } from "../src/core/types.ts";
 import { validateWorld } from "../src/core/validate.ts";
 import { existsSync, readFileSync } from "node:fs";

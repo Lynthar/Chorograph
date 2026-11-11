@@ -7,7 +7,7 @@
    「开图批末恰好重建一次」（builtFor 键 + batch 冲刷共同保证）。 */
 import { batch, effect } from "@preact/signals-core";
 import { worldSig, yearSig, selSig, hoverSig, editVerSig, gridVerSig, isTacSig, unitLegsSig, setWorldState,
-  modeSig, armSig, routePtsSig, routeResSig, routeBusySig, cellsVerSig } from "../ui/state.ts";
+  modeSig, armSig, routePtsSig, routeResSig, routeBusySig, cellsVerSig } from "../app/state.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { Unit, World } from "../core/types.ts";
 import type { ShellCtx } from "./ctx.ts";

@@ -3,7 +3,7 @@
    朱=活动工具（三色分权：金不作选中、朱不作悬停）。
    图标：单色剪影内联 SVG（24 视框，fill:currentColor→随按钮 dim/hover/朱 自动变色，发行单文件内联）。
    眼睛=览、两脚规=测、毛笔=绘、军旗=军、三叠图页=层。 */
-import { drawerOpenSig, editSubSig, layersOpenSig, modeSig, railToolOf, readOnlySig, setRailTool, type RailTool } from "./state.ts";
+import { drawerOpenSig, editSubSig, layersOpenSig, modeSig, railToolOf, readOnlySig, setRailTool, type RailTool } from "../app/state.ts";
 
 type IconName = RailTool | "layers";
 

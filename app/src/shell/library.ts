@@ -14,7 +14,7 @@ import { convertGeoJSON, GEO_CAPS, padBBox, scanGeoJSON, type GeoMapping, type G
 import { paintStep } from "../core/territory.ts";
 import { zoneField } from "../core/climzone.ts";
 import { mapFrame } from "../core/frame.ts";
-import { FAC_PALETTE, outsideCount, pullIntoFrame } from "../ui/editops.ts";
+import { FAC_PALETTE, outsideCount, pullIntoFrame } from "../app/editops.ts";
 import { phasesOf, yearRangeOf } from "../core/time.ts";
 import { validateWorld, formatIssues, worldCap } from "../core/validate.ts";
 import { createTacticalWorld } from "../core/tactical.ts";
@@ -33,7 +33,7 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, setWorldState, libViewS
   playingSig, togglePlay, stopPlay, closeSettings, mutateWorld, pushHistoryOnce, clearOpSel, cancelOpDraw,
   routePtsSig, routeResSig, linkFromSig, unitLegsSig, uiPrefsSig, terrainStyleSig,
   gridVerSig, editVerSig, showToast, loadStageSig, saveConflictSig, readOnlySig, geoImportSig, ruleFieldSig, type LibActions }
-  from "../ui/state.ts";
+  from "../app/state.ts";
 import type { ShellCtx, FolderHandle } from "./ctx.ts";
 import type { DeepLink } from "./deeplink.ts";
 import type { Host } from "./host.ts";

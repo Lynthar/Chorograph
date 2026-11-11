@@ -3,8 +3,8 @@
 import { useRef } from "preact/hooks";
 import { EDGE_STYLE, RIVER_TMPL, WALL_TMPL } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
-import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "./state.ts";
-import { MEANDER_LEVELS, meanderLevelOf, saveEdgeForm } from "./editops.ts";
+import { deleteEdgeIdx, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "../app/state.ts";
+import { MEANDER_LEVELS, meanderLevelOf, saveEdgeForm } from "../app/editops.ts";
 import { CertaintyChips, readCertainty } from "./CertaintyChips.tsx";
 import type { Edge } from "../core/types.ts";
 import { tget } from "../core/util.ts";

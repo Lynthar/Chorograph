@@ -4,10 +4,10 @@
    表单沿用非受控 + 提交时读回（同设置弹层之规）；⚠ 唯独实时预览要跟着敲，故 onInput 弹一个计数。 */
 import { useRef, useState } from "preact/hooks";
 import { calOf, fmtT, fmtYear, MAX_HPD, MAX_MPH, tacT } from "../core/calendar.ts";
-import { loadTemplates, newTemplateId, pickCalendarCfg, removeTemplate, saveTemplates, upsertTemplate, type CalTemplate } from "../data/calstore.ts";
+import { newTemplateId, pickCalendarCfg, removeTemplate, saveTemplates, upsertTemplate, type CalTemplate } from "../data/calstore.ts";
 import type { CalendarCfg } from "../core/types.ts";
 import { useModalFocus } from "./modal.ts";
-import { calOverlaySig, calTemplatesSig, showToast } from "./state.ts";
+import { calOverlaySig, calTemplatesSig, showToast } from "../app/state.ts";
 
 const nums = (s: string): number[] => s.split(/[,，、\s]+/).map(x => parseInt(x, 10)).filter(n => isFinite(n) && n >= 1);
 const words = (s: string): string[] => s.split(/[,，、\n]+/).map(x => x.trim()).filter(x => x);
@@ -132,9 +132,4 @@ export function CalendarOverlay() {
       <CalendarCard />
     </div>
   );
-}
-
-/** 启动时把本机模板灌进信号（boot 调用一次） */
-export function initCalTemplates(): void {
-  calTemplatesSig.value = loadTemplates();
 }

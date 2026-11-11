@@ -161,7 +161,7 @@ export interface Decor extends Timed {
 }
 
 /** 自定义印章资产（每图内嵌 base64；上传即降采样 ≤256px WebP-alpha）。decor 以 kind:"img:<id>" 引用；
-    浏览器印章池（localStorage 跨图复用）见 ui/stamps.ts。 */
+    浏览器印章池（localStorage 跨图复用）见 app/stamps.ts。 */
 export interface Asset { id: string; name?: string; src: string; w: number; h: number }
 
 export interface TerrainOverride extends Timed {

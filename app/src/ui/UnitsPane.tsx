@@ -4,8 +4,8 @@
    战略图（2026-07-31 起可摆基础部队）走同一套流程，只是时刻粒度为年/月、属性只到基础五项。
    ⚠超速标记只在选中部队的检查器卡里给出（可达性预算只算选中部队且只在战术图算，见 orchestrate 的编排 effect）。 */
 import { fmtStrength, unitKind, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../core/units.ts";
-import { addUnitUnplaced } from "./editops.ts";
-import { flyReqSig, isTacSig, mutateWorld, selSig, showToast, worldSig, yearSig } from "./state.ts";
+import { addUnitUnplaced } from "../app/editops.ts";
+import { flyReqSig, isTacSig, mutateWorld, selSig, showToast, worldSig, yearSig } from "../app/state.ts";
 
 export function UnitsPane() {
   const world = worldSig.value!;

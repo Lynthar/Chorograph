@@ -11,7 +11,7 @@
    ② 拼错的普通值——`#sub=node`（正确是 add）照单全收，把 editSubSig 设成一个不存在的工具态：
    界面看着像绘制工具、点画布却什么都不发生。**一个无效值不报错、不回落、静默产出一个死工具，
    比崩溃更难排查**，故非法值一律当作没给过。 */
-import { armSig, yearSig } from "../ui/state.ts";
+import { armSig, yearSig } from "../app/state.ts";
 import { PRESETS, ARM_NAME } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -60,7 +60,7 @@ export interface DeepLink {
   hold: number | null;
 }
 
-/** 编辑子工具白名单＝ui/state.EditSub 的全部取值（此处另写一份，免深链把类型层的自由度当运行时许可） */
+/** 编辑子工具白名单＝app/state.EditSub 的全部取值（此处另写一份，免深链把类型层的自由度当运行时许可） */
 const SUBS = ["select", "add", "link", "paint", "terrain", "decor", "label", "unit", "delete"];
 const ANALYSIS = ["measure", "route", "edit"];
 const OVLS = ["help", "settings", "create", "prefs", "import"];

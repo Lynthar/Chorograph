@@ -8,12 +8,12 @@ import { CLIMATE, CLIMATE_ORDER, DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LA
 import { calOf, eraPh, eraTy, fmtWhen, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
 import { DH_MAX_M, HEIGHT_STEPS_STRAT, HEIGHT_STEPS_TAC, UPLIFT_FLOORS_M, UPLIFT_PEAKS_M, heightStepM, upliftOn } from "../core/elev.ts";
 import { useLayoutEffect } from "preact/hooks";
-import { addFaction, removePaintLayer, setPaintLayerSpan } from "./editops.ts";
-import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "./stamps.ts";
+import { addFaction, removePaintLayer, setPaintLayerSpan } from "../app/editops.ts";
+import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "../app/stamps.ts";
 import type { Edge, Ecotype, Landform } from "../core/types.ts";
 import { addTypeSig, brushEraseSig, canRedoSig, canUndoSig, climPaintSig, decorKindSig, editSubSig, eraNewSig, heightStepMSig, upliftPeakMSig, upliftModeSig, basinFloorMSig, isTacSig, linkFromSig, linkTypeSig,
   mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, parseWhenInput, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisOf, terrainAxisSig, undoWorld, worldSig,
-  type EditSub } from "./state.ts";
+  type EditSub } from "../app/state.ts";
 
 const SUBS: { s: EditSub; g: string; n: string }[] = [
   { s: "terrain", g: "形", n: "地形" },

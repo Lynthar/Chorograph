@@ -1,4 +1,4 @@
-/* 视域编排：为当刻在场、带视野 / 火力 / 雷达圈的部队与地点，在**落定的**规则场（ui/state.ruleFieldSig）上算
+/* 视域编排：为当刻在场、带视野 / 火力 / 雷达圈的部队与地点，在**落定的**规则场（app/state.ruleFieldSig）上算
    视线掩膜，结果进 visMaskSig（部队 / 地点 id → 圈 → 掩膜；无掩膜的圈画整圆）；飞行部队被他派的视野圈与雷达
    看见与否另算点对点视线，进 detectSig。并发形制：防抖归并 + 单飞行闸
    （shell/singleflight，与腿账同一份）+ seq 令牌丢过期结果。规则场演算中（sig 为 null）不发单、沿用上一份，
@@ -11,7 +11,7 @@ import { activeAt, ownerAt } from "../core/time.ts";
 import { REFRACT_OPTICAL, REFRACT_RADAR, TARGET_M, noMasks, type ViewField, type VisMask } from "../core/viewshed.ts";
 import { VANTAGE_GAIN_M, VANTAGE_M } from "../core/constants.ts";
 import { layerOn } from "../render/overlay.ts";
-import { worldSig, yearSig, editVerSig, layersSig, isTacSig, ruleFieldSig, visMaskSig, detectSig, visFailSig, showToast } from "../ui/state.ts";
+import { worldSig, yearSig, editVerSig, layersSig, isTacSig, ruleFieldSig, visMaskSig, detectSig, visFailSig, showToast } from "../app/state.ts";
 import { errText } from "../core/util.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { SightReq, SightRes, VisReq, VisRes, VisTag } from "../worker/routeProto.ts";

@@ -2,9 +2,9 @@
    一次「保存修改」提交；删除走 state 的 deleteFactionAt 门面（与检查器卡片同一条路径，含 confirm 与涂域目标清理）。
    字段带持久小标签（.frow>label）。 */
 import { useRef } from "preact/hooks";
-import { applyFactionForm } from "./editops.ts";
+import { applyFactionForm } from "../app/editops.ts";
 import { calOf, eraPh, eraTy, fmtWhenForm } from "../core/calendar.ts";
-import { deleteFactionAt, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "./state.ts";
+import { deleteFactionAt, inspEditSig, isTacSig, modeSig, mutateWorld, parseWhenInput, showToast, worldSig } from "../app/state.ts";
 import type { Faction } from "../core/types.ts";
 
 export function FactionForm({ f }: { f: Faction }) {

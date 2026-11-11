@@ -6,15 +6,14 @@ import { roadCellSet } from "../core/grid.ts";
 import { clampToFrame, mapFrame } from "../core/frame.ts";
 import { createTerrainRenderer } from "../render/renderer.ts";
 import { mountUI } from "../ui/mount.tsx";
-import { initCalTemplates } from "../ui/CalendarOverlay.tsx";
-import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
+import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig, initCalTemplates,
   modeSig, routePtsSig, setMode,
   editSubSig, editVerSig, isTacSig, linkTypeSig, tacReqSig,
   paintFactionSig, flyReqSig, helpOpenSig, prefsOpenSig, importOpenSig, openSettings, selectOp,
   analysisSubSig, uiPrefsSig, RELIEF_STEPS, subDaySig, readOnlySig, libActionsSig, terrainStyleSig,
   selNode, selEdge, selUnit, selFaction,
   type EditSub }
-  from "../ui/state.ts";
+  from "../app/state.ts";
 import { wireInteractions } from "./pointer.ts";
 import { wireOrchestration, wireRoute } from "./orchestrate.ts";
 import { wireViewshed } from "./viewshed.ts";

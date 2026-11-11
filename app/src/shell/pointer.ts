@@ -27,12 +27,12 @@ import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUn
   mutateWorld, mutateWorldLive, pushHistoryOnce, beginStroke, endStroke, undoWorld, redoWorld,
   deleteNodeAt, deleteUnitAt, deleteEdgeIdx, deleteDecorAt,
   type EditSub, type Sel }
-  from "../ui/state.ts";
+  from "../app/state.ts";
 import { addNode, addEdge, addFreeEdge, addLabel, addOp, addDecor, addAsset, applyEra, removeNode, removeOp,
   removeDecor, removeUnit, setUnitWaypoint, setUnitRing, setUnitFacing, setNodeRangeKm, setNodeVision, moveNode, moveDecor, dataLon, paintTerrainPath, paintHeightPath, paintUpliftPath, paintClimatePath }
-  from "../ui/editops.ts";
-import { poolGet } from "../ui/stamps.ts";
-import { paintDims, maskFromLayer, brushMask, runsFromMask, ensurePaintLayer, type PaintMask } from "../ui/paint.ts";
+  from "../app/editops.ts";
+import { poolGet } from "../app/stamps.ts";
+import { paintDims, maskFromLayer, brushMask, runsFromMask, ensurePaintLayer, type PaintMask } from "../app/paint.ts";
 import { paintCellSet } from "../core/territory.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
