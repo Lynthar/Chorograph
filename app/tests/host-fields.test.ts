@@ -439,7 +439,8 @@ describe("中尺度阶段（host）", () => {
     assert.equal(seen.ultraCap, undefined, "工作档是嵌套解的图不发精修单");
     assert.equal(ctx.elevField, ctx.ruleField, "画面＝工作档");
   });
-  it("分块：中尺度到了，块单带外层裁剪（嵌套解）、不带包络；车道没有结果时块单照旧细级侵蚀（要切割量、不带裁剪）", async () => {
+  it("分块：中尺度到了，块单带外层裁剪（嵌套解）、不带包络；车道没有结果时块单照旧细级侵蚀（要切割量、不带裁剪）", async (tc) => {
+    const warn = tc.mock.method(console, "warn", () => {});
     for (const fail of [false, true]) {
       const { ctx } = mkCtx(), M = mesoRig(ctx), tilesIn: ErodeInput[] = [];
       let carves = 0;
@@ -454,6 +455,7 @@ describe("中尺度阶段（host）", () => {
       await flush();
       if (fail) { M.st.q[0].done = true; M.st.q[0].res(null); } else M.answer(0);
       await flush(); await tick(240, 6); await flush();
+      assert.equal(warn.mock.callCount(), fail ? 1 : 0, "车道没有结果要响一声，有结果不响");
       assert.ok(tilesIn.length >= 1, "发了块单");
       const t = tilesIn[0];
       if (!fail) {
@@ -467,13 +469,16 @@ describe("中尺度阶段（host）", () => {
       else { assert.ok(!t.nest && t.win, "宏观底的块单照旧"); assert.equal(carves, 1); }
     }
   });
-  it("车道没有结果（null）：这张图照旧用宏观底发单，不再等、不再要", async () => {
+  it("车道没有结果（null）：这张图照旧用宏观底发单，不再等、不再要", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
     landWorld(ctx, V2(), "v1", 3050);
     host.rebuildIfNeeded();
     await flush();
     M.st.q[0].done = true; M.st.q[0].res(null);
     await flush(); await tick(100);
+    assert.equal(warn.mock.callCount(), 1, "没有结果要响一声");
+    assert.match(warn.mock.calls[0].arguments.join(""), /中尺度稳态没有结果.*车道不可用/);
     assert.equal(seen.erodes, 1);
     assert.ok(!("mesoEnv" in seen.lastInp!), "宏观底的单不带包络");
     mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
@@ -484,6 +489,7 @@ describe("中尺度阶段（host）", () => {
     mutateWorld(w => { w.heightOverrides!.push({ lon: 100.15, lat: 30.05, dh: 0.2 }); }, { grid: true });
     host.rebuild(); await flush(); await tick(100);
     assert.equal(cellsVerSig.value, v1, "只动高程涂改：类型格没换，不换代");
+    assert.equal(warn.mock.callCount(), 1, "失败过的键不再要，也不再响");
   });
   it("换生成参数：在飞的单撤掉、按新键再要；撤掉的单不落地", async () => {
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
@@ -683,7 +689,8 @@ describe("中尺度阶段（host）", () => {
       assert.equal(worldSig.value!.edges.length, 0, "只读态不写");
     } finally { readOnlySig.value = false; }
   });
-  it("挪河流滑杆：地形不重建，用同一份格子再要一单、只换河；车道没有结果时用宏观河兜底", async () => {
+  it("挪河流滑杆：地形不重建，用同一份格子再要一单、只换河；车道没有结果时用宏观河兜底", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
     const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
     landWorld(ctx, V2(), "v1", 3050);
     host.rebuildIfNeeded(); await flush(); await tick(200);
@@ -699,11 +706,14 @@ describe("中尺度阶段（host）", () => {
     const { ctx: c2 } = mkCtx(), M2 = mesoRig(c2), h2 = createHost(c2);
     landWorld(c2, V2(), "v2", 3050);
     h2.rebuildIfNeeded(); await flush();
+    assert.equal(warn.mock.callCount(), 0, "有结果的那张图不响");
     M2.st.q[0].done = true; M2.st.q[0].res(null);
     await flush(); await tick(100);
+    assert.equal(warn.mock.callCount(), 1, "中尺度没有结果要响一声");
     assert.deepStrictEqual(worldSig.value!.edges, genRiverEdges(c2.meta, undefined), "中尺度没有结果：宏观河兜底");
   });
-  it("解不出：这一份不再等也不再要，侵蚀放行、屏上回到 Sg；下一笔照常再要", async () => {
+  it("解不出：这一份不再等也不再要，侵蚀放行、屏上回到 Sg；下一笔照常再要", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx);
     const { host, lon, lat } = await openV2(ctx, M);
     const sgF = ctx.grid!.meso, erodes0 = seen.erodes;
@@ -711,6 +721,8 @@ describe("中尺度阶段（host）", () => {
     await flush();
     M.st.uq[0].done = true; M.st.uq[0].res(null);
     await flush(); await tick(100);
+    assert.equal(warn.mock.callCount(), 1, "解不出要响一声");
+    assert.match(warn.mock.calls[0].arguments.join(""), /画抬升没有解出.*车道不可用/);
     assert.equal(ctx.grid!.meso, sgF);
     assert.equal(seen.erodes, erodes0 + 1, "侵蚀放行");
     host.rebuild(); await flush(); await tick(100);

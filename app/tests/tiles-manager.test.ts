@@ -180,7 +180,8 @@ describe("分块精修的编排（shell/tiles）", () => {
     assert.strictEqual(r.calls.length, n0, "块也不重算");
   });
 
-  it("车道失败：等一会儿复位一次接着算；复位后又失败就停摆，放大看着时报不可用", async () => {
+  it("车道失败：等一会儿复位一次接着算；复位后又失败就停摆，放大看着时报不可用", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
     mock.timers.enable({ apis: ["setTimeout"] });
     try {
       const r = rig({ lanes: 1 });
@@ -191,6 +192,8 @@ describe("分块精修的编排（shell/tiles）", () => {
       feed(r.m, INP);
       await flush();
       assert.deepStrictEqual(r.calls, [1], "首单失败");
+      assert.equal(warn.mock.callCount(), 1, "失败要响一声");
+      assert.match(warn.mock.calls[0].arguments.join(""), /分块精修失败.*车道没有结果/);
       assert.strictEqual(r.busy[r.busy.length - 1][0], true, "等复位期间仍算忙（还会再算）");
       mock.timers.tick(TILE_RETRY_MS);
       await flush();
@@ -203,6 +206,7 @@ describe("分块精修的编排（shell/tiles）", () => {
       feed(r.m, inp, undefined, now);
       await flush();
       assert.deepStrictEqual(r.downs, [true], "复位用过了又失败＝停摆，视口里的块不是当前那份＝报不可用");
+      assert.equal(warn.mock.callCount(), 2, "停摆那次失败也响");
       assert.strictEqual(r.busy[r.busy.length - 1][0], false, "停摆不算忙（胶囊不悬在精修中）");
       mock.timers.tick(TILE_RETRY_MS * 4);
       await flush();

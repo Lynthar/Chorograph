@@ -509,7 +509,7 @@ describe("陈旧写入守卫（guard）", () => {
     assert.strictEqual(isStaleError(staleError({ base: 1, cur: 2 })), true);
   });
 
-  it("文件夹库：写成功但版本读不回＝{ok:true,mtime:null}（守卫自愿下岗，不能报成写失败）", async () => {
+  it("文件夹库：写成功但版本读不回＝{ok:true,mtime:null}（守卫自愿下岗，不能报成写失败）", async (t) => {
     const dir = memDir();
     const orig = dir.getFileHandle.bind(dir);
     let wrote = false;
@@ -520,10 +520,13 @@ describe("陈旧写入守卫（guard）", () => {
       if (opts?.create) wrote = true;
       return h;
     };
+    const warn = t.mock.method(console, "warn", () => {});
     const r = await folderWriteWorld(dir, "丁.json", mkWorld("丁"));
     assert.strictEqual(r.ok, true, "写成功就是写成功——不能因为读不回版本而报失败");
     assert.strictEqual(r.mtime, null, "版本未知须如实为 null，下次即不做守卫");
     assert.match(dir._files["丁.json"], /丁/);
+    assert.strictEqual(warn.mock.callCount(), 1, "守卫下岗要响一声");
+    assert.match(warn.mock.calls[0].arguments.join(""), /丁\.json.*读不回 mtime/);
   });
 
   it("浏览器库：守卫中止过一次后，同一个 lib 实例仍能正常读写（abort 不得毒化连接）", async () => {
