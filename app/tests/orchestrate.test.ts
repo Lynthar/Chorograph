@@ -11,7 +11,7 @@ import { normalizeWorld } from "../src/core/world.ts";
 import { unitLegs } from "../src/core/units.ts";
 import { gridVerSig, hoverSig, landedRuleField, modeSig, mutateWorld, mutateWorldLive, routeBusySig, routePtsSig, routeResSig, ruleFieldSig,
   selSig, unitLegsSig, worldSig, yearSig } from "../src/ui/state.ts";
-import type { ElevField } from "../src/core/elev.ts";
+import type { RuleField } from "../src/core/elev.ts";
 import type { ComputedRoute } from "../src/core/route.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import type { Unit, World, WorldNode } from "../src/core/types.ts";
@@ -240,7 +240,7 @@ describe("行军计算编排（wireRoute）", () => {
 describe("落定的规则场不跨图", () => {
   afterEach(() => { ruleFieldSig.value = null; });
   it("同图演算中沿用上一份；换图即清，新图落定前读不到上一张图的场", () => {
-    const { ctx } = mkCtx(), fA = { cols: 1 } as unknown as ElevField, fB = { cols: 2 } as unknown as ElevField;
+    const { ctx } = mkCtx(), fA = { cols: 1 } as unknown as RuleField, fB = { cols: 2 } as unknown as RuleField;
     landWorld(ctx, W(), "甲", 3050);
     ruleFieldSig.value = fA;
     assert.equal(landedRuleField(), fA);

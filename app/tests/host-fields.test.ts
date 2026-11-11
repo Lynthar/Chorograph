@@ -16,6 +16,9 @@ import type { FieldGeom } from "../src/core/elev.ts";
 import { gen2Meso, gen2Uplift, mesoKey as mesoKeyOf, mesoState, riverParams, type UpliftCells } from "../src/core/gen2.ts";
 import { nestBaseOf, nestSolOf } from "../src/core/nested.ts";
 import type { MesoReply, UpliftReply } from "../src/worker/routeProto.ts";
+import { viewFieldOf } from "../src/shell/viewshed.ts";
+import { contourStepOf } from "../src/render/renderer.ts";
+import { tileField } from "../src/core/tiles.ts";
 import { allComposites, terrainProps } from "../src/core/constants.ts";
 
 /* host.rebuild 经 $() 摸 DOM 挂点（hud 恒写）——node 下以最小 fake 顶上 */
@@ -92,9 +95,11 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     const coarse = ctx.ruleField!;
     assert.equal(coarse.cols, ctx.grid!.cols, "落地前规则场＝粗格场");
     assert.equal(ctx.elevField, coarse, "画面同一份");
+    assert.equal(coarse.src, "coarse");
     await flush();
     const work = ctx.ruleField!;
     assert.equal(work.cols, ctx.grid!.cols * 2, "工作档落地＝规则场换成 2× 细分场");
+    assert.equal(work.src, "work", "工作档车道交出来的场带规则场标记");
     assert.equal(work.data[0], seen.workCap, "规则场出自工作档预算");
     assert.notEqual(ctx.elevField, work, "画面走渐变，落地一拍不硬切");
     await tick(240, 6);
@@ -103,6 +108,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     const ultra = ctx.elevField!;
     assert.equal(ultra.cols, ctx.grid!.cols * 4, "静置后画面＝精修场（4×）");
     assert.equal(ultra.data[0], seen.ultraCap, "画面出自精修预算");
+    assert.ok(!("src" in ultra), "精修场不带规则场标记");
     assert.equal(ctx.ruleField, work, "规则场不随精修落地变");
     assert.equal(seen.field, ultra, "渲染器画面份＝精修");
     assert.equal(seen.rule, work, "渲染器规则份＝工作档（推演底图画它）");
@@ -742,3 +748,22 @@ describe("中尺度阶段（host）", () => {
     assert.equal(ruleFieldSig.value, ctx.ruleField, "立即落定");
   });
 });
+
+/* 类型层的锁（tsc 即门禁，函数不运行）：画面场、没过工作档车道的侵蚀产出、块层裁出来的场都传不进规则侧；
+   哪一条不再报错，就是规则场与画面场又能互换了 */
+export function ruleFieldTypeLocks(ctx: ShellCtx, meta: Meta, raw: ElevField): void {
+  // @ts-expect-error 画面场可能是精修档
+  ruleFieldSig.value = ctx.elevField;
+  // @ts-expect-error
+  ctx.ruleField = ctx.elevField;
+  // @ts-expect-error
+  viewFieldOf(meta, ctx.elevField!, ctx.grid!);
+  // @ts-expect-error
+  contourStepOf(meta, 1, ctx.grid, ctx.elevField, null, ctx.grid!.bb);
+  // @ts-expect-error 侵蚀产出没过工作档车道
+  ruleFieldSig.value = raw;
+  // @ts-expect-error 块层裁出来的场
+  viewFieldOf(meta, tileField(ctx.tileLayer!.geom, 0, ctx.tileLayer!.tiles.get(0)!), ctx.grid!);
+  // @ts-expect-error 渲染器的规则份必传
+  ctx.R!.uploadGrid(ctx.grid!, new Float32Array(0), raw);
+}

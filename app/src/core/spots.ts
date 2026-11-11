@@ -1,6 +1,6 @@
 /* 标高点（core）：按突出度选的真山顶 + 内陆水体的水面，给等高线补上晕渲画不出的绝对高差。
    纯函数；数字一律取制图面（elevSmooth）＝与光标读数同一个数。峰表要对整场排序，走 Worker（shell/spots）。 */
-import { elevSmooth, waterMask, type ElevField } from "./elev.ts";
+import { elevSmooth, waterMask, type ElevField, type RuleField } from "./elev.ts";
 import type { Grid } from "./grid.ts";
 import type { ViewField } from "./viewshed.ts";
 
@@ -9,7 +9,7 @@ export interface SpotHeight { lon: number; lat: number; e: number; kind: "peak" 
 /** 全场峰表：真山顶的细格序号与突出度（抽象单位；全场最高＝Infinity），按突出度降序、同值按高程降序再按序号 */
 export interface PeakTable { idx: Int32Array; prom: Float32Array }
 /** 峰表与算它的那份规则场：选点与数字都读 f——场已换而新表未到时，画的仍是自洽的上一份 */
-export interface SpotTable { f: ElevField; t: PeakTable }
+export interface SpotTable { f: RuleField; t: PeakTable }
 
 /** 高程降序的格序（LSD 基数排序，稳定＝同高按序号升序）：比较排序在百万格上要慢一个量级 */
 function descOrder(e: Float32Array): Uint32Array {

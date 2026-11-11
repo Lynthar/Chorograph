@@ -17,7 +17,7 @@ import type { Climate } from "../core/types.ts";
 import type { GeoMapping, GeoScan } from "../core/geojson.ts";
 import type { ComputedRoute, RoutePoint } from "../core/route.ts";
 import type { Leg } from "../core/units.ts";
-import type { ElevField } from "../core/elev.ts";
+import type { RuleField } from "../core/elev.ts";
 import type { SpotTable } from "../core/spots.ts";
 import type { ErodeMode } from "../core/erode.ts";
 import { noMasks, type VisMasks } from "../core/viewshed.ts";
@@ -154,10 +154,10 @@ export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
 export const tilesDownSig = signal(false);
 /** 落定的规则场（host 独写，换图时 setWorldState 清空）：门关＝粗格、门开＝工作档落地后的那份；演算中为 null。
     规则消费者只认它——ctx.ruleField 在等待窗里是过渡合成，视域算在上面就是「落笔即变、落地又变」。 */
-export const ruleFieldSig = signal<ElevField | null>(null);
-let ruleLanded: ElevField | null = null;
+export const ruleFieldSig = signal<RuleField | null>(null);
+let ruleLanded: RuleField | null = null;
 /** 最近落定的规则场：演算中（ruleFieldSig 为 null）沿用上一份；换图即清——上一张图的场给新图取等高距与高程数字，线和数字就对不上 */
-export function landedRuleField(): ElevField | null {
+export function landedRuleField(): RuleField | null {
   const f = ruleFieldSig.value;
   if (f) ruleLanded = f;
   return ruleLanded;

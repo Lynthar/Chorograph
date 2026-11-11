@@ -9,7 +9,7 @@ import { wireSpots } from "../src/shell/spots.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
 import { buildGridCells } from "../src/core/grid.ts";
-import { coarseField, type ElevField } from "../src/core/elev.ts";
+import { coarseField, type RuleField } from "../src/core/elev.ts";
 import { detectSig, layersSig, mutateWorld, ruleFieldSig, toastSig, visFailSig, visMaskSig, worldSig, yearSig } from "../src/ui/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import type { SightReq, SightRes, VisReq, VisRes } from "../src/worker/routeProto.ts";
@@ -54,7 +54,7 @@ const TAC = (units: object[], meta: object = {}, nodes: object[] = []): World =>
 });
 const size = (): number => visMaskSig.peek().unit.size + visMaskSig.peek().node.size;
 /** 开图 + 手工给规则场（不走 host：这里测的是编排，不是场记账） */
-function open(ctx: ShellCtx, w: World, T = 3050): ElevField {
+function open(ctx: ShellCtx, w: World, T = 3050): RuleField {
   landWorld(ctx, w, "t1", T);
   ctx.grid = buildGridCells(ctx.meta, w.terrainOverrides, T);
   const f = coarseField(ctx.grid, new Float32Array(ctx.grid.cols * ctx.grid.rows));

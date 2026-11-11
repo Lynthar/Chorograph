@@ -5,7 +5,7 @@
    落定换引用即重算；规则场只在换引用时推送 Worker 一次（拖部队的连发不再逐单克隆整幅场）。 */
 import { effect } from "@preact/signals-core";
 import { kmPerDeg, kmPerDegXY } from "../core/geo.ts";
-import { elevUnitM, waterSurface, type ElevField } from "../core/elev.ts";
+import { elevUnitM, waterSurface, type RuleField } from "../core/elev.ts";
 import { isModern, arcDegOf, nodeEyeM, nodeVisionKm, rangeDirect, unitAltAt, unitArm, unitEyeM, unitFireDirect, unitFireKm, unitPos, radarKmOf, radarMOf, radarTgtMOf, unitVantageM } from "../core/units.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { REFRACT_OPTICAL, REFRACT_RADAR, TARGET_M, noMasks, type ViewField, type VisMask } from "../core/viewshed.ts";
@@ -88,7 +88,7 @@ export function sightReqs(w: World, T: number, obs: VisReq[]): SightReq[] {
 }
 
 /** 规则场 + 粗格水面 + 物理标定 → 视线场。曲率半径按每度里程反推（战术图是切平面投影，圆周＝360×km/度） */
-export function viewFieldOf(meta: Meta, f: ElevField, grid: Grid): ViewField {
+export function viewFieldOf(meta: Meta, f: RuleField, grid: Grid): ViewField {
   const { kmx, kmy } = kmPerDegXY(meta, f.bb);
   return {
     bb: f.bb, step: f.step, cols: f.cols, rows: f.rows, data: f.data,
@@ -102,13 +102,13 @@ export function wireViewshed(ctx: ShellCtx): () => void {
   let seq = 0, lineage: Meta | undefined;
   /* 掩膜按单复用：视线判定对（规则场, 观察者参数）是纯函数，两者都没变的圈沿用上一份掩膜对象（屏幕栅格缓存随之命中），
      只发变了的圈——否则拖一个部队或改一处无关对象，所有圈都要重算、重建栅格。换规则场或换图即清空。 */
-  let memo: { f: ElevField; masks: Map<string, VisMask | null> } | null = null;
+  let memo: { f: RuleField; masks: Map<string, VisMask | null> } | null = null;
   /* 失败只在转入失败态时响一次（拖动连发不刷屏）；读数的「未算出 / 沿用上次结果」由卡片读 visFailSig */
   const failed = (why: string): void => {
     if (!visFailSig.peek()) showToast(`视域计算失败（${why}）　图上可达区未更新`, { err: true });
     visFailSig.value = true;
   };
-  const flight = singleFlight((meta: Meta, f: ElevField, grid: Grid, obs: VisReq[], sights: SightReq[]) => {
+  const flight = singleFlight((meta: Meta, f: RuleField, grid: Grid, obs: VisReq[], sights: SightReq[]) => {
     const my = ++seq;
     ctx.routeClient.setViewField(viewFieldOf(meta, f, grid));   // 每单都推：槽与标高点共用，自己记「推过了」会按对方留下的场算；同一份场客户端不重发
     if (!memo || memo.f !== f) memo = { f, masks: new Map() };

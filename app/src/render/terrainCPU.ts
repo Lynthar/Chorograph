@@ -9,7 +9,7 @@
    推演底图（opts.flat）例外：逐屏幕像素直接栅格化、不走瓦片（贴图重采样会让格边像素取到邻格）。 */
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
 import { terrainProps, compositeIndex } from "../core/constants.ts";
-import { elevBilinear, elevSmooth, coarseField, waterMask, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
+import { elevBilinear, elevSmooth, waterMask, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField, type RuleField } from "../core/elev.ts";
 import { zoneColMix, zoneTreeMix, zoneWeightsAt, ZONE_N, type ZoneWeights } from "./zones.ts";
 import { blendSharp, climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, shoreElev, ALB_ROT, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, WATER, type ClimLook } from "./material.ts";
 import { riverDirty, riverSD } from "./rivers.ts";
@@ -220,8 +220,8 @@ function elevRamp(e: number, ws: number, beach: boolean, clim?: ClimLook, dl = 0
 export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   const ctx = canvas.getContext("2d")!;
   let grid: Grid | null = null;
-  let field: ElevField | null = null;   // 画面场含几何（粗格或侵蚀细分，精修档在此；缺省=按 ELEV[类型] 合成粗格,旧行为）
-  let rule: ElevField | null = null;    // 规则场（工作档）：推演底图的等高线取它＝与光标读数同源；缺省＝画面场
+  let field: ElevField | null = null;   // 画面场含几何（粗格或侵蚀细分，精修档在此）
+  let rule: RuleField | null = null;    // 规则场（粗格或工作档）：等高线与推演底图的高程取它＝与光标读数同源
   type Tile = { cv: HTMLCanvasElement; bb: BBox; pxpd: number; key: string; rp: number; o: TerrainRenderOpts };   // rp/o＝实际渲染分辨率与选项（补画照用）
   let tiles: Tile[] = [];   // 每份露出网格的世界拷贝一张（常态一张，跨环绕缝时两张）
   let dirty: BBox[] = [];   // 自上次 render 以来数据变了的经纬矩形（已外扩到取样半径），render 时补进留用的瓦片
@@ -234,12 +234,6 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   let cellWS: Float32Array | null = null;   // 每格水面高程（core/elev.waterSurface；海 0／内陆湖岸线高）
   let cellWater: Uint8Array | null = null;  // 每格水域掩码（core/elev.waterMask，按 Grid 记忆的共享只读数组）
 
-  /* 高程场恒备：未传入时按 ELEV[类型] 合成（旧行为）；双线性统一走 core/elev.elevBilinear（与光标读数同源） */
-  const fieldOfTypes = (g: Grid): Float32Array => {
-    const f = new Float32Array(g.rows * g.cols);
-    for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) f[r * g.cols + c] = terrainProps(g.cells[r][c]).elev;
-    return f;
-  };
   /* 画面场取样（同 GL cellAt）：块层按缩放权重 tw 混入（tw 由 render 按本帧缩放定，进瓦片键）；块所在处 tHere 给装饰噪声退场用 */
   let tLayer: TileLayer | null = null, tw = 0;
   const elevBil = (lon: number, lat: number): number => {
@@ -600,10 +594,10 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
 
   return {
     canvas, kind: "cpu",
-    uploadGrid(g: Grid, wsurf: Float32Array, f?: ElevField, r?: ElevField) {
+    uploadGrid(g: Grid, wsurf: Float32Array, f: ElevField, r: RuleField) {
       const prev = tiles.length && grid ? { g: grid, f: field!, r: rule!, ws: cellWS!, water: cellWater!, mat: cellMat!, tint: cellTint!, has: cellTintHas! } : null;
       const sameGrid = g === grid;
-      grid = g; field = f || coarseField(g, fieldOfTypes(g)); rule = r || field; cellWS = wsurf; cellWater = waterMask(g);
+      grid = g; field = f; rule = r; cellWS = wsurf; cellWater = waterMask(g);
       if (!sameGrid) {   // 同一 Grid 实例＝只动了高程，逐格材质/色调不变
         const n = g.rows * g.cols;   // 逐格材质/色调预算（renderTile 每像素四角查表）
         cellMat = new Float32Array(n * 7); cellTint = new Float32Array(n * 3); cellTintHas = new Uint8Array(n); cellIdx = new Uint8Array(n);

@@ -6,14 +6,14 @@ import { layerOn } from "../render/overlay.ts";
 import { worldSig, layersSig, ruleFieldSig, spotTableSig } from "../ui/state.ts";
 import { singleFlight } from "./singleflight.ts";
 import { viewFieldOf } from "./viewshed.ts";
-import type { ElevField } from "../core/elev.ts";
+import type { RuleField } from "../core/elev.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Meta } from "../core/types.ts";
 import type { ShellCtx } from "./ctx.ts";
 
 export function wireSpots(ctx: ShellCtx): () => void {
   let seq = 0, lineage: Meta | undefined;
-  const flight = singleFlight((meta: Meta, f: ElevField, grid: Grid) => {
+  const flight = singleFlight((meta: Meta, f: RuleField, grid: Grid) => {
     const my = ++seq;
     ctx.routeClient.setViewField(viewFieldOf(meta, f, grid));
     return ctx.routeClient.peaks().then(t => {

@@ -26,9 +26,12 @@ export interface FieldGeom { bb: BBox; step: number; cols: number; rows: number 
 /** 高程场（含几何）：粗格=coarseField 包装 buildElevField 产出；细分=core/erode.erodeField。
     eroded＝经侵蚀的细分场（粗格恒 false）：渲染端据此给装饰按坡门控、宏观纹理降档。 */
 export interface ElevField extends FieldGeom { data: Float32Array; eroded: boolean }
+/** 规则场：读数、等高线取档与注记、视域、标高点只收它。只有粗格场与落地的工作档带 src——
+    精修档与块层的场不带，传进规则 API 过不了编译（读了它们，读数就随本机内存与计算进度变） */
+export interface RuleField extends ElevField { src: "coarse" | "work" }
 /** 粗格场包装（旧 buildElevField 产出 + 网格几何；relief=0 契约路径） */
-export function coarseField(grid: FieldGeom, data: Float32Array): ElevField {
-  return { bb: grid.bb, step: grid.step, cols: grid.cols, rows: grid.rows, data, eroded: false };
+export function coarseField(grid: FieldGeom, data: Float32Array): RuleField {
+  return { bb: grid.bb, step: grid.step, cols: grid.cols, rows: grid.rows, data, eroded: false, src: "coarse" };
 }
 
 /** 侵蚀落地渐变的一帧：display = from + (to − from)·t，几何不同（首次落地：粗格→细分）时
@@ -36,7 +39,7 @@ export function coarseField(grid: FieldGeom, data: Float32Array): ElevField {
     读感像「出错了自己纠正」（用户实报「不可靠感」）——渐变把结算变成有意的「沉降定形」。
     远处两场逐位相同＝渐变只发生在真正变了的区域；**t≥1 返回 to 本身**（末帧＝真场引用，
     与直接换场逐位一致）。eroded 取 to 的。 */
-export function fieldMix(from: ElevField, to: ElevField, t: number): ElevField {
+export function fieldMix<F extends ElevField>(from: ElevField, to: F, t: number): F {
   if (t >= 1) return to;
   const n = to.cols * to.rows;
   const same = from.cols === to.cols && from.rows === to.rows && from.step === to.step;
@@ -49,7 +52,7 @@ export function fieldMix(from: ElevField, to: ElevField, t: number): ElevField {
       data[i] = f0 + (to.data[i] - f0) * t;
     }
   }
-  return { bb: to.bb, step: to.step, cols: to.cols, rows: to.rows, data, eroded: to.eroded };
+  return { ...to, data };
 }
 
 /** 侵蚀等待窗的显示合成：细分场 + 粗格增量（now − base）按细格中心双线性上采样叠加。
@@ -68,7 +71,7 @@ export function fieldMix(from: ElevField, to: ElevField, t: number): ElevField {
     参照是扭曲基面邻域）不许被人为抬高，增量为零的细格因此恒等于 fine=原位不动之约保持；
     水域格天花=max(WATER_CEIL, 本次粗格场该格值)——涂水后残留的陆高须压进水面，否则新画的
     水面上浮着旧地形的干斑；取粗格场而非类型表，内陆湖才不会在等待窗里被按回海平面。 */
-export function fieldPlusDelta(fine: ElevField, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null): ElevField {
+export function fieldPlusDelta<F extends ElevField>(fine: F, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null): F {
   const d = deltaOf(base, now, geom);
   return d ? applyDelta(fine, d, now, geom, cells, free) : fine;
 }
@@ -90,7 +93,7 @@ export function deltaOf(base: Float32Array, now: Float32Array, geom: FieldGeom):
 }
 /** 把一份粗格增量羽化进细场 fine（语义见 fieldPlusDelta；free＝不钳陆地地板的粗格，即画的盆地 Grid.meso.basin，盆底可低于类型地板与海面）。fine 可以只是图幅的一块（分块精修），原点须落在细格网上；
     补丁窗碰不到这块＝返回 fine 本身（引用不变） */
-export function applyDelta(fine: ElevField, d: CoarseDelta, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null): ElevField {
+export function applyDelta<F extends ElevField>(fine: F, d: CoarseDelta, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null): F {
   const { cols, rows } = geom, { diff, c0, r0, c1, r1 } = d;
   /* 补丁窗＝变化粗格 [c0..c1]×[r0..r1] 的双线性支撑域折到细格（k=粗细步长比），外留 1 格余量；
      出界钳到边缘格＝边缘章的支撑域自然含边界细格。oc/or＝fine 原点在全图细格网上的偏移（整幅场为 0） */
@@ -118,7 +121,7 @@ export function applyDelta(fine: ElevField, d: CoarseDelta, now: Float32Array, g
       data[i] = v;
     }
   }
-  return { bb: fine.bb, step: fine.step, cols: fine.cols, rows: fine.rows, data, eroded: fine.eroded };
+  return { ...fine, data };
 }
 
 /** 默认高程标定：1 抽象单位 = 2000 米（雪线 0.82≈1640m、示意山 0.9≈1800m 的合理观感） */

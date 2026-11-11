@@ -3,7 +3,7 @@
    绘制——恒正立、纸色描边压线、走标签避让场**最后**占位（让地名、部队与标高点）。
    数字＝制图面高程取整＝与光标读数同一个数；线本身也画在同一面上（§9.15），故图内自洽。
    ⚠ 等值线的角态表与链折线只在 render/maskraster（与视线掩膜的轮廓共用一份）。 */
-import { elevSmooth, elevUnitM, waterSurface, type ElevField } from "../core/elev.ts";
+import { elevSmooth, elevUnitM, waterSurface, type RuleField } from "../core/elev.ts";
 import { project, unproject, type Camera } from "../core/projection.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox, Meta } from "../core/types.ts";
@@ -66,7 +66,7 @@ export function placeLabels(poly: number[], spacing: number, minLen: number, spa
 /* 注记缓存：按（规则场, 世界拷贝偏移）存一份世界锚定的注记表——平移只重投影，故数字不随平移沿线爬动。
    视口出了 region（外扩 LAB_MARGIN）、缩放偏出 ±20%、或等高距换档，才重算。 */
 interface LabCache { region: BBox; dpp: number; base: number; items: { lon: number; lat: number; m: number }[] }
-const labCache = new WeakMap<ElevField, Map<number, LabCache>>();
+const labCache = new WeakMap<RuleField, Map<number, LabCache>>();
 
 /** 屏幕矩形的世界经纬 bbox（扣掉本拷贝的经度偏移＝世界域坐标） */
 function worldBox(cam: Camera, x0: number, y0: number, x1: number, y1: number): BBox {
@@ -75,7 +75,7 @@ function worldBox(cam: Camera, x0: number, y0: number, x1: number, y1: number): 
   return { lonMin: tl[0] - sh, lonMax: br[0] - sh, latMin: br[1], latMax: tl[1] };
 }
 
-function build(cam: Camera, meta: Meta | undefined, f: ElevField, grid: Grid, base: number): LabCache {
+function build(cam: Camera, meta: Meta | undefined, f: RuleField, grid: Grid, base: number): LabCache {
   const mx = cam.w * LAB_MARGIN, my = cam.h * LAB_MARGIN, sh = cam.lonShift || 0;
   const x0 = -mx, y0 = -my;
   const sw = Math.floor((cam.w + 2 * mx) / LAB_SAMPLE_PX) + 1, shh = Math.floor((cam.h + 2 * my) / LAB_SAMPLE_PX) + 1;
@@ -139,7 +139,7 @@ function build(cam: Camera, meta: Meta | undefined, f: ElevField, grid: Grid, ba
 /** 画本拷贝的等高线注记：base＝渲染器这一帧用的等距（抽象单位，renderer.contourStepOf），不在此另算；避让场撞位即弃标。 */
 export function drawContourLabels(
   ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
-  f: ElevField, grid: Grid, lf: LabelField, base: number
+  f: RuleField, grid: Grid, lf: LabelField, base: number
 ): void {
   if (!(base > 0)) return;
   let byShift = labCache.get(f);

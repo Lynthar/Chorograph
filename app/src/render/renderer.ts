@@ -3,7 +3,7 @@
    WebGL2 上下文（含软渲）一律走 GPU**；仅上下文创建/着色器编译失败才退 CPU 瓦片。 */
 import type { Grid } from "../core/grid.ts";
 import type { TileLayer } from "../core/tiles.ts";
-import { contourStats, contourStepFor, waterSurface, type ContourStep, type ElevField, type FieldRect } from "../core/elev.ts";
+import { contourStats, contourStepFor, waterSurface, type ContourStep, type ElevField, type FieldRect, type RuleField } from "../core/elev.ts";
 import type { BBox, Meta } from "../core/types.ts";
 import { beachOf, climLook, paperOf, shadeGain, slopeKOf, snowSpec, type ClimLook, type SnowSpec } from "./material.ts";
 import { zoneLooks, zoneWeights, type ZoneLooks, type ZoneWeights } from "./zones.ts";
@@ -46,7 +46,7 @@ export function terrainOpts(meta: Meta, degPerPx: number, layers: Record<string,
     场＝落定的规则场优先（演算中沿用上一份），没有就用当前规则场；坡度按**视口窗**统计（放大进山不再按整图的 75 分位算＝线距不随放大变密），
     高程范围按全场（「整幅至少四级」是整张图的承诺，不随视窗变）；上一档按 meta 记忆＝换档带迟滞（平移中统计量小幅漂移不来回跳）。没有网格＝无场手感。 */
 const lastStep = new WeakMap<Meta, number>();
-export function contourStepOf(meta: Meta, degPerPx: number, grid: Grid | null, landed: ElevField | null, current: ElevField | null, view: BBox): ContourStep {
+export function contourStepOf(meta: Meta, degPerPx: number, grid: Grid | null, landed: RuleField | null, current: RuleField | null, view: BBox): ContourStep {
   const f = landed || current;
   let stats = null;
   if (grid && f) {
@@ -74,13 +74,13 @@ function statsWindow(f: ElevField, v: BBox, wrap: boolean): FieldRect | undefine
 export interface TerrainRenderer {
   canvas: HTMLCanvasElement;
   kind: "webgl2" | "cpu";
-  /** 传网格与高程场。field=画面场含几何（粗格=coarseField 包装；细分=erode 产出，eroded 为真；
-      精修档也在此；缺省=按 ELEV[类型] 示意常数合成粗格，旧行为）。
-      rule=规则场（工作档）：两种底图的等高线与推演底图的高程都取它＝与光标读数同源；缺省＝field。
+  /** 传网格与高程场。field=画面场含几何（粗格=coarseField 包装；细分=erode 产出，eroded 为真；精修档也在此）。
+      rule=规则场（粗格或工作档）：两种底图的等高线与推演底图的高程都取它＝与光标读数同源。两场都必传——
+      缺省成「同一份」会让精修场在没人察觉时顶替规则场。
       wsurf=每格水面高程（core/elev.waterSurface，海 0／内陆湖在岸线高度）：
       水陆判据与深浅色都以它为基准，必传——漏了内陆湖会静默沉回海平面。
       传入的数组一律当不可变快照：内容变了就换新数组——CPU 渲染器按引用判「这份没变」、只补画变了的那片，原地改写的内容不会上屏。 */
-  uploadGrid(grid: Grid, wsurf: Float32Array, field?: ElevField, rule?: ElevField): void;
+  uploadGrid(grid: Grid, wsurf: Float32Array, field: ElevField, rule: RuleField): void;
   /** 分块精修的块层（core/tiles；null＝没有块）：只进观感底图的晕渲高程，按缩放连续过渡（tileWeight），块所在处的装饰噪声随之退场——
       块里的起伏是真算出来的，再叠噪声就是同一波段画两遍。块数组同 uploadGrid 之约当不可变快照，按引用判要不要重传 */
   uploadTiles(layer: TileLayer | null): void;

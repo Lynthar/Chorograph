@@ -6,7 +6,7 @@ import { wireSpots } from "../src/shell/spots.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
 import { buildGridCells } from "../src/core/grid.ts";
-import { coarseField, type ElevField } from "../src/core/elev.ts";
+import { coarseField, type RuleField } from "../src/core/elev.ts";
 import { layersSig, ruleFieldSig, spotTableSig } from "../src/ui/state.ts";
 import type { PeakTable } from "../src/core/spots.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
@@ -25,7 +25,7 @@ function mkCtx(): { ctx: ShellCtx; pend: ((t: PeakTable | null) => void)[] } {
   return { ctx, pend };
 }
 const MAP = (name: string): World => normalizeWorld({ meta: { 名称: name, worldModel: "flat", kmPerDeg: 111.19, terrain: "plain", bbox: { lonMin: 100, lonMax: 101, latMin: 30, latMax: 31 } } });
-function open(ctx: ShellCtx, w: World): ElevField {
+function open(ctx: ShellCtx, w: World): RuleField {
   landWorld(ctx, w, name(w), 0);
   ctx.grid = buildGridCells(ctx.meta, w.terrainOverrides, 0);
   const f = coarseField(ctx.grid, new Float32Array(ctx.grid.cols * ctx.grid.rows));

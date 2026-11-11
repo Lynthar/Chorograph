@@ -4,7 +4,7 @@
    普通对象直读；低频 UI 态才走 signals。 */
 import type { Meta } from "../core/types.ts";
 import type { Grid } from "../core/grid.ts";
-import type { ElevField } from "../core/elev.ts";
+import type { ElevField, RuleField } from "../core/elev.ts";
 import type { ViewState } from "../core/projection.ts";
 import type { TerrainRenderer } from "../render/renderer.ts";
 import type { Library } from "../data/library.ts";
@@ -36,7 +36,7 @@ export interface ShellCtx {
   /** 规则场：规则与光标读数的**唯一**读取源——工作档侵蚀场（预算按图种是常量＝同一存档在任何机器、
       任何时刻同值），落地前为粗格场。精修档只进 elevField、永不进它：精修预算随本机内存分档，
       读它＝读数随机器变，规则引擎建不到它上面。 */
-  ruleField: ElevField | null;
+  ruleField: RuleField | null;
   /** 分块精修的块层（只进画面，同 elevField 的精修档；规则场与读数不读它）：host 的分块管理器独写，null＝没有块 */
   tileLayer: TileLayer | null;
   /** 地形渲染器（boot 创建；无 WebGL2 自动退 CPU 瓦片） */

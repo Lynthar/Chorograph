@@ -20,7 +20,7 @@ import { climRampGLSL, materialTable, rampGLSL, shoreGLSL, snowLatGLSL, waterGLS
 import { riverGLSL, riverTexels, RIV_TEX_W, type RiverSet } from "./rivers.ts";
 import { zoneGLSL, zoneLookTexels, ZLOOK_W, ZONE_N, type ZoneWeights } from "./zones.ts";
 import type { Grid } from "../core/grid.ts";
-import { SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField } from "../core/elev.ts";
+import { SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField, type RuleField } from "../core/elev.ts";
 import type { BBox } from "../core/types.ts";
 import { tilesInView, tileWeight, type TileLayer } from "../core/tiles.ts";
 
@@ -755,8 +755,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
 
   return {
     canvas, kind: "webgl2",
-    uploadGrid(grid: Grid, wsurf: Float32Array, field?: ElevField, rule?: ElevField) {
-      g = grid; lastWS = wsurf; lastField = field; lastRule = rule || field;
+    uploadGrid(grid: Grid, wsurf: Float32Array, field: ElevField, rule: RuleField) {
+      g = grid; lastWS = wsurf; lastField = field; lastRule = rule;
       doUpload(grid, wsurf, field, lastRule);
     },
     uploadTiles(layer: TileLayer | null) { tLayer = layer; tVer++; lastKey = null; },

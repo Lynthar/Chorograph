@@ -3,7 +3,7 @@
 import { buildGridCells, gridGeom, roadCellSet, type Grid } from "../core/grid.ts";
 import { isGen2, mesoKey, riverParams, type Gen2MesoField, type GenRiver, type UpliftCells } from "../core/gen2.ts";
 import { genRiverEdges, genRiverEdgesOf } from "../core/world.ts";
-import { buildElevField, coarseField, fieldMix, fieldPlusDelta, upliftCells, waterSurface, type ElevField } from "../core/elev.ts";
+import { buildElevField, coarseField, fieldMix, fieldPlusDelta, upliftCells, waterSurface, type ElevField, type RuleField } from "../core/elev.ts";
 import { erodeGate, erodeInput, erodeKey, ultraInput, upscaleOf, workNest, type ErodeInput, erodeMode } from "../core/erode.ts";
 import { tilePlan } from "../core/tiles.ts";
 import type { NestBase, NestSrc } from "../core/nested.ts";
@@ -110,12 +110,12 @@ export function createHost(ctx: ShellCtx): Host {
   let pendCoarseNow: Float32Array | null = null;   // 最新的含涂改粗格场：落地 / 渐变 / 精修入屏时把涂改增量叠回定形后的场（底图与涂改档下与 pendCoarse 同一对象）
   /** 定形后的场叠上「当前粗格 − 定形基准」（仅底图档＝高程笔的涂改）：底图与涂改档两份粗格同一对象，原样返回＝旧行为逐位 */
   const basinOf = (g: Grid): Uint8Array | null => g.meso ? g.meso.basin : null;   // 画的盆地：增量合成不钳陆地地板
-  const withDelta = (f: ElevField, baseC: Float32Array): ElevField =>
+  const withDelta = <F extends ElevField>(f: F, baseC: Float32Array): F =>
     pendCoarseNow && pendCoarseNow !== baseC && ctx.grid ? fieldPlusDelta(f, baseC, pendCoarseNow, ctx.grid, ctx.grid.cells, basinOf(ctx.grid)) : f;
   let pendUInp: ErodeInput | null = null;   // 同一单的精修档形态（数组共享引用，仅换预算三键；战术图才有）
   /* 工作档＝规则场（ctx.ruleField）兼等待窗合成的基座，跨同几何的重建存活；精修档只进画面，且只对
      当前构建有效——任何重建即弃（落笔不在千万格的精修场上逐 move 复制重传，静置后自会重算）。 */
-  let work: ElevField | null = null, workBase: Float32Array | null = null, workKey = "";   // 已落地工作档 + 增量基准 + 几何键
+  let work: RuleField | null = null, workBase: Float32Array | null = null, workKey = "";   // 已落地工作档 + 增量基准 + 几何键
   let ultra: ElevField | null = null;   // 在屏精修场（本次构建）
   let gridKey = "", gridOv: TerrainOverride[] | null = null;   // 当前 ctx.grid 建自哪份（meta 键+年份+图 id, 涂改数组引用），见 rebuild 注
   let sentCells: string[][] | null = null;   // 上次随寻路上下文发出的类型格（换了就递增 cellsVerSig）
@@ -338,6 +338,8 @@ export function createHost(ctx: ShellCtx): Host {
        950 万细格、单次要跑一两分钟；减半后恰取 2×＝420 万，几秒可得，内存也只要一半。 */
     pendUInp = pendInp ? ultraInput(pendInp, ctx.meta.mapKind === "tactical" ? ULTRA_CAP : ULTRA_CAP / 2) : null;
   }
+  /** 工作档车道交出来的场才是规则场：标记只在这一处打（缓存命中与现算两个到货点），精修与块的车道不打 */
+  const asWork = (f: ElevField): RuleField => ({ ...f, src: "work" });
   const erodeFlight = singleFlight(() => {
     const grid = ctx.grid!;
     assemble();
@@ -347,11 +349,11 @@ export function createHost(ctx: ShellCtx): Host {
     return Promise.all([uinp ? fieldCacheGet(erodeKey(uinp)) : null, fieldCacheGet(ck)]).then(([uhit, hit]) => {
       if (buildN !== token || !ctx.grid) return;   // 其间已重建＝这单作废（新单已在防抖/dirty 里）
       if (uhit) landUltra(uhit, false);   // 画面先上最锐形态；规则场仍等工作档
-      if (hit) { landWork(hit, baseC, key, false, inp, uinp, ck); return; }
+      if (hit) { landWork(asWork(hit), baseC, key, false, inp, uinp, ck); return; }
       if (!ultra) setPhase("work");   // 精修在屏时工作档的补算是幕后事，胶囊不报
       return ctx.routeClient.erode(inp).then(f => {
         if (f) void fieldCachePut(ck, f);   // 过期结果也入缓存——内容寻址＝对它的输入恒真，撤销/重做正好吃到
-        if (f && buildN === token && ctx.grid) landWork(f, baseC, key, true, inp, uinp, ck);   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
+        if (f && buildN === token && ctx.grid) landWork(asWork(f), baseC, key, true, inp, uinp, ck);   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
         else if (buildN === token) { dropPhase(); settleRule(); }   // 算不出＝这一轮就此落定在粗格（读数也读它）；过期（含被撤）＝新单接管相位与落定，胶囊不闪
       }, e => {   // 拒绝也要落定（闸自会放闸并补发）——否则胶囊悬在「侵蚀计算中」、读数无人落定
         dropPhase();
@@ -370,7 +372,7 @@ export function createHost(ctx: ShellCtx): Host {
       开图/改图幅，窗只防「IDB 罕见卡死数秒后才命中」时硬换用户已看熟的粗帧；真机磁盘上取 3MB 条目
       偶尔要几百 ms，300ms 的窗曾让这类命中退化成渐变＝仍有一次可见换场（初版踩过）。
       computed＝真算过（缓存命中静默、不闪「已定形」）。 */
-  function landWork(f: ElevField, baseC: Float32Array, key: string, computed: boolean, inp: ErodeInput, uinp: ErodeInput | null, ck: string): void {
+  function landWork(f: RuleField, baseC: Float32Array, key: string, computed: boolean, inp: ErodeInput, uinp: ErodeInput | null, ck: string): void {
     const early = !computed && !work && performance.now() - coarseAt < 1000;
     work = f; workBase = baseC; workKey = key;
     keep({ key, base: baseC, f, ck });
@@ -395,8 +397,8 @@ export function createHost(ctx: ShellCtx): Host {
   /* 撤销 / 重做这类同年的离散换场常回到刚落地过的地形：最近几份工作档留在内存，内容键对上就同步换上，
      不走等待窗合成——合成＝定形场减去未侵蚀的满高增量，撤一笔大幅雕刻会合成出一圈坑和土垒 */
   const RECENT = 4;
-  let recent: { key: string; base: Float32Array; f: ElevField; ck: string }[] = [];
-  function keep(e: { key: string; base: Float32Array; f: ElevField; ck: string }): void {
+  let recent: { key: string; base: Float32Array; f: RuleField; ck: string }[] = [];
+  function keep(e: { key: string; base: Float32Array; f: RuleField; ck: string }): void {
     recent = [e, ...recent.filter(x => x.key === e.key && x.ck !== e.ck)].slice(0, RECENT);   // 只留当前几何的
   }
   const sameArr = (a: Float32Array, b: Float32Array): boolean => {
@@ -406,7 +408,7 @@ export function createHost(ctx: ShellCtx): Host {
     return true;
   };
   /** 粗格基准相同的才组装侵蚀单比内容键（组装与求键要几十毫秒，只在候选上付） */
-  function recall(key: string, coarse: Float32Array): { f: ElevField; ck: string } | null {
+  function recall(key: string, coarse: Float32Array): { f: RuleField; ck: string } | null {
     const cand = recent.filter(e => e.key === key && sameArr(e.base, coarse));
     if (!cand.length) return null;
     assemble();

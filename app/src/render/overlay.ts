@@ -19,7 +19,7 @@ import { createLabelField } from "./labels.ts";
 import { drawSpotHeights } from "./spots.ts";
 import { drawContourLabels } from "./contourlab.ts";
 import type { Grid } from "../core/grid.ts";
-import type { ElevField } from "../core/elev.ts";
+import type { RuleField } from "../core/elev.ts";
 import type { SpotTable } from "../core/spots.ts";
 import type { TerrainRivers } from "./rivers.ts";
 import type { Leg } from "../core/units.ts";
@@ -57,7 +57,7 @@ export interface OverlayOpts {
   unitLegs?: Map<string, Leg[]>;      // 部队可达性预算（外壳缓存；供尾迹标超速）
   visMasks?: VisMasks;                // 视线掩膜（外壳编排；有掩膜的圈只填视线可达的格）
   detect?: Map<string, SightRes[]>;   // 飞行部队被他派看见（外壳编排；看见的画探测圈）
-  ruleField?: ElevField | null;       // 落定的规则场（等高线注记读；数字与光标读数同源，演算中沿用上一份）
+  ruleField?: RuleField | null;       // 落定的规则场（等高线注记读；数字与光标读数同源，演算中沿用上一份）
   spotTable?: SpotTable | null;       // 标高点峰表（外壳编排；null＝未算出，只标水面）
   contourStep?: number;               // 等距（抽象单位，renderer.contourStepOf 取的那一档，与地形渲染器同一档；注记按它标）
   smooth?: number;                    // 涂域边界平滑档（Chaikin 轮数 0–3；缺省 2，笔刷框调）
