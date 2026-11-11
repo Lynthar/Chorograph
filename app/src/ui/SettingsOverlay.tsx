@@ -327,7 +327,7 @@ function SettingsCard({ mode, from }: { mode: SettingsMode; from?: Meta }) {
         if (genTerrKey(mm) !== tk) { const r = regenRivers(w, true); riv = r.added ? "new" : r.removed ? "gone" : ""; }
         else riv = "new";
       }
-    }, { grid: true });
+    }, { grid: "ifChanged" });
     if (riv && selSig.peek()?.kind === "edge") selSig.value = null;   // 连线按下标选中，换河之后下标指向别的线
     closeSettings();
     showToast(!riv ? "已应用到当前世界" : riv === "new" ? "已应用到当前世界，河流按新参数重画" : "已应用到当前世界，自动生成的河一并撤下", { undo: true });

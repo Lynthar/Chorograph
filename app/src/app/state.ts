@@ -277,12 +277,13 @@ function roBlocked(): boolean {
   return true;
 }
 
-/** 一切编辑的总入口：快照 → 原地改 → 浅拷贝换引用广播。opts.grid=改了地形（须重建网格）。
+/** 一切编辑的总入口：快照 → 原地改 → 浅拷贝换引用广播。opts.grid=改了地形（须重建网格）；"ifChanged"＝按改前改后的 terrKey 判（同撤销重做：地形没变不重建）。
     fn 抛异常＝整步作废：不留撤销步，异常照抛给调用方；fn 已改了一半的，按快照回滚（未改则不广播）。 */
-export function mutateWorld(fn: (w: World) => void, opts: { grid?: boolean } = {}): void {
+export function mutateWorld(fn: (w: World) => void, opts: { grid?: boolean | "ifChanged" } = {}): void {
   const w = worldSig.peek();
   if (!w || roBlocked()) return;
   const snap = hist.push(w);
+  const tk0 = opts.grid === "ifChanged" ? terrKey(w) : "";
   try {
     fn(w);
   } catch (e) {
@@ -290,9 +291,10 @@ export function mutateWorld(fn: (w: World) => void, opts: { grid?: boolean } = {
     if (prev) applyRestored(w, prev); else syncHistFlags();
     throw e;
   }
+  const regrid = opts.grid === "ifChanged" ? terrKey(w) !== tk0 : !!opts.grid;
   batch(() => {
     worldSig.value = { ...w };
-    if (opts.grid) gridVerSig.value++;
+    if (regrid) gridVerSig.value++;
     syncHistFlags();
     editVerSig.value++;
   });

@@ -108,6 +108,7 @@ export function createHost(ctx: ShellCtx): Host {
   let pendGate = false, pendHovs: HeightOverride[] | undefined, pendYear = 0;   // 门判定与延迟组装的原料（rebuild 同拍记账）
   let pendInp: ErodeInput | null = null, pendCoarse: Float32Array | null = null;   // 侵蚀单（fireErode 结算时才组装）与它的粗格基准（仅底图档＝不含高程涂改）
   let pendGrid: Grid | null = null;   // 侵蚀单取哪个 Grid：仅底图档下画抬升在屏时是只带 Sg 的那个（侵蚀不看笔），其余即 ctx.grid
+  let pendLive = false;   // 这一轮（pendGrid）的单排上了或在飞；等中尺度没发出去、或算不出即置否——仅底图档的早退支只替还在路上的单等
   let pendCoarseNow: Float32Array | null = null;   // 最新的含涂改粗格场：落地 / 渐变 / 精修入屏时把涂改增量叠回定形后的场（底图与涂改档下与 pendCoarse 同一对象）
   /** 定形后的场叠上「当前粗格 − 定形基准」（仅底图档＝高程笔的涂改）：底图与涂改档两份粗格同一对象，原样返回＝旧行为逐位 */
   const basinOf = (g: Grid): Uint8Array | null => g.meso ? g.meso.basin : null;   // 画的盆地：增量合成不钳陆地地板
@@ -117,6 +118,7 @@ export function createHost(ctx: ShellCtx): Host {
   /* 工作档＝规则场（ctx.ruleField）兼等待窗合成的基座，跨同几何的重建存活；精修档只进画面，且只对
      当前构建有效——任何重建即弃（落笔不在千万格的精修场上逐 move 复制重传，静置后自会重算）。 */
   let work: RuleField | null = null, workBase: Float32Array | null = null, workKey = "";   // 已落地工作档 + 增量基准 + 几何键
+  let workEg: Grid | null = null;   // 工作档是哪个侵蚀 Grid 的解：与本轮的对不上＝画面上是旧解叠增量的合成，不许落定
   let ultra: ElevField | null = null;   // 在屏精修场（本次构建）
   let gridKey = "", gridOv: TerrainOverride[] | null = null;   // 当前 ctx.grid 建自哪份（meta 键+年份+图 id, 涂改数组引用），见 rebuild 注
   let sentCells: string[][] | null = null;   // 上次随寻路上下文发出的类型格（换了就递增 cellsVerSig）
@@ -344,7 +346,7 @@ export function createHost(ctx: ShellCtx): Host {
   const erodeFlight = singleFlight(() => {
     const grid = ctx.grid!;
     assemble();
-    if (!pendInp) { dropPhase(); settleRule(); return Promise.resolve(); }   // 门与组装理论上同判（erodeGate 锁）；防御留一手
+    if (!pendInp) { dropPhase(); settleRule(); pendLive = false; return Promise.resolve(); }   // 门与组装理论上同判（erodeGate 锁）；防御留一手
     const token = buildN, baseC = pendCoarse!, key = geomKey(grid), inp = pendInp, uinp = pendUInp;
     const ck = erodeKey(inp);
     return Promise.all([uinp ? fieldCacheGet(erodeKey(uinp)) : null, fieldCacheGet(ck)]).then(([uhit, hit]) => {
@@ -355,17 +357,17 @@ export function createHost(ctx: ShellCtx): Host {
       return ctx.routeClient.erode(inp).then(f => {
         if (f) void fieldCachePut(ck, f);   // 过期结果也入缓存——内容寻址＝对它的输入恒真，撤销/重做正好吃到
         if (f && buildN === token && ctx.grid) landWork(asWork(f), baseC, key, true, inp, uinp, ck);   // 其间无任何重建才换场（有＝结果过期作废，新重建已另发单）
-        else if (buildN === token) { dropPhase(); settleRule(); }   // 算不出＝这一轮就此落定在粗格（读数也读它）；过期（含被撤）＝新单接管相位与落定，胶囊不闪
+        else if (buildN === token) { dropPhase(); settleRule(); pendLive = false; }   // 算不出＝落定在当下那份（读数也读它），下次重建重发单；过期（含被撤）＝新单接管相位与落定，胶囊不闪
       }, e => {   // 拒绝也要落定（闸自会放闸并补发）——否则胶囊悬在「侵蚀计算中」、读数无人落定
         dropPhase();
-        if (buildN === token) settleRule();
+        if (buildN === token) { settleRule(); pendLive = false; }
         console.warn("侵蚀计算失败（保持粗格）：", e);
       });
     });
   }, () => fireErode());
   function fireErode(): void {
     if (!ctx.grid || !pendGate) { dropPhase(); return; }   // 门关＝「relief=0 且无涂改」旧粗格路径逐位不变
-    if (mesoHold) { setPhase("work"); return; }           // 中尺度到了会重建、再发单
+    if (mesoHold) { pendLive = false; setPhase("work"); return; }   // 中尺度到了会重建、再发单
     erodeFlight.fire();
   }
   /** 工作档落地：规则场换真。画面：精修在屏＝不动（同一内容的更锐形态，不许被顶回去），只把规则场
@@ -375,7 +377,7 @@ export function createHost(ctx: ShellCtx): Host {
       computed＝真算过（缓存命中静默、不闪「已定形」）。 */
   function landWork(f: RuleField, baseC: Float32Array, key: string, computed: boolean, inp: ErodeInput, uinp: ErodeInput | null, ck: string): void {
     const early = !computed && !work && performance.now() - coarseAt < 1000;
-    work = f; workBase = baseC; workKey = key;
+    work = f; workBase = baseC; workKey = key; workEg = pendGrid;
     keep({ key, base: baseC, f, ck });
     ctx.ruleField = withDelta(f, baseC);
     settleRule();
@@ -507,13 +509,14 @@ export function createHost(ctx: ShellCtx): Host {
     lastEg = eg;
     const coarseNow = buildElevField(ctx.meta, hovs, ctx.grid!, yearSig.value);   // 含涂改的粗格场：显示与规则的增量来源
     /* 仅底图 / 关闭档且侵蚀的 Grid 没换＝侵蚀输入一字没变：不撤单、不发单、不换场，只把涂改与画抬升的增量叠回已定形的场（精修在屏也留着）——
-       高程笔「笔落即最终」的落点就在这里。关闭档从无工作档，走不到这一支。 */
-    if (mode !== "all" && eReuse && work && workBase) {
+       高程笔「笔落即最终」的落点就在这里。关闭档从无工作档，走不到这一支。
+       工作档不是这个侵蚀 Grid 的解时，只在本轮的单还在路上才走这里：画面照常跟笔，落定等那一单落地（先落定合成场＝落地又变一次）。 */
+    if (mode !== "all" && eReuse && work && workBase && (workEg === eg || pendLive)) {
       pendCoarseNow = coarseNow;
       tiles.setCoarse(coarseNow, ctx.grid!);
       ctx.ruleField = withDelta(work, workBase);
       ctx.elevField = ultra ? withDelta(ultra, workBase) : ctx.ruleField;
-      settleRule();
+      if (workEg === eg) settleRule();
       upload();
       settleBuild(t0, w);
       return;
@@ -529,7 +532,7 @@ export function createHost(ctx: ShellCtx): Host {
     pendYear = yearSig.value;
     pendGrid = eg;
     pendGate = erodeGate(ctx.meta, erodeHovs, eg, pendYear);   // 门同拍判定（轻）；数组组装延迟到 fireErode 结算（见并发闸头注）
-    pendInp = null; pendUInp = null;
+    pendInp = null; pendUInp = null; pendLive = pendGate;
     pendCoarse = coarse; pendCoarseNow = coarseNow;
     doneOwed = false;
     const key = geomKey(ctx.grid!);
@@ -537,13 +540,14 @@ export function createHost(ctx: ShellCtx): Host {
     tiles.setCoarse(coarseNow, ctx.grid!);
     /* 等待窗显示（见并发闸头注）：同几何工作档在手＝粗格增量羽化叠上去；否则粗格场
        （开图先出粗帧、门关的旧契约路径、换图/改图幅弃场）。规则场与画面此刻同一份。 */
-    if (!pendGate || workKey !== key) { work = null; workBase = null; workKey = ""; }
+    if (!pendGate || workKey !== key) { work = null; workBase = null; workKey = ""; workEg = null; }
     /* 年份变了不查：播放与拨年每步都换 Grid、地形又多半不随年变，每步组装求键＝每帧白付几十毫秒 */
     const back = recallOk && sameYear && pendGate && !mesoHold && key === lastBuiltKey ? recall(key, coarse) : null;
     if (back) {   // 内容对上＝这就是该落定的场，不发单
       clearTimeout(erodeTimer);
       settleBuild(t0, w);
       if (back.f !== work) { landWork(back.f, coarse, key, false, pendInp!, pendUInp, back.ck); return; }   // 换回别的一步：渐变换场、块按它重排
+      workEg = eg;   // 内容键对上＝它也是这个侵蚀 Grid 的解
       ctx.ruleField = ctx.elevField = withDelta(work!, workBase!);   // 就是在屏那份：只落定，块的输入也没变
       settleRule(); upload(); dropPhase(); scheduleUltra();
       return;
