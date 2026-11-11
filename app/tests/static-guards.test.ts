@@ -8,6 +8,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { ISL_SHOAL_U } from "../src/core/gen2.ts";
+import { WATER_EPS } from "../src/core/constants.ts";
+import { CONTOUR, FINE_STEP_K, FULL_WRAP_DEG, FX, NOISE, NRM_K, WATER } from "../src/render/material.ts";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
@@ -58,13 +60,27 @@ describe("静态守卫：单一真源", () => {
     const re = /0\.55,\s*0\.72,\s*0\.75|\b38(\.0)?,\s*66(\.0)?,\s*86\b|\b40(\.0)?,\s*90(\.0)?,\s*132\b|\b100(\.0)?,\s*160(\.0)?,\s*198\b/;
     assert.deepStrictEqual(hitsOutside(re, ["render/material.ts"]), [], "水色又写成了字面量——两个渲染器读 material.WATER，河口与湖面才接得上色");
   });
-  it("水段色阶的深端（水面下多少个高程单位到最深色）两个渲染器同值，且等于生成器压群岛浅滩的深度", () => {
-    const re = /e\s*-\s*ws\s*\+\s*([\d.]+)\)\s*\/\s*0\.33/;
-    for (const f of ["render/terrainGL.ts", "render/terrainCPU.ts"]) {
-      const hit = files.find(([n]) => n === f)![1].map(l => re.exec(l)).filter(Boolean);
-      assert.strictEqual(hit.length, 1, `${f} 里水段色阶那一行应恰一处`);
-      assert.strictEqual(+hit[0]![1], ISL_SHOAL_U, `${f} 的水段色阶深端与 gen2.ISL_SHOAL_U 不同——群岛的浅滩会压不到深海色，或压过了头`);
-    }
+  it("水段色阶的深端（水面下多少个高程单位到最深色）两个渲染器同读 WATER.rampE，且等于生成器压群岛浅滩的深度", () => {
+    const re = /e\s*-\s*ws\s*\+\s*(\$\{glF\()?WATER\.rampE\b/;
+    for (const f of ["render/terrainGL.ts", "render/terrainCPU.ts"])
+      assert.strictEqual(linesIn(f, re), 1, `${f} 里水段色阶那一行应恰一处、深端读 WATER.rampE`);
+    assert.strictEqual(WATER.rampE, ISL_SHOAL_U, "WATER.rampE 与 gen2.ISL_SHOAL_U 不同——群岛的浅滩会压不到深海色，或压过了头");
+  });
+  it("两个地形渲染器不手写 material 表里的数与 WATER_EPS", () => {
+    /* 表里的非整数以字面量回到渲染器即红（注释不算）；同值异义、不该从表取的才进 SKIP，并写明它是什么 */
+    const SKIP: Record<string, string> = { "0.25": "帐篷平滑的四点权、助曲线的 1/4 距", "0.3": "CPU 瓦片的 30% 余量", "0.5": "格心偏移、居中与 1/2 距", "1.5": "CPU 瓦片的分辨率档上限、岸线墨宽" };
+    const owner = new Map<number, string>();
+    const walk = (x: unknown, p: string): void => {
+      if (typeof x === "number") { const v = Math.abs(x); if (!Number.isInteger(v) && !owner.has(v)) owner.set(v, p); }
+      else if (x && typeof x === "object") for (const [k, y] of Object.entries(x)) walk(y, `${p}.${k}`);
+    };
+    walk({ NOISE, CONTOUR, FX, WATER, FULL_WRAP_DEG, FINE_STEP_K, NRM_K, WATER_EPS }, "material");
+    const hits = ["render/terrainGL.ts", "render/terrainCPU.ts"].flatMap(f => {
+      const code = readFileSync(path.join(SRC, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, " ")).replace(/\/\/[^\n]*/g, "");
+      return code.split("\n").flatMap((l, i) => [...l.matchAll(/(?<![\w.$])(\d+\.\d+)(?![\w.])/g)]
+        .filter(m => owner.has(+m[1]) && !Object.hasOwn(SKIP, String(+m[1]))).map(m => `${f}:${i + 1} ${m[1]}（与 ${owner.get(+m[1])} 同值）`));
+    });
+    assert.deepStrictEqual(hits, [], "渲染器里又手写了表里的数——同义就从 material 的表取（GL 经 glslF 注入），异义才进 SKIP：\n" + hits.join("\n"));
   });
   it("单飞行闸只有 shell/singleflight 一份", () => {
     assert.deepStrictEqual(hitsOutside(/\b\w*(busy|Busy|eroding)\s*=\s*true\b/, ["shell/singleflight.ts"]), [], "又手写了一份 busy/dirty 闸——走 singleFlight(run, refire)");

@@ -214,8 +214,10 @@ export function rampGLSL(): string {
   return fn("elevLand", ELEV_RAMP) + "\n" + fn("elevLow", LOW_RAMP);
 }
 
-/** 纸色：图廓外的纸与出图垫纸（GLSL 与 tokens.css 的 canvas-wrap 底色各留一份同值字面量） */
+/** 纸色：图廓外的纸与出图垫纸（tokens.css 的 canvas-wrap 底色另留一份同值字面量） */
 export const PAPER = "#d9d2c0";
+/** 纸色的 0–255 三分量：地形画布上的图幅外（GL 着色器与 CPU 推演底图） */
+export const PAPER_RGB: readonly number[] = [1, 3, 5].map(i => parseInt(PAPER.slice(i, i + 2), 16));
 
 /** 地形画布的纸模式：画布上图幅外铺纸色、开小水塘（战术图恒开，战略图看 meta.outside＝内陆图声明）。
     屏上看得见的图廓外纸由叠加层一律铺上（overlay 的 drawMargin），与本判据无关。 */
@@ -234,7 +236,9 @@ export function paperOf(meta: Meta | undefined): boolean {
    ⚠ 格边取 gridStepDeg(meta)＝地形粗格，不取细分场格：精修落地不许换夸张。
    ⚠ 旧式法线 nrm=4.5·uPXPD/14 的量纲是「每(抽象/度)」，在战术图上等于 64 倍夸张、且不随比例尺变——
    增益必须由三个 render 调用点按 shadeGain 传入。 —— */
-export const NRM0 = 4.5 / 14;
+/** 旧式法线的两个数：nrm＝NRM_K·(px/度 ÷ NRM_PX)·增益（两端同式），NRM0＝NRM_K / NRM_PX */
+export const NRM_K = 4.5, NRM_PX = 14;
+export const NRM0 = NRM_K / NRM_PX;
 export function exagFor(cellKm: number, kmPerPx: number): number {
   const p = Math.log(FX.exagE1 / FX.exagE0) / Math.log(FX.exagCellKm1 / FX.exagCellKm0);
   const eCell = Math.max(FX.exagE0, Math.min(FX.exagMax, FX.exagE0 * Math.pow(Math.max(1e-9, cellKm) / FX.exagCellKm0, p)));
@@ -253,10 +257,12 @@ export const MICRO_F0 = 17.6;
 /** 微八度档数上限（世界锚定 ×2 阶梯；fp32 下噪声坐标以图幅原点为局部原点，12 档内不失谐） */
 export const MICRO_OCTAVES = 12;
 
+/** 八度门控的屏幕波长两沿（像素）：自 [0] 起淡入、[1] 全强（GL gate() 同读） */
+export const OCT_GATE_PX = [3, 8] as const;
 /** 八度门控：该八度的屏幕波长（px/度 ÷ 频率）自 3px 起淡入、8px 全强。
     战略图整幅视角（≈33px/度）下所有新增细节恒为 0——旧缩放档观感保持的判据就是这一个函数。 */
 export function octaveGate(pxPerDeg: number, freq: number): number {
-  const t = Math.max(0, Math.min(1, (pxPerDeg / freq - 3) / 5));
+  const t = Math.max(0, Math.min(1, (pxPerDeg / freq - OCT_GATE_PX[0]) / (OCT_GATE_PX[1] - OCT_GATE_PX[0])));
   return t * t * (3 - 2 * t);
 }
 
@@ -352,20 +358,65 @@ export const FX = {
   poolRot: [0.5, -0.85], poolK: 1.06,             // 两八度梯度噪声各转一角（值噪声的塘沿格线连成方块）；K＝与旧式同覆盖率（水洼 22%、湿泥 30%）
   marshSlopeLo: 2, marshSlopeHi: 3,               // 沼泽按宏观坡淡出（度）：湿地只在缓坡，坡上不画湿绿、水洼与墩洼；规则照旧算沼泽
   poolMix: 0.62, poolC: [0.36, 0.50, 0.50],       // 积水色（青灰，近岸带同族更沉）
-  mudMix: 0.30, mudC: [0.40, 0.37, 0.29]          // 洼间湿泥压暗
+  mudMix: 0.30, mudC: [0.40, 0.37, 0.29],         // 洼间湿泥压暗
+  wMin: 0.003,                                    // 材质与生态权重的门：不过门的那一段整段跳过
+  tintMix: 0.45,                                  // 生态色调混入（× 四角色调权重和）
+  cavLo: -0.10, cavHi: 0.16,                      // 谷影的上下限（负＝脊上提亮）
+  rockC: [0.36, 0.33, 0.30], rockSpan: [0.26, 0.27, 0.27], rockK: 1.1,   // 岩色＝rockC + rockSpan·clamp(e·rockK)：越高越浅
+  snowC: [0.93, 0.94, 0.965], snowSlopeCut: 0.6,  // 雪色；陡坡挂不住雪：坡满时雪盖扣掉这一份
+  luma: [0.299, 0.587, 0.114],                    // 亮度权：等高线亮晕按底色亮度渐隐
+  macroNrm: 0.3214,                               // 宏观坡的法线系数＝细节法线对基础坡度响应之半（取 NRM0 的四位近似，换成 NRM0 会改像素）
+  fbmE: [0.4, 0.2], fbmRough: [0.24, 0.08, 0.025], fbmEroded: 0.25, fbmF: 1.1   // 宏观 fbm4：高程过 fbmE[0] / [1] 取对应幅度、其余取末项，侵蚀场再乘 fbmEroded；频率按 1/度
 } as const;
+
+/** GLSL 浮点字面量：整数补「.0」，其余取最短往返写法——解析回同一个 double，舍入成 float32 与手写的字面量同值 */
+export function glslF(x: number): string { return Number.isInteger(x) ? x.toFixed(1) : String(x); }
+
+/** 观感噪声的取样常数（两端逐处同式：GL 经 glslF 注入、CPU 直接引用）：o＝各噪声的种子偏移 [x, y]，即同一噪声场里互不相关的取样窗；
+    f2 / w＝第二档的频率比与两档权重，sx＝横向拉伸。改任何一个数都是换一套花样，两端必须一起换 */
+export const NOISE = {
+  tau: 6.2831853,   // 梯度噪声：格点哈希 × tau＝梯度方向角
+  ridgeK: 1.9,      // 梯度噪声 → 脊形：1 − min(1, |n|·ridgeK)
+  warp: { f2: 3.1, a2: 0.35, o: [[13.7, 91.2], [57.1, 33.9], [7.3, 44.9], [99.1, 5.7]] },   // 域扭曲：主频 x、y，副频 x、y（副频 ×f2、幅 ×a2）
+  warp2: [[3.9, 71.3], [41.7, 9.1]],     // 长波扭曲 x、y
+  warp3: [[17.1, 53.7], [88.3, 25.9]],   // 边缘碎化 x、y
+  micro: { rot: [0.7986, 0.6018], k: [19.7, 7.9] },   // 微八度：逐档旋转 37° 的 cos、sin；第 k 档偏移 k·(x, y)
+  canopy: [[7.7, 3.1], [3.3, 8.9]],      // 林冠：lod 两档
+  dune: { sx: 0.3, o: [[11.1, 0.7], [0.9, 17.3]] },
+  ridge: { main: 0.36, mix: [0.55, 0.45], o: [[77.7, 13.9], [23.1, 9.3], [5.3, 31.7]] },   // 棱脊：主脉频率 ×main；主脉²、主脉×支脉的权；主脉、支脉两档
+  marsh: [[41.3, 2.9], [3.7, 55.1]],
+  patch: { f2: 2.7, w: [0.65, 0.35], edge: [0.32, 0.68], o: [[19.3, 5.7], [63.1, 28.9]] },   // 纹理疏密调制：两八度、smoothstep 两沿
+  pool: { f2: 2.7, w: [0.65, 0.35], edge: [0.40, 0.58, 0.68], o: [[7.3, 3.9], [51.3, 17.9]] },   // 水洼：湿泥自 edge[0] 到 [1]、积水自 [1] 到 [2]
+  alb: [[19.9, 7.1], [2.3, 27.9]],       // 反照率两档
+  wave: { sx: 0.35, o: [[3.1, 9.7], [21.3, 1.1]] }   // 水面静态波纹
+} as const;
+
+/** 等高线着墨（两端同式）：带宽＝到等值面像素距的 smoothstep 两沿；crowd＝线距（像素）的挤线门；index＝计曲线每第几条；dash＝间曲线 / 助曲线虚线空段的半宽（周期分数）；
+    ink＝首 / 计 / 间 / 助曲线的墨；color＝线色 0–255；gcPx＝间曲线浮现门那个粗坡的差分半距（CSS 像素，CPU 补画外缘按它留） */
+export const CONTOUR = {
+  minorW: [0.8, 1.5], indexW: [0.9, 1.65], crowd: [2.5, 6], index: 5, dash: [0.125, 0.25],
+  ink: [0.5, 0.7, 0.5, 0.42], color: [90, 70, 40], gcPx: 10,
+  stepDef: 0.12   // 调用方没给等高距时的缺省（抽象单位）
+} as const;
+
+/** 整圈图的判据（经跨超过它）：岸值的列首尾相接，两端同读 */
+export const FULL_WRAP_DEG = 359.99;
+/** 细分场的判据（场格边 < 类型格边 × 它）：装饰噪声门只在细分或侵蚀场上生效，两端同读 */
+export const FINE_STEP_K = 0.999;
 
 const sstep01 = (a: number, b: number, x: number): number => {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
 
-/** 水面配色（两端渲染器同读，GL 的字面量由 waterGLSL 生成）：水段色阶 deep→shallow（0–255，水面下 0.35→0.02 抽象单位线性；deep 也是图外深海底色）、
-    近岸浅水 shore（0–1，按 FX.shoreMix 混入）、岸线墨 ink（0–255）按 inkA 混入。河当水体画（render/rivers），湖海与河同用这一份 */
-export const WATER = { deep: [40, 90, 132], shallow: [100, 160, 198], shore: [0.55, 0.72, 0.75], ink: [38, 66, 86], inkA: 0.55 } as const;
+/** 水面配色与水下分档（两端渲染器同读，GL 的颜色字面量由 waterGLSL 生成）：水段色阶 deep→shallow（0–255，自水面下 rampE 起跨 rampSpan 线性；deep 也是图外深海底色）、
+    近岸浅水 shore（0–1，水面下 shoreE 起渐显、按 FX.shoreMix 混入）、岸线墨 ink（0–255）按 inkA 混入；陆上的河面取水面下 riverE＝紧贴判据线下的浅水。
+    河当水体画（render/rivers），湖海与河同用这一份。rampE 必须等于 gen2.ISL_SHOAL_U（static-guards 锁着）：群岛的浅滩靠它压到深海色 */
+export const WATER = { deep: [40, 90, 132], shallow: [100, 160, 198], shore: [0.55, 0.72, 0.75], ink: [38, 66, 86], inkA: 0.55,
+  rampE: 0.35, rampSpan: 0.33, shoreE: 0.10, riverE: WATER_EPS + 1e-4 } as const;
 /** WATER 的 GLSL 字面量（整数补「.0」）：ramp＝按 t 取水段色阶、shore＝近岸色、ink＝岸线墨、deep＝深海色 */
 export function waterGLSL(): { ramp: string; shore: string; ink: string; deep: string } {
-  const f = (x: number): string => Number.isInteger(x) ? x.toFixed(1) : String(x), D = WATER.deep, S = WATER.shallow;
+  const f = glslF, D = WATER.deep, S = WATER.shallow;
   return { ramp: `vec3(${D.map((d, k) => `${f(d)}+t*${f(S[k] - d)}`).join(",")})/255.0`, shore: `vec3(${WATER.shore.map(f).join(",")})`,
     ink: `vec3(${WATER.ink.map(f).join(",")})/255.0`, deep: `vec3(${D.map(f).join(",")})/255.0` };
 }

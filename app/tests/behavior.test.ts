@@ -33,7 +33,7 @@ import { MAX_RUN_DIM, eachPaintCenter, paintCellSet, paintDims, paintStep, resam
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
-import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, beachOf, decoGate, exagFor, marshGate, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, blendSharp, shoreElev, shoreGLSL, SHADE_LIGHT, shadeGain, slopeKOf, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
+import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NOISE, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, beachOf, decoGate, exagFor, marshGate, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, blendSharp, shoreElev, shoreGLSL, SHADE_LIGHT, shadeGain, slopeKOf, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
 import { terrainOpts, contourStepOf } from "../src/render/renderer.ts";
 import { CLIMATE, CLIMATE_ORDER, allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/app/stamps.ts";
@@ -2392,7 +2392,7 @@ describe("渲染材质表", () => {
     for (const p of [30, 60, 90, 120, 150, 200]) { const g = octaveGate(p, MICRO_F0); assert.ok(g >= prev); prev = g; }
   });
   it("域扭曲总幅 <半格：主副频合成的最坏位移不吃掉相邻格（类型斑块不漂出本格邻域）", () => {
-    assert.ok((0.5 + 0.5 * 0.35) * FX.warpAmp < 0.5, "0.675×warpAmp 须 <0.5 格");
+    assert.ok((0.5 + 0.5 * NOISE.warp.a2) * FX.warpAmp < 0.5, "0.675×warpAmp 须 <0.5 格");
   });
   it("装饰噪声门（批7 下半）：平坦低地关死、真坡与丘/山类型恒 1、水域与粗格场恒 1＝旧观感", () => {
     const plain = materialFor("plain").rough, hill = materialFor("hill").rough, mtn = materialFor("mountain").rough;

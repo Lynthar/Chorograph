@@ -8,10 +8,10 @@
    数据同形的改动（笔刷）只补画变了的那片，补画与整幅重画逐字节相同。
    推演底图（opts.flat）例外：逐屏幕像素直接栅格化、不走瓦片（贴图重采样会让格边像素取到邻格）。 */
 import { fbm, vnoise, hash2 } from "../core/noise.ts";
-import { terrainProps, compositeIndex } from "../core/constants.ts";
+import { terrainProps, compositeIndex, WATER_EPS } from "../core/constants.ts";
 import { elevBilinear, elevSmooth, waterMask, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField, type RuleField } from "../core/elev.ts";
 import { zoneColMix, zoneTreeMix, zoneWeightsAt, ZONE_N, type ZoneWeights } from "./zones.ts";
-import { blendSharp, climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, shoreElev, ALB_ROT, POOL_ROT, snowLatM, PAPER, FOREST_CANOPY, MICRO_F0, MICRO_OCTAVES, NRM0, FX, SHADE_LIGHT, WATER, type ClimLook } from "./material.ts";
+import { blendSharp, climRampColor, materialFor, octaveGate, decoGate, marshGate, rampColor, shoreElev, ALB_ROT, POOL_ROT, snowLatM, CONTOUR, PAPER, PAPER_RGB, FINE_STEP_K, FOREST_CANOPY, FULL_WRAP_DEG, MICRO_F0, MICRO_OCTAVES, NOISE, NRM0, NRM_K, NRM_PX, FX, SHADE_LIGHT, WATER, type ClimLook } from "./material.ts";
 import { riverDirty, riverSD } from "./rivers.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
@@ -65,7 +65,7 @@ export function wrapCopies(viewBB: BBox, gridBB: BBox, wrap: boolean): number[] 
     w 按屏幕像素封顶（同 GL 约 1.4 px 的 coast 带）：只按 pxpd 放大时战术图放大后每段描成上百 px 宽＝沿岸成片矩形染色。
     @param rsd 逐像素到当水画的河面的有向距离（负＝河里）：河里也算水，岸线只描河与湖海并集的边；缺省＝没有河 */
 export function coastInk(d: Uint8ClampedArray, elev: Float32Array, wsv: Float32Array, W: number, H: number, w: number, rsd?: Float32Array | null): void {
-  const land = rsd ? (i: number): boolean => elev[i] >= wsv[i] - 0.02 && !(rsd[i] < 0) : (i: number): boolean => elev[i] >= wsv[i] - 0.02;
+  const land = rsd ? (i: number): boolean => elev[i] >= wsv[i] - WATER_EPS && !(rsd[i] < 0) : (i: number): boolean => elev[i] >= wsv[i] - WATER_EPS;
   const sv = new Uint8Array(W * H), sh = new Uint8Array(W * H), near = new Uint8Array(W * H);
   const hw = w / 2, R = Math.ceil(hw) + 1;
   for (let y = 1; y < H; y++) for (let x = 1; x < W; x++) {
@@ -142,8 +142,8 @@ function gnoise(x: number, y: number): number {
   const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
   const s = ((Math.imul(xi | 0, 0x9e3779b1) ^ Math.imul(yi | 0, 0x85ebca77)) >>> 0) & (GC - 1), o = s * 8;
   if (gcK[s * 2] !== xi || gcK[s * 2 + 1] !== yi) {
-    const t0 = hash2(xi, yi) * 6.2831853, t1 = hash2(xi + 1, yi) * 6.2831853;
-    const t2 = hash2(xi, yi + 1) * 6.2831853, t3 = hash2(xi + 1, yi + 1) * 6.2831853;
+    const t0 = hash2(xi, yi) * NOISE.tau, t1 = hash2(xi + 1, yi) * NOISE.tau;
+    const t2 = hash2(xi, yi + 1) * NOISE.tau, t3 = hash2(xi + 1, yi + 1) * NOISE.tau;
     gcV[o] = Math.cos(t0); gcV[o + 1] = Math.sin(t0); gcV[o + 2] = Math.cos(t1); gcV[o + 3] = Math.sin(t1);
     gcV[o + 4] = Math.cos(t2); gcV[o + 5] = Math.sin(t2); gcV[o + 6] = Math.cos(t3); gcV[o + 7] = Math.sin(t3);
     gcK[s * 2] = xi; gcK[s * 2 + 1] = yi;
@@ -152,7 +152,7 @@ function gnoise(x: number, y: number): number {
   const c = gcV[o + 4] * xf + gcV[o + 5] * (yf - 1), d = gcV[o + 6] * (xf - 1) + gcV[o + 7] * (yf - 1);
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
-const rgd = (n: number): number => 1 - Math.min(1, Math.abs(n) * 1.9);   // 梯度噪声 → 脊形（同 GL rg）
+const rgd = (n: number): number => 1 - Math.min(1, Math.abs(n) * NOISE.ridgeK);   // 梯度噪声 → 脊形（同 GL rg）
 /** 屏幕波长 tpx 锚定的两档世界频率 + crossfade（同 GL lodF） */
 function lodF(pxpd: number, tpx: number): [number, number, number] {
   const fi = Math.max(MICRO_F0, pxpd / tpx);
@@ -162,10 +162,11 @@ function lodF(pxpd: number, tpx: number): [number, number, number] {
 /** 微八度（同 GL micro）：世界锚定 ×2 阶梯 + 逐档门控 + 逐档旋转 37° */
 function micro(rx: number, ry: number, pxpd: number): number {
   let s = 0, a = 0.5, f = MICRO_F0, px = rx, py = ry;
+  const [rc, rs] = NOISE.micro.rot, [kx, ky] = NOISE.micro.k;
   for (let k = 0; k < MICRO_OCTAVES; k++) {
     const g = octaveGate(pxpd, f); if (g <= 0) break;
-    s += a * g * (vnoise(px * f + k * 19.7, py * f + k * 7.9) - 0.5);
-    const nx = 0.7986 * px + 0.6018 * py, ny = -0.6018 * px + 0.7986 * py;   // 同 GL ROT（列主序展开）
+    s += a * g * (vnoise(px * f + k * kx, py * f + k * ky) - 0.5);
+    const nx = rc * px + rs * py, ny = -rs * px + rc * py;   // 同 GL ROT（列主序展开）
     px = nx; py = ny; f *= 2; a *= FX.microPers;
   }
   return s;
@@ -173,33 +174,33 @@ function micro(rx: number, ry: number, pxpd: number): number {
 /** 材质纹理（同 GL texAt）：canopy/dune/ridge/marsh 各一对 lod 档 crossfade，只进光照法线 */
 function texAt(rx: number, ry: number, twc: number, twd: number, twr: number, twm: number, pxpd: number): number {
   let h = 0;
-  if (twc > 0.003) {
+  if (twc > FX.wMin) {
     const [f1, f2, fr] = lodF(pxpd, FX.canopyPx), g = octaveGate(pxpd, f1);
     if (g > 0) {
-      const a = vnoise(rx * f1 + 7.7, ry * f1 + 3.1) - 0.5, b = vnoise(rx * f2 + 3.3, ry * f2 + 8.9) - 0.5;   // 软鼓包（同 GL）
+      const o = NOISE.canopy, a = vnoise(rx * f1 + o[0][0], ry * f1 + o[0][1]) - 0.5, b = vnoise(rx * f2 + o[1][0], ry * f2 + o[1][1]) - 0.5;   // 软鼓包（同 GL）
       h += twc * FX.canopyAmp * g * (a + (b - a) * fr);
     }
   }
-  if (twd > 0.003) {
+  if (twd > FX.wMin) {
     const [f1, f2, fr] = lodF(pxpd, FX.dunePx), g = octaveGate(pxpd, f1);
     if (g > 0) {
-      const a = rgd(gnoise(rx * 0.3 * f1 + 11.1, ry * f1 + 0.7)), b = rgd(gnoise(rx * 0.3 * f2 + 0.9, ry * f2 + 17.3));
+      const { sx, o } = NOISE.dune, a = rgd(gnoise(rx * sx * f1 + o[0][0], ry * f1 + o[0][1])), b = rgd(gnoise(rx * sx * f2 + o[1][0], ry * f2 + o[1][1]));
       h += twd * FX.duneAmp * g * (a + (b - a) * fr);
     }
   }
-  if (twr > 0.003) {
+  if (twr > FX.wMin) {
     const [f1, f2, fr] = lodF(pxpd, FX.ridgePx), g = octaveGate(pxpd, f1);
     if (g > 0) {   // 棱脊两级：主脉（×0.36 波长）调制支脉＝山系层级感
-      const m1 = rgd(gnoise(rx * f1 * 0.36 + 77.7, ry * f1 * 0.36 + 13.9));
-      const a = rgd(gnoise(rx * f1 + 23.1, ry * f1 + 9.3)), b = rgd(gnoise(rx * f2 + 5.3, ry * f2 + 31.7));
+      const { main, mix, o } = NOISE.ridge, m1 = rgd(gnoise(rx * f1 * main + o[0][0], ry * f1 * main + o[0][1]));
+      const a = rgd(gnoise(rx * f1 + o[1][0], ry * f1 + o[1][1])), b = rgd(gnoise(rx * f2 + o[2][0], ry * f2 + o[2][1]));
       const r = a + (b - a) * fr;
-      h += twr * FX.ridgeAmp * g * (0.55 * m1 * m1 + 0.45 * m1 * r);
+      h += twr * FX.ridgeAmp * g * (mix[0] * m1 * m1 + mix[1] * m1 * r);
     }
   }
-  if (twm > 0.003) {
+  if (twm > FX.wMin) {
     const [f1, f2, fr] = lodF(pxpd, FX.marshPx), g = octaveGate(pxpd, f1);
     if (g > 0) {
-      const a = vnoise(rx * f1 + 41.3, ry * f1 + 2.9), b = vnoise(rx * f2 + 3.7, ry * f2 + 55.1);
+      const o = NOISE.marsh, a = vnoise(rx * f1 + o[0][0], ry * f1 + o[0][1]), b = vnoise(rx * f2 + o[1][0], ry * f2 + o[1][1]);
       h += twm * FX.marshAmp * g * (a + (b - a) * fr - 0.5);
     }
   }
@@ -212,7 +213,7 @@ const cw = (eh: number, itv: number, ad: number, w0: number, w1: number): number
 const oddK = (eh: number, itv: number): number => Math.round(eh / itv) % 2 === 0 ? 0 : 1;
 
 function elevRamp(e: number, ws: number, beach: boolean, clim?: ClimLook, dl = 0): [number, number, number] {
-  if (e < ws - 0.02) { const t = Math.max(0, Math.min(1, (e - ws + 0.35) / 0.33)), D = WATER.deep, S = WATER.shallow; return [D[0] + t * (S[0] - D[0]), D[1] + t * (S[1] - D[1]), D[2] + t * (S[2] - D[2])]; }
+  if (e < ws - WATER_EPS) { const t = Math.max(0, Math.min(1, (e - ws + WATER.rampE) / WATER.rampSpan)), D = WATER.deep, S = WATER.shallow; return [D[0] + t * (S[0] - D[0]), D[1] + t * (S[1] - D[1]), D[2] + t * (S[2] - D[2])]; }
   if (clim && clim.n > 0) return climRampColor(clim, e, dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移；同 GL）
   return rampColor(e, beach);   // 陆地分层设色（GL 同源）
 }
@@ -267,15 +268,15 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   const MW = new Float64Array(4), MI = new Int32Array(4), MK = new Int32Array(4);   // 四角权重、复合索引与格号（复用，免 GC）
   function matAt(rx: number, ry: number): void {
     const g = grid!, step = g.step, cols = g.cols, rows = g.rows;
-    const wf = FX.warpF / step;   // 同 GL warpOf：双频、幅度 <半格
-    const w1x = vnoise(rx * wf + 13.7, ry * wf + 91.2) - 0.5, w1y = vnoise(rx * wf + 57.1, ry * wf + 33.9) - 0.5;
-    const w2x = vnoise(rx * wf * 3.1 + 7.3, ry * wf * 3.1 + 44.9) - 0.5, w2y = vnoise(rx * wf * 3.1 + 99.1, ry * wf * 3.1 + 5.7) - 0.5;
+    const wf = FX.warpF / step, { f2, a2, o } = NOISE.warp, o2 = NOISE.warp2, o3 = NOISE.warp3;   // 同 GL warpOf：双频、幅度 <半格
+    const w1x = vnoise(rx * wf + o[0][0], ry * wf + o[0][1]) - 0.5, w1y = vnoise(rx * wf + o[1][0], ry * wf + o[1][1]) - 0.5;
+    const w2x = vnoise(rx * wf * f2 + o[2][0], ry * wf * f2 + o[2][1]) - 0.5, w2y = vnoise(rx * wf * f2 + o[3][0], ry * wf * f2 + o[3][1]) - 0.5;
     const w2f = FX.warp2F / step;   // 长波扭曲（同 GL warp2Of）：只喂色调/材质查找，有意超半格
     const w3f = FX.warp3F / step;   // 边缘碎化：高频小幅（同 GL），见 FX.warp3F 头注
-    const rwx = rx + (w1x + w2x * 0.35) * step * FX.warpAmp + (vnoise(rx * w2f + 3.9, ry * w2f + 71.3) - 0.5) * step * FX.warp2Amp
-      + (vnoise(rx * w3f + 17.1, ry * w3f + 53.7) - 0.5) * step * FX.warp3Amp;
-    const rwy = ry + (w1y + w2y * 0.35) * step * FX.warpAmp + (vnoise(rx * w2f + 41.7, ry * w2f + 9.1) - 0.5) * step * FX.warp2Amp
-      + (vnoise(rx * w3f + 88.3, ry * w3f + 25.9) - 0.5) * step * FX.warp3Amp;
+    const rwx = rx + (w1x + w2x * a2) * step * FX.warpAmp + (vnoise(rx * w2f + o2[0][0], ry * w2f + o2[0][1]) - 0.5) * step * FX.warp2Amp
+      + (vnoise(rx * w3f + o3[0][0], ry * w3f + o3[0][1]) - 0.5) * step * FX.warp3Amp;
+    const rwy = ry + (w1y + w2y * a2) * step * FX.warpAmp + (vnoise(rx * w2f + o2[1][0], ry * w2f + o2[1][1]) - 0.5) * step * FX.warp2Amp
+      + (vnoise(rx * w3f + o3[1][0], ry * w3f + o3[1][1]) - 0.5) * step * FX.warp3Amp;
     const fx = rwx / step - 0.5, fy = rwy / step - 0.5;
     const c0 = Math.max(0, Math.min(cols - 1, Math.floor(fx))), r0 = Math.max(0, Math.min(rows - 1, Math.floor(fy)));
     const c1 = Math.min(cols - 1, c0 + 1), r1 = Math.min(rows - 1, r0 + 1);
@@ -299,39 +300,40 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   /* 等高线画在规则场制图面 ed（帐篷平滑，与读数一致；画面场为精修档时线不跟画面）；公式与 GL 版同构；图幅内缩一格裁掉贴边假线。
      两种底图共用：观感底图在瓦片趟二末尾叠、推演底图逐屏幕像素叠在平色上（W/H＝ed 的行宽与行数） */
   function contourMix(opts: TerrainRenderOpts, W: number, H: number, col: RGB, ed: Float32Array, i: number, x: number, y: number, ws: number, lon: number, lat: number, pxpd: number, pxpdY: number, src: ElevField): RGB {
-    if (!(opts.contour && ed[i] >= ws - 0.02
+    if (!(opts.contour && ed[i] >= ws - WATER_EPS
       && lon > grid!.bb.lonMin + grid!.step && lon < grid!.bb.lonMax - grid!.step
       && lat > grid!.bb.latMin + grid!.step && lat < grid!.bb.latMax - grid!.step)) return col;
-    const cs = opts.cStep || 0.12, dpr = opts.dpr ?? 1, eh = ed[i];   // 线落在等距的整数倍上（同 GL：不再偏移 0.02）
+    const cs = opts.cStep || CONTOUR.stepDef, dpr = opts.dpr ?? 1, eh = ed[i];   // 线落在等距的整数倍上（同 GL：不再偏移 0.02）
     const gx = ed[y * W + Math.min(W - 1, x + 1)] - ed[i], gy = ed[Math.min(H - 1, y + 1) * W + x] - ed[i];   // 屏幕梯度（y 朝下）
     const ad = (Math.abs(gx) + Math.abs(gy)) * dpr + 1e-7;   // 线宽与挤线门按 CSS 像素锚定（同 GL uDPR）
     /* 间曲线的浮现门看 ±10 px 差分的粗坡（同 GL），不看逐像素梯度：侵蚀微起伏让局部梯度远大于宏观坡，按它算线距会低估几十倍；
        虚线相位锚网格原点的像素坐标，切向取世界 y 朝上的帧（gy 取反），与 GL 的 dFdy 同向 */
-    const kx = 10 / pxpd * dpr, ky = 10 / pxpdY * dpr;
-    const gcx = (elevSmooth(src.data, src, lon + kx, lat) - elevSmooth(src.data, src, lon - kx, lat)) / 20;   // 每 CSS px 的坡（同 GL：不再除 dpr）
-    const gcy = (elevSmooth(src.data, src, lon, lat + ky) - elevSmooth(src.data, src, lon, lat - ky)) / 20;
+    const kx = CONTOUR.gcPx / pxpd * dpr, ky = CONTOUR.gcPx / pxpdY * dpr;
+    const gcx = (elevSmooth(src.data, src, lon + kx, lat) - elevSmooth(src.data, src, lon - kx, lat)) / (2 * CONTOUR.gcPx);   // 每 CSS px 的坡（同 GL：不再除 dpr）
+    const gcy = (elevSmooth(src.data, src, lon, lat + ky) - elevSmooth(src.data, src, lon, lat - ky)) / (2 * CONTOUR.gcPx);
     const gsl = Math.abs(gcx) + Math.abs(gcy) + 1e-7, tl = Math.hypot(gy, gx) || 1;
     const sdp = ((gy / tl) * (lon - grid!.bb.lonMin) * pxpd + (gx / tl) * (lat - grid!.bb.latMin) * pxpdY) / dpr;
     const k = contourK(eh, cs, ad, gsl, sdp, 0), kh = contourK(eh, cs, ad, gsl, sdp, FX.haloPx);
     // 亮晕只画核外环（kh−k），按底色亮度渐隐（同 GL；判据见 material.FX.halo*）
-    const hg = (1 - sstep(FX.haloLo, FX.haloHi, (0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2]) / 255)) * Math.max(0, kh - k);
+    const hg = (1 - sstep(FX.haloLo, FX.haloHi, (FX.luma[0] * col[0] + FX.luma[1] * col[1] + FX.luma[2] * col[2]) / 255)) * Math.max(0, kh - k);
     if (hg > 0) col = [col[0] + (FX.haloC[0] * 255 - col[0]) * hg, col[1] + (FX.haloC[1] * 255 - col[1]) * hg, col[2] + (FX.haloC[2] * 255 - col[2]) * hg];
-    return [col[0] + (90 - col[0]) * k, col[1] + (70 - col[1]) * k, col[2] + (40 - col[2]) * k];
+    const I = CONTOUR.color;
+    return [col[0] + (I[0] - col[0]) * k, col[1] + (I[1] - col[1]) * k, col[2] + (I[2] - col[2]) * k];
   }
   /* 此像素的着墨（同 GL contourK）：首曲线（挤线抑制）、计曲线（每第 5 条，带宽 0.9–1.65 只比首曲线略宽、靠墨 0.70 区分）、
      间曲线 / 助曲线（粗坡门 + 虚线）。gsl=粗坡（高程/CSS 像素）、sdp=沿等值线切向的像素坐标、bo=带宽外扩像素（亮晕） */
   function contourK(eh: number, itv: number, ad: number, gsl: number, sdp: number, bo: number): number {
-    const mn = cw(eh, itv, ad, 0.8 + bo, 1.5 + bo) * sstep(2.5, 6, itv / ad);
-    const ix = cw(eh, itv * 5, ad, 0.9 + bo, 1.65 + bo) * sstep(2.5, 6, itv * 5 / ad);
+    const C = CONTOUR, mn = cw(eh, itv, ad, C.minorW[0] + bo, C.minorW[1] + bo) * sstep(C.crowd[0], C.crowd[1], itv / ad);
+    const ix = cw(eh, itv * C.index, ad, C.indexW[0] + bo, C.indexW[1] + bo) * sstep(C.crowd[0], C.crowd[1], itv * C.index / ad);
     const sp1 = itv / gsl, g1 = sstep(SUP_LO_PX, SUP_HI_PX, sp1), g2 = g1 * sstep(SUP_LO_PX, SUP_HI_PX, sp1 * 0.5);
     let m2 = 0, m4 = 0;
     if (g1 > 0) {
       const sd = sdp / SUP_DASH_PX, fr = sd - Math.floor(sd), fr2 = 2 * sd - Math.floor(2 * sd);
-      const d1 = Math.abs(fr - 0.5) >= 0.125 ? 1 : 0, d2 = Math.abs(fr2 - 0.5) >= 0.25 ? 1 : 0;
-      m2 = cw(eh, itv * 0.5, ad, 0.8 + bo, 1.5 + bo) * oddK(eh, itv * 0.5) * g1 * d1;
-      m4 = cw(eh, itv * 0.25, ad, 0.8 + bo, 1.5 + bo) * oddK(eh, itv * 0.25) * g2 * d2;
+      const d1 = Math.abs(fr - 0.5) >= C.dash[0] ? 1 : 0, d2 = Math.abs(fr2 - 0.5) >= C.dash[1] ? 1 : 0;
+      m2 = cw(eh, itv * 0.5, ad, C.minorW[0] + bo, C.minorW[1] + bo) * oddK(eh, itv * 0.5) * g1 * d1;
+      m4 = cw(eh, itv * 0.25, ad, C.minorW[0] + bo, C.minorW[1] + bo) * oddK(eh, itv * 0.25) * g2 * d2;
     }
-    return Math.max(mn * 0.50, ix * 0.70, m2 * 0.50, m4 * 0.42);
+    return Math.max(mn * C.ink[0], ix * C.ink[1], m2 * C.ink[2], m4 * C.ink[3]);
   }
   const rgbCache = new Map<string, RGB>();   // 复合串 → 平色（distinct cell 极少）
   const rgbOf = (cell: string): RGB => {
@@ -353,7 +355,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     }
     const img = ctx.createImageData(W, H), d = img.data;
     const ed = opts.contour ? new Float32Array(W * H) : null;
-    const out: RGB = opts.paper ? [217, 210, 192] : [WATER.deep[0], WATER.deep[1], WATER.deep[2]];
+    const out: RGB = opts.paper ? [PAPER_RGB[0], PAPER_RGB[1], PAPER_RGB[2]] : [WATER.deep[0], WATER.deep[1], WATER.deep[2]];
     for (let y = 0; y < H; y++) {
       const lat = viewBB.latMax - y / pxpdY, inRow = lat >= gb.latMin && lat <= gb.latMax;
       const row = inRow ? g.cells[Math.min(g.rows - 1, Math.floor((lat - gb.latMin) / g.step))] : null;
@@ -394,8 +396,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const microOn = octaveGate(pxpd, MICRO_F0) > 0;   // 整幅视角＝全部新增细节为零，趟一退化为旧管线成本
     const texW0 = FX.texW / pxpd;   // 纹理疏密逐像素乘，故基值在外
     const eroded = field!.eroded ? 1 : 0;   // 场经侵蚀（同 GL uEroded）：装饰按坡门控、宏观 fbm4 降到 1/4
-    const fine = field!.step < grid!.step * 0.999 || eroded ? 1 : 0;   // 装饰噪声门只在细分/侵蚀场生效（粗格=旧图逐位契约）
-    const wrapC = !!opts.wrap && grid!.bb.lonMax - grid!.bb.lonMin > 359.99;   // 岸值的列环绕（同 GL）
+    const fine = field!.step < grid!.step * FINE_STEP_K || eroded ? 1 : 0;   // 装饰噪声门只在细分/侵蚀场生效（粗格=旧图逐位契约）
+    const wrapC = !!opts.wrap && grid!.bb.lonMax - grid!.bb.lonMin > FULL_WRAP_DEG;   // 岸值的列环绕（同 GL）
     const elev = new Float32Array(W * H), esh = new Float32Array(W * H), ed = new Float32Array(W * H), cav = new Float32Array(W * H);
     const wsv = new Float32Array(W * H);   // 逐像素水面（同 GL：与晕渲高程同取扭曲后坐标）
     const mgx = new Float32Array(W * H), mgy = new Float32Array(W * H);   // 宏观场坡（±1 格、无噪声；同 GL mn）
@@ -411,10 +413,10 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const i = y * W + x, p = L2P(x, y);
       const rx = p[0] - lonMin, ry = p[1] - latMin;
       matAt(rx, ry);
-      const wf = FX.warpF / step;   // 与 matAt 同一 warp（各自计算，函数确定性保证一致）
-      const w1x = vnoise(rx * wf + 13.7, ry * wf + 91.2) - 0.5, w1y = vnoise(rx * wf + 57.1, ry * wf + 33.9) - 0.5;
-      const w2x = vnoise(rx * wf * 3.1 + 7.3, ry * wf * 3.1 + 44.9) - 0.5, w2y = vnoise(rx * wf * 3.1 + 99.1, ry * wf * 3.1 + 5.7) - 0.5;
-      const wx = (w1x + w2x * 0.35) * step * FX.warpAmp, wy = (w1y + w2y * 0.35) * step * FX.warpAmp;
+      const wf = FX.warpF / step, { f2, a2, o } = NOISE.warp;   // 与 matAt 同一 warp（各自计算，函数确定性保证一致）
+      const w1x = vnoise(rx * wf + o[0][0], ry * wf + o[0][1]) - 0.5, w1y = vnoise(rx * wf + o[1][0], ry * wf + o[1][1]) - 0.5;
+      const w2x = vnoise(rx * wf * f2 + o[2][0], ry * wf * f2 + o[2][1]) - 0.5, w2y = vnoise(rx * wf * f2 + o[3][0], ry * wf * f2 + o[3][1]) - 0.5;
+      const wx = (w1x + w2x * a2) * step * FX.warpAmp, wy = (w1y + w2y * a2) * step * FX.warpAmp;
       const lonW = p[0] + wx, latW = p[1] + wy;
       const e0 = elevBil(lonW, latW);
       mgx[i] = elevBil(lonW - step, latW) - elevBil(lonW + step, latW);
@@ -423,41 +425,41 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const smac = Math.hypot(mgx[i], mgy[i]) / (2 * step);
       const roughEff = Math.max(MT.rough, Math.min(FX.slopeRoughMax, smac * FX.slopeRough));
       const twrEff = Math.max(MT.r, Math.min(1, smac * FX.slopeRidge));
-      const rough = (e0 > 0.4 ? 0.24 : (e0 > 0.2 ? 0.08 : 0.025)) * (eroded ? 0.25 : 1);
+      const rough = (e0 > FX.fbmE[0] ? FX.fbmRough[0] : (e0 > FX.fbmE[1] ? FX.fbmRough[1] : FX.fbmRough[2])) * (eroded ? FX.fbmEroded : 1);
       /* 装饰噪声门（同 GL：material.decoGate 单一真源）：平坦低地不再画假起伏；侵蚀场上只按坡门控（类型兜底不再算数） */
       wsv[i] = wsAt(lonW, latW);
-      const decoK = decoGate(smac, eroded ? 0 : MT.rough, sstep(wsv[i] - 0.02, wsv[i] + 0.02, e0), fine) * (1 - tHere(lonW, latW));   // 块里的起伏是真算的（同 GL）
+      const decoK = decoGate(smac, eroded ? 0 : MT.rough, sstep(wsv[i] - WATER_EPS, wsv[i] + WATER_EPS, e0), fine) * (1 - tHere(lonW, latW));   // 块里的起伏是真算的（同 GL）
       let e = e0;
       if (decoK > 0) {   // 门关（平地或块权重满）＝噪声两项恒零，免算（同 GL）
-        e += (fbm(lonW * 1.1, latW * 1.1) - 0.5) * rough * 2 * decoK;
+        e += (fbm(lonW * FX.fbmF, latW * FX.fbmF) - 0.5) * rough * 2 * decoK;
         if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp * decoK;
       }
       e = shoreElev(e, wsv[i], shoreAt(cellWater!, grid!.cols, grid!.rows, (rx + wx) / step - 0.5, (ry + wy) / step - 0.5, wrapC));   // 画面的水陆由岸值定（同 GL shoreFix）；岸线墨与趟二的法线都读它
       elev[i] = e;
       /* 纹理疏密（同 GL；见 FX.texPatchF 头注）：世界锚定两八度低频调制，同一片林/沼/山有疏有密 */
       const pf = FX.texPatchF / step;
-      const pn = 0.65 * vnoise(rx * pf + 19.3, ry * pf + 5.7) + 0.35 * vnoise(rx * pf * 2.7 + 63.1, ry * pf * 2.7 + 28.9);
-      const texW = texW0 * (FX.texPatchLo + (FX.texPatchHi - FX.texPatchLo) * sstep(0.32, 0.68, pn));
+      const P = NOISE.patch, pn = P.w[0] * vnoise(rx * pf + P.o[0][0], ry * pf + P.o[0][1]) + P.w[1] * vnoise(rx * pf * P.f2 + P.o[1][0], ry * pf * P.f2 + P.o[1][1]);
+      const texW = texW0 * (FX.texPatchLo + (FX.texPatchHi - FX.texPatchLo) * sstep(P.edge[0], P.edge[1], pn));
       if (Z) { zoneTreeMix(Z.looks, zoneWeightsAt(Z.wt, p[0], p[1], zw), elevBil(p[0], p[1]), rowShift[y], zt); tfade![i] = zt[0]; tmead![i * 3] = zt[1]; tmead![i * 3 + 1] = zt[2]; tmead![i * 3 + 2] = zt[3]; }
       else if (tfade) { const t = clim!.treeE + rowShift[y]; tfade[i] = sstep(t, t + clim!.band, elevBil(p[0], p[1])); }
       const twc = tfade ? MT.c * (1 - tfade[i]) : MT.c;   // 林线以上林冠纹理淡出（同 GL）
       esh[i] = microOn ? e + texAt(rx, ry, twc, MT.d, twrEff, MT.m * marshGate(smac, slopeK), pxpd) * texW : e;
       const es = tw > 0 ? dispSmooth(p[0], p[1]) : elevSmooth(field!.data, field!, p[0], p[1]);
       ed[i] = rule === field && tw === 0 ? es : elevSmooth(rule!.data, rule!, p[0], p[1]);   // 线只跟规则场：画面场为精修档或带块时都不跟画面
-      cav[i] = Math.max(-0.10, Math.min(0.16, (es - elevBil(p[0], p[1])) / field!.step * gain * 2 * NRM0 * (1 + FX.macroW) * FX.cavAmp));   // 同 GL：按真实坡度并随夸张走
+      cav[i] = Math.max(FX.cavLo, Math.min(FX.cavHi, (es - elevBil(p[0], p[1])) / field!.step * gain * 2 * NRM0 * (1 + FX.macroW) * FX.cavAmp));   // 同 GL：按真实坡度并随夸张走
       if (rsd) { const s = riverSD(RV!.set, p[0], p[1], RV!.thr); rsd[i] = s < 1e8 ? s * pxpd : 1e9; }   // 河取未扭曲位置（同 GL）
     }
     const light = SHADE_LIGHT;
-    const nrm = 4.5 * (pxpd / 14) * gain;
+    const nrm = NRM_K * (pxpd / NRM_PX) * gain;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = y * W + x, e = elev[i], ws = wsv[i], p = L2P(x, y);
       const rx = p[0] - lonMin, ry = p[1] - latMin;
       const eL = esh[y * W + Math.max(0, x - 1)], eR = esh[y * W + Math.min(W - 1, x + 1)];
       const eU = esh[Math.max(0, y - 1) * W + x], eD = esh[Math.min(H - 1, y + 1) * W + x];
       const nx = (eL - eR) * nrm, ny = (eU - eD) * nrm;
-      /* 宏观场法线 + 陡坡软压 + 暖冷晕渲（同 GL：0.3214=nrm 对基础坡度响应系数之半）。
+      /* 宏观场法线 + 陡坡软压 + 暖冷晕渲（同 GL：FX.macroNrm＝nrm 对基础坡度响应之半）。
          ⚠ 「把细节从软压里摘出来单独叠」试过并撤回，理由见 GL 版同处头注 */
-      const mnk = 0.3214 / step * FX.macroW * gain;
+      const mnk = FX.macroNrm / step * FX.macroW * gain;
       let n2x = nx + mgx[i] * mnk, n2y = ny + mgy[i] * mnk;
       const sl = Math.hypot(n2x, n2y), sxc = Math.max(0, sl - FX.slopeKnee);
       const slc = Math.min(sl, FX.slopeKnee) + sxc * FX.slopeSoft / (FX.slopeSoft + sxc);   // 膝内恒等（同 GL）
@@ -467,13 +469,13 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const lt = sstep(FX.shadeKnee, 1, dn);
       const sh = FX.shadeLo + (FX.shadeHi - FX.shadeLo) * lt;
       const shR = FX.cool[0] + (FX.warm[0] - FX.cool[0]) * lt, shG = FX.cool[1] + (FX.warm[1] - FX.cool[1]) * lt, shB = FX.cool[2] + (FX.warm[2] - FX.cool[2]) * lt;
-      const ec = rsd && rsd[i] < 0 && e >= ws - 0.02 ? ws - 0.0201 : e;   // 陆上的河面＝紧贴判据线下的浅水（同 GL）
+      const ec = rsd && rsd[i] < 0 && e >= ws - WATER_EPS ? ws - WATER.riverE : e;   // 陆上的河面＝紧贴判据线下的浅水（同 GL）
       let col = elevRamp(ec, ws, beach, clim, rowShift[y]), zsn = 0;
-      if (ec >= ws - 0.02) {
+      if (ec >= ws - WATER_EPS) {
         if (Z) { zoneColMix(Z.looks, zoneWeightsAt(Z.wt, p[0], p[1], zw), e, rowShift[y], beach, zc); col = [zc[0], zc[1], zc[2]]; zsn = zc[3]; }
         matAt(rx, ry);   // 趟二重取材质（色调/反照率/岩化）——省四条逐像素缓存数组的内存
         if (MT.tintW > 0) {
-          const a = 0.45 * MT.tintW;
+          const a = FX.tintMix * MT.tintW;
           let tr = MT.tr, tg = MT.tg, tb = MT.tb;
           const fk = tfade ? tfade[i] * Math.max(0, Math.min(1, MT.c / FOREST_CANOPY)) : 0;
           if (fk > 0) {   // 林线以上的森林换草甸色（同 GL）
@@ -483,21 +485,21 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
           col = [col[0] * (1 - a) + tr * a, col[1] * (1 - a) + tg * a, col[2] * (1 - a) + tb * a];
         }
         // 生态辨识度（同 GL）：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重）
-        if (MT.d > 0.003) {
+        if (MT.d > FX.wMin) {
           const a = MT.d * FX.sandMix;
           col = [col[0] * (1 - a) + FX.sandC[0] * 255 * a, col[1] * (1 - a) + FX.sandC[1] * 255 * a, col[2] * (1 - a) + FX.sandC[2] * 255 * a];
         }
-        const mw0 = MT.m > 0.003 ? MT.m * marshGate(Math.hypot(mgx[i], mgy[i]) / (2 * step), slopeK) : 0;   // 沼泽按坡淡出（同 GL）
-        if (mw0 > 0.003) {
+        const mw0 = MT.m > FX.wMin ? MT.m * marshGate(Math.hypot(mgx[i], mgy[i]) / (2 * step), slopeK) : 0;   // 沼泽按坡淡出（同 GL）
+        if (mw0 > FX.wMin) {
           const a = mw0 * FX.marshMix;
           col = [col[0] * (1 - a) + FX.marshC[0] * 255 * a, col[1] * (1 - a) + FX.marshC[1] * 255 * a, col[2] * (1 - a) + FX.marshC[2] * 255 * a];
           const pg = sstep(FX.poolLo, FX.poolHi, pxpd * step) * mw0 * (opts.paper ? 1 : 0);   // px/格；只在战术图（同 GL）
-          if (pg > 0.003) {
+          if (pg > FX.wMin) {
             const pf = FX.poolF / (grid ? grid.step : 1);
-            const qx = rx * pf, qy = ry * pf, [c1, s1, c2, s2] = POOL_ROT;   // 两八度梯度噪声各转一角（同 GL）
-            const pn = 0.5 + FX.poolK * (0.65 * gnoise(qx * c1 - qy * s1 + 7.3, qx * s1 + qy * c1 + 3.9) + 0.35 * gnoise(2.7 * (qx * c2 - qy * s2) + 51.3, 2.7 * (qx * s2 + qy * c2) + 17.9));
-            const pw = sstep(0.58, 0.68, pn);
-            const mw = sstep(0.40, 0.58, pn) * (1 - pw) * pg * FX.mudMix;
+            const qx = rx * pf, qy = ry * pf, [c1, s1, c2, s2] = POOL_ROT, { f2, w, edge, o } = NOISE.pool;   // 两八度梯度噪声各转一角（同 GL）
+            const pn = 0.5 + FX.poolK * (w[0] * gnoise(qx * c1 - qy * s1 + o[0][0], qx * s1 + qy * c1 + o[0][1]) + w[1] * gnoise(f2 * (qx * c2 - qy * s2) + o[1][0], f2 * (qx * s2 + qy * c2) + o[1][1]));
+            const pw = sstep(edge[1], edge[2], pn);
+            const mw = sstep(edge[0], edge[1], pn) * (1 - pw) * pg * FX.mudMix;
             col = [col[0] * (1 - mw) + FX.mudC[0] * 255 * mw, col[1] * (1 - mw) + FX.mudC[1] * 255 * mw, col[2] * (1 - mw) + FX.mudC[2] * 255 * mw];
             const pa = pw * pg * FX.poolMix;
             col = [col[0] * (1 - pa) + FX.poolC[0] * 255 * pa, col[1] * (1 - pa) + FX.poolC[1] * 255 * pa, col[2] * (1 - pa) + FX.poolC[2] * 255 * pa];
@@ -507,7 +509,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
           const [f1, f2, fr] = lodF(pxpd, FX.albPx), g = octaveGate(pxpd, f1);
           if (g > 0) {
             const [c1, s1, c2, s2] = ALB_ROT;   // 两档梯度噪声各转一角（同 GL）
-            const av = gnoise((c1 * rx - s1 * ry) * f1 + 19.9, (s1 * rx + c1 * ry) * f1 + 7.1) * (1 - fr) + gnoise((c2 * rx - s2 * ry) * f2 + 2.3, (s2 * rx + c2 * ry) * f2 + 27.9) * fr;
+            const o = NOISE.alb, av = gnoise((c1 * rx - s1 * ry) * f1 + o[0][0], (s1 * rx + c1 * ry) * f1 + o[0][1]) * (1 - fr) + gnoise((c2 * rx - s2 * ry) * f2 + o[1][0], (s2 * rx + c2 * ry) * f2 + o[1][1]) * fr;
             const m = 1 + av * MT.albVar * FX.albAmp * g;
             col = [col[0] * m, col[1] * m, col[2] * m];
           }
@@ -515,28 +517,28 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         const slp = Math.hypot(nx, ny);   // 坡度岩化（同 GL）
         const rk = sstep(FX.rockSlopeLo, FX.rockSlopeHi, slp) * MT.rock;
         if (rk > 0) {
-          const t = Math.max(0, Math.min(1, e * 1.1)), a = rk * FX.rockMix;
-          const rc = [(0.36 + 0.26 * t) * 255, (0.33 + 0.27 * t) * 255, (0.30 + 0.27 * t) * 255];
+          const t = Math.max(0, Math.min(1, e * FX.rockK)), a = rk * FX.rockMix, R0 = FX.rockC, RS = FX.rockSpan;
+          const rc = [(R0[0] + RS[0] * t) * 255, (R0[1] + RS[1] * t) * 255, (R0[2] + RS[2] * t) * 255];
           col = [col[0] * (1 - a) + rc[0] * a, col[1] * (1 - a) + rc[1] * a, col[2] * (1 - a) + rc[2] * a];
         }
         const S = opts.snow;   // 雪按米落（同 GL：material.snowSpec 同式，随纬度只在球面图且设了气候档；陡坡挂不住雪打六折）
         const snE = S ? Math.max(0, S.base + rowShift[y]) : 1e9;
-        const sn = (Z ? zsn : sstep(snE, snE + FX.snowBand, e)) * (1 - 0.6 * sstep(FX.snowSlopeLo, FX.snowSlopeHi, slp));
-        if (sn > 0) col = [col[0] + (237.15 - col[0]) * sn, col[1] + (239.7 - col[1]) * sn, col[2] + (246.075 - col[2]) * sn];
+        const sn = (Z ? zsn : sstep(snE, snE + FX.snowBand, e)) * (1 - FX.snowSlopeCut * sstep(FX.snowSlopeLo, FX.snowSlopeHi, slp));
+        if (sn > 0) col = [col[0] + (FX.snowC[0] * 255 - col[0]) * sn, col[1] + (FX.snowC[1] * 255 - col[1]) * sn, col[2] + (FX.snowC[2] * 255 - col[2]) * sn];
         const ak = sstep(FX.airLo, FX.airHi, e) * FX.airMix;   // 空气透视（同 GL）
         if (ak > 0) col = [col[0] + (FX.airC[0] * 255 - col[0]) * ak, col[1] + (FX.airC[1] * 255 - col[1]) * ak, col[2] + (FX.airC[2] * 255 - col[2]) * ak];
         const s2 = sh * (1 - cav[i]);
         col = [col[0] * s2 * shR, col[1] * s2 * shG, col[2] * s2 * shB];
         col = contourMix(opts, W, H, col, ed, i, x, y, ws, p[0], p[1], pxpd, pxpd, rule!);
       } else {
-        const shore = sstep(ws - 0.10, ws - 0.02, ec) * sstep(FX.shoreLo, FX.shoreHi, pxpd * step);   // 近岸浅水带随 px/格 渐显（同 GL）
+        const shore = sstep(ws - WATER.shoreE, ws - WATER_EPS, ec) * sstep(FX.shoreLo, FX.shoreHi, pxpd * step);   // 近岸浅水带随 px/格 渐显（同 GL）
         const sc = [WATER.shore[0] * 255, WATER.shore[1] * 255, WATER.shore[2] * 255], sa = shore * FX.shoreMix;
         col = [col[0] * (1 - sa) + sc[0] * sa, col[1] * (1 - sa) + sc[1] * sa, col[2] * (1 - sa) + sc[2] * sa];
         if (microOn) {   // 静态波纹（同 GL：值噪声 ridged + 横向拉伸 + 门控）
           const [f1, f2, fr] = lodF(pxpd, FX.wavePx), g = octaveGate(pxpd, f1);
           if (g > 0) {
-            const ra = 1 - Math.abs(2 * vnoise(rx * 0.35 * f1 + 3.1, ry * f1 + 9.7) - 1);
-            const rb = 1 - Math.abs(2 * vnoise(rx * 0.35 * f2 + 21.3, ry * f2 + 1.1) - 1);
+            const { sx, o } = NOISE.wave, ra = 1 - Math.abs(2 * vnoise(rx * sx * f1 + o[0][0], ry * f1 + o[0][1]) - 1);
+            const rb = 1 - Math.abs(2 * vnoise(rx * sx * f2 + o[1][0], ry * f2 + o[1][1]) - 1);
             const m = 1 + (ra + (rb - ra) * fr - 0.5) * FX.waveAmp * g;
             col = [col[0] * m, col[1] * m, col[2] * m];
           }
@@ -574,7 +576,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   /** 把 rects 补进瓦片；要补的面积过半返回 false（整块重画更省） */
   function patchTile(t: Tile, rects: BBox[]): boolean {
     const W = t.cv.width, H = t.cv.height, pd = t.rp, dpr = t.o.dpr ?? 1;
-    const pm = Math.ceil(10 * dpr) + Math.ceil(1.5 * dpr) + 3;   // 变化能波及的像素：间曲线门 ±10 CSS px 取样 + 岸线线宽 + 邻像素差分
+    const pm = Math.ceil(CONTOUR.gcPx * dpr) + Math.ceil(1.5 * dpr) + 3;   // 变化能波及的像素：间曲线门 ±10 CSS px 取样 + 岸线线宽 + 邻像素差分
     const rm = Math.ceil(1.5 * dpr) + 3;                          // 只算不贴的外缘：让窗边像素也看得见窗外的邻像素与岸线格边
     const wins: number[][] = [];
     let area = 0;
@@ -635,7 +637,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       const copies = wrapCopies(viewBB, grid.bb, !!opts.wrap);
       /* 键须罩住瓦片读到的每个选项（增益随缩放变）：数据不变时瓦片留用，漏一项＝改那项设置后画面不动 */
       const S = opts.snow, Z = opts.zones;
-      const key = `g${(opts.gain ?? 1).toFixed(2)}d${opts.dpr ?? 1}` + (opts.contour ? `c${opts.cStep || 0.12}` : "") + (opts.paper ? "p" : "") + (opts.beach !== false ? "b" : "") + `m${opts.slopeK ?? 0}`
+      const key = `g${(opts.gain ?? 1).toFixed(2)}d${opts.dpr ?? 1}` + (opts.contour ? `c${opts.cStep || CONTOUR.stepDef}` : "") + (opts.paper ? "p" : "") + (opts.beach !== false ? "b" : "") + `m${opts.slopeK ?? 0}`
         + (S ? `s${S.base},${S.lat ? 1 : 0},${S.refM},${S.unitM}` : "") + (opts.clim ? `k${opts.clim.key}` : "")
         + (Z ? `z${Z.looks.key}@${Z.wt.cols}x${Z.wt.rows},${Z.wt.pd},${Z.wt.bb.lonMin},${Z.wt.bb.latMin}` : "") + (tw > 0 ? `t${tw}` : "");   // 权重换代不进键：同几何走下面的补画
       if (Z && lastZW && Z.wt !== lastZW && Z.wt.cols === lastZW.cols && Z.wt.rows === lastZW.rows && Z.wt.pd === lastZW.pd) {
