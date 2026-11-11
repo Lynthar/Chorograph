@@ -152,9 +152,16 @@ export const saveConflictSig = signal<SaveConflict | null>(null);
 export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
 /** 分块精修停摆（host 独写）：车道复位后又失败、当前缩放用得上块而视口里有块不是当前那一份——胶囊空闲时报「精修不可用」 */
 export const tilesDownSig = signal(false);
-/** 落定的规则场（host 独写）：门关＝粗格、门开＝工作档落地后的那份；演算中为 null。
+/** 落定的规则场（host 独写，换图时 setWorldState 清空）：门关＝粗格、门开＝工作档落地后的那份；演算中为 null。
     规则消费者只认它——ctx.ruleField 在等待窗里是过渡合成，视域算在上面就是「落笔即变、落地又变」。 */
 export const ruleFieldSig = signal<ElevField | null>(null);
+let ruleLanded: ElevField | null = null;
+/** 最近落定的规则场：演算中（ruleFieldSig 为 null）沿用上一份；换图即清——上一张图的场给新图取等高距与高程数字，线和数字就对不上 */
+export function landedRuleField(): ElevField | null {
+  const f = ruleFieldSig.value;
+  if (f) ruleLanded = f;
+  return ruleLanded;
+}
 /** 类型网格的代号（host 独写）：发给寻路的网格换了 cells（换年、改地貌、v2 地类随中尺度重判）就加一——读地类的结果按它重算 */
 export const cellsVerSig = signal(0);
 /** 标高点峰表（shell/spots 独写）：落定规则场的全场峰表，演算中沿用上一份；换图清空 */
@@ -430,6 +437,7 @@ export function setWorldState(w: World): void {
     unitLegsSig.value = new Map();
     visMaskSig.value = noMasks(); detectSig.value = new Map(); visFailSig.value = false;
     spotTableSig.value = null;
+    ruleFieldSig.value = null; ruleLanded = null;   // 新图的规则场还没落定：上一张图的场不留给新图的规则消费者
     worldSig.value = w;
     yearSig.value = yearRangeOf(w, yearSig.peek()).year;
   });

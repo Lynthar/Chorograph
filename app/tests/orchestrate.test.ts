@@ -6,10 +6,13 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { batch } from "@preact/signals";
 import { createHost, type Host } from "../src/shell/host.ts";
-import { landWorld, wireOrchestration } from "../src/shell/orchestrate.ts";
+import { landWorld, wireOrchestration, wireRoute } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
 import { unitLegs } from "../src/core/units.ts";
-import { gridVerSig, hoverSig, mutateWorld, selSig, unitLegsSig, worldSig, yearSig } from "../src/ui/state.ts";
+import { gridVerSig, hoverSig, landedRuleField, modeSig, mutateWorld, mutateWorldLive, routeBusySig, routePtsSig, routeResSig, ruleFieldSig,
+  selSig, unitLegsSig, worldSig, yearSig } from "../src/ui/state.ts";
+import type { ElevField } from "../src/core/elev.ts";
+import type { ComputedRoute } from "../src/core/route.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import type { Unit, World, WorldNode } from "../src/core/types.ts";
 
@@ -151,6 +154,27 @@ describe("编排 effect × host 重建计数（开图批末恰建一次）", () 
     } finally { console.warn = warn0; }
   });
 
+  it("笔刷节流的重建（不涨 gridVer）换了类型网格 ⇒ 腿账按新网格重算", async () => {
+    const tac = W({
+      meta: { 名称: "战", worldModel: "sphere", terrain: "plain", mapKind: "tactical",
+        bbox: { lonMin: 100, lonMax: 100.2, latMin: 30, latMax: 30.2 } },
+      units: [{ id: "u1", kind: "inf", arm: "water", track: [{ t: 3050, lon: 100.04, lat: 30.1 }, { t: 3060, lon: 100.16, lat: 30.1 }] }]
+    });
+    openLikeLibrary(ctx, host, tac, "t1", 3050);
+    selSig.value = { kind: "unit", id: "u1" };
+    await settleLegs();
+    assert.equal(unitLegsSig.peek().get("u1")![0].route, false, "前提：平原上水行走不通");
+    /* 地貌笔一笔：世界先改（editVer++），重建由指针节流稍后直调——中间这一拍腿账按旧网格算出 */
+    const g = ctx.grid!, canal = Array.from({ length: g.cols }, (_, c) => ({ lon: g.bb.lonMin + (c + 0.5) * g.step, lat: 30.1, t: "water" }));
+    mutateWorldLive(w => { w.terrainOverrides = w.terrainOverrides.concat(canal); });
+    await settleLegs();
+    assert.equal(unitLegsSig.peek().get("u1")![0].route, false, "前提：重建之前落的账还是旧网格的");
+    host.rebuild();
+    assert.equal(cellAt(100.1, 30.1), "water", "前提：整行成水");
+    await settleLegs();
+    assert.equal(unitLegsSig.peek().get("u1")![0].route, true, "水道通了：账跟着新网格变");
+  });
+
   it("effect 未接线时开图仍有兜底重建（且只兜一次）", () => {
     unwire();                               // 模拟接线缺失/回归：批末无 effect 冲刷
     openLikeLibrary(ctx, host, W(), "m9", 3050);
@@ -186,5 +210,47 @@ describe("相机缩放钳制（host.setView）", () => {
     host.setView({ lon0: 10, lat0: 5 });
     assert.equal(ctx.view.degPerPx, z);
     assert.deepEqual([ctx.view.lon0, ctx.view.lat0], [10, 5]);
+  });
+});
+
+describe("行军计算编排（wireRoute）", () => {
+  const tick = (): Promise<void> => new Promise(r => setTimeout(r, 0));
+  it("清点即作废在飞的单：旧结果落地不写回，之后的单照常落", async () => {
+    const pend: ((r: ComputedRoute | null) => void)[] = [];
+    const ctx = { routeClient: { route: () => new Promise<ComputedRoute | null>(res => { pend.push(res); }) } } as unknown as ShellCtx;
+    const mode0 = modeSig.peek(), unwire = wireRoute(ctx);
+    try {
+      batch(() => { modeSig.value = "route"; routePtsSig.value = [{ lon: 100.2, lat: 30.5 }, { lon: 100.8, lat: 30.5 }]; });
+      assert.equal(pend.length, 1);
+      assert.equal(routeBusySig.peek(), true);
+      routePtsSig.value = [];                 // 清点（撤销、换图走的也是这一支）
+      assert.equal(routeBusySig.peek(), false);
+      pend[0]({ dist: 1 } as unknown as ComputedRoute);
+      await tick();
+      assert.equal(routeResSig.peek(), null, "清点之后到货的旧路线不写回");
+      routePtsSig.value = [{ lon: 100.3, lat: 30.5 }, { lon: 100.7, lat: 30.5 }];
+      const fresh = { dist: 2 } as unknown as ComputedRoute;
+      pend[1](fresh);
+      await tick();
+      assert.equal(routeResSig.peek(), fresh);
+    } finally { unwire(); batch(() => { modeSig.value = mode0; routePtsSig.value = []; routeResSig.value = null; routeBusySig.value = false; }); }
+  });
+});
+
+describe("落定的规则场不跨图", () => {
+  afterEach(() => { ruleFieldSig.value = null; });
+  it("同图演算中沿用上一份；换图即清，新图落定前读不到上一张图的场", () => {
+    const { ctx } = mkCtx(), fA = { cols: 1 } as unknown as ElevField, fB = { cols: 2 } as unknown as ElevField;
+    landWorld(ctx, W(), "甲", 3050);
+    ruleFieldSig.value = fA;
+    assert.equal(landedRuleField(), fA);
+    ruleFieldSig.value = null;
+    assert.equal(landedRuleField(), fA, "同图演算中沿用上一份");
+    ruleFieldSig.value = fA;
+    landWorld(ctx, W(), "乙", 3050);
+    assert.equal(ruleFieldSig.peek(), null, "新图的规则场还没落定");
+    assert.equal(landedRuleField(), null, "上一张图的场不留给新图");
+    ruleFieldSig.value = fB;
+    assert.equal(landedRuleField(), fB);
   });
 });

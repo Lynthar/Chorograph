@@ -1,10 +1,11 @@
 /* 视域编排（shell/viewshed）：谁成单（视野圈恒判、火力圈直射按视线/曲射按射角、雷达只在现代图、飞行不判、未入场不判、层关不判；
    地点火力多圈各成一单、不在当刻的地点不判）、
-   只在规则场落定时算（ruleFieldSig null＝沿用上一份）、规则场只推送一次、拒绝臂放闸。
+   只在规则场落定时算（ruleFieldSig null＝沿用上一份）、每张单都推规则场（同一份由客户端去重）、拒绝臂放闸。
    fake routeClient 按观察者回可辨认的掩膜；规则场用粗格包装。 */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { sightReqs, wireViewshed, visObservers } from "../src/shell/viewshed.ts";
+import { wireSpots } from "../src/shell/spots.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
 import { buildGridCells } from "../src/core/grid.ts";
@@ -143,6 +144,35 @@ describe("视域编排（shell/viewshed）", () => {
     await settle();
     assert.equal(seen.pushes, 4);
     assert.equal(seen.calls.length, 4, "每次落定各算一次");
+  });
+
+  it("视线场槽与标高点共用：标高点推过别的场之后，视域单按自己那份场重推", async () => {
+    /* 假客户端照真的来：一个槽、按数组引用去重；记下每张视域单算的时候槽里是哪份场 */
+    let slot: Float32Array | null = null;
+    const at: (Float32Array | null)[] = [];
+    const rc = ctx.routeClient as unknown as { setViewField: (v: { data: Float32Array }) => void; viewshed: (o: VisReq[]) => Promise<VisRes[] | null>; peaks: () => Promise<unknown> };
+    const vs0 = rc.viewshed;
+    rc.setViewField = v => { slot = v.data; };
+    rc.viewshed = o => { at.push(slot); return vs0(o); };
+    rc.peaks = () => Promise.resolve({ idx: new Int32Array(0), prom: new Float32Array(0) });
+    const L0 = layersSig.peek(), unspots = wireSpots(ctx);
+    try {
+      layersSig.value = { ...L0, vision: true, spots: false };
+      const f0 = open(ctx, TAC([U("v", { vision: 3 })]));
+      await settle();
+      assert.ok(at[0] === f0.data, "前提：首单按 f0 算");   // 引用比较：整场数组进断言的差异输出要印几分钟
+      layersSig.value = { ...layersSig.peek(), vision: false, spots: true };
+      const f1 = coarseField(ctx.grid!, new Float32Array(ctx.grid!.cols * ctx.grid!.rows).fill(0.1));
+      ruleFieldSig.value = f1;                // 高程笔换了场：只有标高点推
+      await until(() => slot === f1.data);
+      layersSig.value = { ...layersSig.peek(), spots: false };
+      ruleFieldSig.value = f0;                // 撤销交回同一个 f0 对象
+      mutateWorld(x => { x.units[0].track[0].lon = 100.6; });
+      layersSig.value = { ...layersSig.peek(), vision: true };
+      await settle();
+      assert.equal(at.length, 2);
+      assert.ok(at[1] === f0.data, "掩膜按落定的那份场算，不是标高点留在槽里的那份");
+    } finally { unspots(); layersSig.value = L0; }
   });
 
   it("拖部队（editVer）重算；无成单部队或战略图＝清空且不发单", async () => {

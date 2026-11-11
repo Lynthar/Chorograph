@@ -6,7 +6,8 @@
    只能靠 effect 内部语句顺序保证。orchestrate.test.ts 以 fake 渲染器计数锁
    「开图批末恰好重建一次」（builtFor 键 + batch 冲刷共同保证）。 */
 import { batch, effect } from "@preact/signals-core";
-import { worldSig, yearSig, selSig, hoverSig, editVerSig, gridVerSig, isTacSig, unitLegsSig, setWorldState } from "../ui/state.ts";
+import { worldSig, yearSig, selSig, hoverSig, editVerSig, gridVerSig, isTacSig, unitLegsSig, setWorldState,
+  modeSig, armSig, routePtsSig, routeResSig, routeBusySig, cellsVerSig } from "../ui/state.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { Unit, World } from "../core/types.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -65,6 +66,7 @@ export function wireOrchestration(ctx: ShellCtx, host: Pick<Host, "rebuildIfNeed
        days 是日数——年差直接当日数比，会把「一年行军千里」判成超速。战略图的速度只作记账（同士气之规）。 */
     const sel = selSig.value;
     editVerSig.value;                                       // 依赖：编辑改动（拖航点重算，经防抖归并）
+    cellsVerSig.value;                                      // 依赖：类型网格换代——笔刷节流的重建不涨 gridVerSig，不订它账就停在旧网格上
     const u = (w && ctx.grid && isTacSig.peek() && sel && sel.kind === "unit") ? (w.units || []).find(x => x.id === sel.id) : null;
     clearTimeout(legsTimer);
     if (!u) {
@@ -75,4 +77,27 @@ export function wireOrchestration(ctx: ShellCtx, host: Pick<Host, "rebuildIfNeed
     legsTimer = setTimeout(fireLegs, LEGS_MS);
   });
   return () => { clearTimeout(legsTimer); legsSeq++; dispose(); };
+}
+
+/** 行军计算：模式 / 两点 / 移动方式 / 类型网格换代 → routeClient.route，过期票丢弃；返回解除函数。
+    清空那一支也要作废票号：在飞的单否则会在清点、撤销、换图之后把旧路线写回 */
+export function wireRoute(ctx: ShellCtx): () => void {
+  let ticket = 0;
+  return effect(() => {
+    const mode = modeSig.value, pts = routePtsSig.value, arm = armSig.value;
+    cellsVerSig.value;   // 类型网格换代（换年、改地貌、v2 地类随中尺度落地重判）：按刚发出的上下文重算
+    if (mode !== "route" || pts.length !== 2) { ticket++; routeResSig.value = null; routeBusySig.value = false; return; }
+    routeBusySig.value = true;
+    const my = ++ticket;
+    ctx.routeClient.route(pts[0], pts[1], arm).then(res => {
+      if (my !== ticket) return;
+      routeResSig.value = res;
+      routeBusySig.value = false;
+    }, e => {   // 拒绝也要放闸——busy 卡 true＝面板永远「计算中…」
+      if (my !== ticket) return;
+      routeResSig.value = null;
+      routeBusySig.value = false;
+      console.warn("行军计算失败：", e);
+    });
+  });
 }

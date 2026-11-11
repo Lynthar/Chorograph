@@ -6,7 +6,6 @@ import { EDGE_STYLE } from "../core/constants.ts";
 import { calOf, fmtWhen } from "../core/calendar.ts";
 import { hexA, errText } from "../core/util.ts";
 import { drawOverlay, drawOp, type LoopBudget } from "../render/overlay.ts";
-import type { ElevField } from "../core/elev.ts";
 import { contourStepOf, riverSet, terrainOpts } from "../render/renderer.ts";
 import { drawAnalysis } from "../render/analysis.ts";
 import { drawPaintCells, drawBrushRing, drawSelectBox, drawClimZones } from "../render/editHud.ts";
@@ -17,7 +16,7 @@ import { dataLon } from "../ui/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig, terrainAxisSig, terrainAxisOf, isTacSig,
-  routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, tilesDownSig, readOnlySig, uiPrefsSig, terrainStyleSig }
+  routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, landedRuleField, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, tilesDownSig, readOnlySig, uiPrefsSig, terrainStyleSig }
   from "../ui/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -32,7 +31,6 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   const { autosave } = libio;
   const times: number[] = [];
   let fps = "—", lastFtData = "";
-  let ruleLanded: ElevField | null = null;   // 标高点与等高线注记读的场：落定的规则场；演算中（sig 为 null）沿用上一份
   /* 涂域环首算每帧限时：至少 TERR_FRAME_MS（低于 50 ms 长任务线），本帧其余绘制更慢时按它放大——首算最多占一帧的一半，
      否则边界极繁的图每帧重画已算的层就要几百 ms、每帧只进一层，画全要拖成一次算完的数倍。
      有层没算完就 terrPass+1，它进指纹＝下一帧接着画；常规地图一帧算得完，与不限时逐位同 */
@@ -44,7 +42,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   const paint = (full = false): void => {
     const tp = performance.now();
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
-    const rf = ruleFieldSig.value; if (rf) ruleLanded = rf;
+    const ruleLanded = landedRuleField();   // 标高点与等高线注记读的场：落定的规则场，演算中沿用上一份
     host.syncTiles();   // 分块精修：按本帧视口排先算哪几块、视口里的块齐了才上屏
     const cstep = layers.terrain ? contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleLanded, ctx.ruleField, viewBB()).v : 0;   // 等距：渲染器与注记同吃一档
     const to = layers.terrain ? terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, pxSize(), cstep, zoneField(world), riverSet(ctx.meta, world, yearNow, ctx.view.degPerPx)) : null;

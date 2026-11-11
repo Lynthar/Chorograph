@@ -431,9 +431,9 @@ void main(){
   }
   }
   // 岸线（只给观感底图）描在岸值过零处：按高程梯度描会把重采样前的台阶再描一遍。fwidth 在分支外取＝一致控制流
-  float sdc=shs/(fwidth(shs)+1e-6);   // 到岸线的有向像素距（陆正水负）
+  float sdc=shs/(fwidth(shs)*uDPR+1e-6);   // 到岸线的有向距离（CSS 像素，陆正水负）：墨宽随 uDPR，同 CPU 的 coastInk
   float coast=1.0-smoothstep(0.0,1.4,abs(sdc));
-  if(rsd<1e8) coast=1.0-smoothstep(0.0,1.4,abs(min(sdc,rsd)));   // 河与湖海并成一片水：岸线只描并集的边（按像素距）
+  if(rsd<1e8) coast=1.0-smoothstep(0.0,1.4,abs(min(sdc,rsd/uDPR)));   // 河与湖海并成一片水：岸线只描并集的边
   col=mix(col, ${WG.ink}, coast*${WATER.inkA}*(1.0-float(uMode)));
   // 网格内缩一格的图幅裁边：世界 bbox 外=深海，制图面在边缘塌向海——贴边假线截掉（neatline 惯例）
   if(uContour==1 && er>=ws-0.02 && shs>=0.0 && rsd>=0.0 && rel.x>uGridBB.z && rel.y>uGridBB.z && rel.x<uGridSpan.x-uGridBB.z && rel.y<uGridSpan.y-uGridBB.z){

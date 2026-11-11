@@ -99,7 +99,7 @@ export function viewFieldOf(meta: Meta, f: ElevField, grid: Grid): ViewField {
 
 export function wireViewshed(ctx: ShellCtx): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let seq = 0, pushed: ElevField | null = null, lineage: Meta | undefined;
+  let seq = 0, lineage: Meta | undefined;
   /* 掩膜按单复用：视线判定对（规则场, 观察者参数）是纯函数，两者都没变的圈沿用上一份掩膜对象（屏幕栅格缓存随之命中），
      只发变了的圈——否则拖一个部队或改一处无关对象，所有圈都要重算、重建栅格。换规则场或换图即清空。 */
   let memo: { f: ElevField; masks: Map<string, VisMask | null> } | null = null;
@@ -110,7 +110,7 @@ export function wireViewshed(ctx: ShellCtx): () => void {
   };
   const flight = singleFlight((meta: Meta, f: ElevField, grid: Grid, obs: VisReq[], sights: SightReq[]) => {
     const my = ++seq;
-    if (pushed !== f) { ctx.routeClient.setViewField(viewFieldOf(meta, f, grid)); pushed = f; }
+    ctx.routeClient.setViewField(viewFieldOf(meta, f, grid));   // 每单都推：槽与标高点共用，自己记「推过了」会按对方留下的场算；同一份场客户端不重发
     if (!memo || memo.f !== f) memo = { f, masks: new Map() };
     const have = memo.masks, keys = obs.map(o => JSON.stringify(o)), need: VisReq[] = [], needKeys: string[] = [];
     obs.forEach((o, i) => { if (!have.has(keys[i])) { need.push(o); needKeys.push(keys[i]); } });

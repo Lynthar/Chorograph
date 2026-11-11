@@ -81,4 +81,15 @@ describe("标高点编排（shell/spots）", () => {
     await until(() => spotTableSig.peek() !== null);
     assert.equal(spotTableSig.peek()!.f, fB);
   });
+
+  it("换图那一拍不拿上一张图的场发单：新图的规则场落定才算", async () => {
+    open(ctx, MAP("甲"));
+    await until(() => pend.length === 1);
+    pend[0](table(1));
+    await until(() => spotTableSig.peek() !== null);
+    landWorld(ctx, MAP("乙"), "乙", 0);       // 新图还没重建：ctx.grid 与场都还是甲的
+    await tick();
+    assert.equal(pend.length, 1, "没有按甲的场给乙发单");
+    assert.equal(spotTableSig.peek(), null);
+  });
 });

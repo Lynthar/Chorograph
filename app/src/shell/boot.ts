@@ -7,8 +7,8 @@ import { clampToFrame, mapFrame } from "../core/frame.ts";
 import { createTerrainRenderer } from "../render/renderer.ts";
 import { mountUI } from "../ui/mount.tsx";
 import { initCalTemplates } from "../ui/CalendarOverlay.tsx";
-import { worldSig, yearSig, cellsVerSig, selSig, layersSig, applyPreset, layersOpenSig,
-  modeSig, armSig, routePtsSig, routeResSig, routeBusySig, setMode,
+import { worldSig, yearSig, selSig, layersSig, applyPreset, layersOpenSig,
+  modeSig, routePtsSig, setMode,
   editSubSig, editVerSig, isTacSig, linkTypeSig, tacReqSig,
   paintFactionSig, flyReqSig, helpOpenSig, prefsOpenSig, importOpenSig, openSettings, selectOp,
   analysisSubSig, uiPrefsSig, RELIEF_STEPS, subDaySig, readOnlySig, libActionsSig, terrainStyleSig,
@@ -16,7 +16,7 @@ import { worldSig, yearSig, cellsVerSig, selSig, layersSig, applyPreset, layersO
   type EditSub }
   from "../ui/state.ts";
 import { wireInteractions } from "./pointer.ts";
-import { wireOrchestration } from "./orchestrate.ts";
+import { wireOrchestration, wireRoute } from "./orchestrate.ts";
 import { wireViewshed } from "./viewshed.ts";
 import { wireSpots } from "./spots.ts";
 import { startFrameLoop } from "./frame.ts";
@@ -187,25 +187,7 @@ export async function startApp(ctx: ShellCtx, dl: DeepLink, host: Host, libio: L
     $("a11ysel").textContent = t;
   });
 
-  /* 行军计算：模式/两点/军种/年份任一变化 → 经 routeClient 走 Worker（过期票丢弃） */
-  let routeTicket = 0;
-  effect(() => {
-    const mode = modeSig.value, pts = routePtsSig.value, arm = armSig.value;
-    cellsVerSig.value;   // 类型网格换代（换年、改地貌、v2 地类随中尺度落地重判）：按刚发出的上下文重算
-    if (mode !== "route" || pts.length !== 2) { routeResSig.value = null; routeBusySig.value = false; return; }
-    routeBusySig.value = true;
-    const ticket = ++routeTicket;
-    ctx.routeClient.route(pts[0], pts[1], arm).then(res => {
-      if (ticket !== routeTicket) return;
-      routeResSig.value = res;
-      routeBusySig.value = false;
-    }, e => {   // 拒绝也要放闸——busy 卡 true＝面板永远「计算中…」
-      if (ticket !== routeTicket) return;
-      routeResSig.value = null;
-      routeBusySig.value = false;
-      console.warn("行军计算失败：", e);
-    });
-  });
+  wireRoute(ctx);   // 行军计算：两点 / 移动方式 / 类型网格换代 → 寻路 Worker
 
   /* URL 直达分析：#analysis=route|measure&pts=lon,lat,…&arm= */
   if ((dl.wantAnalysis === "measure" || dl.wantAnalysis === "route" || dl.wantAnalysis === "edit")
