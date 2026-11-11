@@ -4,7 +4,8 @@
    网格→首帧）→ 顶栏出图名；再走一遍只读分享整链（#ro=1&d= 开图→写入门全关→
    「存入我的图库」接管成可编辑）——那些门全在 .tsx 里，node:test 持不到；全程零未捕获异常、零 console.error、#err 空。
    另锁一条渲染契约：推演底图（#base=flat）下像素颜色＝底栏读数那一格（GL 与 CPU 兜底各走一遍）——
-   不是视觉回归（不比截图），只按格采样。兜底路径四条：CPU 观感底图连笔补画＝整幅重画（逐字节）、WebGL 上下文丢失后恢复、
+   不是视觉回归（不比截图），只按格采样。观感底图上两端本不逐像素相同，只锁同视角逐像素差的分布不超过实测水平。
+   兜底路径四条：CPU 观感底图连笔补画＝整幅重画（逐字节）、WebGL 上下文丢失后恢复、
    嵌套形状坏掉的存档不崩、file:// 双击冷启动。先 npm run build 再跑。浏览器可用 E2E_BROWSER 指定。 */
 import { createServer } from "node:http";
 import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -229,6 +230,46 @@ const diff = await evalJs(`(() => { const a = window.__patched, b = ${MAP_PIX}; 
 if (diff !== 0) errors.push(`CPU 连笔补画与整幅重画不一致：${diff < 0 ? "画布尺寸变了" : diff + " 个通道值不同"}`);
 await evalJs(`document.querySelector('.x[aria-label="关闭"]')?.click()`);
 
+/* —— 观感底图两端不离谱：两个渲染器各写一遍着色规则，噪声哈希、岸线画法与取样路径都不同，本来就不逐像素相同。
+   比同视角逐像素差的分布（等高线开着，侵蚀场取前一段入的缓存）：一条规则在一端被改掉或漏掉，分布会明显变坏。
+   区块色偏＝30 px 见方的块里有符号差的均值取最大：两套噪声的差在块里互相抵消，漏掉的规则只往一个方向偏 —— */
+const LOOK = `#map=${encodeURIComponent(mapName)}&preset=${encodeURIComponent("地理")}&lon=95&lat=36&z=0.03`;   // 西岸：海、雪山、丘陵与平原同框
+const LOOK_RGB = `(async () => { const d = ${MAP_PIX}, rgb = new Uint8Array(d.length / 4 * 3);
+  for (let i = 0, j = 0; i < d.length; i += 4, j += 3) { rgb[j] = d[i]; rgb[j + 1] = d[i + 1]; rgb[j + 2] = d[i + 2]; }
+  const u = await new Promise(res => { const f = new FileReader(); f.onload = () => res(f.result); f.readAsDataURL(new Blob([rgb])); });
+  return u.slice(u.indexOf(',') + 1); })()`;
+const lookShot = async (label, extra) => {
+  await send("Page.navigate", { url: `${origin}/?b=${Math.random().toString(36).slice(2)}${LOOK}${extra}` });
+  await until(`观感底图（${label}）开图`, `document.getElementById('crumbName')?.textContent === ${JSON.stringify(mapName)} && (c => c && c.width > 0)(document.getElementById('map'))`);
+  for (let h = null, since = Date.now(); Date.now() - since < 1500; await sleep(250)) {   // 胶囊不在演算、画面连续 1.5 s 不变
+    if (Date.now() > DEADLINE) fail(`等待超时：观感底图（${label}）画面一直在变`);
+    const h1 = await pixHash();
+    if (h1 !== h || /侵蚀计算中|侵蚀精修中/.test(await evalJs(`document.getElementById('ftData')?.textContent || ''`))) { h = h1; since = Date.now(); }
+  }
+  return { gl: await evalJs(`!!document.getElementById('map').getContext('webgl2')`), w: await evalJs(`Math.round(document.getElementById('canvasWrap').getBoundingClientRect().width * devicePixelRatio)`),
+    px: Buffer.from(await evalJs(LOOK_RGB), "base64") };
+};
+const lookGL = await lookShot("GL", ""), lookCPU = await lookShot("CPU 兜底", "&force=cpu");
+let lookNote = lookGL.gl ? "" : "（本机无 WebGL2，观感底图两端比对跳过）";
+if (lookGL.gl && (lookGL.px.length !== lookCPU.px.length || lookGL.w !== lookCPU.w)) errors.push(`观感底图两端可见区尺寸不同（${lookGL.px.length} / ${lookCPU.px.length} 字节）`);
+else if (lookGL.gl) {
+  /* 上限＝硬件 GL 与 SwiftShader 各三次实测最大值上浮三到五成；超限先看实测值，再判是真分歧还是该调上限 */
+  const a = lookGL.px, b = lookCPU.px, W = lookGL.w, H = a.length / 3 / W, B = 30, nbx = Math.floor(W / B), blk = new Float64Array(nbx * Math.floor(H / B) * 3);
+  let sum = 0, big = 0;
+  for (let i = 0; i < a.length; i += 3) {
+    const dr = a[i] - b[i], dg = a[i + 1] - b[i + 1], db = a[i + 2] - b[i + 2], x = (i / 3) % W, y = Math.floor(i / 3 / W);
+    sum += Math.abs(dr) + Math.abs(dg) + Math.abs(db);
+    if (Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db)) > 40) big++;
+    const k = 3 * (Math.floor(y / B) * nbx + Math.floor(x / B));
+    if (x < nbx * B && k < blk.length) { blk[k] += dr; blk[k + 1] += dg; blk[k + 2] += db; }
+  }
+  const got = { "区块色偏": Math.max(...blk.map(Math.abs)) / (B * B), "逐通道均差": sum / a.length, "大差占比%": 100 * big / (a.length / 3) };
+  const cap = { "区块色偏": 4.5, "逐通道均差": 4.0, "大差占比%": 2.5 };
+  const line = Object.keys(cap).map(k => `${k} ${got[k].toFixed(2)}/${cap[k]}`).join("，");
+  if (Object.keys(cap).some(k => !(got[k] <= cap[k]))) errors.push("观感底图 GL 与 CPU 差的分布超限（实测/上限）：" + line);
+  else lookNote = `（观感底图两端差 实测/上限：${line}）`;
+}
+
 /* —— WebGL 上下文丢失后恢复（GPU 进程崩溃、驱动重置、后台回收）：恢复后地形重新出图，不留白屏、不报错 —— */
 await send("Page.navigate", { url: `${origin}/?b=${Math.random().toString(36).slice(2)}#map=${encodeURIComponent(mapName)}` });
 await until("GL 开图", `document.getElementById('crumbName')?.textContent === ${JSON.stringify(mapName)} && (c => c && c.width > 0)(document.getElementById('map'))`);
@@ -313,5 +354,5 @@ await until("file:// 示例建图并打开", `(t => t && t !== '—')(document.g
 const err = await evalJs(`document.getElementById('err')?.textContent || ''`);
 if (err) errors.push("#err 非空：" + err);
 if (errors.length) { console.error("✗ e2e 冒烟失败：\n  " + errors.join("\n  ")); process.exit(1); }
-console.log("✓ e2e 冒烟：启动→图库→示例建图→开图渲染、推演底图逐格一致（GL/CPU）、CPU 连笔补画＝整幅重画、WebGL 丢失后恢复、嵌套坏档不崩、只读链接→写入门→接管、导出的只读网页能开、file:// 冷启动，零错误" + glNote + (dialogs.length ? `（对话框 ${dialogs.length} 个：${dialogs.map(t => t.split("\n")[0]).join(" / ")}）` : ""));
+console.log("✓ e2e 冒烟：启动→图库→示例建图→开图渲染、推演底图逐格一致（GL/CPU）、CPU 连笔补画＝整幅重画、观感底图两端差不越线（GL/CPU）、WebGL 丢失后恢复、嵌套坏档不崩、只读链接→写入门→接管、导出的只读网页能开、file:// 冷启动，零错误" + lookNote + glNote + (dialogs.length ? `（对话框 ${dialogs.length} 个：${dialogs.map(t => t.split("\n")[0]).join(" / ")}）` : ""));
 process.exit(0);
