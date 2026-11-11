@@ -21,7 +21,7 @@ import { esc, errText, fmtKm, hexA, newId, parseKV, safeName } from "../src/core
 import { ALL_KINDS, ARM_OPT_KINDS, EDGE_STYLE, EYE_M, EYE_M_KIND, EYE_M_NODE, FIRE_DIRECT_KIND, LEGACY_KIND, MODERN_KINDS, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
 import { fmtStrength, nodeEyeM, parseStrength, rangeDirect, setUnitPoint, unitAltAt, unitFireDirect, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { astar, computeRoute } from "../src/core/route.ts";
-import { drawEdges, riverShape, wallTeeth } from "../src/render/edges.ts";
+import { drawEdges, RIVER_FAR_KM, RIVER_FAR_PX, RIVER_HEAD_PX, RIVER_MIN_PX, riverFloorPx, riverHeads, riverShape, riverTaper, riverWpx, wallTeeth } from "../src/render/edges.ts";
 import { RIVER_WATER_PX, riverSet, riverThr } from "../src/render/rivers.ts";
 import { facingHandlePx, pickFacingHandle, unitSpots } from "../src/render/units.ts";
 import { changedBox, coastInk, planTile, sameGeom, shoreAt, tileCovers, unionBB, wrapCopies } from "../src/render/terrainCPU.ts";
@@ -1861,6 +1861,55 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     const w: World = { meta: { worldModel: "sphere", planetRadiusKm: 10000 }, factions: [], decor: [], terrainOverrides: [], units: [], nodes: [], edges: [e] };
     assert.ok(pickEdge(zoom, w.meta, w, 3107, 560, 310), "宽的那头（真宽约 17 px）偏 10 px 点得中");
     assert.strictEqual(pickEdge(zoom, w.meta, w, 3107, 240, 310), null, "窄的那头偏 10 px 点不中");
+  });
+  /* 缩到一个像素几十公里：真宽只有百分之几像素的河若还按两三个像素画，整球全景上是一团上百公里宽的粗线 */
+  it("河的底宽：到中档地点隐去那一档为止按水面宽分档（逐位旧值），再缩小按屏上真宽分档并收细——越缩越细、大河始终比小河粗、细到不画的也点不中", () => {
+    const [k0, k1] = RIVER_FAR_KM, tier = (w: number): number => 1 + 1.6 * Math.min(1, Math.max(0, Math.log10(w / 10) / 2));
+    for (const w of [5, 60, 400, 3000]) for (const km of [0.4, 2, 9.3, k0]) assert.strictEqual(riverFloorPx(w, km), tier(w), `${w} m、${km} km/像素：该是旧值`);
+    for (const w of [60, 400, 3000]) {
+      let prev = riverFloorPx(w, k0);
+      assert.ok(Math.abs(riverFloorPx(w, k0 * 1.001) - prev) < 0.01, "起点两侧连续");
+      for (let km = k0 * 1.1; km < 6 * k1; km *= 1.1) { const v = riverFloorPx(w, km); assert.ok(v <= prev + 1e-12, `${w} m 的河在 ${km.toFixed(1)} km/像素反而变粗`); prev = v; }
+    }
+    assert.ok(riverFloorPx(3000, k1) > riverFloorPx(400, k1) && riverFloorPx(400, k1) > riverFloorPx(60, k1), "收到底之后大河仍比小河粗");
+    assert.ok(riverFloorPx(8000, k1) <= RIVER_FAR_PX && riverFloorPx(8000, k1) > RIVER_FAR_PX - 0.01, "最粗不过 RIVER_FAR_PX");
+    assert.ok(riverFloorPx(30, 2 * k1) < RIVER_MIN_PX, "整球全景上几十米宽的河细到不画");
+    /* 拾取同判：一个像素 45 km 的整球全景上，30 m 的河点不中，3 km 的照旧点得中；放大回去 30 m 的也点得中 */
+    const meta: Meta = { worldModel: "sphere", planetRadiusKm: 10000 }, far: Camera = { lon0: 0, lat0: 0, degPerPx: 45 / kmPerDeg(meta), w: 1400, h: 840, flat: false };
+    const mk = (extra: Partial<Edge>): World => ({ meta, factions: [], decor: [], terrainOverrides: [], units: [], nodes: [], edges: [{ type: "river", pts: [[-30, 0], [0, 0], [30, 0]], ...extra }] });
+    assert.strictEqual(pickEdge(far, meta, mk({ widthM: 30 }), 0, 700, 420), null, "整条一个宽的细河");
+    assert.strictEqual(pickEdge(far, meta, mk({ widthM: 30, ws: [20, 30, 40] }), 0, 700, 420), null, "带逐点宽的细河");
+    assert.ok(pickEdge(far, meta, mk({ widthM: 3000 }), 0, 700, 420) && pickEdge(far, meta, mk({ widthM: 3000, ws: [2000, 3000, 4000] }), 0, 700, 420), "大河照旧点得中");
+    assert.ok(riverWpx(meta, far, { type: "river", widthM: 3000 }) < 2 && riverWpx(meta, { ...far, degPerPx: 5 / kmPerDeg(meta) }, { type: "river", widthM: 3000 }) === 2.6, "同一条河：全景上细，放大到 5 km/像素回到 2.6 px");
+    assert.ok(pickEdge({ ...far, degPerPx: 5 / kmPerDeg(meta) }, meta, mk({ widthM: 30 }), 0, 700, 420), "放大回去细河点得中");
+    assert.ok(pickEdge(far, meta, mk({}), 0, 700, 420), "没填水面宽的河不随缩放变（底宽恒 2.6 px）");
+  });
+  it("河头收尖：有逐点宽的河，较窄那一端不接别的河的端点才算河头；线宽在河头 RIVER_HEAD_PX 内从零长到满，短河只收一半长", () => {
+    const R = (pts: [number, number][], ws?: number[]): Edge => ({ type: "river", pts, ...(ws ? { ws } : { widthM: 100 }) });
+    const up = R([[0, 0], [1, 0]], [50, 100]), down = R([[1, 0], [2, 0]], [100, 200]), rev = R([[5, 5], [4, 5]], [300, 80]), plain = R([[7, 7], [8, 7]]), same = R([[9, 9], [10, 9]], [100, 100]);
+    const road: Edge = { type: "road", from: "a", to: "b" };
+    assert.deepStrictEqual(Array.from(riverHeads([up, down, rev, plain, same, road])), [0, -1, 1, -1, -1, -1], "上游段的首点、倒着画的末点是河头；接着上一段的、没有逐点宽的、两端等宽的不是");
+    assert.deepStrictEqual(Array.from(riverHeads([down])), [0], "上一段没画出来时，这一段自己的上游端就是河头");
+    const T = RIVER_HEAD_PX;
+    assert.deepStrictEqual([0, T / 2, T, 5 * T].map(d => riverTaper(d, 10 * T, T, 0)), [0, 0.5, 1, 1], "首点收尖");
+    assert.deepStrictEqual([10 * T, 9.5 * T, 9 * T, 0].map(d => riverTaper(d, 10 * T, 0, T)), [0, 0.5, 1, 1], "末点收尖");
+    assert.deepStrictEqual([0, T / 4, T / 2, T].map(d => riverTaper(d, T, T, 0)), [0, 0.5, 1, 1], "河只有一个收尖长：收到一半长为止");
+    assert.strictEqual(riverTaper(3, 100, 0, 0), 1, "不是河头的不收");
+    /* 画出来的：河头 4 px 以内的河蓝圆头都细（太细的那几小段干脆不画）；上游接了一段之后，同一处照满宽画 */
+    const zoom: Camera = { lon0: 100, lat0: 30, degPerPx: 0.001, w: 800, h: 600, flat: false }, meta: Meta = { worldModel: "sphere", planetRadiusKm: 10000 };
+    const arcs: { x: number; r: number }[] = [], blue: { x: number; r: number }[] = [];
+    const rec = new Proxy({ globalAlpha: 1 } as Record<string | symbol, unknown>, {
+      get: (t, k) => k === "beginPath" ? () => { arcs.length = 0; } : k === "arc" ? (x: number, _y: number, r: number) => { arcs.push({ x, r }); }
+        : k === "fill" ? () => { if (t.fillStyle === "#3f7fc4") blue.push(...arcs); } : k in t ? t[k] : () => {},
+      set: (t, k, v) => { t[k] = v; return true; }
+    }) as unknown as CanvasRenderingContext2D;
+    const main = R([[99.9, 30], [100.1, 30]], [50, 200]), feeder = R([[99.7, 30], [99.9, 30]], [20, 50]), x0 = project(zoom, 99.9, 30)[0];
+    const tipR = (edges: Edge[]): number => {
+      blue.length = 0; drawEdges(rec, zoom, meta, { meta, factions: [], decor: [], terrainOverrides: [], units: [], nodes: [], edges }, 0, new Map(), {}, null, undefined);
+      return Math.max(0, ...blue.filter(a => Math.abs(a.x - x0) < 4).map(a => a.r));
+    };
+    assert.ok(tipR([main]) < 0.2, "河头那几个像素是细的");
+    assert.ok(tipR([feeder, main]) > 0.5, "上游接着别的河：这一点不是河头，照满宽画");
   });
   /* 宽河当水体由地形渲染器画（render/rivers）：叠加层按同一份门槛跳过那些段，线头不伸进水面；地形没画河时宽河照旧画成线 */
   it("河当水体：地形画的段叠加层跳过（选中描两岸红晕）、线头不补进水面、末端进干流或水格渐隐、河口展宽不过门槛；地形没画就照旧画线", () => {

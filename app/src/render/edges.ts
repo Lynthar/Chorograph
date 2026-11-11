@@ -1,7 +1,7 @@
 /* 连线与作战线（自 overlay.ts 原样拆出，行为不变）：
    河流三层描边（选中红晕/白衬底/河蓝；真宽过门槛的段由地形渲染器当水画，见 render/rivers）、官道双线、商路紫点线、工事墨石齿线（2026-07 特化柱B）；
    作战线 攻势=末端实心箭头 / 防线=行进方向左侧齿线（reverse 翻面）。 */
-import { EDGE_STYLE, certaintyStyle } from "../core/constants.ts";
+import { EDGE_STYLE, RANK_KM_PX, certaintyStyle } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
 import { activeAt, opVisibleAt } from "../core/time.ts";
 import { project, projectSeq, type Camera } from "../core/projection.ts";
@@ -16,23 +16,40 @@ import type { LabelField } from "./labels.ts";
 import type { Edge, Meta, Op, World, WorldNode } from "../core/types.ts";
 
 /* —— 河流描边（经典曲流河 + 自由画河共用）：三层描边（选中红晕/白衬底/河蓝） ——
-   riverWpx：widthM 米→像素，放大自然变宽；真宽不足底宽时按水面宽分档（10 m 以下 1px、1000 m 以上 2.6px，对数插值），
-   缩小的图上大河仍比支流粗；无 widthM 时三层宽度与旧值 9/5/2.6 逐位一致。导出供 pickEdge 拾取走廊同源。 */
+   riverWpx：widthM 米→像素，放大自然变宽；真宽不足底宽时按底宽画（riverFloorPx），缩小的图上大河仍比支流粗；
+   无 widthM 时三层宽度与旧值 9/5/2.6 逐位一致。导出供 pickEdge 拾取走廊同源。 */
 export function riverWpx(meta: Meta | undefined, cam: Camera, e: Edge): number {
   const wm = +(e.widthM as number) || 0;
   if (!(wm > 0)) return 2.6;
-  return Math.max(tierPx(wm), (wm / 1000) / kmPerDeg(meta) / cam.degPerPx);
+  const kmpp = kmPerDeg(meta) * cam.degPerPx;
+  return Math.max(riverFloorPx(wm, kmpp), wm / 1000 / kmpp);
 }
+/** 底宽开始随缩放收细、收到底的两档（km/像素）：地点中档隐去的那一档起，到只剩大城那一档止 */
+export const RIVER_FAR_KM: readonly [number, number] = [RANK_KM_PX[2], RANK_KM_PX[1]];
+/** 收到底之后最粗的河画多宽（px）· 细过多少的河段不画也不拾取（px） */
+export const RIVER_FAR_PX = 1.6, RIVER_MIN_PX = 0.25;
 const tierPx = (wm: number): number => 1 + 1.6 * Math.min(1, Math.max(0, Math.log10(wm / 10) / 2));
+/** 底宽（px）：到 RIVER_FAR_KM[0] 为止按水面宽分档（10 m 以下 1 px、1000 m 以上 2.6 px，对数插值）；再缩小就改按河在屏上的真宽分档
+    （千分之一像素以下 0、十分之一像素以上 RIVER_FAR_PX），两者按缩放的对数渐变——一个像素几十公里时还按两三个像素画，满图是上百公里宽的河 */
+export function riverFloorPx(wm: number, kmpp: number): number {
+  const near = tierPx(wm), [k0, k1] = RIVER_FAR_KM;
+  if (!(kmpp > k0)) return near;
+  const s = Math.min(1, Math.log(kmpp / k0) / Math.log(k1 / k0)), far = RIVER_FAR_PX * Math.min(1, Math.max(0, Math.log10(wm / kmpp) / 2));
+  return near + s * (far - near);
+}
+/** 这么宽的河段画不画（绘制与拾取同判）：细过 RIVER_MIN_PX 的只剩抗锯齿的一点灰，看不见的东西不许点得中 */
+export const riverDrawn = (px: number): boolean => px >= RIVER_MIN_PX;
+/** 河头收尖的长度（px）：有逐点宽的河，上游那头不接别的河也不在水里的，线宽在这段里从零长到满（短河至多收一半长） */
+export const RIVER_HEAD_PX = 32;
 /** 自由折线河按画法柔化（与曲流）后的折线（rivers.riverGeom）与逐点的画宽、真宽（px）：绘制与拾取同用；g＝逐点判水面的真宽（度，与地形渲染器比同一个门槛）。
     真宽封顶在 widthM（它不计河口展宽）：只用来判线还是水面，展宽那一截推不过门槛 */
 export function riverShape(meta: Meta | undefined, cam: Camera, e: Edge): { pts: [number, number][]; px: number[]; tp: number[]; g: number[] } {
-  const wm = +(e.widthM as number) || 0, pm = 1 / 1000 / kmPerDeg(meta) / cam.degPerPx, wx = riverWidest(e);
+  const wm = +(e.widthM as number) || 0, kmpp = kmPerDeg(meta) * cam.degPerPx, pm = 1 / 1000 / kmPerDeg(meta) / cam.degPerPx, wx = riverWidest(e);
   const G = riverGeom(meta, e, meanderFade(wx * pm) > 0 && nearView(cam, projectSeq(cam, e.pts!), meanderPad(wx, pm)));
   const S = G.m ? meanderView(meta, cam, G) : G, px: number[] = [], tp: number[] = [];
   for (let k = 0; k < S.pts.length; k++) {
     const w = S.w[k];
-    tp.push(w > 0 ? Math.min(w, wm > 0 ? wm : w) * pm : 0); px.push(w > 0 ? Math.max(tierPx(w), w * pm) : 2.6);
+    tp.push(w > 0 ? Math.min(w, wm > 0 ? wm : w) * pm : 0); px.push(w > 0 ? Math.max(riverFloorPx(w, kmpp), w * pm) : 2.6);
   }
   return { pts: S.pts, px, tp, g: S.g };
 }
@@ -99,30 +116,34 @@ function bankHalo(ctx: CanvasRenderingContext2D, P: [number, number][], px: numb
 const FADE_STEP = 6;
 /** 带逐点宽、宽到画成水面、或首尾落在水里的河。wet[k]＝第 k 段由地形渲染器当水画（null＝一段都不是）：这里跳过，选中时沿两岸描红晕；
     其余段按逐点宽画线（选中红晕、白衬底、河蓝），挨着水面段的那一头不补圆头——线头压在水面上会露出一截白衬底。
-    fh / ft 是首 / 尾渐隐的弧长（px，0＝不渐隐），这段里的线淡到 0 */
-function drawRiverVar(ctx: CanvasRenderingContext2D, P0: [number, number][], px0: number[], wet: boolean[] | null, fh: number, ft: number, selected: boolean): void {
-  /* 弧长、渐隐段细分、逐段透明度；par＝细分后的小段属于原折线的哪一段 */
+    fh / ft 是首 / 尾渐隐的弧长（px，0＝不渐隐），这段里的线淡到 0；th / tt 是首 / 尾收尖的弧长，这段里线宽从 0 长到满 */
+function drawRiverVar(ctx: CanvasRenderingContext2D, P0: [number, number][], px0: number[], wet: boolean[] | null, fh: number, ft: number, th: number, tt: number, selected: boolean): void {
+  /* 弧长、渐隐与收尖段细分、逐段透明度；par＝细分后的小段属于原折线的哪一段 */
   const S0 = [0];
   for (let k = 1; k < P0.length; k++) S0.push(S0[k - 1] + Math.hypot(P0[k][0] - P0[k - 1][0], P0[k][1] - P0[k - 1][1]));
   const L = S0[S0.length - 1], alpha = (s: number): number => Math.min(1, fh > 0 ? s / fh : 1, ft > 0 ? (L - s) / ft : 1);
-  const P: [number, number][] = [P0[0]], px = [px0[0]], A: number[] = [], par: number[] = [];
+  const taper = (s: number): number => riverTaper(s, L, th, tt);
+  const P: [number, number][] = [P0[0]], px = [px0[0] * taper(0)], A: number[] = [], par: number[] = [];
   for (let k = 0; k < P0.length - 1; k++) {
-    const s0 = S0[k], s1 = S0[k + 1], fade = (fh > 0 && s0 < fh) || (ft > 0 && s1 > L - ft), m = fade ? Math.max(1, Math.ceil((s1 - s0) / FADE_STEP)) : 1;
+    const s0 = S0[k], s1 = S0[k + 1], fade = (fh > 0 && s0 < fh) || (ft > 0 && s1 > L - ft), cut = fade || (th > 0 && s0 < th) || (tt > 0 && s1 > L - tt);
+    const m = cut ? Math.max(1, Math.ceil((s1 - s0) / FADE_STEP)) : 1;
     for (let t = 1; t <= m; t++) {
       const u = t / m, uh = (t - 0.5) / m;
       P.push(t === m ? P0[k + 1] : [P0[k][0] + (P0[k + 1][0] - P0[k][0]) * u, P0[k][1] + (P0[k + 1][1] - P0[k][1]) * u]);
-      px.push(px0[k] + (px0[k + 1] - px0[k]) * u);
+      px.push((px0[k] + (px0[k + 1] - px0[k]) * u) * taper(s0 + (s1 - s0) * u));
       A.push(fade ? Math.max(0, alpha(s0 + (s1 - s0) * uh)) : 1); par.push(k);
     }
   }
-  const n = P.length, wetAt = (j: number): boolean => !!wet && wet[par[j]];
+  /* 跳过的小段：地形渲染器当水画的，与细到不画的（两端画宽的均值过不了 riverDrawn；拾取同判） */
+  const n = P.length, wetAt = (j: number): boolean => !!wet && wet[par[j]], off = (j: number): boolean => wetAt(j) || !riverDrawn((px[j] + px[j + 1]) / 2);
   for (let a = 0; a < n - 1;) {
     let b = a + 1;
-    const wt = wetAt(a), whole = A[a] >= 1;
-    while (b < n - 1 && wetAt(b) === wt && (A[b] >= 1) === whole) b++;
+    const wt = wetAt(a), hid = off(a), whole = A[a] >= 1;
+    while (b < n - 1 && wetAt(b) === wt && off(b) === hid && (A[b] >= 1) === whole) b++;
     if (wt) { if (selected) bankHalo(ctx, P, px, a, b); }
+    else if (hid) { /* 细到不画 */ }
     else if (whole) {
-      const capA = a === 0 || !wetAt(a - 1), capB = b === n - 1 || !wetAt(b);
+      const capA = a === 0 || !off(a - 1), capB = b === n - 1 || !off(b);
       const fill = (grow: (v: number) => number, col: string): void => { ctx.beginPath(); addRibbon(ctx, P, px.map(v => grow(v) / 2), a, b, capA, capB); ctx.fillStyle = col; ctx.fill("nonzero"); };
       if (selected) fill(v => v + 6.4, "rgba(192,57,43,.35)");
       fill(v => v + Math.min(2.4, v), "rgba(255,255,255,.5)");
@@ -137,6 +158,24 @@ function drawRiverVar(ctx: CanvasRenderingContext2D, P0: [number, number][], px0
     }
     a = b;
   }
+}
+/** 收尖的宽度系数：离收尖那头的弧长 ÷ 收尖长，封顶 1；河短于两倍收尖长时只收到一半长 */
+export function riverTaper(s: number, L: number, th: number, tt: number): number {
+  const h = Math.min(th, L / 2), t = Math.min(tt, L / 2);
+  return Math.min(1, h > 0 ? s / h : 1, t > 0 ? (L - s) / t : 1);
+}
+/** 每条河哪一头是河头（0＝首点、1＝末点、−1＝没有）：有逐点宽、两端宽不等的自由折线河，较窄那一端的坐标不与别的河的端点重合。
+    edges 只传本帧画出来的连线：没画出来的河不该让别的河头不收尖 */
+export function riverHeads(edges: Edge[]): Int8Array {
+  const key = (p: [number, number]): string => p[0] + "," + p[1], ends = new Map<string, number>(), free = (e: Edge): boolean => e.type === "river" && Array.isArray(e.pts) && e.pts.length >= 2;
+  for (const e of edges) if (free(e)) for (const p of [e.pts![0], e.pts![e.pts!.length - 1]]) ends.set(key(p), (ends.get(key(p)) || 0) + 1);
+  return Int8Array.from(edges, e => {
+    if (!free(e) || !Array.isArray(e.ws) || e.ws.length !== e.pts!.length) return -1;
+    const m = e.pts!.length, a = e.ws[0], b = e.ws[m - 1];
+    if (!(a !== b)) return -1;
+    const up = a < b ? 0 : 1;
+    return ends.get(key(e.pts![up ? m - 1 : 0])) === 1 ? up : -1;
+  });
 }
 function strokeRiver(ctx: CanvasRenderingContext2D, pts: [number, number][], wpx: number, selected: boolean, dash?: number[] | null): void {
   const stroke = (w: number, col: string) => {
@@ -192,7 +231,7 @@ function offscreenPts(pp: [number, number][], cam: Camera): boolean {
 
 /** 一条连线的本体绘制（drawEdges 逐边在 save/restore 内调用）。dash=可靠性虚线（null＝确证，逐位不变） */
 function strokeEdge(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
-  byId: Map<string, WorldNode>, e: Edge, st: { color: string; w: number }, selected: boolean, dash: number[] | null, wet: ((lon: number, lat: number) => boolean) | null, rv: TerrainRivers | undefined): void {
+  byId: Map<string, WorldNode>, e: Edge, st: { color: string; w: number }, selected: boolean, dash: number[] | null, wet: ((lon: number, lat: number) => boolean) | null, rv: TerrainRivers | undefined, head: number): void {
   if (e.type === "river" && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由画河：沿自身折线（Chaikin 柔化），无端点
     const sh = riverShape(meta, cam, e), pp = projectSeq(cam, sh.pts);
     if (offscreenPts(pp, cam)) return;
@@ -203,8 +242,8 @@ function strokeEdge(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | und
     /* 地形渲染器当水画的段（确证的自由折线河，rivers.riverSet 同门）：与它比同一个门槛，两端较窄的那头过门槛才算 */
     const wseg = rv && !dash ? sh.g.slice(1).map((g, k) => Math.min(sh.g[k], g) >= rv.thr) : null;
     /* 没有逐点宽、窄于水面门槛、两头都不在水里的照旧三层描边（旧样式逐位不变）；有可靠性虚线的也照旧——水面与渐隐都表达不了虚线 */
-    if (dash || (!Array.isArray(e.ws) && !fh && !ft && !sh.tp.some(v => v >= RIVER_WATER_PX))) strokeRiver(ctx, pp, riverWpx(meta, cam, e), selected, dash);
-    else drawRiverVar(ctx, pp, sh.px, wseg && wseg.some(Boolean) ? wseg : null, fh, ft, selected);
+    if (dash || (!Array.isArray(e.ws) && !fh && !ft && !sh.tp.some(v => v >= RIVER_WATER_PX))) { const wpx = riverWpx(meta, cam, e); if (riverDrawn(wpx)) strokeRiver(ctx, pp, wpx, selected, dash); }
+    else drawRiverVar(ctx, pp, sh.px, wseg && wseg.some(Boolean) ? wseg : null, fh, ft, head === 0 && !fh ? RIVER_HEAD_PX : 0, head === 1 && !ft ? RIVER_HEAD_PX : 0, selected);
     return;
   }
   if (e.type === "wall" && Array.isArray(e.pts) && e.pts.length >= 2) {    // 自由画工事：原样折线（防线有棱角，不柔化）
@@ -217,7 +256,8 @@ function strokeEdge(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | und
   const [x1, y1] = project(cam, a.lon, a.lat), [x2, y2] = project(cam, b.lon, b.lat);
   if (Math.max(x1, x2) < 0 || Math.min(x1, x2) > cam.w || Math.max(y1, y2) < 0 || Math.min(y1, y2) > cam.h) return;
   if (e.type === "river") {          // 经典 from/to 河：确定性曲流（对齐旧 drawRivers：白衬底+河蓝，选中红晕）
-    strokeRiver(ctx, meander(a, b, e.from + e.to).map(p => project(cam, p[0], p[1])), riverWpx(meta, cam, e), selected, dash);
+    const wpx = riverWpx(meta, cam, e);
+    if (riverDrawn(wpx)) strokeRiver(ctx, meander(a, b, e.from + e.to).map(p => project(cam, p[0], p[1])), wpx, selected, dash);
   } else if (e.type === "wall") {    // 锚定工事（两端点直线；UI 只产自由画，此形态供手编数据）
     strokeWall(ctx, [[x1, y1], [x2, y2]], selected, !!e.reverse, dash);
   } else if (e.type === "road") {    // 官道双线（可靠性虚线两层同步，否则亮线从缺口透出）
@@ -236,6 +276,8 @@ function strokeEdge(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | und
   }
 }
 
+/** riverHeads 里顶替没画出来的连线的占位（不是河，不占端点） */
+const NO_EDGE: Edge = { type: "road" };
 /** 连线（道路/河流/商路/工事）；选中的一条垫红晕（对齐旧 isSelEdge）。单相机（overlay 拷贝循环内调用）。
     可靠性（柱B）：逐边 save/restore 施 alpha 与虚线——确证＝dash null + alpha 1 ＝旧渲染逐位。
     rv＝地形渲染器本帧当水画的河（renderer.terrainOpts 给的那一份；缺省＝没画，宽河也画成线） */
@@ -248,14 +290,16 @@ export function drawEdges(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta
     if (grid && c >= 0 && r >= 0 && c < grid.cols && r < grid.rows && waterMask(grid)[r * grid.cols + c] === 1) return true;
     return !!rv && riverSD(rv.set, lon, lat, rv.thr) < 0;
   } : null;
+  /* 未知线型不画——pickEdge 同门（拾取绘制同源） */
+  const shown = (e: Edge): boolean => on(e.type) && activeAt(e, yearNow) && !!tget(EDGE_STYLE, e.type), heads = riverHeads(world.edges.map(e => shown(e) ? e : NO_EDGE));
   for (let idx = 0; idx < world.edges.length; idx++) {
     const e = world.edges[idx];
-    if (!on(e.type) || !activeAt(e, yearNow)) continue;
-    const st = tget(EDGE_STYLE, e.type); if (!st) continue;   // 未知线型不画——pickEdge 同门（拾取绘制同源）
+    if (!shown(e)) continue;
+    const st = tget(EDGE_STYLE, e.type)!;
     const cs = certaintyStyle(e.certainty, "edge");
     ctx.save();
     ctx.globalAlpha *= cs.alpha;
-    strokeEdge(ctx, cam, meta, byId, e, st, edgeSelIdx === idx, cs.dash, wet, rv);
+    strokeEdge(ctx, cam, meta, byId, e, st, edgeSelIdx === idx, cs.dash, wet, rv, heads[idx]);
     ctx.restore();
   }
 }

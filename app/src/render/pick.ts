@@ -6,7 +6,7 @@ import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/pr
 import { EDGE_STYLE } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
 import { nodeVisibleAt, noteHit, noteMeasure, type NodeGateOpts, type NoteMeasure } from "./nodes.ts";
-import { riverShape, riverWpx } from "./edges.ts";
+import { riverDrawn, riverShape, riverWpx } from "./edges.ts";
 import type { Edge, Meta, World, WorldNode } from "../core/types.ts";
 
 /** 点到线段距离（拾取共用） */
@@ -37,16 +37,17 @@ export function pickEdge(
       if (!tget(EDGE_STYLE, e.type)) return;
       if (layers && layers[e.type] === false) return;   // 图层关了不拾取
       if (!activeAt(e, yearNow)) return;
-      const tol = e.type === "river" ? Math.max(6, riverWpx(meta, cam, e) / 2 + 4) : 6;
+      const wpx = e.type === "river" ? riverWpx(meta, cam, e) : 0, tol = e.type === "river" ? Math.max(6, wpx / 2 + 4) : 6;
       if ((e.type === "river" || e.type === "wall") && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由折线（河/工事）：逐段到自身折线拾取（同 pickOp）；河按渲染柔化后折线与逐点画宽、工事原样——与绘制同源
         const sh = e.type === "river" ? riverShape(meta, c2, e) : null, pp = projectSeq(c2, sh ? sh.pts : e.pts);
         for (let k = 1; k < pp.length; k++) {
+          if (sh && !riverDrawn((sh.px[k - 1] + sh.px[k]) / 2)) continue;   // 缩小到细得不画的河段：看不见的不许点得中
           const d = segDist(x, y, pp[k - 1][0], pp[k - 1][1], pp[k][0], pp[k][1]), tk = sh ? Math.max(6, (sh.px[k - 1] + sh.px[k]) / 4 + 4) : tol;
           if (d < tk && d < bd) { bd = d; best = { edge: e, idx }; }
         }
         return;
       }
-      if (!e.from || !e.to) return;
+      if (!e.from || !e.to || (e.type === "river" && !riverDrawn(wpx))) return;
       const a = byId.get(e.from), b = byId.get(e.to);
       if (!a || !b) return;
       const sp = projectSeq(c2, [{ lon: a.lon, lat: a.lat }, { lon: b.lon, lat: b.lat }]);
