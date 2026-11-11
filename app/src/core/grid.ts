@@ -6,6 +6,7 @@ import { gen2Fine, isGen2 } from "./gen2.ts";
 import { allComposites, canonComposite } from "./constants.ts";
 import { activeAt } from "./time.ts";
 import { kmPerDeg } from "./geo.ts";
+import { SCALE_PROFILES, scaleProfile } from "./scale.ts";
 import type { FieldGeom } from "./elev.ts";
 import type { Gen2MesoField } from "./gen2.ts";
 import { DEFAULT_BBOX, type BBox, type Edge, type Meta, type TerrainOverride, type WorldNode } from "./types.ts";
@@ -24,12 +25,9 @@ export interface Grid { bb: BBox; step: number; cols: number; rows: number; cell
 export function gridStepDeg(meta: Meta | undefined): number {
   const m = meta || {};
   const bb = m.bbox || DEFAULT_BBOX;
-  const tac = m.mapKind === "tactical";
+  const P = scaleProfile(m);
   const raw = Math.round(+(m.gridN as number)) || 0;
-  /* 显式列数只封上限不设下限（战略）：列少只是格粗，没什么可保护的，而**下限会让小图幅表达不出
-     粗格**——4° 的图要 1°/格 只需 4 列，下钳 24 就把它顶成 0.167°。上限才是成本闸（列数×行数）。 */
-  const gn = raw > 0 ? (tac ? Math.min(TAC_GRID_MAX, Math.max(60, raw)) : Math.min(STRAT_GRID_MAX, Math.max(1, raw)))
-    : autoGridN(m);
+  const gn = raw > 0 ? Math.min(P.gridNMax, Math.max(P.gridNMin, raw)) : autoGridN(m);
   /* 步长地板 0.0002°（≈22m@地球）：只防退化 bbox 把 step 压成 0，不再兼任成本闸——成本由列数
      上限管。⚠ 旧值 0.001°≈111m 会把「最小笔刷 100m」这条约定顶掉（更别提缺省 10000km 半径的
      世界，一格 175m），而列数上限已经把格数封住了，地板不必再管第二件事。
@@ -61,19 +59,16 @@ export function gridStepDeg(meta: Meta | undefined): number {
    撞闸只发生在导入/手编的超域档上=格边放粗+fprops 如实读数。
    ⚠ 缺键语义 2026-08-12 起有意改变(旧战术 140→自动、旧战略 1°→自动),作者裁定旧档皆测试
    产物;黄金基准不受影响——parity 把密度写进了夹具输入,冻的是数学不是默认策略。 */
-export const STRAT_GRID_MAX = 1800, STRAT_CELL_CAP = 1_500_000;   // 承诺域上限:出厂星球全球图 1500×708=106 万格在内
-export const TAC_GRID_MAX = 1600, TAC_CELL_CAP = 2_600_000;       // =ULTRA_CAP÷4:域内战术图 4K 精修恒 ≥2×
-export const TAC_CELL_KM = 0.1;        // 战术目标格边＝笔刷最小档 100m（格边即最小笔刷）
-export const STRAT_CELL_KM = 20 / 3;   // 战略目标格边＝最小档 20km 的 1/3（恰 3 格=20km,且 ≤互异上限 7.74km）
+export const STRAT_GRID_MAX = SCALE_PROFILES.strategic.gridNMax;
 export function autoGridN(meta: Meta | undefined): number {
   const m = meta || {};
   const bb = m.bbox || DEFAULT_BBOX;
   const lon = Math.max(1e-9, bb.lonMax - bb.lonMin), lat = Math.max(1e-9, bb.latMax - bb.latMin);
-  const tac = m.mapKind === "tactical";
-  const want = Math.round(lon * kmPerDeg(m) / (tac ? TAC_CELL_KM : STRAT_CELL_KM));   // 照目标格边要多少列
-  const byCells = Math.floor(Math.sqrt((tac ? TAC_CELL_CAP : STRAT_CELL_CAP) * lon / lat));
+  const P = scaleProfile(m);
+  const want = Math.round(lon * kmPerDeg(m) / P.cellKm);   // 照目标格边要多少列
+  const byCells = Math.floor(Math.sqrt(P.cellCap * lon / lat));
   const byRows = Math.floor(2000 * lon / lat);   // 行闸:rows=gn·lat/lon ≤2000（极端瘦高档 60 列下限仍可能顶穿,由 2048 轴护栏兜底截断）
-  return Math.max(60, Math.min(tac ? TAC_GRID_MAX : STRAT_GRID_MAX, want, byCells, byRows));
+  return Math.max(60, Math.min(P.gridNMax, want, byCells, byRows));
 }
 
 /* 程序化底稿 memo(2026-08-13 规模引擎批):seedTerrain 确定性纯函数,同几何同参数＝同底稿。

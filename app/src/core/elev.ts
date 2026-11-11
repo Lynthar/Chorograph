@@ -12,6 +12,7 @@ import { makeRelief, mountainness, reliefSeedOf, RELIEF_M, RELIEF_MESO_CELLS } f
 import { activeAt } from "./time.ts";
 import { stampRect, type Grid } from "./grid.ts";
 import { gen2Fine, isGen2, type UpliftCells } from "./gen2.ts";
+import { scaleProfile } from "./scale.ts";
 import { ECO_ORDER, LANDFORM_ORDER, NO_WATER, SHORE_E, WATER_EPS } from "./constants.ts";
 import type { BBox, HeightOverride, Meta, UpliftOverride } from "./types.ts";
 
@@ -163,15 +164,12 @@ export function upliftCells(meta: Meta | undefined, ups: UpliftOverride[] | unde
 export const UPLIFT_FLOORS_M = [-400, -100, 100, 300, 600, 1000];
 /** 画抬升的目标峰高预设（米）：表单另有数字框，预设之外的值照样能画 */
 export const UPLIFT_PEAKS_M = [500, 1000, 2000, 3000, 5000, 8000];
-/** 高程笔幅度档（米/笔；2026-08-10 精度批，用户点单「战术 1m 起、战略 10m 起」）。 */
-export const HEIGHT_STEPS_TAC = [1, 5, 10, 25, 50];
-export const HEIGHT_STEPS_STRAT = [10, 25, 50, 100, 250];
-/** 生效的每笔米数：chosen≤0/缺省＝自动（战术 10 / 战略 50≈旧硬编码 0.02×2000m=40m 的手感）；
-    显式值钳到该图种档域下限（战术 ≥1 / 战略 ≥10）——换图后残留的另一图种档位不至于越下限。 */
+/** 生效的每笔米数：chosen≤0/缺省＝本图种的自动档（core/scale 的 heightAutoM）；
+    显式值钳到本图种幅度档的首项——换图后残留的另一图种档位不至于越下限。 */
 export function heightStepM(meta: Meta | undefined, chosen: number): number {
-  const tac = ((meta || {}) as { mapKind?: string }).mapKind === "tactical";
-  if (!(chosen > 0)) return tac ? 10 : 50;
-  return Math.max(tac ? 1 : 10, chosen);
+  const P = scaleProfile(meta);
+  if (!(chosen > 0)) return P.heightAutoM;
+  return Math.max(P.heightStepsM[0], chosen);
 }
 
 

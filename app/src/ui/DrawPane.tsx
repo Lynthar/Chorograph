@@ -6,7 +6,8 @@ import { CLIMATE_SWATCH } from "../core/climzone.ts";
 import { isGen2 } from "../core/gen2.ts";
 import { CLIMATE, CLIMATE_ORDER, DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, nodeCatOf, parseComposite } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhen, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
-import { DH_MAX_M, HEIGHT_STEPS_STRAT, HEIGHT_STEPS_TAC, UPLIFT_FLOORS_M, UPLIFT_PEAKS_M, heightStepM, upliftOn } from "../core/elev.ts";
+import { DH_MAX_M, UPLIFT_FLOORS_M, UPLIFT_PEAKS_M, heightStepM, upliftOn } from "../core/elev.ts";
+import { scaleProfile } from "../core/scale.ts";
 import { useLayoutEffect } from "preact/hooks";
 import { addFaction, removePaintLayer, setPaintLayerSpan } from "../app/editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "../app/stamps.ts";
@@ -207,7 +208,7 @@ function TerrainCtx() {
               elevUnitM 折成抽象 dh（pointer.terrainDab）。档表按图种取＝换图自动换排 */}
           <div class="sec" style={{ marginTop: "4px" }}>幅度<span class="mini">只改高低 · 不改地貌与寻路</span></div>
           <div class="chips">
-            {(isTacSig.value ? HEIGHT_STEPS_TAC : HEIGHT_STEPS_STRAT).map(v => (
+            {scaleProfile(meta).heightStepsM.map(v => (
               <button key={v} class="ch tr" aria-pressed={stepM === v} onClick={() => { heightStepMSig.value = v; }}>±{v}m</button>
             ))}
           </div>

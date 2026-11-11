@@ -15,6 +15,7 @@ import { gnoise, makeRelief, mountainness, type ReliefSampler, RELIEF_CARVE_K, R
 import { kmPerDegXY } from "./geo.ts";
 import { activeAt } from "./time.ts";
 import { buildGridCells, stampRect, type Grid } from "./grid.ts";
+import { SCALE_PROFILES, scaleProfile } from "./scale.ts";
 import type { BBox, HeightOverride, Meta } from "./types.ts";
 import { nestCrop, nestKeyParts, type NestInput, type NestSrc } from "./nested.ts";
 
@@ -42,7 +43,7 @@ export interface ErodeInput {
   amp: number;
   /** 起伏种子（core/relief.reliefSeedOf）；sphere＝球面图（起伏按三维取样） */
   seed: number; sphere: boolean;
-  /** 细分格预算（战略 40 万 / 战术 140 万，erodeInput 按 mapKind 定；4K 静置精修经 ultraInput
+  /** 细分格预算（工作档取 core/scale 按图种给的 fineCap；4K 静置精修经 ultraInput
       提到主机给的精修预算）——随输入走＝Worker 不看 ctx、erodeKey 自然分流；必填（可选+兜底
       会盖住缺省分支，同 upscaleOf cap 之训） */
   cap: number;
@@ -102,10 +103,10 @@ export interface ErodeWindow { carve: CoarseCarve | null; refS: number; sc: read
 /* 战略 60 万→240 万（2026-09-02）：起伏改公里锚定后，战略图的细节上限不再由「防混叠」定而由
    预算定——区域图（8° 级）自此吃到轴上限 8×＝1.7 km 细格，缩放进去有真形。大陆级图（48°，105 万
    粗格）仍是 1×，它的加密归静置精修（host 的 ultra 档自本日起也发给战略图）。 */
-const MAX_FINE = 2_400_000;
+const MAX_FINE = SCALE_PROFILES.strategic.fineCap;
 /* 140 万→150 万（2026-09-02）：缺省 60 km 战场 600²×2²＝144 万，恰差 2.8% 拿不到 2×＝缺省尺寸是第一个
    失去细分的尺寸（59 km 有 2×、60 km 没有）；放大看细节时 100 m 工作档露格子。 */
-const MAX_FINE_TAC = 1_500_000;
+const MAX_FINE_TAC = SCALE_PROFILES.tactical.fineCap;
 const ITERS = 6;            // 侵蚀迭代数（隐式解无条件稳定；批6 自 5 上调＝切割深度的老实杠杆）
 const KDT = 0.04;           // 河蚀强度 ×dt（f=KDT·√A/dist；A 单位 km²、dist 单位 km）；批6 自 0.022 上调＝
                             //   让谷网切透涂改块的类型缓坡带与雕体侧翼（「珊瑚项圈」要靠径向切割破环，
@@ -266,7 +267,7 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
   if (amp <= 0 && !hasHov) return null;
   const elev0 = baseElev(m, grid), water = waterMask(grid);   // 三份（含 wsurf）都是按 Grid 记忆的共享只读数组（postMessage 克隆）
   const { kmx, kmy } = kmPerDegXY(m, bb);
-  const cap = m.mapKind === "tactical" ? MAX_FINE_TAC : MAX_FINE, menv = grid.meso ? grid.meso.env : null, bas = grid.meso ? grid.meso.basin : null;
+  const cap = scaleProfile(m).fineCap, menv = grid.meso ? grid.meso.env : null, bas = grid.meso ? grid.meso.basin : null;
   const cg = coarseGeom(cols, rows, step, step / upscaleOf(cols, rows, cap, 8));
   const lfd = !menv && cg && carveLam(cg.cstep * Math.sqrt(kmx * kmy)) > 0 ? landformDelta(m, grid) : null;
   return { bb, step, cols, rows, elev0, water, wsurf: waterSurface(m, grid), amp, seed: reliefSeedOf(m), sphere: m.worldModel !== "flat", kmx, kmy, hovGrid,

@@ -4,6 +4,7 @@ import { kmPerDeg, toRad, wrapLon } from "./geo.ts";
 import { gridStepDeg } from "./grid.ts";
 import { TILE_MAX_X } from "./tiles.ts";
 import { RANK_KM_PX } from "./constants.ts";
+import { scaleProfile } from "./scale.ts";
 import type { BBox, Meta } from "./types.ts";
 
 export interface Camera {
@@ -102,11 +103,10 @@ export function minDegPerPx(meta: Meta | undefined): number {
   return (isFinite(k) && k > 0) ? Math.max(1e-6, 0.005 / k) : 0.004;
 }
 
-/* 放大到底：比例尺停在 SCALE_FLOOR_KM 那一档（读数＝degPerPx × 每度公里，投影里两处 cos 抵消，与视中心纬度无关）。
-   战略图另按数据封顶：块层最细一档的格（类型格 ÷ TILE_MAX_X）占到 ZOOM_CELL_PX 个 CSS 像素为止，再放大只是把同一份数据拉成面片；两者取粗的一头。
+/* 放大到底：比例尺停在本图种的 scaleFloorKm 那一档（core/scale；读数＝degPerPx × 每度公里，投影里两处 cos 抵消，与视中心纬度无关）。
+   开了 zoomDataCap 的图种另按数据封顶：块层最细一档的格（类型格 ÷ TILE_MAX_X）占到 ZOOM_CELL_PX 个 CSS 像素为止，再放大只是把同一份数据拉成面片；两者取粗的一头。
    之后过小图护栏：任何图至少 MIN_ZOOM_RANGE 倍可放大，否则小图的放大极限落在缩小极限之外、相机钉死在一个尺度上。 */
 export const SCALE_BAR_PX = 110;                              // 比例尺条的目标宽度：drawScaleBar 与本规则的单一真源
-export const SCALE_FLOOR_KM = { tactical: 0.5, strategic: 50 };
 export const MIN_ZOOM_RANGE = 10;
 /** 数据封顶的像素数。格只按图自身的网格算，不取本机实际算出的块倍率：那个随内存档与计算进度变，上限跟着变＝同一张图时大时小 */
 export const ZOOM_CELL_PX = 2.5;
@@ -118,10 +118,10 @@ export const ZOOM_CELL_PX = 2.5;
 export function minDppFor(meta: Meta | undefined, fitDpp: number): number {
   const phys = minDegPerPx(meta), k = kmPerDeg(meta);
   if (!(isFinite(k) && k > 0)) return phys;
-  const tac = (meta || {}).mapKind === "tactical";
-  const byScale = (tac ? SCALE_FLOOR_KM.tactical : SCALE_FLOOR_KM.strategic) / (SCALE_BAR_PX * k);
+  const P = scaleProfile(meta);
+  const byScale = P.scaleFloorKm / (SCALE_BAR_PX * k);
   // 数据上限不粗过地点显隐最严一档：粗过它，大星球的整球图上最小一级地点放大到底也不显示
-  const byData = tac ? 0 : Math.min(gridStepDeg(meta) / TILE_MAX_X / ZOOM_CELL_PX, Math.min(...RANK_KM_PX) / k);
+  const byData = P.zoomDataCap ? Math.min(gridStepDeg(meta) / TILE_MAX_X / ZOOM_CELL_PX, Math.min(...RANK_KM_PX) / k) : 0;
   const floor = Math.max(byScale, byData);
   const guard = (isFinite(fitDpp) && fitDpp > 0) ? fitDpp / MIN_ZOOM_RANGE : floor;
   return Math.max(phys, Math.min(floor, guard));

@@ -18,6 +18,7 @@ import { $ } from "./dom.ts";
 import { singleFlight } from "./singleflight.ts";
 import type { ShellCtx } from "./ctx.ts";
 import { clampView, minDppFor, viewCosK, type Camera } from "../core/projection.ts";
+import { scaleProfile } from "../core/scale.ts";
 import { lonCos } from "../core/geo.ts";
 import { frameView } from "../core/frame.ts";
 import type { BBox, HeightOverride, Meta, TerrainOverride, World } from "../core/types.ts";
@@ -112,7 +113,7 @@ export function createHost(ctx: ShellCtx): Host {
   const basinOf = (g: Grid): Uint8Array | null => g.meso ? g.meso.basin : null;   // 画的盆地：增量合成不钳陆地地板
   const withDelta = <F extends ElevField>(f: F, baseC: Float32Array): F =>
     pendCoarseNow && pendCoarseNow !== baseC && ctx.grid ? fieldPlusDelta(f, baseC, pendCoarseNow, ctx.grid, ctx.grid.cells, basinOf(ctx.grid)) : f;
-  let pendUInp: ErodeInput | null = null;   // 同一单的精修档形态（数组共享引用，仅换预算三键；战术图才有）
+  let pendUInp: ErodeInput | null = null;   // 同一单的精修档形态（数组共享引用，仅换预算三键）；走嵌套解的单没有
   /* 工作档＝规则场（ctx.ruleField）兼等待窗合成的基座，跨同几何的重建存活；精修档只进画面，且只对
      当前构建有效——任何重建即弃（落笔不在千万格的精修场上逐 move 复制重传，静置后自会重算）。 */
   let work: RuleField | null = null, workBase: Float32Array | null = null, workKey = "";   // 已落地工作档 + 增量基准 + 几何键
@@ -162,7 +163,7 @@ export function createHost(ctx: ShellCtx): Host {
     },
     onDown: dn => { tilesDownSig.value = dn; }
   }, TILE_BUDGET * 4 * 1.3);
-  const tilesOn = (): boolean => ctx.meta.mapKind !== "tactical" && ctx.routeClient.tileLanes > 0;
+  const tilesOn = (): boolean => scaleProfile(ctx.meta).tiles && ctx.routeClient.tileLanes > 0;
   /* —— 中尺度（v2 图，core/gen2.gen2Meso）：稳态解只依赖生成参数与几何，独立车道上算、解存进 IDB。到了之前不发侵蚀单（先侵蚀宏观底再换形＝多一次可见换场），
      到了就换一个带它的新 Grid 重建；车道不可用或这一单失败＝这张图照旧用宏观底。 —— */
   /** 中尺度场抽出的河与抽它用的滑杆键（riverParams）：滑杆换了要重抽，场不变 */
@@ -336,7 +337,7 @@ export function createHost(ctx: ShellCtx): Host {
     pendInp = inp && ns ? workNest(inp, ns) : inp;
     /* 2026-09-02 起战略图同享精修档，但**预算减半**：大陆级图（105 万粗格）在全额预算下取 3×＝
        950 万细格、单次要跑一两分钟；减半后恰取 2×＝420 万，几秒可得，内存也只要一半。 */
-    pendUInp = pendInp ? ultraInput(pendInp, ctx.meta.mapKind === "tactical" ? ULTRA_CAP : ULTRA_CAP / 2) : null;
+    pendUInp = pendInp ? ultraInput(pendInp, ULTRA_CAP * scaleProfile(ctx.meta).ultraCapK) : null;
   }
   /** 工作档车道交出来的场才是规则场：标记只在这一处打（缓存命中与现算两个到货点），精修与块的车道不打 */
   const asWork = (f: ElevField): RuleField => ({ ...f, src: "work" });
