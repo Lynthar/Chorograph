@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { buildGridCells } from "../src/core/grid.ts";
 import { erodeCarve, erodeField, erodeInput, erodeKey, type ErodeInput } from "../src/core/erode.ts";
 import { applyDelta, deltaOf, elevBilinear } from "../src/core/elev.ts";
-import { TILE_MAX_X, tileCells, tileCore, tileElevAt, tileField, tileInput, tilePlan, tileWeight, type TileLayer } from "../src/core/tiles.ts";
+import { TILE_MAX_X, TILE_P, TILE_SLOTS, TILE_VRAM, tileCells, tileCore, tileElevAt, tileField, tileInput, tilePlan, tileResidency, tilesInView, tileSlotsFor, tileWeight, type TileGeom, type TileLayer } from "../src/core/tiles.ts";
 import type { HeightOverride, Meta, TerrainOverride } from "../src/core/types.ts";
 
 /* 100×67 格的战略图：平原底、中部一片山地（起伏只长在山上）、西南角几块水；工作档 8×＝块倍率上限 */
@@ -123,5 +123,46 @@ describe("分块精修（core/tiles）", () => {
     assert.strictEqual(tileWeight(2.2), 1);
     let prev = -1;
     for (let v = 1; v <= 2; v += 0.05) { const w = tileWeight(v); assert.ok(w >= prev); prev = w; }
+  });
+
+  it("GL 块层的层数：块不比层多就不动，多了倍增扩层；显存不超过 64 MB、不超过本机层数上限，封顶也装不下＝0（整幅不用块）", () => {
+    const K4 = TILE_P * 4;
+    assert.strictEqual(TILE_VRAM, 64 * 2 ** 20);
+    assert.strictEqual(tileSlotsFor(TILE_SLOTS, 40, K4, 2048), TILE_SLOTS);
+    assert.strictEqual(tileSlotsFor(TILE_SLOTS, 79, K4, 2048), 128);
+    assert.strictEqual(tileSlotsFor(TILE_SLOTS, 200, K4, 2048), 256);
+    assert.strictEqual(tileSlotsFor(TILE_SLOTS, 257, K4, 2048), 0, "256×256 的块 64 MB 只装 256 层");
+    assert.strictEqual(tileSlotsFor(TILE_SLOTS, 79, K4, 100), 100, "本机层数上限");
+    assert.strictEqual(tileSlotsFor(128, 100, K4, 2048), 128, "扩过的层不缩");
+    assert.strictEqual(tileSlotsFor(TILE_SLOTS, 65, TILE_P * TILE_MAX_X, 2048), 0, "倍率封顶那档起步就是上限");
+    for (let sx = 1; sx <= TILE_MAX_X; sx++) {
+      const K = TILE_P * sx, bytes = (n: number): number => n * K * K * 4;
+      assert.ok(bytes(TILE_SLOTS) <= TILE_VRAM, `${sx} 倍起步就超显存`);
+      let fit = true;
+      for (let want = 1; want <= 4096; want++) {
+        const n = tileSlotsFor(TILE_SLOTS, want, K, 2048);
+        if (n) { assert.ok(fit && n >= want && bytes(n) <= TILE_VRAM, `${sx} 倍 ${want} 块给了 ${n} 层`); } else fit = false;
+      }
+    }
+  });
+
+  it("GL 块层的驻留：先占空层，再占最久没用、不在视口里的层；视口里的块不被挤掉；块多于层就抛", () => {
+    const slots = [-1, -1, -1], used = [0, 0, 0];
+    assert.deepStrictEqual(tileResidency(slots, used, [5, 7], 1), [[5, 0], [7, 1]]);
+    assert.deepStrictEqual(tileResidency(slots, used, [7, 9], 2), [[9, 2]], "已驻留的不重传");
+    assert.deepStrictEqual(tileResidency(slots, used, [9, 11], 3), [[11, 0]], "挤掉最久没用的 5，不动视口外但刚用过的 7");
+    assert.deepStrictEqual(tileResidency(slots, used, [7, 12, 13], 4), [[12, 0], [13, 2]]);
+    assert.deepStrictEqual(slots, [12, 7, 13]);
+    assert.throws(() => tileResidency(slots, used, [1, 2, 3, 4], 5), RangeError);
+  });
+
+  it("视口里的块多过起步层数：扩层后每块各占一层，没有块被跳过", () => {
+    const g: TileGeom = { lonMin: 0, latMin: 0, pstep: 0.1, P: TILE_P, sx: 4, step: 0.025, nx: 20, ny: 10, cols: 20 * TILE_P, rows: 10 * TILE_P };
+    const want = tilesInView(g, Array.from({ length: g.nx * g.ny }, (_, i) => i), { lonMin: 1, lonMax: 63, latMin: 1, latMax: 50 });
+    assert.strictEqual(want.length, 80, "10 × 8 块");
+    const n = tileSlotsFor(TILE_SLOTS, want.length, g.P * g.sx, 2048), slots = new Array<number>(n).fill(-1);
+    const up = tileResidency(slots, new Array<number>(n).fill(0), want, 1);
+    assert.deepStrictEqual(up.map(u => u[0]), want);
+    assert.strictEqual(new Set(up.map(u => u[1])).size, want.length);
   });
 });

@@ -22,7 +22,7 @@ import { zoneGLSL, zoneLookTexels, ZLOOK_W, ZONE_N, type ZoneWeights } from "./z
 import type { Grid } from "../core/grid.ts";
 import { SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX, type ElevField, type RuleField } from "../core/elev.ts";
 import type { BBox } from "../core/types.ts";
-import { tilesInView, tileWeight, type TileLayer } from "../core/tiles.ts";
+import { tileResidency, tilesInView, tileSlotsFor, tileWeight, TILE_SLOTS, type TileLayer } from "../core/tiles.ts";
 
 const VS = `#version 300 es
 void main(){ vec2 p=vec2(float(gl_VertexID<<1&2), float(gl_VertexID&2)); gl_Position=vec4(p*2.0-1.0,0.0,1.0); }`;
@@ -548,9 +548,9 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     return nt;
   }
   const U = (n: string) => gl.getUniformLocation(pr!, n);
-  /* 分块精修（core/tiles）：块放进纹理数组（6 号单元，一块一层），页表（7 号，R32I）记块号 → 层号；层按 LRU 复用，只给视口里的块。
+  /* 分块精修（core/tiles）：块放进纹理数组（6 号单元，一块一层），页表（7 号，R32I）记块号 → 层号；层按 LRU 复用，只给视口里的块，层数见 tileSlotsFor。
      没有块层时绑 1×1 占位（采样器恒完整）。块数组当不可变快照：层里存的数组与块层里的不是同一个＝要重传 */
-  const TILE_SLOTS = 64;
+  const maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
   let tLayer: TileLayer | null = null, tVer = 0;
   let atlas: WebGLTexture | null = null, page: WebGLTexture | null = null, atlasFor: string | null = null;
   let slotTile: number[] = [], slotArr: (Float32Array | null)[] = [], slotUse: number[] = [], useTick = 0;
@@ -572,37 +572,26 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.activeTexture(gl.TEXTURE0);
     slotTile = new Array(N).fill(-1); slotArr = new Array(N).fill(null); slotUse = new Array(N).fill(0);
   }
-  /** 视口里的块搬进显存（缺的占空层或最久没用、且不在视口里的层），并重写页表；层不够＝多出的块这一帧退回画面场 */
-  function residentTiles(L: TileLayer, view: BBox): void {
+  /** 视口里的块搬进显存并重写页表；块比层多先扩层（重建、全部重传）。扩到封顶也装不下＝false，这一帧整幅不用块 */
+  function residentTiles(L: TileLayer, view: BBox): boolean {
     const g = L.geom, K = g.P * g.sx, FC = g.cols * g.sx, FR = g.rows * g.sx;
     const key = `${K}|${g.nx}x${g.ny}`;
     if (atlasFor !== key) { placeTileTex(K, TILE_SLOTS, g.nx, g.ny); atlasFor = key; }
-    const want = tilesInView(g, L.tiles.keys(), view), wantSet = new Set(want);
+    const want = tilesInView(g, L.tiles.keys(), view), n = tileSlotsFor(slotTile.length, want.length, K, maxLayers);
+    if (!n) return false;
+    if (n > slotTile.length) placeTileTex(K, n, g.nx, g.ny);
     let dirty = false;
-    useTick++;
     for (let s = 0; s < slotTile.length; s++) {
       const t = slotTile[s];
       if (t >= 0 && L.tiles.get(t) !== slotArr[s]) { slotTile[s] = -1; slotArr[s] = null; dirty = true; }   // 块换了或没了
     }
-    for (const i of want) {
-      const a = L.tiles.get(i)!;
-      let s = slotTile.indexOf(i);
-      if (s < 0) {
-        s = slotTile.indexOf(-1);
-        if (s < 0) {
-          let best = -1;
-          for (let k = 0; k < slotTile.length; k++) if (!wantSet.has(slotTile[k]) && (best < 0 || slotUse[k] < slotUse[best])) best = k;
-          if (best < 0) continue;
-          s = best;
-        }
-        const tx = i % g.nx, ty = (i / g.nx) | 0, w = Math.min(K, FC - tx * K), h = Math.min(K, FR - ty * K);
-        gl.activeTexture(gl.TEXTURE6);
-        gl.bindTexture(gl.TEXTURE_2D_ARRAY, atlas);
-        gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, s, w, h, 1, gl.RED, gl.FLOAT, a);
-        gl.activeTexture(gl.TEXTURE0);
-        slotTile[s] = i; slotArr[s] = a; dirty = true;
-      }
-      slotUse[s] = useTick;
+    for (const [i, s] of tileResidency(slotTile, slotUse, want, ++useTick)) {
+      const a = L.tiles.get(i)!, tx = i % g.nx, ty = (i / g.nx) | 0, w = Math.min(K, FC - tx * K), h = Math.min(K, FR - ty * K);
+      gl.activeTexture(gl.TEXTURE6);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, atlas);
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, s, w, h, 1, gl.RED, gl.FLOAT, a);
+      gl.activeTexture(gl.TEXTURE0);
+      slotArr[s] = a; dirty = true;
     }
     if (dirty) {
       const pg = new Int32Array(g.nx * g.ny).fill(-1);
@@ -612,6 +601,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, g.nx, g.ny, gl.RED_INTEGER, gl.INT, pg);
       gl.activeTexture(gl.TEXTURE0);
     }
+    return true;
   }
 
   function riverTex(s: RiverSet | null): void {
@@ -809,10 +799,10 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
         if (Z.looks.key !== zlKey) { zlook = zoneTex(5, zlook, ZLOOK_W, ZONE_N, zoneLookTexels(Z.looks), true); zlKey = Z.looks.key; }
         gl.uniform4f(U("uZoneBB"), Z.wt.bb.lonMin, Z.wt.bb.latMin, Z.wt.cols * Z.wt.pd, Z.wt.rows * Z.wt.pd);
       }
-      gl.uniform1f(U("uTW"), tw);
-      if (TL && tw > 0) {
-        residentTiles(TL, viewBB);
-        const tg = TL.geom;
+      const tOn = !!TL && tw > 0 && residentTiles(TL, viewBB);
+      gl.uniform1f(U("uTW"), tOn ? tw : 0);
+      if (tOn) {
+        const tg = TL!.geom;
         gl.uniform1f(U("uTStep"), tg.step);
         gl.uniform2i(U("uTDim"), tg.cols * tg.sx, tg.rows * tg.sx);
         gl.uniform1i(U("uTK"), tg.P * tg.sx);

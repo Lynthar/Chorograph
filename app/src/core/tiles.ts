@@ -51,6 +51,40 @@ export function tilesInView(g: TileGeom, ids: Iterable<number>, v: BBox): number
   return out;
 }
 
+/** GL 块层起步的层数（一块一层） */
+export const TILE_SLOTS = 64;
+/** GL 块层的显存上限（字节）：层数随视口里的块扩到这里为止，等于倍率封顶那档起步层数的用量 */
+export const TILE_VRAM = TILE_SLOTS * (TILE_P * TILE_MAX_X) ** 2 * 4;
+
+/** 视口里有 want 块时 GL 块层要几层（一层 K×K 的 R32F）：have 够就不动，不够按倍增扩，封顶 TILE_VRAM 与本机的 maxLayers。
+    封顶也装不下＝0：这一帧整幅不用块——只装下一部分＝视口里有块的与没块的按块拼贴 */
+export function tileSlotsFor(have: number, want: number, K: number, maxLayers: number): number {
+  if (want <= have) return have;
+  const cap = Math.min(maxLayers, Math.floor(TILE_VRAM / (K * K * 4)));
+  if (want > cap) return 0;
+  let n = Math.max(1, have);
+  while (n < want) n *= 2;
+  return Math.min(n, cap);
+}
+
+/** GL 块层的驻留：slots[s]＝第 s 层放的块号（-1＝空）、used[s]＝它上次在视口里的帧号，两者就地改写。
+    want 里不在层里的块占空层，没有空层就占最久没用、且不在 want 里的层；返回要上传的 [块号, 层号]
+    @throws RangeError want 多于层数（先经 tileSlotsFor 扩层）：多出的块分不到层 */
+export function tileResidency(slots: number[], used: number[], want: readonly number[], tick: number): [number, number][] {
+  if (want.length > slots.length) throw new RangeError(`视口里 ${want.length} 块，层只有 ${slots.length}`);
+  const wantSet = new Set(want), up: [number, number][] = [];
+  for (const i of want) {
+    let s = slots.indexOf(i);
+    if (s < 0) {
+      s = slots.indexOf(-1);
+      if (s < 0) for (let k = 0; k < slots.length; k++) if (!wantSet.has(slots[k]) && (s < 0 || used[k] < used[s])) s = k;
+      slots[s] = i; up.push([i, s]);
+    }
+    used[s] = tick;
+  }
+  return up;
+}
+
 /** 分块计划。工作档输入 inp（全图）；budget＝全部块心细格数的上限（按本机内存给）；minSx＝不比它细就不值得分块（画面场已有的倍率）。
     倍率取预算允许的最大整数、封顶 TILE_MAX_X；不比 minSx 细、或一块陆地都没有＝null。 */
 export function tilePlan(inp: ErodeInput, budget: number, minSx: number): TilePlan | null {

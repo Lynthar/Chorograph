@@ -345,6 +345,8 @@ const TILES_ANCHORS: Record<string, Anchor> = {
   TILE_VER: none("代号"),
   TILE_W_LO: px("CSS 像素/块格（块开始渐入）"),
   TILE_W_HI: px("CSS 像素/块格（块全权）"),
+  TILE_SLOTS: none("层数（GL 块层起步）"),
+  TILE_VRAM: none("字节（GL 块层显存上限）"),
 };
 const ANCHOR_TABLES: [file: string, table: string, anchors: Record<string, Anchor>][] = [["core/erode.ts", "ERODE_ANCHORS", ERODE_ANCHORS],
   ["core/nested.ts", "NESTED_ANCHORS", NESTED_ANCHORS], ["core/gen2.ts", "GEN2_ANCHORS", GEN2_ANCHORS], ["core/tiles.ts", "TILES_ANCHORS", TILES_ANCHORS]];
