@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { ISL_SHOAL_U } from "../src/core/gen2.ts";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
@@ -56,6 +57,14 @@ describe("静态守卫：单一真源", () => {
   it("水面配色只有 render/material.WATER 一份", () => {
     const re = /0\.55,\s*0\.72,\s*0\.75|\b38(\.0)?,\s*66(\.0)?,\s*86\b|\b40(\.0)?,\s*90(\.0)?,\s*132\b|\b100(\.0)?,\s*160(\.0)?,\s*198\b/;
     assert.deepStrictEqual(hitsOutside(re, ["render/material.ts"]), [], "水色又写成了字面量——两个渲染器读 material.WATER，河口与湖面才接得上色");
+  });
+  it("水段色阶的深端（水面下多少个高程单位到最深色）两个渲染器同值，且等于生成器压群岛浅滩的深度", () => {
+    const re = /e\s*-\s*ws\s*\+\s*([\d.]+)\)\s*\/\s*0\.33/;
+    for (const f of ["render/terrainGL.ts", "render/terrainCPU.ts"]) {
+      const hit = files.find(([n]) => n === f)![1].map(l => re.exec(l)).filter(Boolean);
+      assert.strictEqual(hit.length, 1, `${f} 里水段色阶那一行应恰一处`);
+      assert.strictEqual(+hit[0]![1], ISL_SHOAL_U, `${f} 的水段色阶深端与 gen2.ISL_SHOAL_U 不同——群岛的浅滩会压不到深海色，或压过了头`);
+    }
   });
   it("单飞行闸只有 shell/singleflight 一份", () => {
     assert.deepStrictEqual(hitsOutside(/\b\w*(busy|Busy|eroding)\s*=\s*true\b/, ["shell/singleflight.ts"]), [], "又手写了一份 busy/dirty 闸——走 singleFlight(run, refire)");

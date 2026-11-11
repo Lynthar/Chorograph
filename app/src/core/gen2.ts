@@ -1,7 +1,7 @@
 /* 程序化生成第二版（meta.terrain==="auto" 且 genVer===2）：宏观格上 骨架 → 抬升 → 稳态河流地形 → 高原与盆地 → 水汽 → 湖，
    再逐格派生地类、生态与连续基底。v1（core/terrain）一字不动，按 genVer 分流。
    ⚠ 跨引擎逐位确定：只用 + − × ÷ √、floor、整数哈希与字面常数；Math.sin/cos/exp/pow/log/hypot 不许进——流向树会把 1 ULP 放大成整片流域翻转。 */
-import { CLIMATE_ORDER, FP_CORE, FP_KW, LANDFORM_ORDER, MZ_MAX, RIV_WIDTH, snowLatM } from "./constants.ts";
+import { CLIMATE_ORDER, FP_CORE, FP_KW, LANDFORM_ORDER, MZ_MAX, RIV_WIDTH } from "./constants.ts";
 import { DEFAULT_BBOX, type BBox, type Climate, type Landform, type Meta } from "./types.ts";
 import type { FieldGeom } from "./elev.ts";
 import { buildMesh, cellRand, meshLocate, type Gen2Mesh } from "./gen2mesh.ts";
@@ -690,7 +690,7 @@ export function buildMacro(p: Gen2Params): Macro {
   for (let i = 0; i < n; i++) { area[i] = dx[(i / cols) | 0] * dy; if (land[i]) h0[i] = 1e-3 * cellRand(i, sd + 17); else out[i] = 1; }   // 初值抖动：首轮流向树不按格序排成平行线
   const { h: hRel, iters } = steady({ nbOff: mesh.nbOff, nb: mesh.nb, len, area }, { U, K, acrit: ACRIT_KM2, out, hOut: new Float64Array(n), head: 0 }, h0, { maxIt: 400, tol: STEADY_TOL, canon: false });
   const h = new Float64Array(n);
-  for (let i = 0; i < n; i++) { const v = land[i] ? KAPPA_M * hRel[i] + plat[i] : 0; h[i] = peakCapM(v, peakKneeM(p.sphere, bb.latMin + (mesh.Y[i] + 0.5) * dlat), 0); }   // 高过膝点渐近压缩：碰撞带叠高原在滑杆拉满时会冲上十公里；膝点随纬度
+  for (let i = 0; i < n; i++) { const v = land[i] ? KAPPA_M * hRel[i] + plat[i] : 0; h[i] = peakCapM(v, 0); }   // 高过膝点渐近压缩：碰撞带叠高原在滑杆拉满时会冲上十公里
   for (let i = 0; i < n; i++) if (land[i]) h[i] -= Math.min(bowl[i], BOWL_MAX * h[i]);   // 盆底不跌破海面：海面以下的干地会被渲染端当成水，或钳成 0 m 的平台
   const moist = moisture(p, sc, G, land, h);
   for (let r = 0; r < rows; r++) for (let q = 0; q < cols; q++) {   // 低频噪声：干湿界不沿等值线成光滑弧
@@ -766,15 +766,12 @@ export function buildMacro(p: Gen2Params): Macro {
   }
   return { cols, rows, lon0: bb.lonMin, lat0: bb.latMin, dlon, dlat, dx, dy, mesh, rcv, acc: A, q: fr.Q, salt, lakeEnd, s, land, h, lake, lakeS, relief, moist, wet, shelf: shelfW, camp, cwarp, mid: Float64Array.from(sc.mid, v => Math.min(v, 1e6)), coastLam, coastK, kmPerS: (isl ? 160 : CO_LOUT) * ks, iters, U, K, fold: sc.fold, hRel, plat, bowl };
 }
-/** 峰顶软上限：膝点以上按 x/(1+x/软度) 压缩，渐近膝点 + 软度（3 km）。球面图的膝点随纬度＝雪线曲线 + PEAK_ABOVE_SNOW_M（赤道恰 PEAK_KNEE_M）：
-    最高峰随雪线往极地下降、高程面积在雪线之下堆积；平面图没有气候纬度，膝点恒 PEAK_KNEE_M */
-export const PEAK_KNEE_M = 5500, PEAK_SOFT_M = 3000, PEAK_ABOVE_SNOW_M = 700;
-/** 某纬度的膝点（米）：宏观、中尺度收尾、嵌套收尾三处封顶同读；另算一份＝块与全图的山顶对不上 */
-export function peakKneeM(sphere: boolean, lat: number): number { return sphere ? snowLatM(lat < 0 ? -lat : lat) + PEAK_ABOVE_SNOW_M : PEAK_KNEE_M; }
-/** 软上限：膝点以上压缩；kw＝画抬升的软边权重（1 让开、0 照压、其间混合） */
-export function peakCapM(v: number, knee: number, kw: number): number {
-  if (v <= knee || kw >= 1) return v;
-  const k = knee + (v - knee) / (1 + (v - knee) / PEAK_SOFT_M);
+/** 峰顶软上限：膝点（米）以上按 x/(1+x/软度) 压缩，渐近膝点 + 软度 */
+export const PEAK_KNEE_M = 5500, PEAK_SOFT_M = 3000;
+/** 软上限：kw＝画抬升的软边权重（1 让开、0 照压、其间混合）。宏观、中尺度收尾、嵌套收尾三处封顶同走这里；另算一份＝块与全图的山顶对不上 */
+export function peakCapM(v: number, kw: number): number {
+  if (v <= PEAK_KNEE_M || kw >= 1) return v;
+  const k = PEAK_KNEE_M + (v - PEAK_KNEE_M) / (1 + (v - PEAK_KNEE_M) / PEAK_SOFT_M);
   return kw > 0 ? k + kw * (v - k) : k;
 }
 const STEADY_TOL = 2e-4, KAPPA_M = 1050, LAKE_MIN_M = 25, ACRIT_KM2 = 1500;
@@ -1041,6 +1038,11 @@ function classOf(e: number, rl: number, f: number, tree: number): number {
 }
 /** 陆架坡折（米）· 陆架均宽（km，按地段 0.4～2 倍）· 陆坡（tan 0.8°；3° 在战略格上只剩一格宽的崖） */
 const SHELF_BREAK_M = 140, SHELF_KM = 110, SLOPE_TAN = 0.014;
+/** 群岛的陆架：陆地度先磨的半径（宏观格边的倍数；不磨则三角网的折线露在浅水边上）· 坡折处的陆地度取别的风格的几成
+    （群岛的海大片贴着海平面，照原样取则岛与岛之间整片是浅水；改按离岸距离截，每个岛外就是一圈等宽的晕） */
+const ISL_SHELF_SMOOTH = 1, ISL_SHELF_K = 0.15;
+/** 群岛里不挨陆地的浅滩压到的深度（高程单位）：须与两个地形渲染器水段色阶的深端同值（浅过它才画得出浅水色；深了＝开阔海上又冒出浅色片） */
+export const ISL_SHOAL_U = 0.35;
 /** 近岸最浅（抽象单位）：水格基底须不高于水面 + 它，否则渲染端把它画成陆地；与 core/elev 的 SHORE_E 同值 */
 const SHORE_U = -0.03;
 
@@ -1356,17 +1358,38 @@ function buildFine(p: Gen2Params, M: Macro, g: FieldGeom): Gen2Fine {
   const base = new Float32Array(n), lfIdx = new Uint8Array(n), cf = new Uint8Array(n), cells: string[][] = [];
   /* 陆架＝淹在海面下的低缓陆地：按陆地度取深浅（陆架宽折成陆地度），宽窄跟着海岸带的缓急走，近岸岛连在同一片浅水上；
      离岸超过两倍陆架宽一律往深里走，大洋中间不冒出孤零零的浅滩 */
-  const shelf = (s: number, w: number, dl: number): number => {
-    const z = Math.max(-s * M.kmPerS / w, dl / (isl ? w : 2 * w));
-    return z <= 1 ? SHORE_M - (SHELF_BREAK_M + SHORE_M) * z : -SHELF_BREAK_M - (z - 1) * w * 1000 * SLOPE_TAN;
-  };
+  const shelfZ = (s: number, w: number, dl: number): number => Math.max(-s * M.kmPerS / w, dl / (2 * w));
+  const shelfE = (z: number, w: number): number => z <= 1 ? SHORE_M - (SHELF_BREAK_M + SHORE_M) * z : -SHELF_BREAK_M - (z - 1) * w * 1000 * SLOPE_TAN;
+  /* 群岛只按磨过的陆地度取、不按离岸距离截（距离场的等值线是折线，截出来的浅水边是直边的楔子）；孤零零的浅滩改按连通判：
+     从挨着陆地的海格沿浅过 ISL_SHOAL_U 的海格 4 邻漫开，漫不到的压到 ISL_SHOAL_U */
+  let zIsl: Float64Array | null = null;
+  if (isl) {
+    const Ss = Float64Array.from(S), zs = zIsl = new Float64Array(n), zd = new Float64Array(n), hit = new Uint8Array(n), shoal = ISL_SHOAL_U * p.unitM;
+    boxBlur3(Ss, cols, rows, Math.round(ISL_SHELF_SMOOTH * M.dy / (step * p.kmd)));
+    qh = qt = 0;
+    for (let i = 0; i < n; i++) {
+      if (!water[i]) continue;
+      zs[i] = shelfZ(Ss[i] / ISL_SHELF_K, SW[i], 0); zd[i] = 1 + (shoal - SHELF_BREAK_M) / (SW[i] * 1000 * SLOPE_TAN);
+      if (!(zs[i] < zd[i])) continue;
+      const r = (i / cols) | 0, c = i - r * cols;
+      for (let k = 0; k < 4; k++) { const nr = r + D4R[k], nc = c + D4C[k]; if (nr >= 0 && nc >= 0 && nr < rows && nc < cols && !water[nr * cols + nc]) { hit[i] = 1; queue[qt++] = i; break; } }
+    }
+    while (qh < qt) {
+      const i = queue[qh++], r = (i / cols) | 0, c = i - r * cols;
+      for (let k = 0; k < 4; k++) {
+        const nr = r + D4R[k], nc = c + D4C[k]; if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;
+        const j = nr * cols + nc; if (water[j] && !hit[j] && zs[j] < zd[j]) { hit[j] = 1; queue[qt++] = j; }
+      }
+    }
+    for (let i = 0; i < n; i++) if (water[i] && !hit[i] && zs[i] < zd[i]) zs[i] = zd[i];
+  }
   for (let r = 0; r < rows; r++) {
     const row: string[] = [];
     const lat = bb.latMin + (r + 0.5) * step, al = lat < 0 ? -lat : lat, tree = treeOf(p, lat);
     for (let c = 0; c < cols; c++) {
       const i = r * cols + c;
       let e: number, k: number;
-      if (water[i]) { e = shelf(S[i], SW[i], dLand[i]); k = WATER_CLS; }
+      if (water[i]) { e = shelfE(zIsl ? zIsl[i] : shelfZ(S[i], SW[i], dLand[i]), SW[i]); k = WATER_CLS; }
       else if (lakeOf[i] >= 0) { e = Math.min(E[i], M.lakeS[lakeOf[i]] + SHORE_M); k = WATER_CLS; }
       else {
         e = Math.max(1, E[i]);
@@ -1450,7 +1473,7 @@ function landStencil(i: number, a: number, out: Uint8Array, cols: number, rows: 
 }
 
 /** 中尺度算法代号：中尺度的数学或常数变了就加一，缓存键随之换代（旧解不许还魂） */
-export const MESO_VER = 3;
+export const MESO_VER = 5;
 /** 中尺度稳态的解：高程（米）与流向。缓存这两样就够——汇流面积由流向重积（treeArea），与现解逐位同 */
 export interface Gen2Sg { h: Float64Array; rcv: Int32Array }
 /** 中尺度的产出（网格分辨率）：base＝连续基底（抽象单位；水格照 gen2Fine.base）· env＝起伏包络 0..1（水格 0）·
@@ -1468,29 +1491,58 @@ export function mesoKey(meta: Meta, g: FieldGeom): string {
 /* —— 岩性带：褶皱带里硬软岩层平行造山带，K 按带分档。带的坐标取宏观抬升 U/Umax（等值线平行造山带），每 1/bandN 一条，
    叠两个倍频的三维噪声当褶皱弯曲，带号整数哈希查五档倍率表。静态场，中尺度与块层同一函数、各在自己的格心取 —— */
 /** 目标带宽（km）· 最硬对最软 ＝ c² · 弯曲波长（km）· 弯曲幅度（带数；|弯| 中位约 0.24 条带） */
-export const BAND_KM = 8, BAND_CONTRAST = 3.2, BAND_BEND_KM = 60, BAND_BEND = 1.16;
+export const BAND_KM = 8, BAND_CONTRAST = 1.6, BAND_BEND_KM = 60, BAND_BEND = 1.16;
 /** 带只属于造山带：U/Umax 低于 U0 倍率恒 1、到 U1 满幅渐入（低地与平台整片落在同一带号上，不渐入＝半张图的低地拿同一个倍率）；带数的梯度中位也只看 U0 以上 */
 export const BAND_U0 = 0.1, BAND_U1 = 0.2;
-/** 折皱带里也只有一部分露出成层岩性：按 BAND_VAR_KM 尺度的噪声开关，约四成折皱带满幅、其余不显 */
-export const BAND_VAR_KM = 1500;
+/** 折皱带里也只有一部分露出成层岩性：按 BAND_VAR_KM 尺度的噪声开关，噪声加上偏移（按图定，BandSpec.bandGate）从 0 到 BAND_GATE_W 渐开 */
+export const BAND_VAR_KM = 1500, BAND_GATE_W = 0.2;
+/** 开关的偏移按图定：让本图山地里有带的占 BAND_SHARE，但带不铺过能带上带的地形的 BAND_CAP（山地大半不在折皱带上的图凑不够份额，
+    放开去凑＝折皱带上的丘陵满是成排的岭）。有带＝折皱带占比 ≥ BAND_FOLD_MIN 且抬升渐入 × 开关过半（占比在 0.5 与 1 两头成堆，
+    按权重过半判会卡在半份折皱带的 0.5 上）；偏移只在 ±BAND_GATE_MAX 之间取（噪声不出 ±1.31，两头即全关与全开） */
+export const BAND_SHARE = 0.25, BAND_CAP = 0.5, BAND_FOLD_MIN = 0.25, BAND_GATE_MAX = 2;
 const BAND_TAB = [1 / BAND_CONTRAST, 1 / Math.sqrt(BAND_CONTRAST), 1, Math.sqrt(BAND_CONTRAST), BAND_CONTRAST];
-/** 带规格：umax＝宏观抬升最大值 · bandN＝U/Umax 从 0 到 1 切几条带（0＝没有带，倍率恒 1） */
-export interface BandSpec { umax: number; bandN: number }
+/** 带规格：umax＝宏观抬升最大值 · bandN＝U/Umax 从 0 到 1 切几条带（0＝没有带，倍率恒 1）· bandGate＝岩性噪声开关的偏移 */
+export interface BandSpec { umax: number; bandN: number; bandGate: number }
+const bandAmp = (uRel: number, g: number): number => sstep((uRel - BAND_U0) / (BAND_U1 - BAND_U0)) * (g > 1 ? 1 : g);
+const bandNoise = (P: Pt, seed: number): number => noise3(P.x / BAND_VAR_KM, P.y / BAND_VAR_KM, P.z / BAND_VAR_KM, seed + 1204);
+const bandSwitch = (nz: number, gate: number): number => sstep((nz + gate) / BAND_GATE_W);
 const bandMemo = new WeakMap<Macro, BandSpec>();
-/** 带数按目标带宽与 U/Umax 的梯度中位数反推：陆地节点（U > 0.1·Umax）各按邻点最小二乘求切面梯度（法向加一项压住），取 |∇| 的中位。只随宏观，换网格不变 */
+/** 带数按目标带宽与 U/Umax 的梯度中位数反推：陆地节点（U > 0.1·Umax）各按邻点最小二乘求切面梯度（法向加一项压住），取 |∇| 的中位。
+    开关偏移在宏观的山地节点上二分。两样都只随宏观，换网格不变 */
 export function bandSpecOf(M: Macro, p: Gen2Params): BandSpec {
   const hit = bandMemo.get(M);
   if (hit) return hit;
   const { mesh, U, land, lon0, lat0, dlon, dlat } = M, n = U.length, g: number[] = [];
-  let umax = 0;
+  let umax = 0, bandGate = BAND_GATE_MAX;
   for (let i = 0; i < n; i++) if (U[i] > umax) umax = U[i];
   if (umax > 0) {
-    const P: Pt[] = new Array(n), Us = new Float64Array(n);
+    const P: Pt[] = new Array(n), Us = new Float64Array(n), Gs = new Float64Array(n);
     for (let i = 0; i < n; i++) P[i] = pointOf(p, lon0 + (mesh.X[i] + 0.5) * dlon, lat0 + (mesh.Y[i] + 0.5) * dlat);
     for (let i = 0; i < n; i++) {   // 磨半格再求梯度：中尺度场就是按半个宏观格磨过的，节点间的抖动不算带
-      let s = 0, m = 0;
-      for (let e = mesh.nbOff[i]; e < mesh.nbOff[i + 1]; e++) { s += U[mesh.nb[e]]; m++; }
-      Us[i] = m ? 0.5 * U[i] + 0.5 * s / m : U[i];
+      let s = 0, sg = 0, m = 0;
+      for (let e = mesh.nbOff[i]; e < mesh.nbOff[i + 1]; e++) { s += U[mesh.nb[e]]; sg += M.fold[mesh.nb[e]]; m++; }
+      Us[i] = m ? 0.5 * U[i] + 0.5 * s / m : U[i]; Gs[i] = m ? 0.5 * M.fold[i] + 0.5 * sg / m : M.fold[i];
+    }
+    /* 全开时算得上有带的陆地节点：各记抬升渐入、岩性噪声、是不是山地（地貌照 classOf 按宏观的高程与起伏判）。偏移取两个条件里先到的那个：
+       山地节点里有带的到了 BAND_SHARE，或这些节点已有 BAND_CAP 带着带。只有比较与四则，各引擎逐位同 */
+    const amp: number[] = [], nz: number[] = [], inMt: number[] = [], sd = p.seed * 31;
+    let mt = 0;
+    for (let i = 0; i < n; i++) {
+      if (!land[i] || M.lake[i] >= 0) continue;
+      const lf = (classOf(M.h[i], M.relief[i], 0, 0) / ECOS.length) | 0, m = lf === LF_IDX.mountain || lf === LF_IDX.alpine ? 1 : 0;
+      mt += m;
+      const u = Us[i] / umax, a = u > BAND_U0 && Gs[i] >= BAND_FOLD_MIN ? bandAmp(u, 1) : 0;
+      if (a >= 0.5) { amp.push(a); nz.push(bandNoise(P[i], sd)); inMt.push(m); }
+    }
+    if (amp.length) {
+      let lo = -BAND_GATE_MAX, hi = BAND_GATE_MAX;
+      for (let it = 0; it < 32; it++) {
+        const mid = 0.5 * (lo + hi);
+        let k = 0, km = 0;
+        for (let t = 0; t < amp.length; t++) if (amp[t] * bandSwitch(nz[t], mid) >= 0.5) { k++; km += inMt[t]; }
+        if ((mt > 0 && km >= BAND_SHARE * mt) || k >= BAND_CAP * amp.length) hi = mid; else lo = mid;
+      }
+      bandGate = hi;
     }
     for (let i = 0; i < n; i++) {
       if (!land[i] || U[i] < BAND_U0 * umax) continue;
@@ -1512,18 +1564,24 @@ export function bandSpecOf(M: Macro, p: Gen2Params): BandSpec {
     }
   }
   g.sort((a, b) => a - b);
-  const gm = g.length ? g[g.length >> 1] : 0, spec = { umax, bandN: gm > 0 ? 1 / (BAND_KM * gm) : 0 };
+  const gm = g.length ? g[g.length >> 1] : 0, spec = { umax, bandN: gm > 0 ? 1 / (BAND_KM * gm) : 0, bandGate };
   bandMemo.set(M, spec);
   return spec;
 }
-/** 一点的岩性带 K 倍率：uRel＝U/Umax · g＝折皱带占比（Macro.fold 插到这一点）· P＝图上点（km）；seed 同中尺度（gen2 的 seed × 31） */
+/** 一点上带的权重（0＝不显、1＝满幅）＝抬升渐入 × 折皱带占比 × 岩性噪声开关：uRel＝U/Umax · g＝折皱带占比（Macro.fold 插到这一点）·
+    P＝图上点（km）；seed 同中尺度（gen2 的 seed × 31） */
+export function bandWAt(sp: BandSpec, uRel: number, g: number, P: Pt, seed: number): number {
+  if (!(sp.bandN > 0) || !(uRel > BAND_U0) || !(g > 0)) return 0;
+  const v = bandSwitch(bandNoise(P, seed), sp.bandGate);
+  return v > 0 ? bandAmp(uRel, g) * v : 0;
+}
+/** 一点的岩性带 K 倍率（参数同 bandWAt）：1 + 权重 ×（这条带的档 − 1） */
 export function bandMultAt(sp: BandSpec, uRel: number, g: number, P: Pt, seed: number): number {
-  if (!(sp.bandN > 0) || !(uRel > BAND_U0) || !(g > 0)) return 1;
-  const V = BAND_VAR_KM, v = sstep((noise3(P.x / V, P.y / V, P.z / V, seed + 1204) + 0.05) / 0.2);
-  if (!(v > 0)) return 1;
+  const w = bandWAt(sp, uRel, g, P, seed);
+  if (!(w > 0)) return 1;
   const L = BAND_BEND_KM, L3 = BAND_BEND_KM / 3;
   const bend = BAND_BEND * (noise3(P.x / L, P.y / L, P.z / L, seed + 1201) + 0.5 * noise3(P.x / L3, P.y / L3, P.z / L3, seed + 1202));
-  const u = uRel > 1 ? 1 : uRel, b = Math.floor(u * sp.bandN + bend), w = sstep((uRel - BAND_U0) / (BAND_U1 - BAND_U0)) * (g > 1 ? 1 : g) * v;
+  const u = uRel > 1 ? 1 : uRel, b = Math.floor(u * sp.bandN + bend);
   return 1 + w * (BAND_TAB[Math.floor(cellRand(b + 1048576, seed + 1203) * 5)] - 1);
 }
 
@@ -1601,14 +1659,13 @@ function mesoFinish(st: { pr: MesoPrep; G: MesoGraph }, h: Float64Array, A: Floa
   const { pr, G } = st, { p, g: { bb, step, cols, rows }, M, F, fU, fP, fB, inp: { out, hOut } } = pr, n = cols * rows, um = p.unitM;
   const base = new Float32Array(n), env = new Float32Array(n);
   const qa0 = Math.sqrt(Math.sqrt(MESO_ENV_A0)), qa1 = Math.sqrt(Math.sqrt(MESO_ENV_A1));
-  const at = new Int32Array(25), wt = new Float64Array(25), kneeR = new Float64Array(rows);
-  for (let r = 0; r < rows; r++) kneeR[r] = peakKneeM(p.sphere, bb.latMin + (r + 0.5) * step);
+  const at = new Int32Array(25), wt = new Float64Array(25);
   for (let i = 0; i < n; i++) {
     if (out[i]) { base[i] = F.base[i]; continue; }
     const m = landStencil(i, pr.gen, out, cols, rows, at, wt);
     let hs = 0; for (let t = 0; t < m; t++) hs += wt[t] * h[at[t]];
     let v = hs + fP[i];
-    v = peakCapM(v, kneeR[(i / cols) | 0], up ? up.kw[i] : 0);
+    v = peakCapM(v, up ? up.kw[i] : 0);
     v -= Math.min(fB[i], BOWL_MAX * v);
     const u = up ? fU[i] + up.du[i] : fU[i];
     let w = sstep((u - MESO_PLAIN_U0) / (MESO_PLAIN_U1 - MESO_PLAIN_U0));

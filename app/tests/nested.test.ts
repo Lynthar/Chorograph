@@ -43,8 +43,8 @@ describe("块层嵌套解（core/nested）", () => {
     let x = 0x811c9dc5 | 0;
     const u = new Uint32Array(f.data.buffer, f.data.byteOffset, f.data.length);
     for (let i = 0; i < u.length; i++) x = Math.imul(x ^ u[i], 16777619);
-    assert.strictEqual((x >>> 0).toString(36), "9o7u1r");
-    assert.strictEqual(erodeKey(t), "e10p5v2a-4zzswn-1242z64");
+    assert.strictEqual((x >>> 0).toString(36), "1k7km9u");
+    assert.strictEqual(erodeKey(t), "e10p5v2a-3iecd3-17xvxf4");
   });
 
   it("岩性带按细格心取：块里 K 对父 K 双线性之比＝抖动 × 带函数在细格心的值（带规格、折皱带占比随静态场交下来）", () => {
@@ -172,7 +172,7 @@ describe("块层嵌套解（core/nested）", () => {
     /* 一条骨架边画进细格：节点那一格恰为外层解、受水者那一格恰为它的解，中间沿边单调；别的细格（窗口边除外）不是出口 */
     const cols = 24, rows = 20, n = cols * rows, sx = 4, step = 0.06, fill = (v: number): Float32Array => new Float32Array(n).fill(v);
     const sk = new Uint8Array(n), k0 = 10 * cols + 6; sk[k0] = 1 + 7 * 15 + 1 + 7;   // (6, 10) → (7, 10)
-    const ne: NestInput = { wx: 2, wy: 2, wcols: 20, wrows: 16, x0: 0, y0: 0, gcols: cols, sx, lon0: 100, lat0: 30, step, seed: 31, kmd: 111, sphere: false, umax: 1, bandN: 0, fG: fill(0),
+    const ne: NestInput = { wx: 2, wy: 2, wcols: 20, wrows: 16, x0: 0, y0: 0, gcols: cols, sx, lon0: 100, lat0: 30, step, seed: 31, kmd: 111, sphere: false, umax: 1, bandN: 0, bandGate: 0, fG: fill(0),
       h: Float32Array.from({ length: n }, (_, k) => 100 + 10 * (k % cols)), sk, X: Float32Array.from({ length: n }, (_, k) => k % cols), Y: Float32Array.from({ length: n }, (_, k) => (k / cols) | 0),
       fU: fill(0.5), du: null, kw: null, K: fill(1), P: fill(0), B: fill(0), tauUp: fill(0), A: fill(1), bsig: "t", tgt: null, tsx: 0, pk: null };
     const z = new Float32Array(n), syn: ErodeInput = { bb: { lonMin: 100, latMin: 30, lonMax: 100 + cols * step, latMax: 30 + rows * step }, step, cols, rows, elev0: fill(0.1), water: new Uint8Array(n), wsurf: z,

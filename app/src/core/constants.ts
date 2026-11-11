@@ -456,7 +456,7 @@ export const LANDFORM_ORDER: Landform[] = ["plain", "coast", "hill", "mountain",
 export const ECO_ORDER: Ecotype[] = ["none", "forest", "grassland", "marsh", "desert", "salt"];
 
 /** 地球气候雪线随 |纬度| 的参考曲线（米，分段线性）：赤道约 4800、副热带干旱带隆到 5200、45° 约 2900（阿尔卑斯）、
-    60° 约 1200（北欧）、极地贴海平面。观感的雪线（material.snowSpec）与生成器的峰顶软上限（gen2.peakKneeM）同读这一条 */
+    60° 约 1200（北欧）、极地贴海平面。球面图观感的雪线、林线与气候色阶随纬度的改正都读这一条 */
 export const SNOW_LAT_M: readonly (readonly [number, number])[] = [[0, 4800], [20, 5200], [30, 4600], [45, 2900], [60, 1200], [70, 600], [80, 200], [90, 0]];
 export function snowLatM(absLat: number): number {
   const K = SNOW_LAT_M, n = K.length - 1;

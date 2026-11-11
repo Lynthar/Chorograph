@@ -2,14 +2,14 @@
    全图一窗就是工作档（core/erode.workNest），块的目标面随之取工作档；整球（工作档 1 倍）的块目标面取父基底，工作档与别的图照旧走 core/erode。
    ⚠ 跨引擎逐位确定（同 core/gen2）：只用四则、开方、floor 与整数哈希；窗口里的一切按全图细格号与全图坐标取，相邻两窗的公共格才同值。 */
 import { SHORE_E, WATER_EPS } from "./constants.ts";
-import { BAND_BEND, BAND_BEND_KM, BAND_CONTRAST, BAND_KM, BOWL_MAX, MESO_ACRIT_KM2, MESO_HEAD, MESO_KAPPA_M, MESO_PLAIN_U0, MESO_PLAIN_U1, MESO_U_MIN, bandMultAt, cosD, peakCapM, peakKneeM, pointOf, type MesoState, type UpliftPeak } from "./gen2.ts";
+import { BAND_BEND, BAND_BEND_KM, BAND_CONTRAST, BAND_KM, BOWL_MAX, MESO_ACRIT_KM2, MESO_HEAD, MESO_KAPPA_M, MESO_PLAIN_U0, MESO_PLAIN_U1, MESO_U_MIN, bandMultAt, cosD, peakCapM, pointOf, type MesoState, type UpliftPeak } from "./gen2.ts";
 import { cellRand } from "./gen2mesh.ts";
 import { steady, type SteadyGraph, type SteadyResult } from "./steady.ts";
 import type { ElevField } from "./elev.ts";
 import type { ErodeInput } from "./erode.ts";
 
 /** 算法代号：嵌套解的流程或常数变了加一（只进带 nest 的单的键） */
-export const NEST_VER = 4;
+export const NEST_VER = 5;
 /** 每窗向外多解的父格：骨架之外的谷与坡要在这之内定形，不够则相邻两窗在块心交界上对不上 */
 export const NEST_MARGIN = 8;
 /** 骨架源点在窗口外再取几个父格：三角网的边（流向的一步）最多跨三格，窗外三格的节点流进窗里的那段要画上 */
@@ -44,7 +44,7 @@ const TAU_INF = 1e6;
 /** 块的目标面（工作档裁片）的量化步长（抽象高程，约 3 cm）：工作档在远处的位级扰动不许让所有块换键 */
 export const NEST_TGT_Q = 1 / 65536;
 /** 工作档嵌套解的代号：全图一窗那条路径（校峰等）的流程或常数变了加一（只进工作档单的键） */
-export const WORK_NEST_VER = 3;
+export const WORK_NEST_VER = 4;
 /** 校峰的牛顿步上限：分段线性的凸函数有限步收敛，到上限也确定 */
 const CAL_STEPS = 32;
 
@@ -53,7 +53,7 @@ export interface NestBase {
   cols: number; rows: number;
   X: Float32Array; Y: Float32Array; fU: Float32Array; fK: Float32Array; fP: Float32Array; fB: Float32Array;
   /** 生成器种子（gen2 的 seed × 31）、每度公里、球面；岩性带规格（gen2.BandSpec，细格的 K 按自己的格心再乘一次） */
-  seed: number; kmd: number; sphere: boolean; umax: number; bandN: number;
+  seed: number; kmd: number; sphere: boolean; umax: number; bandN: number; bandGate: number;
   /** 折皱带占比（Macro.fold 插到网格）：岩性带只长在它上面 */
   fG: Float32Array;
 }
@@ -73,7 +73,7 @@ export interface NestInput {
   x0: number; y0: number; gcols: number; sx: number;
   /** 全图原点（度）与父格边长：细格的经纬一律按全图细格号算 */
   lon0: number; lat0: number; step: number;
-  seed: number; kmd: number; sphere: boolean; umax: number; bandN: number; fG: Float32Array;
+  seed: number; kmd: number; sphere: boolean; umax: number; bandN: number; bandGate: number; fG: Float32Array;
   h: Float32Array; sk: Uint8Array; X: Float32Array; Y: Float32Array; fU: Float32Array; du: Float32Array | null; kw: Float32Array | null; K: Float32Array; P: Float32Array; B: Float32Array;
   /** 外层的抬升暂态 τ 与汇流（裁剪）：窗边与骨架钉它们，细级的老面与谷底才与外层同一口径 */
   tauUp: Float32Array; A: Float32Array;
@@ -88,7 +88,7 @@ export interface NestInput {
 export function nestBaseOf(st: MesoState): NestBase {
   const { pr, G } = st, { cols, rows } = pr.g;
   return { cols, rows, X: G.X.slice(), Y: G.Y.slice(), fU: Float32Array.from(pr.fU), fK: Float32Array.from(pr.fK), fP: Float32Array.from(pr.fP), fB: Float32Array.from(pr.fB), fG: Float32Array.from(pr.fG),
-    seed: pr.p.seed * 31, kmd: pr.p.kmd, sphere: pr.p.sphere, umax: pr.band.umax, bandN: pr.band.bandN };
+    seed: pr.p.seed * 31, kmd: pr.p.kmd, sphere: pr.p.sphere, umax: pr.band.umax, bandN: pr.band.bandN, bandGate: pr.band.bandGate };
 }
 /**
  * 一份外层稳态解（h / rcv / A / rl 同 steady）→ 嵌套用的解：骨架＝非出口、流向不指自己、汇流面积 ≥ NEST_SKEL_CELLS 个本格面积；τ 自海湖 0 起沿树累加
@@ -175,7 +175,7 @@ export function nestCrop(src: NestSrc, a0: number, a1: number, b0: number, b1: n
       for (let t = lo; t < idx.length && idx[t] < g1; t++) { const k = r * w + idx[t] - g0; du[k] = S.up.du[t]; kw[k] = S.up.kw[t]; if (du[k] !== 0) anyDu = true; if (kw[k] > 0) anyKw = true; }
     }
   }
-  return { wx: a0, wy: b0, wcols: a1 - a0, wrows: b1 - b0, x0, y0, gcols: gc, sx, lon0, lat0, step, seed: B.seed, kmd: B.kmd, sphere: B.sphere, umax: B.umax, bandN: B.bandN,
+  return { wx: a0, wy: b0, wcols: a1 - a0, wrows: b1 - b0, x0, y0, gcols: gc, sx, lon0, lat0, step, seed: B.seed, kmd: B.kmd, sphere: B.sphere, umax: B.umax, bandN: B.bandN, bandGate: B.bandGate,
     h: sub(S.h), sk: sub(S.sk), X: st(B.X), Y: st(B.Y), fU: st(B.fU), fG: st(B.fG), du: anyDu ? du : null, kw: anyKw ? kw : null, K: st(B.fK), P: st(B.fP), B: st(B.fB),
     tauUp: sub(S.tauUp), A: sub(S.A), bsig: baseSig(B),
     tgt, tsx, pk: work ? (S.up ? S.up.regs : []) : null };
@@ -200,7 +200,7 @@ function baseSig(B: NestBase): string {
 export function nestKeyParts(ne: NestInput): (Uint32Array | Uint8Array)[] {
   const head = new Float64Array([NEST_VER, NEST_MARGIN, NEST_REACH, NEST_PAD, NEST_SKEL_CELLS, SK_R, NEST_JIT, NEST_KJIT, NEST_ITERS, HILL_KM2, HILL_PASSES, HILL_K, LOW_PASSES, NEST_AMP_REF,
     SEED_K, SEED_H0, SEED_JIT, UPLIFT_T, UPLIFT_R, UPLIFT_ACH_KM2, VF_KM, VF_MIN_KM2, FLOOR_MAX_KM, FLOOR_MAX_M, TAU_INF, BAND_KM, BAND_CONTRAST, BAND_BEND_KM, BAND_BEND,
-    ne.wx, ne.wy, ne.wcols, ne.wrows, ne.x0, ne.y0, ne.gcols, ne.sx, ne.lon0, ne.lat0, ne.step, ne.seed, ne.kmd, ne.sphere ? 1 : 0, ne.umax, ne.bandN, ne.du ? 1 : 0, ne.kw ? 1 : 0]);
+    ne.wx, ne.wy, ne.wcols, ne.wrows, ne.x0, ne.y0, ne.gcols, ne.sx, ne.lon0, ne.lat0, ne.step, ne.seed, ne.kmd, ne.sphere ? 1 : 0, ne.umax, ne.bandN, ne.bandGate, ne.du ? 1 : 0, ne.kw ? 1 : 0]);
   const v = (a: Float32Array): Uint32Array => new Uint32Array(a.buffer, a.byteOffset, a.length);
   const parts: (Uint32Array | Uint8Array)[] = [new Uint32Array(head.buffer), Uint32Array.from(ne.bsig, ch => ch.charCodeAt(0)), v(ne.h), ne.sk, v(ne.tauUp), v(ne.A), ...(ne.du ? [v(ne.du)] : []), ...(ne.kw ? [v(ne.kw)] : [])];
   /* 只在有它们时追加：不带目标面的块单、整球图的块键与之前一字不差 */
@@ -463,11 +463,11 @@ function nestFinish(inp: ErodeInput, G: NestGraph, hs: Float64Array, A: Float64A
   if (!ne.tgt) for (let k = 0; k < hovGrid.length && noHov; k++) if (hovGrid[k] !== 0) noHov = false;
   const bm = basin ? Float32Array.from(basin, v => v & 1) : null, inB = bm && vfi ? new Uint8Array(n) : null;
   for (let r = 0; r < FR; r++) {
-    const cy = (gr0 + r + 0.5) / sx - 0.5 - ne.y0, knee = peakKneeM(ne.sphere, ne.lat0 + (gr0 + r + 0.5) * ne.step / sx);   // 膝点随这一行细格的纬度，同 gen2 收尾
+    const cy = (gr0 + r + 0.5) / sx - 0.5 - ne.y0;
     for (let c = 0; c < FC; c++) {
       const i = r * FC + c, cx = (gc0 + c + 0.5) / sx - 0.5 - ne.x0;
       const kwv = F.kw ? F.kw[i] : 0;
-      let v = peakCapM(h[i] + bil(ne.P, cols, rows, cx, cy), knee, kwv);
+      let v = peakCapM(h[i] + bil(ne.P, cols, rows, cx, cy), kwv);
       const b = bil(ne.B, cols, rows, cx, cy);
       v -= b < BOWL_MAX * v ? b : BOWL_MAX * v;
       fine[i] = (v > 1 ? v : 1) / um;
