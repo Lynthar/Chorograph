@@ -157,6 +157,27 @@ export function stampRect(o: { lon: number; lat: number; step?: number }, g: Pic
   return c1 >= c0 && r1 >= r0 ? { c0, c1, r0, r1 } : null;
 }
 
+/** 两份地貌涂改各自盖出的格类型在哪些格上不同（1＝不同）：只看当年生效的涂改本身，不看底稿——
+    分清「地貌是被涂改换掉的」还是「底稿自己换了判法」（中尺度场换了一份）时用 */
+export function overrideDiff(a: TerrainOverride[] | undefined, b: TerrainOverride[] | undefined, g: Pick<Grid, "bb" | "step" | "cols" | "rows">, yearNow: number): Uint8Array {
+  const n = g.cols * g.rows, ids = new Map<string, number>();
+  const stamp = (list: TerrainOverride[] | undefined): Int32Array => {
+    const s = new Int32Array(n);
+    for (const o of list || []) {
+      if (!activeAt(o, yearNow)) continue;
+      const t = canonComposite(o.t), rc = stampRect(o, g);
+      if (!rc) continue;
+      let id = ids.get(t);
+      if (!id) ids.set(t, id = ids.size + 1);
+      for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) s[r * g.cols + c] = id;
+    }
+    return s;
+  };
+  const sa = stamp(a), sb = stamp(b), out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (sa[i] !== sb[i]) out[i] = 1;
+  return out;
+}
+
 /** 官道降低沿途寻路代价：当年生效的道路连线按 40 段插值标记所经格（"r,c"） */
 export function roadCellSet(nodes: WorldNode[], edges: Edge[], yearNow: number, grid: Grid): Set<string> {
   /* ⚠ 建索引而非 `nodes.find`：本函数在**每次网格重建、拨年与编辑**后都跑（host 与 boot 两个调用点），

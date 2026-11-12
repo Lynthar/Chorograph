@@ -4,7 +4,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHistory, terrKey, UNDO_MAX } from "../src/app/history.ts";
 import { createAutosave } from "../src/data/autosave.ts";
-import { muteGenRiver, regenRivers, saveEdgeForm, syncGenRivers, meanderLevelOf, setMeanderLevel } from "../src/app/editops.ts";
+import { foldIntoErosion, muteGenRiver, regenRivers, saveEdgeForm, setErodeMode, syncGenRivers, meanderLevelOf, setMeanderLevel } from "../src/app/editops.ts";
+import { erodeBasis, erodePending } from "../src/core/erode.ts";
+import { validateWorld } from "../src/core/validate.ts";
 import { addEdge, addFreeEdge, addRiver, addAsset, addDecor, removeAsset, addEventNear, addLabel, addNode, addOwner, addPhaseAt, applyEdgeForm, applyNodeForm, applyUnitForm, addUnit, addUnitUnplaced, changeNodeType, dataLon, deleteUnitWaypoint, draftOfRange, moveNode, paintHeightAt, paintHeightPath, paintTerrainPath, paintUpliftPath, removeEdgeAt, removeNode, removeOwner, removePhaseAt, removeUnit, renamePhase, outsideCount, pullIntoFrame, setNodeRangeKm, setNodeVision, setUnitFacing, setUnitRing, setUnitWaypoint, setUnitWaypointAt, setUnitWaypointFacing, setUnitWaypointNum, setUnitWaypointStatus, updateOwner } from "../src/app/editops.ts";
 import { unitArm, unitFacingAt, unitFireKm, unitStatusAt } from "../src/core/units.ts";
 import { adjacentPhaseT, phaseIndexAt, phasesOf } from "../src/core/time.ts";
@@ -984,6 +986,90 @@ describe("地形涂改", () => {
     // 生态轴 none：清生态回纯地貌 hill
     paintTerrainAt(w, buildGridCells(meta, w.terrainOverrides, 3000), 3000, lon, lat, "hill", 1, false, null, "eco");
     assert.strictEqual(cell(), "hill", "生态轴 none：清生态回纯地貌");
+  });
+});
+
+describe("手动档的侵蚀底图（world.baseOverrides）", () => {
+  const meta = (erode?: "base" | "none"): Meta => ({ terrain: "plain", gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, ...(erode ? { erode } : {}) });
+  const P: [number, number][] = [[101.5, 31.5]];
+  it("读法：自动与关闭档＝现状；手动档没记过＝地貌现状、高程与抬升为空；记过的轴取记的、没记的轴取现状", () => {
+    const hov = [{ lon: 101.5, lat: 31.5, dh: 0.1 }], up = [{ lon: 101.5, lat: 31.5, peakM: 900 }], ter = [{ lon: 101.5, lat: 31.5, t: "hill" }];
+    const w = mkWorld({ meta: meta(), terrainOverrides: ter, heightOverrides: hov, upliftOverrides: up, baseOverrides: { terrain: [], height: [] } });
+    assert.deepStrictEqual(erodeBasis(w), { terrain: ter, height: hov, uplift: up }, "自动档不看记录");
+    assert.strictEqual(erodePending(w), false);
+    w.meta = meta("base");
+    assert.deepStrictEqual(erodeBasis(w), { terrain: [], height: [], uplift: up }, "记过的两轴取记的，抬升没记＝现状");
+    assert.strictEqual(erodeBasis(w).uplift, up, "没记的轴就是现状那个数组");
+    assert.strictEqual(erodePending(w), true);
+    delete w.baseOverrides;
+    assert.deepStrictEqual(erodeBasis(w), { terrain: ter, height: undefined, uplift: undefined }, "没记过：高程与抬升不进侵蚀");
+    assert.strictEqual(erodePending(w), true, "带着没侵蚀的高程涂改");
+    w.baseOverrides = {};
+    assert.deepStrictEqual(erodeBasis(w), { terrain: ter, height: hov, uplift: up }, "空记录＝三轴都是现状");
+    assert.strictEqual(erodePending(w), false);
+  });
+  it("地貌笔第一笔钉住改前那份（同一个数组）、后续不再动它；没记过的图同时把高程与抬升记成空；自动档不记", () => {
+    const w = mkWorld({ meta: meta("base") }), g = buildGridCells(w.meta, [], 0), before = w.terrainOverrides;
+    assert.strictEqual(paintTerrainPath(w, g, 0, P, "hill", 1, false, null, "lf"), true);
+    assert.strictEqual(w.baseOverrides!.terrain, before, "钉的就是改前的数组（host 按引用认侵蚀用的网格）");
+    assert.deepStrictEqual(w.baseOverrides, { height: [], uplift: [], terrain: [] });
+    assert.strictEqual(w.terrainOverrides.length, 1);
+    paintTerrainPath(w, buildGridCells(w.meta, w.terrainOverrides, 0), 0, [[102.5, 32.5]], "mountain", 1, false, null, "lf");
+    assert.strictEqual(w.baseOverrides!.terrain, before, "第二笔不重钉");
+    const none = mkWorld({ meta: meta("base") });
+    assert.strictEqual(paintTerrainPath(none, g, 0, P, "plain", 1, true, null, "lf"), false, "空擦");
+    assert.strictEqual(none.baseOverrides, undefined, "没改动不记");
+    const auto = mkWorld({ meta: meta() });
+    paintTerrainPath(auto, g, 0, P, "hill", 1, false, null, "lf");
+    assert.strictEqual(auto.baseOverrides, undefined, "自动档不记");
+  });
+  it("高程笔在收进侵蚀之后的第一笔：深拷贝改前的记录（笔原地改写，快照不跟着变）；地貌笔清掉手雕高程也先钉", () => {
+    const w = mkWorld({ meta: meta("base"), heightOverrides: [{ lon: 101.5, lat: 31.5, dh: 0.1, step: 1 }], baseOverrides: {} }), g = buildGridCells(w.meta, [], 0);
+    assert.strictEqual(paintHeightPath(w, g, P, 0.05, 1, null), true);
+    assert.deepStrictEqual(w.baseOverrides, { height: [{ lon: 101.5, lat: 31.5, dh: 0.1, step: 1 }] }, "只钉动到的那一轴");
+    assert.strictEqual(w.heightOverrides![0].dh, 0.15, "现状照叠");
+    assert.notStrictEqual(w.baseOverrides!.height![0], w.heightOverrides![0], "记录不共用");
+    paintHeightPath(w, g, P, 0.05, 1, null);
+    assert.strictEqual(w.baseOverrides!.height![0].dh, 0.1, "再叠一笔，快照不动");
+    const w2 = mkWorld({ meta: meta("base"), heightOverrides: [{ lon: 101.5, lat: 31.5, dh: 0.1, step: 1 }], baseOverrides: {} });
+    paintTerrainPath(w2, g, 0, P, "hill", 1, false, null, "lf");
+    assert.strictEqual(w2.heightOverrides!.length, 0, "地貌笔清了笔下的手雕高程");
+    assert.deepStrictEqual(w2.baseOverrides, { terrain: [], height: [{ lon: 101.5, lat: 31.5, dh: 0.1, step: 1 }] }, "两轴都钉了改前那份");
+  });
+  it("「侵蚀」命令清空记录（三轴回到现状）；没有可收的不动。换档：进手动＝空记录，离开手动＝删记录，同档不动", () => {
+    const w = mkWorld({ meta: meta("base") }), g = buildGridCells(w.meta, [], 0);
+    assert.strictEqual(foldIntoErosion(w), false, "没有可收的");
+    assert.strictEqual(w.baseOverrides, undefined);
+    paintTerrainPath(w, g, 0, P, "hill", 1, false, null, "lf");
+    assert.strictEqual(foldIntoErosion(w), true);
+    assert.deepStrictEqual(w.baseOverrides, {});
+    assert.deepStrictEqual(erodeBasis(w).terrain, w.terrainOverrides);
+    paintTerrainPath(w, buildGridCells(w.meta, w.terrainOverrides, 0), 0, [[102.5, 32.5]], "hill", 1, false, null, "lf");
+    const pinned = w.baseOverrides;
+    setErodeMode(w, "base");
+    assert.strictEqual(w.baseOverrides, pinned, "同档：记录不动");
+    setErodeMode(w, "all");
+    assert.strictEqual(w.meta.erode, undefined); assert.strictEqual(w.baseOverrides, undefined, "离开手动档删记录");
+    setErodeMode(w, "base");
+    assert.strictEqual(w.meta.erode, "base"); assert.deepStrictEqual(w.baseOverrides, {}, "从自动档进手动档：现状整个算侵蚀过的");
+    setErodeMode(w, "none");
+    assert.strictEqual(w.meta.erode, "none"); assert.strictEqual(w.baseOverrides, undefined);
+  });
+  it("撤销栈与地形键认这个键：只改记录也算地形变了；撤销还原记录", () => {
+    const a = mkWorld({ meta: meta("base") }), b = mkWorld({ meta: meta("base"), baseOverrides: {} });
+    assert.notStrictEqual(terrKey(a), terrKey(b));
+    const h = createHistory();
+    h.push(mkWorld({ meta: meta("base"), baseOverrides: { terrain: [{ lon: 1, lat: 2, t: "hill" }] } }));
+    assert.deepStrictEqual(h.undo(b)!.baseOverrides, { terrain: [{ lon: 1, lat: 2, t: "hill" }] });
+  });
+  it("规范化：非对象删键、非数组的轴删掉、剔非对象成员；校验：形状坏的给警告、超量的拒开", () => {
+    assert.strictEqual(normalizeWorld({ meta: {}, baseOverrides: "x" }).baseOverrides, undefined);
+    assert.deepStrictEqual(normalizeWorld({ meta: {}, baseOverrides: { terrain: [null, { lon: 1, lat: 2, t: "hill" }], height: 3, uplift: [] } }).baseOverrides,
+      { terrain: [{ lon: 1, lat: 2, t: "hill" }], uplift: [] });
+    const v = validateWorld({ meta: {}, nodes: [], baseOverrides: { height: 3 } });
+    assert.ok(v.ok && v.warnings.some(x => x.path === "baseOverrides.height"));
+    assert.ok(validateWorld({ meta: {}, nodes: [], baseOverrides: [] }).warnings.some(x => x.path === "baseOverrides"));
+    assert.strictEqual(validateWorld({ meta: {}, nodes: [], baseOverrides: { terrain: new Array(4000001).fill(0) } }).ok, false, "超过地貌涂改的量级上限");
   });
 });
 

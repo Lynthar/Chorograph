@@ -4,6 +4,7 @@
 import { wrapLon } from "../core/geo.ts";
 import { clampToFrame, inFrame, mapFrame } from "../core/frame.ts";
 import { DH_MAX_M, elevUnitM } from "../core/elev.ts";
+import { erodeMode, erodePending, type ErodeMode } from "../core/erode.ts";
 import { brushZones, encodeZones, paintedZones, zoneGeom } from "../core/climzone.ts";
 import { newId, parseKV, tget } from "../core/util.ts";
 import { activeAt } from "../core/time.ts";
@@ -11,7 +12,7 @@ import { genRiverEdges, riverCells } from "../core/world.ts";
 import { TRACK_OK, isModern, setUnitPoint, unitKind, unitPos, type TrackKey } from "../core/units.ts";
 import { ALL_KINDS, armOptional, canonComposite, CERTAINTY, MZ_MAX, parseComposite, UNIT_KINDS } from "../core/constants.ts";
 import type { Grid } from "../core/grid.ts";
-import type { Arm, Asset, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, NodeRange, Op, Owner, Phase, TerrainId, TerrainOverride, TrackPt, Unit, UpliftOverride, World, WorldNode } from "../core/types.ts";
+import type { Arm, Asset, BaseOverrides, BBox, Certainty, Decor, Edge, Faction, HeightOverride, Meta, NodeRange, Op, Owner, Phase, TerrainId, TerrainOverride, TrackPt, Unit, UpliftOverride, World, WorldNode } from "../core/types.ts";
 
 export const newNodeId = (): string => newId("n");
 export const newEventId = (): string => newId("ev");
@@ -335,6 +336,30 @@ const bucketByCell = <T extends { lon: number; lat: number }>(list: T[], bb: BBo
 const recordBlockStep = (w: World, step: number): boolean =>
   ((w.meta || {}) as { mapKind?: string }).mapKind === "tactical" || step < 1;
 
+/* —— 手动档的侵蚀底图（world.baseOverrides，读端 core/erode.erodeBasis）—— */
+/** 手动档下改三轴涂改之前调：这一轴还跟着现状走，就把改前那份钉成侵蚀看到的。高程轴深拷贝（高程笔原地改写记录）。
+    写入口漏调＝笔下的改动悄悄进了侵蚀输入：画面当时不变，下次整图重算（开图、撤销、换设置）地形自己变 */
+function pinBase(w: World, axis: keyof BaseOverrides): void {
+  if (erodeMode(w.meta) !== "base") return;
+  const b = w.baseOverrides || (w.baseOverrides = { height: [], uplift: [] });   // 键缺＝没记过：高程与抬升不进侵蚀（erodeBasis 同读法）
+  if (b[axis]) return;
+  if (axis === "terrain") b.terrain = w.terrainOverrides || [];
+  else if (axis === "height") b.height = (w.heightOverrides || []).map(o => ({ ...o }));
+  else b.uplift = w.upliftOverrides || [];
+}
+/** 「侵蚀」命令：把现在的三轴涂改整个收进侵蚀（只在手动档有东西可收时动）。返回动了没有 */
+export function foldIntoErosion(w: World): boolean {
+  if (!erodePending(w)) return false;
+  w.baseOverrides = {};
+  return true;
+}
+/** 换侵蚀计算档：进手动档＝现状整个算侵蚀过的（从自动档来画面不变）；离开手动档删记录，免得日后切回来读到过期的那份 */
+export function setErodeMode(w: World, mode: ErodeMode): void {
+  if (mode === erodeMode(w.meta)) return;
+  if (mode === "all") delete w.meta.erode; else w.meta.erode = mode;
+  if (mode === "base") w.baseOverrides = {}; else delete w.baseOverrides;
+}
+
 export function paintTerrainAt(w: World, grid: Grid, yearNow: number, lon: number, lat: number,
   t: string, size: number, erase: boolean, era?: EraNew | null,
   axis: "both" | "lf" | "eco" = "both"): boolean {   // t=复合串（两轴）；axis=单轴笔刷时只并入该轴、另一轴留旧格值
@@ -406,9 +431,10 @@ export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
     }
   }
   // 与旧逐格 filter+push 的产物同序：存活者按原序 + 新涂按盘序追加（新涂中心互异＝不会互相命中）
+  if (deadT.size || added.length) pinBase(w, "terrain");
   w.terrainOverrides = deadT.size || added.length ? (deadT.size ? ovs.filter(o => !deadT.has(o)) : ovs).concat(added) : ovs;
-  if (deadH.size) w.heightOverrides = hovs!.filter(o => !deadH.has(o));   // 只在真移除时赋回（缺键不落盘之约）
-  if (deadU.size) setUplifts(w, ups!.filter(o => !deadU.has(o)));
+  if (deadH.size) { pinBase(w, "height"); w.heightOverrides = hovs!.filter(o => !deadH.has(o)); }   // 只在真移除时赋回（缺键不落盘之约）
+  if (deadU.size) { pinBase(w, "uplift"); setUplifts(w, ups!.filter(o => !deadU.has(o))); }
   if (wiped) wiped.n += deadH.size + deadU.size;
   return changed;
 }
@@ -455,12 +481,14 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
       if (ex) {
         const nd = Math.max(-cap, Math.min(cap, +(ex.dh + dh).toFixed(6)));
         if (nd === ex.dh) continue;               // 已到幅度上限：这一格不再叠，也不记改动
+        pinBase(w, "height");                     // 原地改写之前：钉过即空操作
         ex.dh = nd;
         if (recStep) ex.step = +step.toFixed(7);   // 顺手把旧章的量化 step 校直——不然它在重建端仍按粗块解读
         if (Math.abs(ex.dh) < 1e-6) dead.add(ex);
       } else {
         const ov: HeightOverride = { lon: clon, lat: clat, dh: +dh.toFixed(6) };
         if (recStep) ov.step = +step.toFixed(7);   // 7 位防细格量化误判粗块（同 paintTerrainPath 之规）
+        pinBase(w, "height");
         ovs.push(applyEra(ov, era));
       }
       changed = true;
@@ -517,8 +545,8 @@ export function paintUpliftPath(w: World, grid: Grid, yearNow: number, path: rea
       added.push(applyEra(ov, era));
     }
   }
-  if (deadH.size) w.heightOverrides = hovs!.filter(o => !deadH.has(o));
-  if (deadU.size || added.length) setUplifts(w, (deadU.size ? ups.filter(o => !deadU.has(o)) : ups).concat(added));
+  if (deadH.size) { pinBase(w, "height"); w.heightOverrides = hovs!.filter(o => !deadH.has(o)); }
+  if (deadU.size || added.length) { pinBase(w, "uplift"); setUplifts(w, (deadU.size ? ups.filter(o => !deadU.has(o)) : ups).concat(added)); }
   return deadU.size + deadH.size + added.length > 0;
 }
 

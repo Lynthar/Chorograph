@@ -319,7 +319,7 @@ describe("世界规范化/构造一致", () => {
       const w = JSON.parse(JSON.stringify(blankWorld(c.spec, "@today@")));
       assert.strictEqual(w.meta.gridN, autoGridN(w.meta), "盖章值＝创建当刻自动档");
       delete w.meta.gridN;
-      assert.strictEqual(w.meta.erode, "base", "新图出生即「仅底图」（黄金基准早于这枚盖章，剥掉再比）");
+      assert.strictEqual(w.meta.erode, "base", "新图出生即手动档（黄金基准早于这枚盖章，剥掉再比）");
       delete w.meta.erode;
       assert.deepStrictEqual(w, c.output);
     }

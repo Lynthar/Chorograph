@@ -20,7 +20,7 @@ import { paintStep, resamplePaintRuns } from "./territory.ts";
 import { calOf, fmtYear, yearSpanT } from "./calendar.ts";
 import { erodeMode, type ErodeMode } from "./erode.ts";
 import { reliefSeedOf } from "./relief.ts";
-import type { CalendarCfg, GenStyle, Meta, PaintLayer, TerrainMode, TerrainOverride, World, WorldNode } from "./types.ts";
+import type { BaseOverrides, CalendarCfg, GenStyle, HeightOverride, Meta, PaintLayer, TerrainMode, TerrainOverride, World, WorldNode } from "./types.ts";
 
 const clone = <T>(o: T): T => JSON.parse(JSON.stringify(o));
 
@@ -86,7 +86,7 @@ export function blankTacticalWorld(s: BlankTacSpec, today: string): World {
   if (s.vault) meta.vault = s.vault;
   if (s.period === "modern") meta.period = "modern";
   meta.gridN = autoGridN(meta);   // 尺度身份盖章（创建时定形）：此后法则常数演进不动旧图
-  meta.erode = "base";            // 同 blankWorld：新图出生即「仅底图」
+  meta.erode = "base";            // 同 blankWorld：新图出生即手动档
   return { meta, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] };
 }
 
@@ -94,7 +94,7 @@ export interface TacBakeOpts {
   parentMapId?: string | null;   // 双向链接：meta.parent.map（外壳传当前图 id）
   yearNow?: number;              // 事件无 year 时的年份兜底
   today?: string;               // 更新戳 YYYY-MM-DD（外壳传，保持纯函数）
-  erode?: ErodeMode;             // 子图的侵蚀计算档（作者生成时选）；缺省＝母图的档——母图保住的手雕高程不该在子图上被再侵蚀
+  erode?: ErodeMode;             // 子图的侵蚀计算档（作者生成时选）；缺省＝母图的档——母图上还没侵蚀的涂改不该在子图上被侵蚀
 }
 
 /** 从战役事件点烘焙一张战术世界（子图恒平面）。dia 内部钳 [20,140]；units:[] 空。
@@ -165,32 +165,37 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
      （生成器升级不再改旧战场）。sample/plain 锚世界坐标、更细的重采样反而更好＝维持透传继承。
      BAKE_CAP 防细格母图（旧 auto 战术图再烘）烙爆章数：k×k 瓦片粗采、章尺寸随之放大。 */
   const bake = m.terrain === "auto" || m.terrain === "island";
-  const terrainOverrides: TerrainOverride[] = [];
-  if (bake) {
-    const g = buildGridCells(m, src.terrainOverrides, yr);
-    const c0 = Math.max(0, Math.floor((invLon(bbox.lonMin) - g.bb.lonMin) / g.step));
-    const c1 = Math.min(g.cols - 1, Math.floor((invLon(bbox.lonMax) - g.bb.lonMin) / g.step));
-    const r0 = Math.max(0, Math.floor((bbox.latMin - g.bb.latMin) / g.step));
-    const r1 = Math.min(g.rows - 1, Math.floor((bbox.latMax - g.bb.latMin) / g.step));
-    if (c1 >= c0 && r1 >= r0) {   // 窗口全在母图幅外（不该发生）＝不烙，子图纯平原
-      const k = Math.max(1, Math.ceil(Math.sqrt((c1 - c0 + 1) * (r1 - r0 + 1) / BAKE_CAP)));
-      for (let r = r0; r <= r1; r += k) for (let c = c0; c <= c1; c += k)
-        terrainOverrides.push({
-          lon: +tx(g.bb.lonMin + (c + k / 2) * g.step).toFixed(4), lat: +(g.bb.latMin + (r + k / 2) * g.step).toFixed(4),
-          t: g.cells[Math.min(r + (k >> 1), r1)][Math.min(c + (k >> 1), c1)],   // 瓦片中央格的类别
-          step: +(g.step * k).toFixed(7)   // 写端 7 位（涂改块尺寸契约）；粗块经向覆盖差一个 cosφ,同下继承粗块之注
-        });
+  /** 母图的一份地貌涂改 → 子图的（物化或透传）：现状与「侵蚀看到的那份」各走一遍 */
+  const bakeTerrain = (list: TerrainOverride[]): TerrainOverride[] => {
+    const terrainOverrides: TerrainOverride[] = [];
+    if (bake) {
+      const g = buildGridCells(m, list, yr);
+      const c0 = Math.max(0, Math.floor((invLon(bbox.lonMin) - g.bb.lonMin) / g.step));
+      const c1 = Math.min(g.cols - 1, Math.floor((invLon(bbox.lonMax) - g.bb.lonMin) / g.step));
+      const r0 = Math.max(0, Math.floor((bbox.latMin - g.bb.latMin) / g.step));
+      const r1 = Math.min(g.rows - 1, Math.floor((bbox.latMax - g.bb.latMin) / g.step));
+      if (c1 >= c0 && r1 >= r0) {   // 窗口全在母图幅外（不该发生）＝不烙，子图纯平原
+        const k = Math.max(1, Math.ceil(Math.sqrt((c1 - c0 + 1) * (r1 - r0 + 1) / BAKE_CAP)));
+        for (let r = r0; r <= r1; r += k) for (let c = c0; c <= c1; c += k)
+          terrainOverrides.push({
+            lon: +tx(g.bb.lonMin + (c + k / 2) * g.step).toFixed(4), lat: +(g.bb.latMin + (r + k / 2) * g.step).toFixed(4),
+            t: g.cells[Math.min(r + (k >> 1), r1)][Math.min(c + (k >> 1), c1)],   // 瓦片中央格的类别
+            step: +(g.step * k).toFixed(7)   // 写端 7 位（涂改块尺寸契约）；粗块经向覆盖差一个 cosφ,同下继承粗块之注
+          });
+      }
+    } else {
+      for (const o of list || []) {
+        if (!inBB(o) || !activeAt(o, yr)) continue;
+        const c = strip(clone(o)); c.lon = tx(o.lon); c.step = +(o.step as number) || 1;   // 记原块尺寸(战略=1°)，战术细网格上按粗块盖章为初稿
+        terrainOverrides.push(c);
+      }
     }
-  } else {
-    for (const o of src.terrainOverrides || []) {
-      if (!inBB(o) || !activeAt(o, yr)) continue;
-      const c = strip(clone(o)); c.lon = tx(o.lon); c.step = +(o.step as number) || 1;   // 记原块尺寸(战略=1°)，战术细网格上按粗块盖章为初稿
-      terrainOverrides.push(c);
-    }
-  }
-  const heightOverrides = (src.heightOverrides || []).filter(o => inBB(o) && activeAt(o, yr)).map(o => {
+    return terrainOverrides;
+  };
+  const bakeHeights = (list: HeightOverride[] | undefined): HeightOverride[] => (list || []).filter(o => inBB(o) && activeAt(o, yr)).map(o => {
     const c = strip(clone(o)); c.lon = tx(o.lon); c.step = +(o.step as number) || 1; return c;   // 高程涂改同规则继承
   });
+  const terrainOverrides = bakeTerrain(src.terrainOverrides), heightOverrides = bakeHeights(src.heightOverrides);
 
   const cal = clone(m.calendar || { months: 12, dpm: 30 });
   const cs = calOf(cal);
@@ -213,7 +218,7 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
   if (m.period === "modern") meta.period = "modern";      // 时代随图继承（母图一般没有；设置里可改）
   if (m.outside === "land") meta.outside = "land";        // 图幅外随图继承：母图声明内陆，切边的湖在子图仍是湖（不继承＝水面沉回 0）
   const er = opts.erode ?? erodeMode(m);
-  if (er !== "all") meta.erode = er;                      // 缺键＝底图与涂改（同设置的写法）
+  if (er !== "all") meta.erode = er;                      // 缺键＝自动档（同设置的写法）
   if (m.vault) meta.vault = m.vault;
   meta.gridN = autoGridN(meta);   // 尺度身份盖章（同 blankTacticalWorld）
 
@@ -237,6 +242,15 @@ export function createTacticalWorld(src: World, ev: WorldNode, dia: number, opts
 
   const out: World = { meta, factions, nodes, edges, decor, terrainOverrides, units: [] };
   if (heightOverrides.length) out.heightOverrides = heightOverrides;
+  /* 手动档的子图继承母图「哪些涂改收进了侵蚀」：自动档母图＝全收；手动档母图＝它记的那份照样烘一遍（没记就不带，子图照缺键读）。
+     不带过来，母图上还没侵蚀的手画山在子图上被刻出谷网。画抬升不随图（战术图不读它） */
+  const pb = src.baseOverrides, pm = erodeMode(m);
+  if (er === "base" && (pm === "all" || (pm === "base" && pb))) {
+    const b: BaseOverrides = {};
+    if (pm === "base" && pb!.terrain) b.terrain = bakeTerrain(pb!.terrain);
+    if (pm === "base" && pb!.height) b.height = bakeHeights(pb!.height);
+    out.baseOverrides = b;
+  }
   if (assets.length) out.assets = assets;
   return out;
 }

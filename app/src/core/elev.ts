@@ -72,17 +72,18 @@ export function fieldMix<F extends ElevField>(from: ElevField, to: F, t: number)
     参照是扭曲基面邻域）不许被人为抬高，增量为零的细格因此恒等于 fine=原位不动之约保持；
     水域格天花=max(WATER_CEIL, 本次粗格场该格值)——涂水后残留的陆高须压进水面，否则新画的
     水面上浮着旧地形的干斑；取粗格场而非类型表，内陆湖才不会在等待窗里被按回海平面。 */
-export function fieldPlusDelta<F extends ElevField>(fine: F, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null): F {
-  const d = deltaOf(base, now, geom);
+export function fieldPlusDelta<F extends ElevField>(fine: F, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null, drop?: Float32Array | null): F {
+  const d = deltaOf(base, now, geom, drop);
   return d ? applyDelta(fine, d, now, geom, cells, free) : fine;
 }
-/** 粗格增量 now − base 与它的变化范围（粗格闭区间）；两份逐位相同＝null */
-export interface CoarseDelta { diff: Float32Array; c0: number; r0: number; c1: number; r1: number }
-export function deltaOf(base: Float32Array, now: Float32Array, geom: FieldGeom): CoarseDelta | null {
+/** 粗格增量 now − base 与它的变化范围（粗格闭区间）；两份逐位相同且没有 drop 格＝null。
+    drop＝细场在这些粗格上的细节作废多少（0..1，dropWeights 给）：取 1 的地方不叠增量、改取 now 的双线性，之间按权重混 */
+export interface CoarseDelta { diff: Float32Array; c0: number; r0: number; c1: number; r1: number; drop?: Float32Array | null }
+export function deltaOf(base: Float32Array, now: Float32Array, geom: FieldGeom, drop?: Float32Array | null): CoarseDelta | null {
   const { cols, rows } = geom;
   let c0 = cols, c1 = -1, r0 = rows, r1 = -1;
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    if (now[r * cols + c] !== base[r * cols + c]) {
+    if (now[r * cols + c] !== base[r * cols + c] || (drop && drop[r * cols + c])) {
       if (c < c0) c0 = c; if (c > c1) c1 = c;
       if (r < r0) r0 = r; if (r > r1) r1 = r;
     }
@@ -90,12 +91,61 @@ export function deltaOf(base: Float32Array, now: Float32Array, geom: FieldGeom):
   if (c1 < 0) return null;
   const diff = new Float32Array(rows * cols);
   for (let i = 0; i < rows * cols; i++) diff[i] = now[i] - base[i];
-  return { diff, c0, r0, c1, r1 };
+  return { diff, c0, r0, c1, r1, drop: drop || null };
+}
+/** 地貌轴不同的格的作废权重（a、b 是同几何的两份类型格；一格都没有＝null）：不同的格连同周围 core 格取 1，再往外 fade 格线性降到 0（按方窗距离）。
+    only＝只在这些格里找不同（外扩不受它限）。渐降是因为侵蚀过的地面整体比粗格场低几米，一格之内切换会留一道坎，晕渲把它画成细线 */
+export function landformChanged(a: string[][], b: string[][], only: Uint8Array | null, core: number, fade: number): Float32Array | null {
+  const rows = a.length, cols = rows ? a[0].length : 0, memo = new Map<string, string>();
+  const lf = (t: string): string => { let v = memo.get(t); if (v === undefined) memo.set(t, v = terrainProps(t).lf); return v; };
+  let out: Float32Array | null = null;
+  for (let r = 0; r < rows; r++) {
+    const ra = a[r], rb = b[r];
+    for (let c = 0; c < cols; c++) {
+      if (ra[c] === rb[c] || (only && !only[r * cols + c]) || lf(ra[c]) === lf(rb[c])) continue;
+      (out ||= new Float32Array(rows * cols))[r * cols + c] = 1;
+    }
+  }
+  if (!out) return null;
+  /* 逐圈外扩（八邻一圈＝方窗距离加一）：front 是上一圈新标上的格 */
+  let front: number[] = [];
+  for (let i = 0; i < out.length; i++) if (out[i]) front.push(i);
+  for (let d = 1; d <= core + fade && front.length; d++) {
+    const v = d <= core ? 1 : 1 - (d - core) / (fade + 1), next: number[] = [];
+    for (const i of front) {
+      const r = (i / cols) | 0, c = i - r * cols;
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const rr = r + dr, cc = c + dc;
+        if (rr < 0 || cc < 0 || rr >= rows || cc >= cols || out[rr * cols + cc]) continue;
+        out[rr * cols + cc] = v; next.push(rr * cols + cc);
+      }
+    }
+    front = next;
+  }
+  return out;
+}
+/** 手动档增量合成丢细节的范围：换了地貌的格外扩 DROP_CORE 格全丢、再 DROP_FADE 格渐降；低地上基面被地貌涂改动过 DROP_HI_M 米以上全丢、不到 DROP_LO_M 米不算 */
+export const DROP_CORE = 1, DROP_FADE = 3, DROP_LO_M = 3, DROP_HI_M = 15;
+/** 细场出自 from、屏上是 to（同几何的两个 Grid）时，增量合成在哪些粗格上丢掉细场的细节（deltaOf 的 drop；没有＝null）。
+    基面那一项管战术图的山前带：山脚外十几格的平原基面都跟着山在变，留着那里的细节＝涂掉的山脚外一圈浅沟。权重乘「1 − 这一格地貌类型的山地度」（平原、沿海全算，山地不算）：涂掉半座山，剩下半座的基面也在降，它的沟谷照旧留着。
+    only＝两者的中尺度场不同时传涂改差（core/grid.overrideDiff）：只认涂改换掉的地貌，基面差不看——它含抬升的高差，那是整片照叠的 */
+export function dropWeights(meta: Meta | undefined, from: Grid, to: Grid, only: Uint8Array | null): Float32Array | null {
+  let out = landformChanged(from.cells, to.cells, only, DROP_CORE, DROP_FADE);
+  if (only) return out;
+  const a = baseElev(meta || {}, from), b = baseElev(meta || {}, to), u = elevUnitM(meta), lo = DROP_LO_M / u, hi = DROP_HI_M / u, cols = to.cols;
+  for (let i = 0; i < a.length; i++) {
+    const d = Math.abs(b[i] - a[i]);
+    if (d <= lo) continue;
+    const t = d >= hi ? 1 : (d - lo) / (hi - lo), w = t * t * (3 - 2 * t) * (1 - mountainness(terrainProps(to.cells[(i / cols) | 0][i % cols]).elev));
+    if (!out) out = new Float32Array(a.length);
+    if (w > out[i]) out[i] = w;
+  }
+  return out;
 }
 /** 把一份粗格增量羽化进细场 fine（语义见 fieldPlusDelta；free＝不钳陆地地板的粗格，即画的盆地 Grid.meso.basin，盆底可低于类型地板与海面）。fine 可以只是图幅的一块（分块精修），原点须落在细格网上；
     补丁窗碰不到这块＝返回 fine 本身（引用不变） */
 export function applyDelta<F extends ElevField>(fine: F, d: CoarseDelta, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null): F {
-  const { cols, rows } = geom, { diff, c0, r0, c1, r1 } = d;
+  const { cols, rows } = geom, { diff, c0, r0, c1, r1, drop } = d;
   /* 补丁窗＝变化粗格 [c0..c1]×[r0..r1] 的双线性支撑域折到细格（k=粗细步长比），外留 1 格余量；
      出界钳到边缘格＝边缘章的支撑域自然含边界细格。oc/or＝fine 原点在全图细格网上的偏移（整幅场为 0） */
   const k = geom.step / fine.step;
@@ -111,6 +161,7 @@ export function applyDelta<F extends ElevField>(fine: F, d: CoarseDelta, now: Fl
       const i = r * fine.cols + c;
       const lon = fine.bb.lonMin + (c + 0.5) * fine.step;
       let v = fine.data[i] + elevBilinear(diff, geom, lon, lat);
+      if (drop) { const m = elevBilinear(drop, geom, lon, lat); if (m > 0) v += (elevBilinear(now, geom, lon, lat) - v) * m; }
       if (cells) {
         const pc = Math.max(0, Math.min(cols - 1, Math.floor((lon - geom.bb.lonMin) / geom.step)));
         const p = terrainProps(cells[pr][pc]);

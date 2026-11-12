@@ -3,7 +3,7 @@
    语义断言防"新旧一起错"：官道减半、水军限水、可达性判定、时间轴范围。 */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildGridCells, gridGeom, roadCellSet, type Grid } from "../src/core/grid.ts";
+import { buildGridCells, gridGeom, overrideDiff, roadCellSet, type Grid } from "../src/core/grid.ts";
 import { astar, cellCenter, cellCost, computeRoute, lonlatToCell, measureLegs, routeReport } from "../src/core/route.ts";
 import { DEPTH_RATIO, bearingDeg, footCornersLL, setUnitPoint, unitFacingAt, unitFootKm, unitLegs, unitPos } from "../src/core/units.ts";
 import { pickUnit, unitSpots } from "../src/render/units.ts";
@@ -15,7 +15,7 @@ import { ERODE_VER, erodeCarve, erodeField, erodeGate, erodeInput, erodeKey, ero
 import { gen2Meso, gen2Uplift, mesoState, riverParams, type UpliftCells } from "../src/core/gen2.ts";
 import { tileInput, tileKey, tilePlan } from "../src/core/tiles.ts";
 import { fbm } from "../src/core/noise.ts";
-import { baseElev, buildElevField, coarseField, elevBilinear, fieldMix, fieldPlusDelta, waterMask, waterSurface, LAND_FLOOR, SHORE_E, type ElevField } from "../src/core/elev.ts";
+import { baseElev, buildElevField, coarseField, dropWeights, DROP_CORE, DROP_FADE, elevBilinear, fieldMix, fieldPlusDelta, landformChanged, waterMask, waterSurface, LAND_FLOOR, SHORE_E, type ElevField } from "../src/core/elev.ts";
 import { gnoise, makeRelief, mountainness, RELIEF_M } from "../src/core/relief.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
@@ -888,7 +888,7 @@ describe("侵蚀真形（core/erode）", () => {
     assert.strictEqual(inp.unitM, 2000);
     assert.notStrictEqual(erodeKey(inp), erodeKey({ ...inp, unitM: 1000 }), "unitM 是内容键的一元");
   });
-  it("侵蚀计算档（meta.erode）：缺键与非法值＝底图与涂改；关闭＝门关、输入 null（与 gate 同判）；仅底图由 host 传空涂改组装", () => {
+  it("侵蚀计算档（meta.erode）：缺键与非法值＝自动；关闭＝门关、输入 null（与 gate 同判）；手动档由 host 传侵蚀看到的那份涂改组装", () => {
     const { grid } = mkGrid(plainWorld());
     assert.strictEqual(erodeMode(undefined), "all"); assert.strictEqual(erodeMode({}), "all");
     assert.strictEqual(erodeMode({ erode: "base" }), "base"); assert.strictEqual(erodeMode({ erode: "none" }), "none");
@@ -896,8 +896,8 @@ describe("侵蚀真形（core/erode）", () => {
     const hov = [{ lon: 100.2, lat: 30.7, dh: 0.2 }];
     assert.strictEqual(erodeGate({ terrain: "plain", relief: 0.5, erode: "none" }, hov, grid, 3100), false, "关闭：relief 与涂改都不开门");
     assert.strictEqual(erodeInput({ terrain: "plain", relief: 0.5, erode: "none" }, hov, grid, 3100), null);
-    assert.ok(erodeInput({ terrain: "plain", relief: 0.5, erode: "base" }, undefined, grid, 3100)!.hovGrid.every(v => v === 0), "仅底图：host 传空涂改＝零栅格");
-    assert.strictEqual(erodeGate({ terrain: "plain", erode: "base" }, undefined, grid, 3100), false, "仅底图且 relief=0＝无侵蚀（涂改不参与）");
+    assert.ok(erodeInput({ terrain: "plain", relief: 0.5, erode: "base" }, undefined, grid, 3100)!.hovGrid.every(v => v === 0), "手动档没记过：host 传空涂改＝零栅格");
+    assert.strictEqual(erodeGate({ terrain: "plain", erode: "base" }, undefined, grid, 3100), false, "手动档没记过且 relief=0＝无侵蚀（涂改不参与）");
   });
   it("erodeGate 与 erodeInput 逐位同判（2026-08-13 延迟组装批:门在 rebuild 同拍、数组在结算拍,判据不许漂）", () => {
     const { grid } = mkGrid(plainWorld());
@@ -1214,6 +1214,76 @@ describe("侵蚀等待窗合成（core/elev.fieldPlusDelta）", () => {
     const out = fieldPlusDelta(fine, base, now, g2, cells, Uint8Array.of(1, 0));
     assert.ok(out.data[0] < -0.05, "盆里的细格随增量压到海面以下：" + out.data[0]);
     assert.ok(out.data[3] >= 0.06 - 1e-6, "掩码外照旧钳回类型地板：" + out.data[3]);
+  });
+  it("drop 格（地貌被涂改换掉）：细场的细节作废、取粗格场的双线性；离它一格以外照旧叠增量；只有 drop 没有增量也出补丁", () => {
+    const fine = mkFine(), base = new Float32Array(16).fill(0.5), now = base.slice(), drop = new Float32Array(16);
+    now[1 * 4 + 1] = 0.2; drop[1 * 4 + 1] = 1;   // (r1,c1) 从 0.5 涂成 0.2 的另一种地貌
+    const out = fieldPlusDelta(fine, base, now, geom, undefined, null, drop);
+    const at = (fr: number, fc: number): number => out.data[fr * 20 + fc];
+    assert.ok(Math.abs(at(7, 7) - 0.2) < 1e-6, "格心：就是粗格场的值，原来的起伏没了 " + at(7, 7));
+    const plain = fieldPlusDelta(fine, base, now, geom);
+    assert.ok(Math.abs(plain.data[7 * 20 + 7] - (fine.data[7 * 20 + 7] - 0.3)) < 1e-6, "不带 drop＝照旧叠增量（细节留着）");
+    assert.strictEqual(at(17, 17), fine.data[17 * 20 + 17], "支撑域外不动");
+    const mid = at(7, 10), add = fine.data[7 * 20 + 10] + elevBilinear(Float32Array.from(now, (v, i) => v - base[i]), geom, 100 + 10.5 * 0.2, 30 + 7.5 * 0.2), bil = elevBilinear(now, geom, 100 + 10.5 * 0.2, 30 + 7.5 * 0.2);
+    const m = elevBilinear(drop, geom, 100 + 10.5 * 0.2, 30 + 7.5 * 0.2);
+    assert.ok(m > 0.3 && m < 0.5, "前提：这一格在 drop 格与邻格之间 " + m);
+    assert.ok(Math.abs(mid - (add + (bil - add) * m)) < 1e-6, "两格之间按 drop 的双线性权重过渡");
+    const same = fieldPlusDelta(fine, base, base, geom, undefined, null, drop);
+    assert.notStrictEqual(same, fine, "粗格场没变但有 drop 格：照样出补丁");
+    assert.ok(Math.abs(same.data[7 * 20 + 7] - 0.5) < 1e-6);
+    assert.strictEqual(fieldPlusDelta(fine, base, base, geom, undefined, null, new Float32Array(16)), fine, "drop 全零＝没有");
+  });
+  it("landformChanged 只认地貌轴：换生态不算、换地貌算；only 圈定范围；一格都没有＝null", () => {
+    const a = [["plain", "plain/forest", "hill"], ["water", "mountain", "plain"]], b = [["plain/forest", "hill/forest", "hill"], ["plain", "mountain", "plain"]];
+    assert.deepStrictEqual(Array.from(landformChanged(a, b, null, 0, 0)!), [0, 1, 0, 1, 0, 0]);
+    assert.deepStrictEqual(Array.from(landformChanged(a, b, Uint8Array.of(1, 0, 1, 1, 1, 1), 0, 0)!), [0, 0, 0, 1, 0, 0]);
+    assert.strictEqual(landformChanged(a, a, null, 1, 3), null);
+    assert.strictEqual(landformChanged(a, [["plain/desert", "plain", "hill/forest"], ["water", "mountain", "plain"]], null, 1, 3), null, "只换了生态");
+    const P = Array.from({ length: 7 }, () => Array.from({ length: 7 }, () => "plain")), Q = P.map(r => r.slice());
+    Q[3][3] = "mountain"; Q[0][6] = "hill";
+    const g1 = landformChanged(P, Q, null, 1, 0)!, g2 = landformChanged(P, Q, null, 2, 0)!;
+    assert.strictEqual(g1.reduce((s, v) => s + v, 0), 9 + 4, "外扩一格：中间那格成 3×3，角上那格钳在图内成 2×2");
+    assert.strictEqual(g2.reduce((s, v) => s + v, 0), 25 + 9 - 4, "外扩两格：5×5 与角上的 3×3 叠了 4 格");
+    assert.ok(g2[1 * 7 + 1] === 1 && g2[0] === 0 && g2[3 * 7 + 6] === 0, "方窗：斜对角两格也在内，再远不在");
+    const W = Array.from({ length: 1 }, () => Array.from({ length: 9 }, () => "plain")), X = [W[0].slice()];
+    X[0][0] = "water";
+    assert.deepStrictEqual(Array.from(landformChanged(W, X, null, 1, 3)!), [1, 1, 0.75, 0.5, 0.25, 0, 0, 0, 0], "全丢一格、再三格线性降到 0");
+  });
+  it("dropWeights：换了地貌的格与邻格全丢、往外渐降；战术图的山前带（低地上基面动了 15 m 以上的格）也全丢、动得少的按比例，留下的山不丢；传了 only 就只看地貌", () => {
+    const meta: Meta = { terrain: "plain", mapKind: "tactical", worldModel: "flat", kmPerDeg: 111.19, relief: 0.6, gridN: 120, bbox: { lonMin: 114, lonMax: 114.108, latMin: 34, latMax: 34.108 } };
+    const blk = []; for (let r = 48; r < 72; r++) for (let c = 48; c < 72; c++) blk.push({ lon: 114 + (c + 0.5) * 0.0009, lat: 34 + (r + 0.5) * 0.0009, t: "mountain", step: 0.0009 });
+    const from = buildGridCells(meta, blk, 0), to = buildGridCells(meta, [], 0), n = from.cols;
+    assert.strictEqual(from.cells[60][60], "mountain"); assert.strictEqual(to.cells[60][60], "plain");
+    const w = dropWeights(meta, from, to, null)!, base0 = baseElev(meta, from), base1 = baseElev(meta, to), U = 2000;
+    assert.strictEqual(w[60 * n + 60], 1); assert.strictEqual(w[60 * n + 47], 1, "邻格全丢");
+    let ramp = 0, part = 0;
+    for (let i = 0; i < w.length; i++) {
+      const d = Math.abs(base1[i] - base0[i]) * U;
+      if (d >= 15) { assert.strictEqual(w[i], 1, "基面动了 " + d.toFixed(1) + " m 的低地格全丢"); if (from.cells[(i / n) | 0][i % n] === "plain") ramp++; }
+      else if (w[i] > 0 && w[i] < 1) part++;
+    }
+    /* 只涂掉山的南半：北半还是山，基面跟着降了上百米，沟谷照旧留着（离切口四格以外权重 0） */
+    const half = buildGridCells(meta, blk.filter(o => o.lat > 34 + 60 * 0.0009), 0), wh = dropWeights(meta, from, half, null)!, bh = baseElev(meta, half);
+    assert.strictEqual(half.cells[68][60], "mountain");
+    assert.ok((base0[68 * n + 60] - bh[68 * n + 60]) * U > 15, "前提：留下的山基面降了 " + ((base0[68 * n + 60] - bh[68 * n + 60]) * U).toFixed(0) + " m");
+    assert.strictEqual(wh[68 * n + 60], 0, "留下的山不丢细节");
+    assert.strictEqual(wh[55 * n + 60], 1, "涂掉的那半全丢");
+    assert.ok(ramp > 100, "前提：山脚外有一圈基面跟着变的平原格（山前带）" + ramp);
+    assert.ok(part > 0, "再往外渐降");
+    assert.strictEqual(w[5 * n + 5], 0, "远处不动");
+    const only = new Uint8Array(w.length).fill(1), lfOnly = dropWeights(meta, from, to, only)!;
+    assert.deepStrictEqual(lfOnly, landformChanged(from.cells, to.cells, only, DROP_CORE, DROP_FADE), "传 only：基面那一项不看");
+    assert.ok(lfOnly.reduce((s, v) => s + (v === 1 ? 1 : 0), 0) < w.reduce((s, v) => s + (v === 1 ? 1 : 0), 0));
+    assert.strictEqual(dropWeights(meta, to, to, null), null);
+  });
+  it("overrideDiff 只比涂改盖出的格：一边有一边没有、两边盖的类型不同都算；同样的涂改（顺序不同也行）不算；过期的不算", () => {
+    const g = { bb: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 }, step: 1, cols: 4, rows: 4 };
+    const A = [{ lon: 100.5, lat: 30.5, t: "hill" }, { lon: 101.5, lat: 30.5, t: "mountain" }, { lon: 103.5, lat: 33.5, t: "plain", until: 2000 }];
+    const B = [{ lon: 101.5, lat: 30.5, t: "plain" }, { lon: 100.5, lat: 30.5, t: "hill" }, { lon: 102.5, lat: 31.5, t: "water" }];
+    const d = overrideDiff(A, B, g, 3000);
+    assert.deepStrictEqual([d[0], d[1], d[1 * 4 + 2], d[3 * 4 + 3]], [0, 1, 1, 0]);
+    assert.strictEqual(d.reduce((s, v) => s + v, 0), 2);
+    assert.ok(overrideDiff(A, [A[1], A[0]], g, 3000).every(v => v === 0));
   });
 });
 

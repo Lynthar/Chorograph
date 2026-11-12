@@ -9,7 +9,7 @@ import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, 
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
 import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, upliftCells, upliftOn, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, stampRect, type Grid } from "../src/core/grid.ts";
-import { erodeGate, erodeInput, erodeMode } from "../src/core/erode.ts";
+import { erodeBasis, erodeGate, erodeInput, erodeMode } from "../src/core/erode.ts";
 import { peakTable, pickPeaks, waterSpots, type PickOpts } from "../src/core/spots.ts";
 import { handleRouteMsg } from "../src/worker/routeProto.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
@@ -1373,7 +1373,7 @@ describe("可靠性分级 certainty（柱B）", () => {
 });
 
 describe("新图的侵蚀计算档", () => {
-  it("新建的战略图与战术战场出生即「仅底图」；存档里没有这个键的旧图仍按「底图与涂改」读", () => {
+  it("新建的战略图与战术战场出生即手动档；存档里没有这个键的旧图仍按自动档读", () => {
     const strat = blankWorld({ 名称: "甲", worldModel: "sphere", terrain: "plain", bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } }, "d");
     const tac = blankTacticalWorld({ 名称: "乙", lon: 114, lat: 38, diaKm: 20, battleYear: 1 }, "d");
     assert.strictEqual(strat.meta.erode, "base");
@@ -2180,14 +2180,36 @@ describe("战术图生成（快照烘焙）", () => {
     assert.ok(w.terrainOverrides.every(o => (o.step as number) > mstep * 1.5), "粗采瓦片的章尺寸＝k×母格边（k>1）");
   });
 
-  it("侵蚀计算档：缺省随母图（底图与涂改不落键），作者选的档压过母图", () => {
+  it("侵蚀计算档：缺省随母图（自动档不落键），作者选的档压过母图", () => {
     const src = srcWorld();
-    assert.strictEqual(createTacticalWorld(src, ev, 60, {}).meta.erode, undefined, "母图缺键＝底图与涂改＝子图也不落键");
+    assert.strictEqual(createTacticalWorld(src, ev, 60, {}).meta.erode, undefined, "母图缺键＝自动档＝子图也不落键");
     src.meta.erode = "base";
-    assert.strictEqual(createTacticalWorld(src, ev, 60, {}).meta.erode, "base", "母图仅底图：手雕高程在子图上也不被再侵蚀");
+    assert.strictEqual(createTacticalWorld(src, ev, 60, {}).meta.erode, "base", "母图手动档：没侵蚀的涂改在子图上也不被侵蚀");
     assert.strictEqual(createTacticalWorld(src, ev, 60, { erode: "none" }).meta.erode, "none");
     assert.strictEqual(createTacticalWorld(src, ev, 60, { erode: "all" }).meta.erode, undefined);
     assert.strictEqual(src.meta.erode, "base", "母图不动");
+  });
+  it("手动档的子图继承母图「哪些涂改收进了侵蚀」：自动档母图＝全收；手动档母图照它记的那份烘一遍，没记就不带", () => {
+    const src = srcWorld();
+    src.heightOverrides = [{ lon: ev.lon, lat: ev.lat, dh: 0.2, step: 0.1 }];
+    const seen = (w: World) => erodeBasis(w);
+    const fromAuto = createTacticalWorld(src, ev, 60, { erode: "base" });
+    assert.deepStrictEqual(fromAuto.baseOverrides, {}, "自动档母图上全都侵蚀过：子图三轴都是现状");
+    assert.deepStrictEqual(seen(fromAuto).height, fromAuto.heightOverrides);
+    assert.strictEqual(createTacticalWorld(src, ev, 60, {}).baseOverrides, undefined, "子图不是手动档：不带");
+    src.meta.erode = "base";
+    const legacy = createTacticalWorld(src, ev, 60, {});
+    assert.strictEqual(legacy.baseOverrides, undefined, "母图没记过：子图照缺键读");
+    assert.strictEqual(seen(legacy).height, undefined, "手雕高程在子图上也不进侵蚀");
+    src.baseOverrides = { height: [], terrain: src.terrainOverrides.slice(0, 1) };
+    const kid = createTacticalWorld(src, ev, 60, {});
+    assert.deepStrictEqual(kid.baseOverrides!.height, [], "母图记的空高程：子图也空");
+    assert.strictEqual(kid.heightOverrides!.length, 1, "现状的高程涂改照旧带过来");
+    const only = createTacticalWorld({ ...src, terrainOverrides: src.terrainOverrides.slice(0, 1) }, ev, 60, {});
+    assert.deepStrictEqual(kid.baseOverrides!.terrain, only.terrainOverrides, "地貌那一轴＝拿母图记的那份照同一条路烘出来的");
+    src.baseOverrides = {};
+    assert.deepStrictEqual(createTacticalWorld(src, ev, 60, {}).baseOverrides, {}, "母图全收进去了：子图也全收");
+    assert.strictEqual(createTacticalWorld(src, ev, 60, { erode: "none" }).baseOverrides, undefined);
   });
   it("earth 历法母图：calendar 原样继承、tacSpan=当年 JDN、说明用公元纪年", () => {
     const src = srcWorld();

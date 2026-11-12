@@ -260,7 +260,7 @@ describe("块层嵌套解（core/nested）", () => {
     assert.ok(s70 > 0 && Math.abs(Math.sqrt(s35 / s70) - 0.5) < 0.01, `细节之比 ${Math.sqrt(s35 / s70).toFixed(3)}`);
   });
 
-  it("高程涂改照叠：粗格涂改双线性叠到陆细格上（底图与涂改档下块里也有它），水细格不动", () => {
+  it("高程涂改照叠：粗格涂改双线性叠到陆细格上（自动档下块里也有它），水细格不动", () => {
     const { inp, plan, nest } = fix(), tinp = tileInput(inp, plan, null, plan.tiles[5], nest), dh = 0.1;
     const a = field(plan.tiles[5]).data, b = nestedField({ ...tinp, hovGrid: new Float32Array(tinp.hovGrid.length).fill(dh) }).data, { wat } = nestSolve(tinp).F;
     let land = 0, exact = 0;

@@ -193,8 +193,8 @@ const waitRepaint = async (label, h0) => {
 await send("Page.navigate", { url: `${origin}/?b=${Math.random().toString(36).slice(2)}#map=${encodeURIComponent(mapName)}&force=cpu` });
 await until("CPU 观感底图开图", `document.getElementById('crumbName')?.textContent === ${JSON.stringify(mapName)} && (c => c && c.width > 0)(document.getElementById('map'))`);
 await erodeQuiet("CPU 开图落定");
-/* 比对要有区分力：旧式示例缺省无起伏（大片平台，窗边算错也看不出）→ 开「自然」；侵蚀计算选「仅底图」——
-   缺省档收笔后侵蚀落地会整幅重画，最后上屏的就不是补画了 */
+/* 比对要有区分力：旧式示例缺省无起伏（大片平台，窗边算错也看不出）→ 开「自然」；侵蚀计算选「手动」——
+   自动档收笔后侵蚀落地会整幅重画，最后上屏的就不是补画了 */
 await evalJs(`document.getElementById('btnSettings').click()`);
 await until("设置弹层（地势起伏）", `!!document.getElementById('sw_relief')`);
 await evalJs(`(() => { document.getElementById('sw_relief').value = '0.7'; document.querySelector('input[name="sw_erode"][value="base"]').click(); [...document.querySelectorAll('button')].find(b => b.textContent.includes('应用到当前世界')).click(); })()`);

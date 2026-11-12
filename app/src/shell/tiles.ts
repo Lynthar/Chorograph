@@ -26,8 +26,8 @@ export interface TileManager {
   /** 新一份全图工作档输入（同几何）：plan＝core/tiles.tilePlan 的结果，base＝这份输入出自的粗格场（增量合成的基准），key＝erodeKey(inp)（切割量按它在内存里留几份）；
       nest＝这份输入出自的中尺度场给嵌套解的那份（带中尺度的图才有，有它块就走嵌套解；工作档也是嵌套解时 nest.work 带着它，块的目标面取它） */
   setInput(inp: ErodeInput, plan: TilePlan, base: Float32Array, key: string, nest?: NestSrc | null): void;
-  /** 当前含涂改的粗格场与网格（每次重建都送）：在屏块按它补增量 */
-  setCoarse(now: Float32Array, grid: Grid): void;
+  /** 当前含涂改的粗格场与网格（每次重建都送）：在屏块按它补增量；drop＝地貌被涂改换掉的粗格（core/elev.deltaOf 的 drop，没有传 null） */
+  setCoarse(now: Float32Array, grid: Grid, drop: Float32Array | null): void;
   /** 视口与缩放（每帧送，没变就不动） */
   setView(view: BBox, degPerPx: number): void;
 }
@@ -50,9 +50,9 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
   const shown = new Map<number, Shown>(), published = new Set<number>(), held = new Set<number>();
   const fresh = new Map<number, Shown>();   // 视口里在屏块的新一份：视口齐了才换上
   const queue = new Set<number>(), inflight = new Map<number, string>();
-  let now: Float32Array | null = null, grid: Grid | null = null;
+  let now: Float32Array | null = null, grid: Grid | null = null, drop: Float32Array | null = null;
   let view: BBox | null = null, dpp = 0, vis = new Set<number>();
-  let disp = new Map<number, Float32Array>(), dispFor = new Map<number, [Float32Array, Float32Array, Float32Array]>();   // 在屏块 → (raw, base, now) 算出的显示数组
+  let disp = new Map<number, Float32Array>(), dispFor = new Map<number, [Float32Array, Float32Array, Float32Array, Float32Array | null]>();   // 在屏块 → (raw, base, now, drop) 算出的显示数组
   let busy = false, computed = false, up = false, down = false;   // up＝块层在屏（下屏只在上过屏时报）
   const emit = (L: TileLayer | null): void => { if (!L && !up) return; up = !!L; d.onLayer(L); };
 
@@ -74,21 +74,21 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
   /* 块层：在屏块按「raw + (当前粗格 − 它的基准粗格)」出显示数组；三样引用都没变就沿用上一份（渲染器按数组引用判要不要重传） */
   function publish(): void {
     if (!plan) return;
-    const deltas = new Map<Float32Array, CoarseDelta | null>(), next = new Map<number, Float32Array>(), nextFor = new Map<number, [Float32Array, Float32Array, Float32Array]>();
+    const deltas = new Map<Float32Array, CoarseDelta | null>(), next = new Map<number, Float32Array>(), nextFor = new Map<number, [Float32Array, Float32Array, Float32Array, Float32Array | null]>();
     let changed = disp.size !== published.size;
     for (const i of published) {
       const s = shown.get(i)!, prev = dispFor.get(i);
       let a = disp.get(i)!;
-      if (!prev || prev[0] !== s.raw || prev[1] !== s.base || prev[2] !== now) {
+      if (!prev || prev[0] !== s.raw || prev[1] !== s.base || prev[2] !== now || prev[3] !== drop) {
         a = s.raw;
         if (now && grid && s.base !== now) {
-          if (!deltas.has(s.base)) deltas.set(s.base, deltaOf(s.base, now, grid));
+          if (!deltas.has(s.base)) deltas.set(s.base, deltaOf(s.base, now, grid, drop));
           const dl = deltas.get(s.base);
           if (dl) a = applyDelta(tileField(plan.geom, i, s.raw), dl, now, grid, grid.cells, grid.meso ? grid.meso.basin : null).data;
         }
         if (a !== disp.get(i)) changed = true;
       }
-      next.set(i, a); nextFor.set(i, [s.raw, s.base, now!]);
+      next.set(i, a); nextFor.set(i, [s.raw, s.base, now!, drop]);
     }
     disp = next; dispFor = nextFor;
     if (changed) emit({ geom: plan.geom, tiles: disp });
@@ -206,7 +206,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
       publish(); updateBusy();
       if (!dead) requestCarve();   // 等复位的那几秒不发：复位时见没有切割量会补要
     },
-    setCoarse(n, g) { now = n; grid = g; publish(); },
+    setCoarse(n, g, dr) { now = n; grid = g; drop = dr; publish(); },
     setView(v, degPerPx) {
       if (view && v.lonMin === view.lonMin && v.lonMax === view.lonMax && v.latMin === view.latMin && v.latMax === view.latMax && degPerPx === dpp) return;
       view = v; dpp = degPerPx;

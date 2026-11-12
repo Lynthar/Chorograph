@@ -16,17 +16,46 @@ import { kmPerDegXY } from "./geo.ts";
 import { activeAt } from "./time.ts";
 import { buildGridCells, stampRect, type Grid } from "./grid.ts";
 import { SCALE_PROFILES, scaleProfile } from "./scale.ts";
-import type { BBox, HeightOverride, Meta } from "./types.ts";
+import type { BBox, HeightOverride, Meta, TerrainOverride, UpliftOverride, World } from "./types.ts";
 import { nestCrop, nestKeyParts, type NestInput, type NestSrc } from "./nested.ts";
 
 /** 侵蚀计算档（meta.erode，设置弹层一行三选）：缺键与非法值＝all。
-    all＝底图与涂改都侵蚀（落笔先见草稿，算完落地换真形）；base＝只侵蚀地类底图，高程涂改直接叠在定形后的场上
-    （host 传空涂改组装输入、Grid 没换就不发单＝笔落即最终、重开图也一样；地貌笔改了地类仍会重算）；none＝不侵蚀（门恒关＝粗格路径）。 */
+    all＝自动（涂改后自动重算，落笔先见草稿、算完落地换真形）；base＝手动（只侵蚀 erodeBasis 给的那份，之后的涂改叠在定形后的场上＝笔落即最终，
+    点「侵蚀」才把现状收进去重算）；none＝不侵蚀（门恒关＝粗格路径）。 */
 export type ErodeMode = "all" | "base" | "none";
-export const ERODE_MODES: Record<ErodeMode, { 名: string }> = { all: { 名: "底图与涂改" }, base: { 名: "仅底图" }, none: { 名: "关闭" } };
+export const ERODE_MODES: Record<ErodeMode, { 名: string }> = { all: { 名: "自动" }, base: { 名: "手动" }, none: { 名: "关闭" } };
 export function erodeMode(meta: Meta | undefined): ErodeMode {
   const v = (meta || {}).erode;
   return v === "base" || v === "none" ? v : "all";
+}
+
+/** 侵蚀看到的三轴涂改 */
+export interface ErodeBasis { terrain: TerrainOverride[]; height: HeightOverride[] | undefined; uplift: UpliftOverride[] | undefined }
+/** 手动档取 world.baseOverrides 记的那份（轴缺＝现状；整个键缺＝地貌取现状、高程与抬升为空），其余档＝现状。
+    host、战术图烘焙与「侵蚀」按钮同读这一处：各读各的，同一份存档换个入口就侵蚀出另一份地形 */
+export function erodeBasis(w: World): ErodeBasis {
+  const terrain = w.terrainOverrides, height = w.heightOverrides, uplift = w.upliftOverrides;
+  if (erodeMode(w.meta) !== "base") return { terrain, height, uplift };
+  const b = w.baseOverrides;
+  if (!b) return { terrain, height: undefined, uplift: undefined };
+  return { terrain: b.terrain ?? terrain, height: b.height ?? height, uplift: b.uplift ?? uplift };
+}
+/** 手动档下有没有还没收进侵蚀的涂改（「侵蚀」按钮可不可点）：钉过任一轴，或没记过的图带着高程涂改 / 画抬升 */
+export function erodePending(w: World): boolean {
+  if (erodeMode(w.meta) !== "base") return false;
+  const b = w.baseOverrides, some = (a: unknown[] | undefined): boolean => !!a && a.length > 0;
+  return b ? !!(b.terrain || b.height || b.uplift) : some(w.heightOverrides) || some(w.upliftOverrides);
+}
+/** 高程涂改的内容指纹（顺序相关；空与缺同为 ""）：host 判「侵蚀看到的高程涂改变没变」，只在数组引用换了时算 */
+export function hovSig(list: HeightOverride[] | undefined): string {
+  if (!list || !list.length) return "";
+  const f = new Float64Array(6), u = new Uint32Array(f.buffer);
+  let a = 0x811c9dc5 | 0, b = 0x6c62272e | 0;
+  for (const o of list) {
+    f[0] = +o.lon; f[1] = +o.lat; f[2] = +o.dh; f[3] = +(o.step as number) || 0; f[4] = o.since ?? NaN; f[5] = o.until ?? NaN;
+    for (let i = 0; i < 12; i++) { a = Math.imul(a ^ u[i], 16777619); b = Math.imul(b ^ u[i], 0x85ebca6b) + i | 0; }
+  }
+  return list.length + "-" + (a >>> 0).toString(36) + "-" + (b >>> 0).toString(36);
 }
 
 export interface ErodeInput {

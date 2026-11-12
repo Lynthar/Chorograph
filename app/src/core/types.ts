@@ -62,7 +62,7 @@ export interface Meta {
   outside?: "land";           // 图幅外是陆地：碰到图幅边的水体也按内陆湖定水面，图幅外铺纸色（缺键=海）
   period?: "modern";          // 时代（战术图）：现代解锁雷达等近现代账目；缺键＝古代＝既有图一字不变。⚠ 与 calendar.era（纪元前缀）无关
   climate?: Climate;          // 气候档：陆地配色、林线与雪线，球面图再随纬度在图幅内变化（缺键=出厂配色、2050 m 雪线、无林线，旧图观感不变）
-  erode?: "base" | "none";    // 侵蚀计算档（core/erode.erodeMode）：缺键＝底图与涂改都侵蚀（旧图逐位不变）；base＝只侵蚀地类底图、高程涂改叠在其上；none＝不侵蚀
+  erode?: "base" | "none";    // 侵蚀计算档（core/erode.erodeMode）：缺键＝自动（涂改后自动重算，旧图逐位不变）；base＝手动（只侵蚀 world.baseOverrides 记的那份，之后的涂改叠在其上）；none＝不侵蚀
   calendar?: CalendarCfg;     // 战术图历法（默认 12 月 × 30 日）
   parent?: TacParent;
   battleYear?: number;        // 战术图对应的战役年份
@@ -184,6 +184,10 @@ export interface UpliftOverride extends Timed {
   step?: number;              // 图章尺寸（同 HeightOverride）
 }
 
+/** 侵蚀看到的涂改（手动档才读，读端只有 core/erode.erodeBasis）：三轴各一份上次侵蚀时的涂改，缺哪一轴＝那一轴与现状相同。
+    整个键缺＝地貌取现状、高程与抬升不进侵蚀（这个键出现之前存的手动档图就是这样读的）。数组写进来之后不许原地改——host 按引用认它 */
+export interface BaseOverrides { terrain?: TerrainOverride[]; height?: HeightOverride[]; uplift?: UpliftOverride[] }
+
 export interface TrackPt {
   t: number; lon: number; lat: number;
   st?: string;                // 状态（UNIT_STATUS 键：battle/standoff/rout）：自该航点起生效到下一航点；缺省=行军/常态
@@ -235,6 +239,7 @@ export interface World {
   terrainOverrides: TerrainOverride[];
   heightOverrides?: HeightOverride[];   // 可选（不入 normalizeWorld 数组清单——旧档形状不变）
   upliftOverrides?: UpliftOverride[];   // 画抬升（可选键，缺省不落盘——同 heightOverrides；只在 v2 战略图上生效）
+  baseOverrides?: BaseOverrides;        // 手动档下侵蚀看到的涂改（可选键；见 BaseOverrides）
   units: Unit[];
   assets?: Asset[];                     // 自定义印章资产（可选键，缺省不落盘——同 heightOverrides）
   climateZones?: ClimateZone[];         // 气候分区（core/climzone；可选键，缺省不落盘；只进观感）

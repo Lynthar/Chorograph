@@ -47,6 +47,15 @@ export function normalizeWorld(w: unknown): World {
     if (Array.isArray(o[k])) o[k] = o[k].filter(isRec);
     else delete o[k];
   }
+  // baseOverrides（手动档下侵蚀看到的涂改）：非对象删键；三轴各自非数组删轴（＝那一轴按现状）、剔非对象成员
+  if (o.baseOverrides != null) {
+    if (!isRec(o.baseOverrides)) delete o.baseOverrides;
+    else for (const k of ["terrain", "height", "uplift"]) {
+      const a = o.baseOverrides[k];
+      if (a == null) continue;
+      if (Array.isArray(a)) o.baseOverrides[k] = a.filter(isRec); else delete o.baseOverrides[k];
+    }
+  }
   // climateZones（气候分区）同「缺键不落盘」：非数组删键、剔非对象成员（档名与 runs 的坏值由解码端跳过）
   if (o.climateZones != null) {
     if (Array.isArray(o.climateZones)) o.climateZones = o.climateZones.filter(isRec);
@@ -233,7 +242,7 @@ export function blankWorld(s: BlankWorldSpec, today: string): World {
      kmPerDeg/半径）创建后冻结,公式却会演进;盖章后旧图永远按建图当天的格边打开,法则常数
      此后只影响新图。⚠ 对黄金基准属 sanctioned 附加键：parity 比对时剥掉此键另断言其值。 */
   w.meta.gridN = autoGridN(w.meta);
-  w.meta.erode = "base";   // 新图出生即「仅底图」：涂改叠在侵蚀之后、笔落即最终；缺键的旧图仍是「底图与涂改」，不许改缺省
+  w.meta.erode = "base";   // 新图出生即手动档：涂改叠在侵蚀之后、笔落即最终；缺键的旧图仍是自动档，不许改缺省
   w.edges = genRiverEdges(w.meta);   // 网格几何要等 gridN 盖章
   return w as World;
 }

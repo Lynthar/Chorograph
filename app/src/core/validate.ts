@@ -73,7 +73,7 @@ export function validateWorld(w: unknown): ValidateResult {
   if (meta.climate != null && !tget(CLIMATE, meta.climate as string))
     W("meta.climate", `未知气候档 ${JSON.stringify(meta.climate)}（按未设定处理：出厂配色与雪线、无林线、不随纬度）`);
   if (meta.erode != null && !tget(ERODE_MODES, meta.erode as string))
-    W("meta.erode", `未知侵蚀计算档 ${JSON.stringify(meta.erode)}（按「底图与涂改」处理）`);
+    W("meta.erode", `未知侵蚀计算档 ${JSON.stringify(meta.erode)}（按「自动」处理）`);
   if (meta.bbox != null) {
     const b = meta.bbox as Record<string, unknown>;
     if (!isObj(b) || !isNum(b.lonMin) || !isNum(b.lonMax) || !isNum(b.latMin) || !isNum(b.latMax)
@@ -243,6 +243,18 @@ export function validateWorld(w: unknown): ValidateResult {
   });
   if (Array.isArray(o.upliftOverrides) && o.upliftOverrides.length && !upliftOn(meta as Meta))
     W("upliftOverrides", "画抬升只在第二版生成器的战略图上生效，这张图上不显示");
+
+  /* —— 手动档下侵蚀看到的涂改（三轴数组；量级闸同各自的顶层数组，成员由 normalize 剔非对象）—— */
+  const bo = o.baseOverrides;
+  if (bo != null) {
+    if (!isObj(bo)) W("baseOverrides", "侵蚀看到的涂改不是对象，打开时将被丢弃");
+    else for (const [k, top] of [["terrain", "terrainOverrides"], ["height", "heightOverrides"], ["uplift", "upliftOverrides"]] as const) {
+      const a = bo[k];
+      if (a == null) continue;
+      if (!Array.isArray(a)) W(`baseOverrides.${k}`, "不是数组，打开时这一轴按现状处理");
+      else if (a.length > worldCap(top)) F(`baseOverrides.${k}`, `含 ${a.length} 项，超出可处理上限（疑损坏或恶意档）`);
+    }
+  }
 
   /* —— 生成河的删改记录（格号；normalize 剔非整数、升序去重）—— */
   const off = o.genRiverOff;

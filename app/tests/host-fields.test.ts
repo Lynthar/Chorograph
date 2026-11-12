@@ -5,6 +5,7 @@ import { describe, it, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createHost } from "../src/shell/host.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
+import { foldIntoErosion, paintHeightPath, paintTerrainPath, paintUpliftPath } from "../src/app/editops.ts";
 import { genRiverEdges, genRiverEdgesOf, normalizeWorld } from "../src/core/world.ts";
 import { gridGeom } from "../src/core/grid.ts";
 import { beginStroke, canUndoSig, cellsVerSig, deleteEdgeIdx, editVerSig, endStroke, erodePhaseSig, gridVerSig, mesoDownSig, mutateWorld, readOnlySig, redoWorld, ruleFieldSig, undoWorld, worldSig, yearSig } from "../src/app/state.ts";
@@ -133,7 +134,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(seen.rule, ctx.ruleField);
   });
 
-  it("仅底图档：高程笔重建不发单、不弃精修、不撤单；规则场＝工作档叠涂改增量且立即落定；侵蚀输入不含涂改", async () => {
+  it("手动档：高程笔重建不发单、不弃精修、不撤单；规则场＝工作档叠涂改增量且立即落定；侵蚀输入不含涂改", async () => {
     const { ctx, seen } = mkCtx();
     const host = createHost(ctx);
     landWorld(ctx, W({ erode: "base" }), "t1", 3050);
@@ -158,7 +159,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(seen.field, ctx.elevField); assert.equal(seen.rule, ctx.ruleField);
   });
 
-  /** 仅底图档开图到工作档落地，再用地貌笔换掉侵蚀的 Grid，新单挂在飞行中 */
+  /** 手动档开图到工作档落地，再用地貌笔换掉侵蚀的 Grid，新单挂在飞行中 */
   async function baseWithJobInFlight(ctx: ShellCtx, seen: Seen, host: ReturnType<typeof createHost>): Promise<void> {
     landWorld(ctx, W({ erode: "base" }), "t1", 3050);
     host.rebuildIfNeeded();
@@ -174,7 +175,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
   }
   const sculpt = (): void => mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.02, lat: 30.02, dh: 0.2 }); }, { grid: true });
 
-  it("仅底图档：换了侵蚀 Grid 的新单在飞时落高程笔：画面跟笔、不撤单、不落定，新单落地才落定", async () => {
+  it("手动档：换了侵蚀 Grid 的新单在飞时落高程笔：画面跟笔、不撤单、不落定，新单落地才落定", async () => {
     const { ctx, seen } = mkCtx();
     const host = createHost(ctx);
     await baseWithJobInFlight(ctx, seen, host);
@@ -192,7 +193,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(seen.erodes, 2, "高程笔没有另发单");
   });
 
-  it("仅底图档：换了侵蚀 Grid 的那一单算不出：落定当下那份；下一笔重发单，落地前不落定", async () => {
+  it("手动档：换了侵蚀 Grid 的那一单算不出：落定当下那份；下一笔重发单，落地前不落定", async () => {
     const { ctx, seen } = mkCtx();
     const host = createHost(ctx);
     await baseWithJobInFlight(ctx, seen, host);
@@ -211,6 +212,113 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.ok(ruleFieldSig.value === ctx.ruleField, "工作档出自当前 Grid：高程笔照旧立即落定");
     await tick(500);
     assert.equal(seen.erodes, 3, "高程笔不发单");
+  });
+
+  /** 手动档开图到精修落地；brush＝走写入口的一笔地貌（丘陵）加一次重建 */
+  async function manualSettled(ctx: ShellCtx, w0: World): Promise<{ host: ReturnType<typeof createHost>; brush: () => void }> {
+    const host = createHost(ctx);
+    landWorld(ctx, w0, "t1", 3050);
+    host.rebuildIfNeeded();
+    await flush(); await tick(240, 6); await tick(6000);
+    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "前置：精修在屏");
+    return { host, brush: () => { mutateWorld(w => { paintTerrainPath(w, ctx.grid!, 3050, [[100.05, 30.05]], "hill", 2, false, null, "lf"); }, { grid: true }); host.rebuild(); } };
+  }
+  it("手动档地貌笔：侵蚀看到的仍是改前那份——不发单、不弃精修、规则场＝工作档叠增量且立即落定；屏上的格换成新地类", async () => {
+    const { ctx, seen } = mkCtx();
+    const { host, brush } = await manualSettled(ctx, W({ erode: "base" }));
+    const work = ctx.ruleField!, g0 = ctx.grid!, erodes0 = seen.erodes;
+    brush();
+    await tick(500);
+    assert.notEqual(ctx.grid, g0, "屏上的格换了实例（地类变了，寻路与配色跟着变）");
+    assert.ok(ctx.grid!.cells.some(row => row.includes("hill")));
+    assert.equal(seen.erodes, erodes0, "没有再发侵蚀单");
+    assert.equal(seen.erodeCancels, 0);
+    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "精修仍在屏（叠了地貌增量）");
+    assert.equal(ctx.ruleField!.cols, work.cols);
+    assert.notEqual(ctx.ruleField, work, "规则场＝工作档叠地貌增量");
+    assert.equal(ruleFieldSig.value, ctx.ruleField, "立即落定");
+    assert.notEqual(erodePhaseSig.value, "work", "胶囊不亮");
+    /* 涂成丘陵的格：旧的侵蚀细节作废，读到的是未侵蚀的新地貌（粗格场的值），不是假工作档的满幅数；没涂到的格照旧是工作档 */
+    const g = ctx.grid!, f = ctx.ruleField!, k = f.cols / g.cols, r = Math.floor((30.05 - g.bb.latMin) / g.step), c = Math.floor((100.05 - g.bb.lonMin) / g.step);
+    assert.equal(g.cells[r][c], "hill");
+    const center = f.data[(r * k + (k >> 1)) * f.cols + c * k + (k >> 1)];
+    assert.ok(center < seen.workCap! / 10, "笔下的格大半取粗格场（细格心离粗格心四分之一格，权重 15/16）：" + center);
+    assert.equal(f.data[0], seen.workCap, "远处纹丝不动");
+    assert.ok(ctx.elevField!.data[(r * 4 + 2) * ctx.elevField!.cols + c * 4 + 2] < seen.ultraCap! / 10, "精修场上同样");
+    brush();   // 同一处再涂＝零改动；再换一处
+    mutateWorld(w => { paintTerrainPath(w, ctx.grid!, 3050, [[100.02, 30.02]], "mountain", 2, false, null, "lf"); }, { grid: true });
+    host.rebuild(); await tick(500);
+    assert.equal(seen.erodes, erodes0, "第二笔照旧不发单");
+    assert.equal(ruleFieldSig.value, ctx.ruleField);
+  });
+  it("手动档点「侵蚀」：发一单，单里是现在的地貌与高程；撤销、重做都换回最近落地过的那份，不再发单", async () => {
+    const { ctx, seen } = mkCtx();
+    const { host, brush } = await manualSettled(ctx, W({ erode: "base" }));
+    const erodes0 = seen.erodes, elev0 = seen.lastInp!.elev0.slice();
+    brush();
+    mutateWorld(w => { paintHeightPath(w, ctx.grid!, [[100.08, 30.08]], 0.05, 2, null); }, { grid: true }); host.rebuild();
+    await tick(500);
+    assert.equal(seen.erodes, erodes0);
+    mutateWorld(w => { assert.ok(foldIntoErosion(w)); }, { grid: true });
+    host.rebuildIfNeeded();
+    assert.ok(ruleFieldSig.value === null, "演算中");
+    await tick(100); await tick(240, 6);
+    assert.equal(seen.erodes, erodes0 + 1, "发了一单");
+    assert.ok(seen.lastInp!.elev0.some((v, i) => v !== elev0[i]), "单里是涂过的地貌");
+    assert.ok(seen.lastInp!.hovGrid.some(v => v !== 0), "单里带高程涂改");
+    assert.equal(ruleFieldSig.value, ctx.ruleField, "落地即落定");
+    assert.equal(ctx.ruleField, ctx.elevField, "涂改全在单里：没有增量可叠");
+    const folded = ctx.ruleField;
+    undoWorld(); host.rebuildIfNeeded();
+    await flush(); await tick(240, 6);
+    assert.equal(seen.erodes, erodes0 + 1, "撤销：换回上一份工作档，不发单");
+    assert.ok(ctx.ruleField !== folded && ctx.ruleField !== ctx.elevField, "规则场＝旧工作档叠涂改增量（新合成的场，画面走渐变到同一份内容）");
+    assert.equal(ruleFieldSig.value, ctx.ruleField);
+    redoWorld(); host.rebuildIfNeeded();
+    await flush(); await tick(240, 6);
+    assert.equal(seen.erodes, erodes0 + 1, "重做：同样不发单");
+    assert.deepEqual(worldSig.value!.baseOverrides, {});
+  });
+  it("手动档撤销一笔地貌笔：回到改前那个 Grid 实例，早退支——不发单、精修留屏", async () => {
+    const { ctx, seen } = mkCtx();
+    const { host, brush } = await manualSettled(ctx, W({ erode: "base" }));
+    const g0 = ctx.grid!, work = ctx.ruleField!, erodes0 = seen.erodes;
+    brush();
+    undoWorld(); host.rebuildIfNeeded();
+    await tick(500);
+    assert.equal(ctx.grid, g0, "屏上的格就是侵蚀用的那个实例");
+    assert.equal(ctx.ruleField, work, "没有增量＝工作档本身");
+    assert.equal(seen.erodes, erodes0);
+    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "精修仍在屏");
+    redoWorld(); host.rebuildIfNeeded();
+    await tick(500);
+    assert.equal(seen.erodes, erodes0, "重做那一笔：侵蚀看到的还是改前那份");
+    assert.notEqual(ctx.ruleField, work);
+    assert.equal(ruleFieldSig.value, ctx.ruleField);
+  });
+  it("手动档收进侵蚀之后的高程笔：开图的单里带着收进去的涂改；再落笔不发单，侵蚀看到的还是那一份", async () => {
+    const { ctx, seen } = mkCtx();
+    const w0 = W({ erode: "base" });
+    w0.heightOverrides = [{ lon: 100.03, lat: 30.03, dh: 0.1 }]; w0.baseOverrides = {};
+    const { host } = await manualSettled(ctx, w0);
+    const erodes0 = seen.erodes, hov0 = seen.lastInp!.hovGrid.slice();
+    assert.ok(hov0.some(v => v !== 0), "前置：收进去的高程涂改在单里");
+    assert.equal(ctx.ruleField, ruleFieldSig.value);
+    const g0 = ctx.grid;
+    for (let i = 0; i < 3; i++) { mutateWorld(w => { paintHeightPath(w, ctx.grid!, [[100.05, 30.05]], 0.05, 2, null); }, { grid: true }); host.rebuild(); }
+    await tick(500);
+    assert.equal(ctx.grid, g0);
+    assert.equal(seen.erodes, erodes0, "不发单");
+    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "精修仍在屏");
+    assert.equal(ruleFieldSig.value, ctx.ruleField, "立即落定");
+    assert.deepEqual(worldSig.value!.baseOverrides, { height: [{ lon: 100.03, lat: 30.03, dh: 0.1 }] });
+    yearSig.value = 3051; host.rebuildIfNeeded(); await flush(); await tick(240, 6);
+    assert.equal(seen.erodes, erodes0 + 1, "拨年走全路径");
+    assert.deepEqual(seen.lastInp!.hovGrid, hov0, "全路径的单里仍只有收进去的那份");
+    mutateWorld(w => { foldIntoErosion(w); }, { grid: true });
+    host.rebuildIfNeeded(); await tick(100); await tick(240, 6);
+    assert.equal(seen.erodes, erodes0 + 2, "只有高程涂改要收（侵蚀的 Grid 没换），点侵蚀照样发单");
+    assert.ok(seen.lastInp!.hovGrid.some((v, i) => v !== hov0[i]), "单里是现在的高程涂改");
   });
 
   it("在飞的工作档单随重建撤掉：单以 null 收场、不进缓存、胶囊不闪、新单接管落地", async () => {
@@ -322,7 +430,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.notEqual(hi.ctx.elevField!.data[0], lo.ctx.elevField!.data[0], "画面随预算变（精修只进画面）");
   });
 
-  it("撤销只动高程的一笔：沿用同一个 Grid（仅底图档照旧走早退支、不发单）；撤销对象编辑之后的一笔也照旧", async () => {
+  it("撤销只动高程的一笔：沿用同一个 Grid（手动档照旧走早退支、不发单）；撤销对象编辑之后的一笔也照旧", async () => {
     const { ctx, seen } = mkCtx();
     const host = createHost(ctx);
     landWorld(ctx, W({ erode: "base" }), "t1", 3050);
@@ -689,7 +797,7 @@ describe("中尺度阶段（host）", () => {
     assert.equal(seen.erodes, erodes, "3000 那份的工作档落地过：同步换上、不发单");
     assert.equal(ruleFieldSig.value, ctx.ruleField, "同拍落定");
   });
-  it("仅底图档画盆地成湖：侵蚀的格没有湖、屏上的格有，规则场在新湖格上压到水面以下（画成水）", async () => {
+  it("手动档画盆地成湖：侵蚀的格没有湖、屏上的格有，规则场在新湖格上压到水面以下（画成水）", async () => {
     const { ctx } = mkCtx(), M = mesoRig(ctx);
     const { host } = await openV2(ctx, M, { erode: "base" });
     await tick(6000);
@@ -720,7 +828,7 @@ describe("中尺度阶段（host）", () => {
     assert.ok(lakes > 0, `前提：湿处的盆成湖 ${JSON.stringify(g.meso!.water && g.meso!.water.list)}`);
     assert.strictEqual(dry, 0, `新湖格里有 ${dry} 格规则场高过水面（会画成陆）`);
   });
-  it("仅底图档：侵蚀单取只带 Sg 的 Grid；解到了不撤单、不发单，规则场＝工作档叠抬升增量、立即落定", async () => {
+  it("手动档：侵蚀单取只带 Sg 的 Grid；解到了不撤单、不发单，规则场＝工作档叠抬升增量、立即落定", async () => {
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx);
     const { host, lon, lat } = await openV2(ctx, M, { erode: "base" });
     await tick(6000);
@@ -744,7 +852,7 @@ describe("中尺度阶段（host）", () => {
     assert.ok(seen.lastInp!.nest && !seen.lastInp!.nest.du, "全路径的单也取只带 Sg 的 Grid（侵蚀不看笔）");
     assert.notEqual(ctx.grid!.meso, sgF, "屏上仍是画抬升的解");
   });
-  it("仅底图档：画抬升等解时改了地貌（单被扣着），解到了补发那一单、落地才落定", async () => {
+  it("手动档：画抬升等解时改了地貌（单被扣着），解到了补发那一单、落地才落定", async () => {
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx);
     const { host, lon, lat } = await openV2(ctx, M, { erode: "base" });
     const erodes0 = seen.erodes;
@@ -759,6 +867,38 @@ describe("中尺度阶段（host）", () => {
     assert.equal(seen.erodes, erodes0 + 1, "解到了：补发地貌改过的那一单");
     assert.ok(!seen.lastInp!.nest!.du, "单取只带 Sg 的 Grid");
     assert.ok(ruleFieldSig.value === ctx.ruleField, "落地才落定");
+  });
+  it("手动档点「侵蚀」把画的山收进去：单取带抬升的 Grid；之后再画，侵蚀看到的仍是收进去那份——不发单、那份解不随后来的解轮换掉", async () => {
+    const { ctx, seen } = mkCtx(), M = mesoRig(ctx);
+    const { host, lon, lat } = await openV2(ctx, M, { erode: "base" });
+    await tick(6000);
+    const erodes0 = seen.erodes;
+    paint(lon, lat, 3000); host.rebuild(); await flush(); await tick(200);
+    M.answerUp(0); await flush(); await tick(500);
+    assert.equal(seen.erodes, erodes0, "前置：没点侵蚀，画的山不进侵蚀");
+    mutateWorld(w => { foldIntoErosion(w); }, { grid: true });
+    host.rebuildIfNeeded(); await flush(); await tick(500);
+    assert.equal(seen.erodes, erodes0 + 1, "点侵蚀：发一单");
+    assert.ok(seen.lastInp!.nest && seen.lastInp!.nest.du, "单取带抬升的 Grid");
+    assert.equal(M.st.uq.length, 1, "屏上已有这份解：不重解");
+    const g1 = ctx.grid;
+    for (let i = 1; i <= 5; i++) {   // 多过留着的解数：收进去那份若只靠最近几份留着，这里就被挤掉了
+      mutateWorld(w => { paintUpliftPath(w, ctx.grid!, 3050, [[lon, lat]], { peakM: 3000 + 200 * i }, 1, false); }, { grid: true });
+      host.rebuild(); await flush(); await tick(200);
+      M.answerUp(M.st.uq.length - 1); await flush(); await tick(300);
+    }
+    assert.equal(M.st.uq.length, 6, "每笔只解屏上那一份");
+    assert.equal(seen.erodes, erodes0 + 1, "侵蚀看到的还是收进去那份：不发单");
+    assert.notEqual(ctx.grid, g1, "屏上换成新画的解");
+    assert.equal(ruleFieldSig.value, ctx.ruleField, "立即落定");
+    assert.deepEqual(worldSig.value!.baseOverrides, { uplift: [{ lon, lat, peakM: 3000 }] });
+    yearSig.value = 3051; host.rebuildIfNeeded(); await flush(); await tick(300);
+    assert.equal(M.st.uq.length, 6, "拨年：两份解都在手，不重解");
+    assert.equal(seen.erodes, erodes0 + 2);
+    assert.ok(seen.lastInp!.nest!.du, "全路径的单仍取收进去那份抬升");
+    undoWorld(); undoWorld(); undoWorld(); undoWorld(); undoWorld();
+    host.rebuildIfNeeded(); await flush(); await tick(300);
+    assert.equal(M.st.uq.length, 6, "撤回到刚点完侵蚀：屏上与侵蚀看到的是同一份，就是留着的那份");
   });
   it("生成的河跟着中尺度场：落地就把带标记的河换成它抽的、手画的留着、不推撤销；同一份再核零写入；删掉的不回来", async () => {
     const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx), w0 = V2();

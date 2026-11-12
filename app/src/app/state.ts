@@ -23,7 +23,7 @@ import type { ErodeMode } from "../core/erode.ts";
 import { noMasks, type VisMasks } from "../core/viewshed.ts";
 import type { SightRes } from "../worker/routeProto.ts";
 import type { TerrainStyle } from "../render/renderer.ts";
-import type { Arm, Decor, Edge, Faction, Meta, Op, TerrainId, Unit, World, WorldNode } from "../core/types.ts";
+import type { Arm, Decor, Edge, Faction, Meta, Op, TerrainId, TerrainOverride, Unit, World, WorldNode } from "../core/types.ts";
 import { tget } from "../core/util.ts";
 
 /** 新壳已实现的图层子集（未实现的不出现在面板上）。trails/ranges/vision 为战术图专属（tacOnly）；
@@ -399,8 +399,12 @@ export function endStroke(): void {
 
 function applyRestored(cur: World, snapshot: World): void {
   const restored = normalizeWorld(snapshot);
-  /* 涂改内容没变就沿用当前数组：host 按引用判类型网格能否复用，JSON 还原的新数组会让它白建 Grid、丢掉「仅底图」档高程笔的早退支 */
-  if (JSON.stringify(cur.terrainOverrides) === JSON.stringify(restored.terrainOverrides)) restored.terrainOverrides = cur.terrainOverrides;
+  /* 地貌涂改内容没变就沿用当前数组（现状与手动档下侵蚀看到的那份互相也认）：host 按引用认类型网格，
+     JSON 还原的新数组会让它白建 Grid、丢掉手动档的早退支（撤销一笔＝精修下屏、侵蚀重发） */
+  const pool = [cur.terrainOverrides, cur.baseOverrides?.terrain].filter(a => !!a).map(a => [a!, JSON.stringify(a)] as const);
+  const kept = (a: TerrainOverride[]): TerrainOverride[] => { const s = JSON.stringify(a); return pool.find(p => p[1] === s)?.[0] ?? a; };
+  restored.terrainOverrides = kept(restored.terrainOverrides);
+  if (restored.baseOverrides?.terrain) restored.baseOverrides.terrain = kept(restored.baseOverrides.terrain);
   const gridChanged = terrKey(cur) !== terrKey(restored);   // 地形没变就不重建（撤销秒回）
   batch(() => {
     stopPlay();                                            // 撤销/重做换世界：停播，避免计时器推新态

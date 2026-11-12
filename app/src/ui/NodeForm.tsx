@@ -377,12 +377,12 @@ export function NodeForm({ n }: { n: WorldNode }) {
   );
 }
 
-/** 生成战术图的侵蚀计算档（事件卡片与事件表单共用）：预选母图的档——母图保住的手雕高程，子图缺省也保住 */
+/** 生成战术图的侵蚀计算档（事件卡片与事件表单共用）：预选母图的档——母图上还没侵蚀的涂改，子图缺省也不侵蚀 */
 export function TacErodeSelect({ id, meta, sref }: { id?: string; meta: Meta | undefined; sref?: Ref<HTMLSelectElement> }) {
   const cur = erodeMode(meta);
   return (
     <select class="fld" id={id} ref={sref} style={{ width: "auto" }} aria-label="子图侵蚀计算"
-      title="子图的侵蚀计算：底图与涂改＝高程涂改也被侵蚀重塑；仅底图＝高程涂改原样保留、只侵蚀地类底图；关闭＝不侵蚀。预选与母图相同，生成后可在设置里改">
+      title="子图的侵蚀计算：自动＝带过去的涂改都被侵蚀，之后每次涂改自动重算；手动＝母图上侵蚀过的涂改在子图上照样侵蚀、没侵蚀的原样保留，之后笔落即最终、点「侵蚀」才重算；关闭＝不侵蚀。预选与母图相同，生成后可在设置里改">
       {(Object.keys(ERODE_MODES) as ErodeMode[]).map(k => <option key={k} value={k} selected={cur === k}>侵蚀 · {ERODE_MODES[k].名}</option>)}
     </select>
   );

@@ -70,7 +70,7 @@ const stroke = (): { now: Float32Array; inp: ErodeInput } => {
 describe("分块精修的编排（shell/tiles）", () => {
   it("视口里的块先算；视口里的块齐了才一起上屏，视口外的随到随上；忙闲只在用得上块时报", async () => {
     const r = rig({ lanes: 1 });
-    r.m.setCoarse(COARSE, GRID);
+    r.m.setCoarse(COARSE, GRID, null);
     const [v, dpp] = viewOf(1);
     r.m.setView({ ...v, lonMin: v.lonMin - 12 * G.pstep }, dpp);   // 视口在块 1、左缘伸进块 0
     feed(r.m, INP);
@@ -92,7 +92,7 @@ describe("分块精修的编排（shell/tiles）", () => {
 
   it("整幅视图（块格不到一像素）：照样在后台算，但不报忙", async () => {
     const r = rig();
-    r.m.setCoarse(COARSE, GRID);
+    r.m.setCoarse(COARSE, GRID, null);
     r.m.setView({ lonMin: BB.lonMin, lonMax: BB.lonMax, latMin: BB.latMin, latMax: BB.latMax }, G.step * 4);
     feed(r.m, INP);
     await flush();
@@ -103,7 +103,7 @@ describe("分块精修的编排（shell/tiles）", () => {
 
   it("编辑：旧块留在屏上叠粗格增量；键没变的块不重算，变了的算完就换", async () => {
     const r = rig({ lanes: 2 });
-    r.m.setCoarse(COARSE, GRID);
+    r.m.setCoarse(COARSE, GRID, null);
     feed(r.m, INP);
     await flush();
     while (r.calls.length < 4) await r.release();
@@ -112,7 +112,7 @@ describe("分块精修的编排（shell/tiles）", () => {
     /* 块 1 里落一笔：粗格场先变（等待窗合成），侵蚀输入随后换 */
     const now = COARSE.slice(), c = 85, rr = 50;
     now[rr * GRID.cols + c] = 0.3;
-    r.m.setCoarse(now, GRID);
+    r.m.setCoarse(now, GRID, null);
     const mid = r.last()!;
     assert.notStrictEqual(mid.tiles.get(1), before.tiles.get(1), "笔下的块即时叠上增量");
     assert.strictEqual(mid.tiles.get(0), before.tiles.get(0), "碰不到增量的块原样不动");
@@ -133,7 +133,7 @@ describe("分块精修的编排（shell/tiles）", () => {
 
   it("放大编辑：视口里换了键的块等视口齐了同一帧换上；忙闲罩住切割量与换键块，块齐了才报完成", async () => {
     const r = rig({ lanes: 2 });
-    r.m.setCoarse(COARSE, GRID);
+    r.m.setCoarse(COARSE, GRID, null);
     const [v, dpp] = rightCol();
     r.m.setView(v, dpp);
     feed(r.m, INP);
@@ -142,7 +142,7 @@ describe("分块精修的编排（shell/tiles）", () => {
     const before = r.last()!;
     assert.deepStrictEqual(r.busy[r.busy.length - 1], [false, true], "前置：开图那轮算完");
     const { now, inp } = stroke();
-    r.m.setCoarse(now, GRID);
+    r.m.setCoarse(now, GRID, null);
     const mid = r.last()!;
     feed(r.m, inp, undefined, now);
     assert.deepStrictEqual(r.busy[r.busy.length - 1], [true, false], "切割量还没到：视口里的块是不是当前那份还不知道＝忙");
@@ -160,19 +160,19 @@ describe("分块精修的编排（shell/tiles）", () => {
 
   it("切割量按输入键留在内存：撤销回到算过的输入不再要 Worker，块从内存同步换回", async () => {
     const r = rig({ lanes: 2 });
-    r.m.setCoarse(COARSE, GRID);
+    r.m.setCoarse(COARSE, GRID, null);
     feed(r.m, INP);
     await flush();
     while (r.waiting.length) await r.release();
     const first = r.last()!;
     const { now, inp } = stroke();
-    r.m.setCoarse(now, GRID);
+    r.m.setCoarse(now, GRID, null);
     feed(r.m, inp, undefined, now);
     await flush();
     while (r.waiting.length) await r.release();
     assert.strictEqual(r.st.carves, 2);
     const n0 = r.calls.length;
-    r.m.setCoarse(COARSE, GRID);
+    r.m.setCoarse(COARSE, GRID, null);
     feed(r.m, INP);
     assert.strictEqual(r.st.carves, 2, "同一输入：切割量取内存");
     assert.strictEqual(r.last()!.tiles.get(1), first.tiles.get(1), "同步换回原来那一块（不等下一拍）");
@@ -185,7 +185,7 @@ describe("分块精修的编排（shell/tiles）", () => {
     mock.timers.enable({ apis: ["setTimeout"] });
     try {
       const r = rig({ lanes: 1 });
-      r.m.setCoarse(COARSE, GRID);
+      r.m.setCoarse(COARSE, GRID, null);
       const [v, dpp] = viewOf(1);
       r.m.setView(v, dpp);
       r.st.fail = 1;
@@ -201,7 +201,7 @@ describe("分块精修的编排（shell/tiles）", () => {
       while (r.waiting.length) await r.release();
       assert.strictEqual(r.last()!.tiles.size, 4, "复位后整批算完");
       const { now, inp } = stroke();
-      r.m.setCoarse(now, GRID);
+      r.m.setCoarse(now, GRID, null);
       r.st.fail = 1;
       feed(r.m, inp, undefined, now);
       await flush();
@@ -218,12 +218,12 @@ describe("分块精修的编排（shell/tiles）", () => {
 
   it("缓存命中不发单；换几何（reset）块层下屏", async () => {
     const warm = rig();
-    warm.m.setCoarse(COARSE, GRID);
+    warm.m.setCoarse(COARSE, GRID, null);
     feed(warm.m, INP);
     await flush();
     for (let k = 0; k < 4; k++) await warm.release();
     const r = rig({ cache: warm.cache });
-    r.m.setCoarse(COARSE, GRID);
+    r.m.setCoarse(COARSE, GRID, null);
     feed(r.m, INP);
     await flush();
     assert.strictEqual(r.calls.length, 0);
@@ -234,7 +234,7 @@ describe("分块精修的编排（shell/tiles）", () => {
 
   it("中尺度单（带起伏包络）不要切割量：不发 erodeCarve，块照常排队算、齐了上屏", async () => {
     const r = rig(), mi = { ...INP, mesoEnv: new Float32Array(INP.cols * INP.rows) };
-    r.m.setCoarse(COARSE, GRID);
+    r.m.setCoarse(COARSE, GRID, null);
     feed(r.m, mi);
     await flush();
     assert.strictEqual(r.st.carves, 0, "中尺度图不跑粗级，不该要切割量");
