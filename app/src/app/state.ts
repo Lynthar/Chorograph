@@ -147,9 +147,11 @@ export interface SaveConflict {
 }
 export const saveConflictSig = signal<SaveConflict | null>(null);
 
-/* —— 侵蚀计算相位（顶栏胶囊；host 独写）：work=工作档演算中 / ultra=4K 静置精修中 /
-   done=刚落定（host 2s 后自动归 idle）。缓存命中不置相位——瞬时完成的事不值得一枚胶囊。 —— */
+/* —— 侵蚀计算相位（顶栏胶囊；host 独写）：work=工作档演算中 / ultra=工作档到手、精修或块还没到齐 /
+   done=刚换上（host 2s 后自动归 idle）。工作档缓存命中不置 work——瞬时完成的事不值得一枚胶囊。 —— */
 export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
+/** 这一轮重算走到哪一步（host 独写，算完即 null）：meso＝等中尺度 · work＝工作档 · detail＝精修或块（total > 0 时 done / total 是块数）。加载页与顶栏胶囊同读 */
+export const erodeProgSig = signal<{ step: "meso" | "work" | "detail"; done: number; total: number } | null>(null);
 /** 分块精修停摆（host 独写）：车道复位后又失败、当前缩放用得上块而视口里有块不是当前那一份——胶囊空闲时报「精修不可用」 */
 export const tilesDownSig = signal(false);
 /** 中尺度不可用（host 独写）：这张 v2 图的中尺度车道复位一次后仍没有结果，屏上的地类、侵蚀与河都是宏观底——胶囊空闲时报「侵蚀计算不可用」，压过「精修不可用」 */
@@ -593,8 +595,8 @@ export function parseWhenInput(cal: CalendarSpec, tac: boolean, raw: unknown): n
 }
 
 /* —— 图库开图加载舞台：朱印+图名+金进度+步骤行。library 开图流程步进
-   0 读取存档→1 地形烘焙→2 时段过滤→3 泥金落款；null=关（LoadStage 组件自带淡出）。 —— */
-export interface LoadStageState { name: string; step: number; renderer?: string }
+   0 读取存档→1 侵蚀计算（等到地形全部算完）→2 时段过滤→3 泥金落款；null=关（LoadStage 组件自带淡出）。 —— */
+export interface LoadStageState { name: string; step: number; renderer?: string; /** 有它就出「返回图库」：不等地形算完，回图库（后台照算） */ back?: () => void }
 export const loadStageSig = signal<LoadStageState | null>(null);
 
 /* —— 检查器「随时编辑」：卡片「编辑」钮随时开表单，不再锁编辑模式

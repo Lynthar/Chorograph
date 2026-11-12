@@ -17,7 +17,7 @@ import { dataLon } from "../app/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
   paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig, terrainAxisSig, terrainAxisOf, isTacSig, upliftModeSig,
-  routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, landedRuleField, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, mesoDownSig, tilesDownSig, readOnlySig, uiPrefsSig, terrainStyleSig }
+  routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, landedRuleField, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, erodeProgSig, mesoDownSig, tilesDownSig, readOnlySig, uiPrefsSig, terrainStyleSig }
   from "../app/state.ts";
 import { $ } from "./dom.ts";
 import type { ShellCtx } from "./ctx.ts";
@@ -45,7 +45,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     const tp = performance.now();
     const layers = layersSig.value, world = worldSig.value, yearNow = yearSig.value;
     const ruleLanded = landedRuleField();   // 标高点与等高线注记读的场：落定的规则场，演算中沿用上一份
-    host.syncTiles();   // 分块精修：按本帧视口排先算哪几块、视口里的块齐了才上屏
+    host.syncTiles();   // 分块精修：按本帧视口排先算哪几块（上屏由 host 在全图的块到齐时一起做）
     const cstep = layers.terrain ? contourStepOf(ctx.meta, ctx.view.degPerPx, ctx.grid, ruleLanded, ctx.ruleField, viewBB()).v : 0;   // 等距：渲染器与注记同吃一档
     const to = layers.terrain ? terrainOpts(ctx.meta, ctx.view.degPerPx, layers, uiPrefsSig.value.relief, terrainStyleSig.value, ctx.DPR, pxSize(), cstep, zoneField(world), riverSet(ctx.meta, world, yearNow, ctx.view.degPerPx)) : null;
     if (to) ctx.R!.render(viewBB(), to);
@@ -169,7 +169,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       bs ? bs.x1 : -1, bs ? bs.y1 : -1, bs ? bs.moved : false,
       // 顶栏保存态文案的来源（同样不是 signal，漏了就会「已保存」迟迟不上屏）
       autosave.pending, ctx.savedAt, ctx.saveErr, ctx.bootNote, ctx.mapId, ctx.source, ctx.lib,
-      saveConflictSig.value, erodePhaseSig.value, mesoDownSig.value, tilesDownSig.value, readOnlySig.value,
+      saveConflictSig.value, erodePhaseSig.value, erodeProgSig.value, mesoDownSig.value, tilesDownSig.value, readOnlySig.value,
       uiPrefsSig.value.relief,   // 山影深浅（本机偏好）进晕渲增益：改了必须重画
       terrainStyleSig.value,     // 底图样式（观感/推演）
       terrPass                   // 涂域环分帧首算未完（见 TERR_FRAME_MS）
@@ -199,9 +199,9 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
     const srcShort = !ctx.lib ? "内置示例（只读）" : ctx.source === "folder" ? "📁 文件夹图库" : "💾 浏览器图库";
     /* 侵蚀计算相位胶囊（可读性三件套之一）：命名的、可见的过程不被读成 bug——
        落定后的换场自此有预告。告警态（冲突/保存失败）在场时让位，警报优先。 */
-    const ep = erodePhaseSig.value;
+    const ep = erodePhaseSig.value, pg = erodeProgSig.value;
     const epTxt = saveConflictSig.value || ctx.saveErr ? ""
-      : ep === "work" ? "⛰ 侵蚀计算中… · " : ep === "ultra" ? "⛰ 侵蚀精修中… · " : ep === "done" ? "✓ 侵蚀已完成 · " : mesoDownSig.value ? "⚠ 侵蚀计算不可用 · " : tilesDownSig.value ? "⚠ 侵蚀精修不可用 · " : "";
+      : ep === "work" ? "⛰ 侵蚀计算中… · " : ep === "ultra" ? "⛰ 侵蚀精修中" + (pg && pg.total ? " " + pg.done + "/" + pg.total : "") + "… · " : ep === "done" ? "✓ 侵蚀已完成 · " : mesoDownSig.value ? "⚠ 侵蚀计算不可用 · " : tilesDownSig.value ? "⚠ 侵蚀精修不可用 · " : "";
     /* ⚠ 冲突自成一档，不能并进「自动保存失败」那句——那句尾巴写着「随下次改动重试」，
        而冲突态恰恰**不会**重试（守卫短路着，等用户在弹层里决断），并进去就是在说假话。 */
     const ftTxt = epTxt + (readOnlySig.value

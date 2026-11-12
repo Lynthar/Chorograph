@@ -22,7 +22,7 @@ export interface RouteClient {
   legs(unit: Unit): Promise<Leg[] | null>;
   /** 侵蚀重铸（自带输入不依赖 setContext；Worker 挂掉时返 null——调用方保持粗格） */
   erode(input: ErodeInput): Promise<ElevField | null>;
-  /** 4K 静置精修（第三车道，懒建）：几十秒的精修单不许挤占工作档侵蚀车道。
+  /** 精修档（第三车道，懒建）：几十秒的精修单不许挤占工作档侵蚀车道。车道崩了这一单返 null，下一单懒建新的。
       ⚠ 建不出 Worker 一律返 null **绝不同步回退**——30s 的同步演算＝冻死主线程，宁可不精修 */
   erodeUltra(input: ErodeInput): Promise<ElevField | null>;
   /** 撤掉在飞的精修单：terminate 车道、单以 null 收场（新编辑来了，几十秒的单跑完也只会被令牌作废）；
@@ -66,7 +66,7 @@ export function createRouteClient(): RouteClient {
                                   // 同一份内联 bundle 二次实例化＝零体积成本；erode 自带全部输入，
                                   // 不吃 setContext，故 ew 无 ctx 镜像之需。
   let ewDead = false;             // 侵蚀车道崩过＝不再建（退回主 worker / 同步）；主动撤单只置 ew=null，下一单懒建
-  let uw: Worker | null = null;   // 4K 静置精修车道（2026-08-11，懒建）：精修单跑几十秒，
+  let uw: Worker | null = null;   // 精修车道（懒建）：精修单跑几十秒，
   let uwTried = false;            // 与 ew 分开＝精修期间新笔的工作档侵蚀不排队
   /* 分块精修车道（懒建）：首次开图要算一百多块、每块半秒到一秒，两条并行把等待减半；核少的机器只开一条，免得挤占交互 */
   const hc = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 0 : 0;
@@ -152,6 +152,7 @@ export function createRouteClient(): RouteClient {
   };
   const killUltraWorker = () => {
     try { uw?.terminate(); } catch { /* 已死 */ }
+    if (uw) uwTried = false;   // 崩了或撤了的车道下一单懒建新的；建不出 Worker 的照旧不再试（同分块车道）
     uw = null;
     for (const [, res] of pendingU) res({ t: "route", id: -1, res: null } as RouteReply);
     pendingU.clear();
@@ -272,7 +273,6 @@ export function createRouteClient(): RouteClient {
     cancelUltra() {
       if (!pendingU.size) return;
       killUltraWorker();
-      uwTried = false;   // 与崩溃判死不同：这是主动撤单，车道要能再建
     },
     async meso(meta, geom, sg) {
       const worker = ensureMw();

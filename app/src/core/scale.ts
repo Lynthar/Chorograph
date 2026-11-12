@@ -20,7 +20,7 @@ export interface ScaleProfile {
   readonly cellCap: number;
   /** 侵蚀工作档的细格数预算（细格） */
   readonly fineCap: number;
-  /** 静置精修预算相对主机精修预算的倍率（无量纲） */
+  /** 精修档预算相对主机精修预算的倍率（无量纲；有块计划的图不精修） */
   readonly ultraCapK: number;
   /** 开不开分块精修（开了还要本机有块车道） */
   readonly tiles: boolean;

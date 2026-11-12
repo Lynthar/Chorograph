@@ -177,7 +177,7 @@ const MAP_PIX = `(() => { const m = document.getElementById('map'), r = document
   const w = Math.round(r.width * devicePixelRatio), h = Math.round(r.height * devicePixelRatio), c = document.createElement('canvas');
   c.width = w; c.height = h; const g = c.getContext('2d'); g.drawImage(m, 0, 0); return g.getImageData(0, 0, w, h).data; })()`;
 const pixHash = () => evalJs(`(() => { const d = ${MAP_PIX}; let h = 0; for (let i = 0; i < d.length; i += 4) h = (h * 31 + d[i] + d[i + 1] * 7 + d[i + 2] * 13) | 0; return h; })()`);
-const erodeQuiet = async (label) => {   // 顶栏侵蚀胶囊连续 8 s 不在演算（盖住 6 s 静置精修窗）
+const erodeQuiet = async (label) => {   // 顶栏侵蚀胶囊连续 8 s 不在演算（工作档、精修与块都换上了）
   let since = Date.now();
   while (Date.now() < DEADLINE) {
     if (/侵蚀计算中|侵蚀精修中/.test(await evalJs(`document.getElementById('ftData')?.textContent || ''`))) since = Date.now();

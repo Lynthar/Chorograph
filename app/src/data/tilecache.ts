@@ -7,8 +7,8 @@ import { TILE_VER } from "../core/tiles.ts";
 
 const DB = "yutu2-tilecache";
 const STORES = ["tiles", "touch"] as const;
-/** 条目上限：约两三张大陆级图的块 */
-export const TILE_CACHE_CAP = 320;
+/** 条目上限：约七张大陆级图的块（每块约 1 MB）。开图要等全图的块到齐，放不下的图每次重开都得重算一分钟 */
+export const TILE_CACHE_CAP = 1024;
 
 let dbP: Promise<IDBDatabase | null> | null = null;
 let warned = false;

@@ -1,6 +1,6 @@
-/* host 的高程场记账（「高程成为数据」）：规则场 ctx.ruleField 只认工作档，精修档只进画面 ctx.elevField。
-   fake routeClient 按输入预算返回可辨认的场（数据整幅填 cap），fake 渲染器记下最近一次上传的（画面, 规则）对；
-   静置窗 6s 用 node:test 的 mock timers 拨过。node 下无 indexedDB＝场缓存恒未命中，走的是真算分支。 */
+/* host 的高程场记账（「高程成为数据」）：规则场 ctx.ruleField 只认工作档，精修档只进画面 ctx.elevField；工作档到手先攒着，精修或块到齐了同一帧换上。
+   fake routeClient 按输入预算返回可辨认的场（数据整幅填 cap），fake 渲染器记下最近一次上传的（画面, 规则）对与上传次数；
+   防抖用 node:test 的 mock timers 拨过。node 下无 indexedDB＝场缓存恒未命中，走的是真算分支。 */
 import { describe, it, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createHost } from "../src/shell/host.ts";
@@ -35,27 +35,27 @@ const fakeField = (inp: ErodeInput, sx: number): ElevField => ({
 });
 
 /* holdUltra＝精修单挂起不回（模拟几十秒的在飞单）；cancels 只数撤到了在飞单的那几次（host 每次重建都调，无单时是空操作） */
-interface Seen { field?: ElevField; rule?: ElevField; workCap?: number; ultraCap?: number; holdUltra?: boolean; holdErode?: boolean; cancels: number; erodeCancels: number; erodes: number; lastInp?: ErodeInput; release?: (f: ElevField | null) => void; releaseE?: (f: ElevField | null) => void }
+interface Seen { field?: ElevField; rule?: ElevField; uploads: number; workCap?: number; ultraCap?: number; holdUltra?: boolean; holdErode?: boolean; cancels: number; erodeCancels: number; erodes: number; lastInp?: ErodeInput; lastUInp?: ErodeInput; lastWork?: ElevField; release?: (f: ElevField | null) => void; releaseE?: (f: ElevField | null) => void }
 function mkCtx(): { ctx: ShellCtx; seen: Seen } {
-  const seen: Seen = { cancels: 0, erodeCancels: 0, erodes: 0 };
+  const seen: Seen = { cancels: 0, erodeCancels: 0, erodes: 0, uploads: 0 };
   const ctx = {
     canvas: {}, ov: {},
     routeClient: {
       setContext: () => {},
       erode: (inp: ErodeInput) => {
         seen.workCap = inp.cap; seen.erodes++; seen.lastInp = inp;
-        return seen.holdErode ? new Promise<ElevField | null>(res => { seen.releaseE = res; }) : Promise.resolve(fakeField(inp, inp.nest ? inp.nest.sx : 2));
+        return seen.holdErode ? new Promise<ElevField | null>(res => { seen.releaseE = res; }) : Promise.resolve(seen.lastWork = fakeField(inp, inp.nest ? inp.nest.sx : 2));
       },
       cancelErode: () => { if (seen.releaseE) { seen.erodeCancels++; seen.releaseE(null); seen.releaseE = undefined; } },
       erodeUltra: (inp: ErodeInput) => {
-        seen.ultraCap = inp.cap;
+        seen.ultraCap = inp.cap; seen.lastUInp = inp;
         return seen.holdUltra ? new Promise<ElevField | null>(res => { seen.release = res; }) : Promise.resolve(fakeField(inp, 4));
       },
       cancelUltra: () => { if (seen.release) { seen.cancels++; seen.release(null); seen.release = undefined; } }
     },
     DPR: 1, meta: {}, view: { lon0: 100.05, lat0: 30.05, degPerPx: 0.001 },
     grid: null, elevField: null, ruleField: null,
-    R: { uploadGrid: (_g: unknown, _ws: unknown, field: ElevField, rule: ElevField) => { seen.field = field; seen.rule = rule; }, uploadTiles: () => {} },
+    R: { uploadGrid: (_g: unknown, _ws: unknown, field: ElevField, rule: ElevField) => { seen.field = field; seen.rule = rule; seen.uploads++; }, uploadTiles: () => {} },
     builtFor: null, repaint: null,
     lib: null, mapId: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
@@ -71,7 +71,7 @@ const W = (extra: Record<string, unknown> = {}): World => normalizeWorld({
 const flush = async (): Promise<void> => { for (let i = 0; i < 4; i++) await new Promise(r => setImmediate(r)); };
 /** 拨假钟（MockTimers 只有同步 tick）：分 steps 步走，每步冲一次微任务——渐变是逐帧再排的定时器链 */
 const tick = async (ms: number, steps = 1): Promise<void> => { for (let i = 0; i < steps; i++) { mock.timers.tick(ms / steps); await flush(); } };
-/** 开图到精修落地的整段：粗格 → 工作档（渐变 240ms）→ 静置 6s → 精修 */
+/** 开图到换上屏的整段：粗格 → 工作档到手、精修紧跟着算 → 同一帧换上（后面两次拨钟是防抖余量） */
 async function openAndSettle(ctx: ShellCtx): Promise<{ work: ElevField }> {
   const host = createHost(ctx);
   landWorld(ctx, W(), "t1", 3050);
@@ -88,50 +88,67 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
   beforeEach(() => { mock.timers.enable({ apis: ["setTimeout"] }); delete nav.deviceMemory; });
   afterEach(() => { mock.timers.reset(); delete nav.deviceMemory; });
 
-  it("开图：规则场先是粗格、工作档落地后换真；精修落地只换画面，规则场与渲染器的规则份不动", async () => {
+  it("开图：工作档到手不单独换上，精修到了同一帧换；规则场只认工作档，精修只进画面", async () => {
     const { ctx, seen } = mkCtx();
+    seen.holdUltra = true;
     const host = createHost(ctx);
     landWorld(ctx, W(), "t1", 3050);
     host.rebuildIfNeeded();
     const coarse = ctx.ruleField!;
-    assert.equal(coarse.cols, ctx.grid!.cols, "落地前规则场＝粗格场");
+    assert.equal(coarse.cols, ctx.grid!.cols, "换上之前规则场＝粗格场");
     assert.equal(ctx.elevField, coarse, "画面同一份");
     assert.equal(coarse.src, "coarse");
+    let done = false;
+    void host.settled().then(() => { done = true; });
     await flush();
-    const work = ctx.ruleField!;
-    assert.equal(work.cols, ctx.grid!.cols * 2, "工作档落地＝规则场换成 2× 细分场");
+    assert.equal(seen.erodes, 1);
+    assert.ok(ctx.ruleField === coarse && ctx.elevField === coarse, "工作档到手、精修还在算：屏上不动");
+    assert.equal(ruleFieldSig.peek(), null, "也不落定");
+    assert.equal(erodePhaseSig.peek(), "ultra", "胶囊报精修中");
+    assert.ok(!done, "「算完了」还没兑现");
+    const ups = seen.uploads;
+    seen.release!(fakeField(seen.lastUInp!, 4)); seen.release = undefined;
+    await flush();
+    const work = ctx.ruleField!, ultra = ctx.elevField!;
+    assert.equal(seen.uploads, ups + 1, "换上屏只上传一次");
+    assert.equal(work.cols, ctx.grid!.cols * 2, "规则场换成 2× 细分场");
     assert.equal(work.src, "work", "工作档车道交出来的场带规则场标记");
     assert.equal(work.data[0], seen.workCap, "规则场出自工作档预算");
-    assert.notEqual(ctx.elevField, work, "画面走渐变，落地一拍不硬切");
-    await tick(240, 6);
-    assert.equal(ctx.elevField, work, "渐变末帧＝工作档引用");
-    await tick(6000);
-    const ultra = ctx.elevField!;
-    assert.equal(ultra.cols, ctx.grid!.cols * 4, "静置后画面＝精修场（4×）");
+    assert.equal(ultra.cols, ctx.grid!.cols * 4, "画面＝精修场（4×）");
     assert.equal(ultra.data[0], seen.ultraCap, "画面出自精修预算");
     assert.ok(!("src" in ultra), "精修场不带规则场标记");
-    assert.equal(ctx.ruleField, work, "规则场不随精修落地变");
+    assert.equal(ruleFieldSig.peek(), work, "同拍落定");
     assert.equal(seen.field, ultra, "渲染器画面份＝精修");
     assert.equal(seen.rule, work, "渲染器规则份＝工作档（推演底图画它）");
+    assert.ok(done, "换上屏＝算完了");
+    assert.equal(erodePhaseSig.peek(), "done");
+    await tick(20000);
+    assert.ok(ctx.ruleField === work && ctx.elevField === ultra && seen.uploads === ups + 1, "之后静置：什么都不再变");
   });
 
-  it("落笔：精修即弃，画面回到规则场；规则场＝工作档叠粗格增量的合成，不退回粗格", async () => {
+  it("落笔（自动档）：屏上的工作档与精修都留着叠粗格增量，新的一份算齐才一起换", async () => {
     const { ctx, seen } = mkCtx();
     const host = createHost(ctx);
     landWorld(ctx, W(), "t1", 3050);
     host.rebuildIfNeeded();
     await flush();
-    const work = ctx.ruleField!;
-    await tick(240, 6);
-    await tick(6000);
-    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "前置：精修在屏");
+    const work = ctx.ruleField!, ultra = ctx.elevField!;
+    assert.equal(ultra.cols, ctx.grid!.cols * 4, "前置：精修在屏");
+    seen.holdUltra = true;
     mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
     host.rebuild();   // 笔刷走 pointer 直调 rebuild，同一条路
-    assert.equal(ctx.elevField, ctx.ruleField, "精修弃了：画面＝规则场");
-    assert.equal(ctx.ruleField!.cols, work.cols, "规则场仍在工作档几何上（合成，不是粗格）");
-    assert.notEqual(ctx.ruleField, work, "增量非零＝新合成的场");
-    assert.equal(seen.field, ctx.ruleField, "渲染器两份同一对象");
-    assert.equal(seen.rule, ctx.ruleField);
+    const mid = ctx.elevField!;
+    assert.ok(mid.cols === ultra.cols && mid !== ultra, "画面＝旧精修叠增量（新合成的场），不退回工作档");
+    assert.ok(ctx.ruleField!.cols === work.cols && ctx.ruleField !== work, "规则场＝旧工作档叠增量，不退回粗格");
+    assert.equal(ruleFieldSig.peek(), null, "演算中");
+    assert.equal(seen.field, mid); assert.equal(seen.rule, ctx.ruleField);
+    await tick(60);
+    assert.equal(seen.erodes, 2, "新工作档单发了并回来了");
+    assert.ok(ctx.elevField === mid && ruleFieldSig.peek() === null, "新工作档到手、新精修没到：屏上还是那份合成");
+    seen.release!(fakeField(seen.lastUInp!, 4)); seen.release = undefined;
+    await flush();
+    assert.ok(ctx.ruleField !== work && ctx.ruleField!.src === "work" && ctx.elevField!.cols === ultra.cols && ctx.elevField !== mid, "到齐：工作档与精修一起换");
+    assert.equal(ruleFieldSig.peek(), ctx.ruleField);
   });
 
   it("手动档：高程笔重建不发单、不弃精修、不撤单；规则场＝工作档叠涂改增量且立即落定；侵蚀输入不含涂改", async () => {
@@ -197,9 +214,12 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     const { ctx, seen } = mkCtx();
     const host = createHost(ctx);
     await baseWithJobInFlight(ctx, seen, host);
+    let done = false;
+    void host.settled().then(() => { done = true; });
     seen.releaseE!(null); seen.releaseE = undefined;   // 车道崩溃：单以 null 收场
     await flush();
-    assert.ok(ruleFieldSig.value === ctx.ruleField && ctx.elevField === ctx.ruleField, "算不出：落定在当下那份（画面与读数同一份）");
+    assert.ok(done, "算不出也打开「算完了」的闩（开图的加载页不悬着）");
+    assert.ok(ruleFieldSig.value === ctx.ruleField && ctx.elevField!.cols === ctx.grid!.cols * 4, "算不出：落定在当下那份（旧工作档叠增量；屏上的精修留着）");
     seen.holdErode = false;
     sculpt();
     host.rebuild();
@@ -214,7 +234,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(seen.erodes, 3, "高程笔不发单");
   });
 
-  /** 手动档开图到精修落地；brush＝走写入口的一笔地貌（丘陵）加一次重建 */
+  /** 手动档开图到工作档与精修换上；brush＝走写入口的一笔地貌（丘陵）加一次重建 */
   async function manualSettled(ctx: ShellCtx, w0: World): Promise<{ host: ReturnType<typeof createHost>; brush: () => void }> {
     const host = createHost(ctx);
     landWorld(ctx, w0, "t1", 3050);
@@ -267,12 +287,12 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.ok(seen.lastInp!.elev0.some((v, i) => v !== elev0[i]), "单里是涂过的地貌");
     assert.ok(seen.lastInp!.hovGrid.some(v => v !== 0), "单里带高程涂改");
     assert.equal(ruleFieldSig.value, ctx.ruleField, "落地即落定");
-    assert.equal(ctx.ruleField, ctx.elevField, "涂改全在单里：没有增量可叠");
+    assert.ok(ctx.ruleField!.data[0] === seen.workCap && ctx.elevField!.data[0] === seen.ultraCap, "涂改全在单里：没有增量可叠，规则场与画面就是新工作档与新精修本身");
     const folded = ctx.ruleField;
     undoWorld(); host.rebuildIfNeeded();
     await flush(); await tick(240, 6);
     assert.equal(seen.erodes, erodes0 + 1, "撤销：换回上一份工作档，不发单");
-    assert.ok(ctx.ruleField !== folded && ctx.ruleField !== ctx.elevField, "规则场＝旧工作档叠涂改增量（新合成的场，画面走渐变到同一份内容）");
+    assert.ok(ctx.ruleField !== folded && ctx.ruleField !== ctx.elevField, "规则场＝旧工作档叠涂改增量（新合成的场），画面＝它的精修叠同一份增量");
     assert.equal(ruleFieldSig.value, ctx.ruleField);
     redoWorld(); host.rebuildIfNeeded();
     await flush(); await tick(240, 6);
@@ -371,23 +391,27 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(ruleFieldSig.peek()!.cols, ctx.grid!.cols);
   });
 
-  it("在飞的精修单随重建撤掉：单以 null 收场、胶囊归位、画面留在规则场", async () => {
+  it("在飞的精修单随重建撤掉：单以 null 收场、没有半份换上，新一轮照常起、到齐才换", async () => {
     const { ctx, seen } = mkCtx();
     seen.holdUltra = true;
     const host = createHost(ctx);
     landWorld(ctx, W(), "t1", 3050);
     host.rebuildIfNeeded();
     await flush();
-    await tick(240, 6);
-    await tick(6000);
     assert.equal(erodePhaseSig.peek(), "ultra", "前置：精修单在飞");
     assert.equal(seen.cancels, 0, "前置：此前的重建没有在飞单可撤");
     mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
     host.rebuild();
     assert.equal(seen.cancels, 1, "落笔那次重建撤了在飞的单");
     await flush();
-    assert.equal(erodePhaseSig.peek(), "idle", "撤单＝胶囊归位（不悬在「精修中」）");
-    assert.equal(ctx.elevField, ctx.ruleField, "画面＝规则场，没有精修上屏");
+    assert.ok(ctx.elevField === ctx.ruleField && ctx.ruleField!.cols === ctx.grid!.cols, "被撤的那一轮什么都没换上：屏上还是粗格");
+    await tick(60);
+    assert.equal(seen.erodes, 2, "新一轮的工作档单");
+    assert.equal(erodePhaseSig.peek(), "ultra", "新一轮的精修在飞");
+    seen.release!(fakeField(seen.lastUInp!, 4)); seen.release = undefined;
+    await flush();
+    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "到齐才换上");
+    assert.equal(erodePhaseSig.peek(), "done");
   });
 
   it("类型网格按实例复用：只动高程不换 Grid；涂改 / 年份 / meta 任一变即换新实例", () => {
@@ -456,49 +480,47 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(seen.erodes, erodes0, "全程没有再发侵蚀单");
   });
 
-  it("撤销 / 重做回到落地过的地形：同步换上那份工作档、同拍落定，不合成也不发单", async () => {
+  it("撤销 / 重做回到落地过的地形：换上最近那份工作档（它的精修取缓存或补算，到了同一帧换），不合成也不发工作档单", async () => {
     const { ctx, seen } = mkCtx();
     const host = createHost(ctx);
     landWorld(ctx, W(), "t1", 3050);
     host.rebuildIfNeeded();
     await flush();
     const work0 = ctx.ruleField!;
-    await tick(240, 6);
     mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
     host.rebuildIfNeeded();
     assert.equal(ruleFieldSig.value, null, "前置：新的一笔走等待窗");
     await tick(60);
     const work1 = ctx.ruleField!;
     assert.notEqual(work1, work0);
-    assert.equal(ruleFieldSig.value, work1, "前置：那一笔落地");
-    await tick(240, 6);
+    assert.equal(ruleFieldSig.value, work1, "前置：那一笔换上了");
     const erodes = seen.erodes;
     undoWorld();
     host.rebuildIfNeeded();
-    assert.equal(ctx.ruleField, work0, "撤销：规则场就是开图落地的那份，不是合成");
+    await flush();
+    assert.equal(ctx.ruleField, work0, "撤销：规则场就是开图那份，不是合成");
     assert.equal(ruleFieldSig.value, work0, "同拍落定");
+    assert.equal(ctx.elevField!.cols, ctx.grid!.cols * 4, "画面是它的精修");
     redoWorld();
     host.rebuildIfNeeded();
-    assert.equal(ctx.ruleField, work1, "重做：换回那一笔落地的那份");
+    await flush();
+    assert.equal(ctx.ruleField, work1, "重做：换回那一笔的那份");
     await tick(500);
-    assert.equal(seen.erodes, erodes, "没有再发侵蚀单");
-    await tick(240, 6);
-    assert.equal(ctx.elevField, work1, "画面渐变到同一份");
+    assert.equal(seen.erodes, erodes, "没有再发工作档单");
   });
 
-  it("离散换场落到在屏那一份（侵蚀单一字不变的设置改动）：只落定，不渐变、不发单；拨年照旧走等待窗", async () => {
+  it("离散换场落到在屏那一份（侵蚀单一字不变的设置改动）：同一次重建里落定，屏上的工作档与精修原样、不发单；拨年照旧走等待窗", async () => {
     const { ctx, seen } = mkCtx();
     const host = createHost(ctx);
     landWorld(ctx, W(), "t1", 3050);
     host.rebuildIfNeeded();
     await flush();
-    const work0 = ctx.ruleField!;
-    await tick(240, 6);
+    const work0 = ctx.ruleField!, ultra0 = ctx.elevField!;
     const erodes = seen.erodes;
     mutateWorld(w => { w.meta.erode = "base"; }, { grid: true });   // 没有高程涂改：两档的侵蚀单逐位相同
     host.rebuildIfNeeded();
     assert.equal(ctx.ruleField, work0, "规则场就是在屏那份");
-    assert.equal(ctx.elevField, work0, "画面不走渐变");
+    assert.equal(ctx.elevField, ultra0, "精修也还是那一份（没有重要、没有重算）");
     assert.equal(ruleFieldSig.value, work0, "同拍落定");
     await tick(500);
     assert.equal(seen.erodes, erodes, "没有发单");
@@ -507,43 +529,40 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(ruleFieldSig.value, null, "拨年不查最近落地：照旧进演算、等防抖后的那一单（播放每步不付组装求键的账）");
   });
 
-  it("设置应用（grid: ifChanged）：不动地形的项不重建——精修留在屏上、在飞的精修单不撤、不发工作档单；动地形的项照旧重建", async () => {
+  it("设置应用（grid: ifChanged）：不动地形的项不重建——在飞的精修单不撤、不发工作档单、换上的照旧在屏；动地形的项照旧重建", async () => {
     const { ctx, seen } = mkCtx();
     seen.holdUltra = true;
     const host = createHost(ctx);
     landWorld(ctx, W(), "t1", 3050);
     host.rebuildIfNeeded();
     await flush();
-    const work = ctx.ruleField!;
-    await tick(240, 6);
-    await tick(6000);
     assert.equal(erodePhaseSig.peek(), "ultra", "前置：精修单在飞");
     const erodes0 = seen.erodes, ver0 = gridVerSig.peek();
     mutateWorld(w => { Object.assign(w.meta, { climate: "arid", contourM: 50, period: "modern" }); }, { grid: "ifChanged" });
     host.rebuildIfNeeded();
     assert.equal(gridVerSig.peek(), ver0, "气候 / 等高距 / 时代不进地形键：不要求重建");
     assert.equal(seen.cancels, 0, "在飞的精修单没撤");
-    seen.release!(fakeField(seen.lastInp!, 4)); seen.release = undefined;
+    seen.release!(fakeField(seen.lastUInp!, 4)); seen.release = undefined;
     await flush();
-    const ultra = ctx.elevField!;
-    assert.equal(ultra.cols, ctx.grid!.cols * 4, "精修照常落地");
+    const ultra = ctx.elevField!, work = ctx.ruleField!;
+    assert.equal(ultra.cols, ctx.grid!.cols * 4, "这一轮照常到齐、换上");
     mutateWorld(w => { w.meta.名称 = "改名"; w.meta.vault = "库"; }, { grid: "ifChanged" });
     host.rebuildIfNeeded();
     await tick(500);
-    assert.ok(ctx.elevField === ultra && ruleFieldSig.value === work, "精修仍在屏，落定的规则场不动");
+    assert.ok(ctx.elevField === ultra && ruleFieldSig.value === work, "换上的那份原样在屏，落定的规则场不动");
     assert.equal(seen.erodes, erodes0, "没有新的工作档单");
     mutateWorld(w => { w.meta.relief = 1; }, { grid: "ifChanged" });
     host.rebuildIfNeeded();
     assert.equal(gridVerSig.peek(), ver0 + 1, "地势起伏进地形键：照旧重建");
-    assert.ok(ctx.elevField !== ultra && ruleFieldSig.value === null, "重建弃精修、进演算");
+    assert.ok(ctx.elevField!.cols === ultra.cols && ruleFieldSig.value === null, "重建：进演算；屏上还是旧解（叠增量），等新的到齐");
     await tick(100);
     assert.equal(seen.erodes, erodes0 + 1, "发了新单");
     mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: "ifChanged" });
     assert.equal(gridVerSig.peek(), ver0 + 2, "原地改涂改数组也认得出");
   });
 
-  it("放大编辑（分块精修）：「已完成」等视口里的块换成新的才报", async () => {
-    const { ctx } = mkCtx();
+  it("分块的战略图：工作档到手不单独换上，全图的块到齐了同一帧换；编辑后同理，「已完成」与换上同拍；撤销同一次重建里换回", async () => {
+    const { ctx, seen } = mkCtx();
     const held: (() => void)[] = [];
     Object.assign(ctx.routeClient, {
       tileLanes: 1,
@@ -555,26 +574,45 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     });
     els.canvasWrap = { dataset: {}, value: "", clientWidth: 200, clientHeight: 150 } as never;
     const host = createHost(ctx);
-    /* 5 万格的战略图：工作档 6×、精修 7×，块 8×（15 块） */
+    /* 5 万格的战略图：工作档 6×，块 8×（15 块）；不精修 */
     landWorld(ctx, normalizeWorld({ meta: { 名称: "陆", worldModel: "sphere", terrain: "plain", relief: 0.5, gridN: 280,
       bbox: { lonMin: 100, lonMax: 115, latMin: 30, latMax: 40 } } }), "s1", 3050);
     host.rebuildIfNeeded();
     const g = ctx.grid!, lon = g.bb.lonMin + 96 * g.step, lat = g.bb.latMin + 96 * g.step;
     Object.assign(ctx.view, { lon0: lon, lat0: lat, degPerPx: g.step / 16 });   // 块 6（第二行第二列）中央，一个块格两个 CSS 像素
     host.syncTiles();
+    let done = false;
+    void host.settled().then(() => { done = true; });
     await flush();
-    assert.equal(erodePhaseSig.value, "ultra", "工作档算完、视口里的块还没到：报精修中");
+    assert.equal(seen.ultraCap, undefined, "分块的图不发精修单");
+    assert.equal(erodePhaseSig.value, "ultra", "工作档算完、块还没到齐：报精修中");
+    assert.ok(ctx.ruleField!.cols === g.cols && ruleFieldSig.value === null && !ctx.tileLayer, "屏上还是粗格，块层没上");
+    const ups = seen.uploads;
     held.shift()!(); await flush();
-    assert.equal(erodePhaseSig.value, "done", "视口里那块到了才报完成");
-    assert.ok(ctx.tileLayer?.tiles.has(6));
+    assert.ok(erodePhaseSig.value === "ultra" && !ctx.tileLayer && !done, "视口里那块到了也不换：等全图");
+    while (held.length) { held.shift()!(); await flush(); }
+    assert.equal(erodePhaseSig.value, "done", "全图的块到齐才报完成");
+    assert.ok(done, "「算完了」同拍兑现");
+    assert.equal(seen.uploads, ups + 1, "工作档只上传一次");
+    assert.ok(ctx.ruleField!.src === "work" && ruleFieldSig.value === ctx.ruleField, "工作档同拍换上并落定");
+    assert.equal(ctx.tileLayer!.tiles.size, 15, "十五块一起上屏");
+    const rule0 = ctx.ruleField, t60 = ctx.tileLayer!.tiles.get(6);
     mutateWorld(w => { (w.heightOverrides ||= []).push({ lon, lat, dh: 0.2 }); }, { grid: true });
     host.rebuildIfNeeded();
-    const old6 = ctx.tileLayer!.tiles.get(6);
+    const old6 = ctx.tileLayer!.tiles.get(6), rule1 = ctx.ruleField;
     await tick(60);
-    assert.equal(erodePhaseSig.value, "ultra", "工作档落地时视口里的块还是旧的：不报完成");
-    while (held.length && erodePhaseSig.value !== "done") { held.shift()!(); await flush(); }
+    assert.equal(erodePhaseSig.value, "ultra", "新工作档到手、换了键的块还没到：不报完成");
+    assert.ok(ctx.ruleField === rule1 && ctx.tileLayer!.tiles.get(6) === old6 && ruleFieldSig.value === null, "屏上还是旧解叠增量，一样都没换");
+    while (held.length) { held.shift()!(); await flush(); }
     assert.equal(erodePhaseSig.value, "done");
-    assert.notEqual(ctx.tileLayer!.tiles.get(6), old6, "报完成时视口里的块已换成新的");
+    assert.ok(ctx.ruleField !== rule1 && ctx.tileLayer!.tiles.get(6) !== old6, "工作档与换了键的块同拍换上");
+    const erodes = seen.erodes;
+    undoWorld();
+    host.rebuildIfNeeded();
+    assert.ok(ctx.ruleField === rule0 && ruleFieldSig.value === rule0 && ctx.tileLayer!.tiles.get(6) === t60, "撤销：工作档与块都在内存，不等下一拍就换回");
+    assert.equal(held.length, 0, "没有发块单");
+    await tick(500);
+    assert.equal(seen.erodes, erodes, "也没有发工作档单");
   });
 });
 
@@ -644,7 +682,7 @@ describe("中尺度阶段（host）", () => {
   it("分块：中尺度到了，块单带外层裁剪（嵌套解）、不带包络；车道复位后仍没有结果时块单照旧细级侵蚀（要切割量、不带裁剪）", async (tc) => {
     const warn = tc.mock.method(console, "warn", () => {});
     for (const fail of [false, true]) {
-      const { ctx } = mkCtx(), M = mesoRig(ctx), tilesIn: ErodeInput[] = [];
+      const { ctx, seen } = mkCtx(), M = mesoRig(ctx), tilesIn: ErodeInput[] = [];
       let carves = 0;
       Object.assign(ctx.routeClient, {
         tileLanes: 1,
@@ -662,10 +700,10 @@ describe("中尺度阶段（host）", () => {
       const t = tilesIn[0];
       if (!fail) {
         assert.ok(t.nest && !t.mesoEnv && !t.win, "嵌套解的块单"); assert.equal(carves, 0, "中尺度图不要切割量");
-        const w = ctx.ruleField!, ne = t.nest;
+        const w = seen.lastWork!, ne = t.nest;   // 块还没到齐，工作档攒着没换上：取车道交出来的那份
         assert.ok(ne.tgt && ne.tsx === 6 && w.cols === ctx.grid!.cols * 6, "工作档是嵌套解（280 列＝6 倍）：块单带它的裁片当目标面");
         assert.equal(ne.tgt.length, t.cols * t.rows * 36, "裁片罩住单的整个裁剪");
-        assert.equal(ne.tgt[0], w.data[(ne.y0 * 6) * w.cols + ne.x0 * 6], "裁的是落地的工作档（整数值量化后不变）");
+        assert.equal(ne.tgt[0], w.data[(ne.y0 * 6) * w.cols + ne.x0 * 6], "裁的是到手的工作档（整数值量化后不变）");
         assert.equal(ne.pk, null, "块单不校峰");
       }
       else { assert.ok(!t.nest && t.win, "宏观底的块单照旧"); assert.equal(carves, 1); }

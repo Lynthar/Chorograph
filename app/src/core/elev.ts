@@ -35,27 +35,6 @@ export function coarseField(grid: FieldGeom, data: Float32Array): RuleField {
   return { bb: grid.bb, step: grid.step, cols: grid.cols, rows: grid.rows, data, eroded: false, src: "coarse" };
 }
 
-/** 侵蚀落地渐变的一帧：display = from + (to − from)·t，几何不同（首次落地：粗格→细分）时
-    from 先按 to 的细格中心双线性重采样。落地若一帧硬切，笔下区域从平滑预演跳成刻好的真形，
-    读感像「出错了自己纠正」（用户实报「不可靠感」）——渐变把结算变成有意的「沉降定形」。
-    远处两场逐位相同＝渐变只发生在真正变了的区域；**t≥1 返回 to 本身**（末帧＝真场引用，
-    与直接换场逐位一致）。eroded 取 to 的。 */
-export function fieldMix<F extends ElevField>(from: ElevField, to: F, t: number): F {
-  if (t >= 1) return to;
-  const n = to.cols * to.rows;
-  const same = from.cols === to.cols && from.rows === to.rows && from.step === to.step;
-  const data = new Float32Array(n);
-  for (let r = 0; r < to.rows; r++) {
-    const lat = to.bb.latMin + (r + 0.5) * to.step;
-    for (let c = 0; c < to.cols; c++) {
-      const i = r * to.cols + c;
-      const f0 = same ? from.data[i] : elevBilinear(from.data, from, to.bb.lonMin + (c + 0.5) * to.step, lat);
-      data[i] = f0 + (to.data[i] - f0) * t;
-    }
-  }
-  return { ...to, data };
-}
-
 /** 侵蚀等待窗的显示合成：细分场 + 粗格增量（now − base）按细格中心双线性上采样叠加。
     重建到侵蚀单落地之间隔着 150ms 防抖 + 数百 ms Worker 计算，这段空窗若直接换回粗格场，
     笔刷按下的每次重建都让全图闪回粗格观感、侵蚀落地又闪回来（「一按全图变、松开又变回」，

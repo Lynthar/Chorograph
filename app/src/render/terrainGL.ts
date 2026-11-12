@@ -678,7 +678,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.activeTexture(gl.TEXTURE0);   // 常规活动纹理还原到 0 号（类型纹理绑定预期）
     return { tex: t, cols: fc, rows: fr, step: field ? field.step : grid.step, eroded: field && field.eroded ? 1 : 0, of: field };
   }
-  /* 场纹理按 ElevField 引用留用：落地渐变六帧只换画面场、规则场不动，精修入屏亦然——不留用就是每帧多传一份 8 MB 的规则场。
+  /* 场纹理按 ElevField 引用留用：只换画面场（叠涂改增量、精修）时规则场不动——不留用就是每次多传一份 8 MB 的规则场。
      缺省场（未传 field＝按类型合成）没有引用可认，照旧重建。 */
   const heldTex = (f: ElevField | undefined): FieldTex | null =>
     f ? (fDisp && fDisp.of === f ? fDisp : fRule && fRule.of === f ? fRule : null) : null;

@@ -15,7 +15,7 @@ import { ERODE_VER, erodeCarve, erodeField, erodeGate, erodeInput, erodeKey, ero
 import { gen2Meso, gen2Uplift, mesoState, riverParams, type UpliftCells } from "../src/core/gen2.ts";
 import { tileInput, tileKey, tilePlan } from "../src/core/tiles.ts";
 import { fbm } from "../src/core/noise.ts";
-import { baseElev, buildElevField, coarseField, dropWeights, DROP_CORE, DROP_FADE, elevBilinear, fieldMix, fieldPlusDelta, landformChanged, waterMask, waterSurface, LAND_FLOOR, SHORE_E, type ElevField } from "../src/core/elev.ts";
+import { baseElev, buildElevField, coarseField, dropWeights, DROP_CORE, DROP_FADE, elevBilinear, fieldPlusDelta, landformChanged, waterMask, waterSurface, LAND_FLOOR, SHORE_E, type ElevField } from "../src/core/elev.ts";
 import { gnoise, makeRelief, mountainness, RELIEF_M } from "../src/core/relief.ts";
 import type { Meta, Unit, World } from "../src/core/types.ts";
 
@@ -1107,31 +1107,6 @@ describe("A* 开集换堆（2026-08-13 规模引擎批）：弹出序与旧线�
     const res = astar(meta, g, undefined, [100.0005, 30.0005], [100 + 0.4995, 30 + 0.4995], "land");
     assert.ok(res, "25 万格对角长途须可达（旧 guard 在此假报不可达）");
     assert.ok(res!.path.length >= cols, "路径须真跨全图");
-  });
-});
-
-describe("侵蚀落地渐变（core/elev.fieldMix）", () => {
-  const mkF = (cols: number, rows: number, step: number, v: number, eroded = false): ElevField => ({
-    bb: { lonMin: 100, lonMax: 100 + cols * step, latMin: 30, latMax: 30 + rows * step },
-    step, cols, rows, data: new Float32Array(cols * rows).fill(v), eroded
-  });
-  it("t≥1 返回 to 本身（末帧＝真场引用，与硬切逐位一致）", () => {
-    const a = mkF(4, 4, 1, 0.2), b = mkF(4, 4, 1, 0.6);
-    assert.strictEqual(fieldMix(a, b, 1), b);
-  });
-  it("同几何中点插值；两场相同处恒不动（渐变只发生在真变了的区域）", () => {
-    const a = mkF(4, 4, 1, 0.2), b = mkF(4, 4, 1, 0.6, true);
-    a.data[5] = 0.6;   // 此格 from===to＝远处不动
-    const m = fieldMix(a, b, 0.5);
-    assert.strictEqual(m.data[0], Math.fround(0.4));
-    assert.strictEqual(m.data[5], Math.fround(0.6), "两场同值处逐位稳定");
-    assert.strictEqual(m.eroded, true, "过渡帧取 to 的侵蚀标记");
-    assert.notStrictEqual(m, b);
-  });
-  it("几何不同（首次落地粗→细）按 to 细格中心双线性重采样再插", () => {
-    const a = mkF(4, 4, 1, 0.2), b = mkF(8, 8, 0.5, 0.6);
-    const m = fieldMix(a, b, 0.5);
-    for (let i = 0; i < 64; i++) assert.ok(Math.abs(m.data[i] - 0.4) < 1e-6, "常数场重采样仍是常数：" + m.data[i]);
   });
 });
 

@@ -210,8 +210,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     const v = validateWorld(raw);
     if (!v.ok) { alert("这份只读分享的数据无法载入：\n" + formatIssues(v.fatal)); return false; }
     if (v.warnings.length) console.warn(`只读分享有 ${v.warnings.length} 条数据提示：\n` + formatIssues(v.warnings));
-    setWorld(raw, null, null);
-    readOnlySig.value = true;
+    await openDirect(raw, () => { readOnlySig.value = true; });
     return true;
   }
 
@@ -289,7 +288,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       ctx.lib.patchEntry(ctx.mapId, snap, false).catch(() => {});
     }
   }
-  /* —— 开图加载舞台：步进 0 读取存档→1 地形烘焙→2 时段过滤→3 泥金落款。
+  /* —— 开图加载舞台：步进 0 读取存档→1 侵蚀计算（等到地形全部算完，terrainReady）→2 时段过滤→3 泥金落款。
      paintFrame=让浏览器真画一帧（双 rAF），保证舞台先上屏再进同步重活（setWorld 里的网格重建）；
      后台标签 rAF 不跑（深链在后台标签启动时），setTimeout 兜底防开图悬死。总时长不足则补到
      ~450ms（一闪而过比没有更糟，防闪烁语义）；失败/成功一律 finally 收场（组件自带淡出）。 */
@@ -305,6 +304,29 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     const renderer = ctx.R ? (ctx.R.rendererName().startsWith("CPU") ? "CPU" : "WebGL") : undefined;
     loadStageSig.value = { name: name || (cur ? cur.name : "…"), step, renderer };
   };
+  /* 开图之后等地形全部算完（host.settled：中尺度、工作档、精修、全图的块）再撤加载页——进图即终态。
+     back＝加载页上出「返回图库」：点了就不等，图已载入、后台照算。返回 false＝用户点了返回 */
+  function terrainReady(back: boolean): Promise<boolean> {
+    return new Promise(res => {
+      let done = false;
+      const fin = (ok: boolean): void => { if (!done) { done = true; res(ok); } };
+      const cur = loadStageSig.peek();
+      if (back && cur) loadStageSig.value = { ...cur, back: () => fin(false) };
+      void host.settled().then(() => fin(true));
+    });
+  }
+  /** 不经图库的开图（只读分享、没有图库时的示例）：同样等算完才撤加载页；没有图库可回，不出返回钮。after 紧跟 setWorld 同步跑 */
+  async function openDirect(w: unknown, after?: () => void): Promise<void> {
+    const t0 = performance.now();
+    stageStep(1, ((w as { meta?: Meta } | null)?.meta || ({} as Meta)).名称 || "未命名");
+    try {
+      await paintFrame();
+      setWorld(w, null, null);
+      after?.();
+      await terrainReady(false);
+      await stageFinish(t0);
+    } finally { loadStageSig.value = null; }
+  }
   async function stageFinish(t0: number): Promise<void> {
     stageStep(2);
     await paintFrame();                        // 帧循环按新世界/纪年画一帧（时段过滤生效）
@@ -331,6 +353,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       ctx.baseVer = got.entry ? got.entry.updatedAt : null;   // 与内容同源（须在 setWorld 之后，它会清空基准）
       ctx.lib!.kvSet("lastMap", id).catch(() => {});
       hideHome();
+      if (!(await terrainReady(true))) { showHome(); return true; }
       await stageFinish(t0);
       return true;
     } finally { loadStageSig.value = null; }
@@ -353,6 +376,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       setWorld(w, fn, (ctx.fcache[ctx.folderDir!.name] || {})[fn]);
       ctx.baseVer = got.mtime;   // 与内容同源（须在 setWorld 之后，它会清空基准）
       hideHome();
+      if (!(await terrainReady(true))) { showHome(); return true; }
       await stageFinish(t0);
       return true;
     } finally { loadStageSig.value = null; }
@@ -871,7 +895,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     if (await bootShared()) return;
     if (!ctx.lib) {
       const s = dl.wantSample ? await fetchSample(dl.wantSample) : null;
-      if (s) setWorld(s, null, null); else host.rebuild();
+      if (s) await openDirect(s); else host.rebuild();
       return;
     }
     if (dl.wantSample && await bootSample(dl.wantSample)) return;   // 指定夹具优先

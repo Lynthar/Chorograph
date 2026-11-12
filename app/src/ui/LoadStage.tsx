@@ -2,16 +2,18 @@
    语法：进行中一律金、印章朱（品牌位；印分白文/朱文两态随主题，symbol 在 index.html）。
    library.ts 开图流程置 loadStageSig 步进
    0 读取存档 → 1 侵蚀计算(·渲染器) → 2 时段过滤 → 3 泥金落款；置 null 后本组件淡出再卸载。
+   第 1 步停到地形全部算完（host.settled）：下面一行报走到哪（erodeProgSig），进度条按它走。
    ⚠「侵蚀计算」是这一过程的**唯一用户面词**（顶栏胶囊/设置项/帮助条目同词；2026-09-22 自「地势定形」改，原「地形烘焙」
    更早已统一）——别再另起名（ARM_NAME 之训：同一件事两个名字就是下一处漂移）。 */
 import { Fragment } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { loadStageSig, type LoadStageState } from "../app/state.ts";
+import { erodeProgSig, loadStageSig, type LoadStageState } from "../app/state.ts";
 
-const STEP_W = [10, 45, 78, 94];   // 各步骤进度条宽 %（无真实进度源，按流水线阶段走）
+const STEP_W = [10, 20, 82, 94];   // 各步骤进度条宽 %；第 1 步内按侵蚀计算的进度从 20 走到 78
+const SUB = { meso: "正在算地势…", work: "正在刻沟谷…", detail: "正在补细节" } as const;
 
 export function LoadStage() {
-  const st = loadStageSig.value;
+  const st = loadStageSig.value, pg = erodeProgSig.value;
   const [shown, setShown] = useState<LoadStageState | null>(null);
   const [closing, setClosing] = useState(false);
   useEffect(() => {
@@ -24,15 +26,20 @@ export function LoadStage() {
   if (!shown) return null;
   const steps = ["读取存档", "侵蚀计算" + (shown.renderer ? " · " + shown.renderer : ""), "时段过滤", "泥金落款"];
   const step = Math.min(steps.length - 1, shown.step);
+  const sub = step === 1 && pg ? SUB[pg.step] + (pg.step === "detail" ? (pg.total ? " " + pg.done + " / " + pg.total : "…") : "") : "";
+  const w = step === 1 && pg ? (pg.step === "meso" ? 26 : pg.step === "work" ? 36 : 42 + 36 * (pg.total ? pg.done / pg.total : 0.5)) : STEP_W[step];
   return (
     <div class={"loadstage" + (closing ? " out" : "")}>
       <div class="ls-box">
         <span class="ls-seal sealmark" aria-hidden="true"><svg class="v-solid"><use href="#mk-seal"/></svg><svg class="v-line"><use href="#mk-seal-line"/></svg></span>
         <b class="ls-name">{shown.name}</b>
-        <div class="ls-bar"><i style={{ width: (closing ? 100 : STEP_W[step]) + "%" }}></i></div>
+        <div class="ls-bar"><i style={{ width: (closing ? 100 : w) + "%" }}></i></div>
         <div class="ls-steps">{steps.map((s, i) => (
           <Fragment key={i}>{i > 0 ? " · " : ""}<span class={i < step ? "done" : i === step ? "now" : ""}>{s}</span></Fragment>
         ))}</div>
+        <div class="ls-sub" aria-live="polite">{sub}</div>
+        {shown.back && !closing ? <button type="button" class="ls-back" id="lsBack" onClick={shown.back}
+          title="不等了：这张图留在后台接着算，下次打开时算好的部分不用重算">返回图库</button> : null}
       </div>
     </div>
   );

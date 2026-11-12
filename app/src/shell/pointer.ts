@@ -20,7 +20,7 @@ import { bearingDeg, fmtStrength, unitMoraleAt, unitPos, unitStatusAt, unitStren
 import { pickDecor, decorIdsInRadius, decorsInBox, ecoForeignIdsInDisc } from "../render/decor.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit, selMembers,
   modeSig, editSubSig, linkTypeSig, linkFromSig, isTacSig, setRailTool, pickEditSub, showToast,
-  inspEditSig, settingsSig, closeSettings, helpOpenSig, calOverlaySig, geoImportSig, prefsOpenSig, importOpenSig, saveConflictSig, togglePlay, stopPlay,
+  inspEditSig, settingsSig, closeSettings, loadStageSig, helpOpenSig, calOverlaySig, geoImportSig, prefsOpenSig, importOpenSig, saveConflictSig, togglePlay, stopPlay,
   opDrawSig, opSelSig, selectOp, clearOpSel, cancelOpDraw, routePtsSig,
   addTypeSig, paintFactionSig, paintLayerSig, paintTerrainSig, terrainAxisSig, terrainAxisOf, climPaintSig, decorKindSig, decorSizeSig,
   brushSizeSig, brushEraseSig, decorEraseSig, eraNewSig, heightStepMSig, upliftPeakMSig, upliftModeSig, basinFloorMSig,
@@ -977,6 +977,7 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
     if (mode === "edit" && editSubSig.value === "link") linkFromSig.value = null;   // 取消连线起点
   });
   addEventListener("keydown", e => {
+    if (loadStageSig.peek()) return;   // 开图加载页盖着整屏：键盘不落到底下还没算完的图上
     /* ⌘K / Ctrl+K：聚焦顶栏搜索框。
        须在输入框守卫之前（正在打字也能召唤）；弹层/图库打开时让位（焦点别落进被盖住的顶栏）。 */
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "k" || e.key === "K")

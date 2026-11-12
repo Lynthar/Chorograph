@@ -236,6 +236,9 @@ body{font-family:var(--f-hei);-webkit-font-smoothing:antialiased;user-select:non
 .ls-steps{font:400 var(--fs-xs)/1.9 var(--f-mono);color:var(--q-faint)}
 .ls-steps .done{color:var(--q-dim);text-decoration:line-through;text-decoration-color:var(--q-faint)}
 .ls-steps .now{color:var(--q-gold)}
+.ls-sub{min-height:1.9em;font:400 var(--fs-xs)/1.9 var(--f-mono);font-variant-numeric:tabular-nums;color:var(--q-dim)}
+.ls-back{cursor:pointer;padding:4px 12px;font-size:var(--fs-sm);border:1px solid var(--q-ln);border-radius:var(--r-xs);background:none;color:var(--q-dim)}
+.ls-back:hover{color:var(--q-tx);background:var(--q-in)}
 
 /* ═══════════ 面板批：抽屉内容件 / 检查器 / 表单 / fprops / 弹层 / toast ═══════════
    源自设计稿；改名注记：设计的 .kv 网格读数在此命名为 .kv2

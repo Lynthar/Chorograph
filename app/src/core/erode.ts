@@ -73,7 +73,7 @@ export interface ErodeInput {
   amp: number;
   /** 起伏种子（core/relief.reliefSeedOf）；sphere＝球面图（起伏按三维取样） */
   seed: number; sphere: boolean;
-  /** 细分格预算（工作档取 core/scale 按图种给的 fineCap；4K 静置精修经 ultraInput
+  /** 细分格预算（工作档取 core/scale 按图种给的 fineCap；精修档经 ultraInput
       提到主机给的精修预算）——随输入走＝Worker 不看 ctx、erodeKey 自然分流；必填（可选+兜底
       会盖住缺省分支，同 upscaleOf cap 之训） */
   cap: number;
@@ -135,7 +135,7 @@ export interface ErodeWindow { carve: CoarseCarve | null; refS: number; sc: read
    (1.67km 细格)与改前观感持平。大格数图(全球 106 万)细分自然回 1×,耗时账见设计稿。 */
 /* 战略 60 万→240 万（2026-09-02）：起伏改公里锚定后，战略图的细节上限不再由「防混叠」定而由
    预算定——区域图（8° 级）自此吃到轴上限 8×＝1.7 km 细格，缩放进去有真形。大陆级图（48°，105 万
-   粗格）仍是 1×，它的加密归静置精修（host 的 ultra 档自本日起也发给战略图）。 */
+   粗格）仍是 1×，放大后的细节归分块精修（core/tiles）。 */
 const MAX_FINE = SCALE_PROFILES.strategic.fineCap;
 /* 140 万→150 万（2026-09-02）：缺省 60 km 战场 600²×2²＝144 万，恰差 2.8% 拿不到 2×＝缺省尺寸是第一个
    失去细分的尺寸（59 km 有 2×、60 km 没有）；放大看细节时 100 m 工作档露格子。 */
@@ -328,7 +328,7 @@ function landformDelta(m: Meta, grid: Grid): Float32Array | null {
   return out;
 }
 
-/** 精修档输入（4K 静置精修，2026-08-11）：同一份工作档输入换预算——数组共享引用（Worker 侧
+/** 精修档输入（没有块计划的图，与工作档同一帧换上）：同一份工作档输入换预算——数组共享引用（Worker 侧
     postMessage 自会克隆）、axisMax 提到 16、acrit 按 (sxU/sxW)² 放大＝物理集水阈值与工作档
     一致（见 ErodeInput.acrit 注）。ultraCap 由主机按 deviceMemory 分档传入。
     ⚠ 倍率提不上去＝返 null 不发精修单（2026-08 审查修正）：低内存档 5.25M 预算撞上 196 万格
