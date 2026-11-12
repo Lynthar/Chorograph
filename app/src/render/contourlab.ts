@@ -5,6 +5,7 @@
    ⚠ 等值线的角态表与链折线只在 render/maskraster（与视线掩膜的轮廓共用一份）。 */
 import { elevSmooth, elevUnitM, waterSurface, type RuleField } from "../core/elev.ts";
 import { project, unproject, type Camera } from "../core/projection.ts";
+import { CONTOUR } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox, Meta } from "../core/types.ts";
 import type { LabelField } from "./labels.ts";
@@ -19,7 +20,7 @@ export const LAB_MAX_LEVELS = 12, LAB_SNAP_PX = 1.5;
     ⚠ 三种结果都是首曲线等距的整数倍——注记必须落在**画出来的**线上，否则数字旁边没有线。 */
 export function labStepFor(spanV: number, base: number): number {
   if (!(base > 0)) return 0;
-  const idx = base * 5;
+  const idx = base * CONTOUR.index;
   if (!(spanV > 0)) return idx;
   if (spanV / idx < 2) return base;   // 计曲线不足两条＝数不出来，改标首曲线
   const k = Math.ceil(spanV / idx / LAB_MAX_LEVELS);
@@ -154,7 +155,7 @@ export function drawContourLabels(
   if (!c.items.length) return;
   ctx.save();
   ctx.font = "10px sans-serif"; ctx.textBaseline = "middle"; ctx.textAlign = "center";
-  ctx.lineJoin = "round"; ctx.lineWidth = 3.5; ctx.strokeStyle = "rgba(246,239,220,.92)"; ctx.fillStyle = "rgba(90,70,40,.95)";
+  ctx.lineJoin = "round"; ctx.lineWidth = 3.5; ctx.strokeStyle = "rgba(246,239,220,.92)"; ctx.fillStyle = `rgba(${CONTOUR.color.join(",")},.95)`;   // 与线同墨
   for (const it of c.items) {
     const [x, y] = project(cam, it.lon, it.lat);
     if (x < -40 || y < -10 || x > cam.w + 40 || y > cam.h + 10) continue;

@@ -3,8 +3,9 @@
    八度门控——两端观感同构的判据收在这里，别在渲染器里各写一份数值。
    ⚠ 另立一张表、不给 LANDFORM/ECO/terrainProps 加字段（它们是平价逐位比对对象，同 NODE_CATS 之例）。 */
 import { CLIMATE, SNOW_LAT_M, WATER_EPS, parseComposite, allComposites, snowLatM } from "../core/constants.ts";
-import { elevUnitM } from "../core/elev.ts";
+import { elevUnitM, SUP_DASH_PX, SUP_HI_PX, SUP_LO_PX } from "../core/elev.ts";
 import { tget } from "../core/util.ts";
+import { hash2, vnoise } from "../core/noise.ts";
 import { kmPerDeg } from "../core/geo.ts";
 import { gridStepDeg } from "../core/grid.ts";
 import type { Climate, Landform, Meta } from "../core/types.ts";
@@ -404,7 +405,8 @@ export const FULL_WRAP_DEG = 359.99;
 /** 细分场的判据（场格边 < 类型格边 × 它）：装饰噪声门只在细分或侵蚀场上生效，两端同读 */
 export const FINE_STEP_K = 0.999;
 
-const sstep01 = (a: number, b: number, x: number): number => {
+/** smoothstep（同 GLSL）：两端同式的规则与 CPU 兜底共用这一份 */
+export const sstep01 = (a: number, b: number, x: number): number => {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
@@ -413,7 +415,10 @@ const sstep01 = (a: number, b: number, x: number): number => {
     近岸浅水 shore（0–1，水面下 shoreE 起渐显、按 FX.shoreMix 混入）、岸线墨 ink（0–255）按 inkA 混入；陆上的河面取水面下 riverE＝紧贴判据线下的浅水。
     河当水体画（render/rivers），湖海与河同用这一份。rampE 必须等于 gen2.ISL_SHOAL_U（static-guards 锁着）：群岛的浅滩靠它压到深海色 */
 export const WATER = { deep: [40, 90, 132], shallow: [100, 160, 198], shore: [0.55, 0.72, 0.75], ink: [38, 66, 86], inkA: 0.55,
-  rampE: 0.35, rampSpan: 0.33, shoreE: 0.10, riverE: WATER_EPS + 1e-4 } as const;
+  rampE: 0.35, rampSpan: 0.33, shoreE: 0.10, riverE: WATER_EPS + 1e-4,
+  /* 岸线墨的宽（两端画法不同，各一组数）：GL 是到岸值零点的有向距离上 inkBandPx 宽的软带（CSS 像素）；
+     CPU 是格边上 4×4 超采样的线，宽 max(1, min(inkWPx·dpr, 瓦片像素每度 ÷ inkWK))——只按后者放大，战术图放大后每段描成上百像素 */
+  inkBandPx: 1.4, inkWPx: 1.5, inkWK: 14 } as const;
 /** WATER 的 GLSL 字面量（整数补「.0」）：ramp＝按 t 取水段色阶、shore＝近岸色、ink＝岸线墨、deep＝深海色 */
 export function waterGLSL(): { ramp: string; shore: string; ink: string; deep: string } {
   const f = glslF, D = WATER.deep, S = WATER.shallow;
@@ -469,3 +474,341 @@ export function marshGate(smac: number, slopeK: number): number {
 export const POOL_ROT: readonly [number, number, number, number] = [Math.cos(FX.poolRot[0]), Math.sin(FX.poolRot[0]), Math.cos(FX.poolRot[1]), Math.sin(FX.poolRot[1])];
 /** 反照率噪声两档的坐标变换＝旋转 × ½（cos, sin）：梯度噪声的斑块约半个格距，格距加倍才与旧值噪声同尺寸；GL 与 CPU 同取 */
 export const ALB_ROT: readonly [number, number, number, number] = [0.5 * Math.cos(FX.albRot[0]), 0.5 * Math.sin(FX.albRot[0]), 0.5 * Math.cos(FX.albRot[1]), 0.5 * Math.sin(FX.albRot[1])];
+
+/* —— 两端同式的观感规则：每条一个 TS 函数（CPU 兜底直接调用）+ 同名 GLSL（shadeGLSL / contourGLSL 生成，GL 着色器注入），写在一起。
+   改一条必须两份同改，否则 GL 与 CPU 观感分家（e2e「观感底图两端差不越线」只兜得住大的）。两份各留各的运算次序：
+   颜色量纲不同（TS 0–255、GLSL 0–1），GLSL 的 mix 与 a+(b−a)t 舍入不同，GL 有些常数预先折成一个字面量——改写其中一份的次序＝那一端的像素变 —— */
+
+/** 陡坡软压：坡长超过膝点 slopeKnee 的部分按 soft/(soft+超出) 压缩，膝内恒等——写成 knee + … 会把任何微坡拉到膝点、平原满是褶皱 */
+export function slopeSoft(sl: number): number {
+  const x = Math.max(0, sl - FX.slopeKnee);
+  return Math.min(sl, FX.slopeKnee) + x * FX.slopeSoft / (FX.slopeSoft + x);
+}
+/** 暖冷晕渲（Imhof）：受光 dn → o[0] 明暗倍率、o[1..3] 冷暖色偏（受光面暖、背光面冷） */
+export function shadeOf(dn: number, o: Float64Array): void {
+  const lt = sstep01(FX.shadeKnee, 1, dn);
+  o[0] = FX.shadeLo + (FX.shadeHi - FX.shadeLo) * lt;
+  o[1] = FX.cool[0] + (FX.warm[0] - FX.cool[0]) * lt; o[2] = FX.cool[1] + (FX.warm[1] - FX.cool[1]) * lt; o[3] = FX.cool[2] + (FX.warm[2] - FX.cool[2]) * lt;
+}
+/** 谷影（帐篷差的廉价 AO，负＝脊上提亮）：de＝制图面 − 双线性（场的抽象单位），按真实坡度并随夸张走 */
+export function cavOf(de: number, fstep: number, gain: number): number {
+  return Math.max(FX.cavLo, Math.min(FX.cavHi, de / fstep * gain * 2 * NRM0 * (1 + FX.macroW) * FX.cavAmp));
+}
+/** 球面图气候带的纬度改正（抽象高程）：雪线、林线、色阶同用这一个 */
+export function latShift(lat: number, refM: number, unitM: number): number { return (snowLatM(Math.abs(lat)) - refM) / unitM; }
+/** 林线淡出：高程 e 自 treeE + dl 起、band 之内从 0 到 1 */
+export function treeFade(treeE: number, dl: number, band: number, e: number): number { const t = treeE + dl; return sstep01(t, t + band, e); }
+/** 林线以上换成草甸色的份额：淡出量 × 林冠满度（canopy ÷ FOREST_CANOPY） */
+export function meadowK(fade: number, canopy: number): number { return fade * Math.max(0, Math.min(1, canopy / FOREST_CANOPY)); }
+/** 生态色调的混入份额（× 四角色调权重和） */
+export function tintK(tintW: number): number { return FX.tintMix * tintW; }
+/** 荒漠暖沙定调的份额（沙丘权重 d） */
+export function sandK(d: number): number { return d * FX.sandMix; }
+/** 沼泽湿绿定调的份额（坡门之后的沼泽权重 m） */
+export function marshK(m: number): number { return m * FX.marshMix; }
+/** 水洼的显隐：一格占几像素 pxCell 渐显 × 沼泽权重 m × paper（只在战术图：战略格上两格半的塘是十几公里的湖） */
+export function poolGate(pxCell: number, m: number, paper: number): number { return sstep01(FX.poolLo, FX.poolHi, pxCell) * m * paper; }
+/** 水洼噪声 pn → o[0] 湿泥份额、o[1] 积水份额（都还没乘显隐与各自的 mix） */
+export function poolMask(pn: number, o: Float64Array): void {
+  const E = NOISE.pool.edge, pw = sstep01(E[1], E[2], pn);
+  o[0] = sstep01(E[0], E[1], pn) * (1 - pw); o[1] = pw;
+}
+/** 反照率抖动的倍率：av＝两档梯度噪声的 crossfade，g＝八度门 */
+export function albM(av: number, albVar: number, g: number): number { return 1 + av * albVar * FX.albAmp * g; }
+/** 坡度岩化的份额：缩放无关坡度 slp × 材质岩化敏感度 rock */
+export function rockK(slp: number, rock: number): number { return sstep01(FX.rockSlopeLo, FX.rockSlopeHi, slp) * rock; }
+/** 岩色的高度位置：岩色＝rockC + rockSpan·它（越高越浅） */
+export function rockT(e: number): number { return Math.max(0, Math.min(1, e * FX.rockK)); }
+/** 雪线（抽象高程）：基准 + 纬度改正，不低于海面 */
+export function snowLine(base: number, dl: number): number { return Math.max(0, base + dl); }
+/** 雪盖：高程 e 自雪线 snE 起 snowBand 内从 0 到 1 */
+export function snowAt(snE: number, e: number): number { return sstep01(snE, snE + FX.snowBand, e); }
+/** 陡坡挂不住雪的折扣（乘在雪盖上） */
+export function snowSlope(slp: number): number { return 1 - FX.snowSlopeCut * sstep01(FX.snowSlopeLo, FX.snowSlopeHi, slp); }
+/** 空气透视的份额：越高越淡蓝 */
+export function airK(e: number): number { return sstep01(FX.airLo, FX.airHi, e) * FX.airMix; }
+/** 近岸浅水带的份额：水下 shoreE 起渐显到判据线，按一格占几像素 pxCell 渐显（整幅视角下摊成贴纸大光环） */
+export function shoreK(ec: number, ws: number, pxCell: number): number {
+  return sstep01(ws - WATER.shoreE, ws - WATER_EPS, ec) * sstep01(FX.shoreLo, FX.shoreHi, pxCell) * FX.shoreMix;
+}
+/** 水面静态波纹的倍率：wv＝两档 ridged 值噪声的 crossfade，g＝八度门 */
+export function waveM(wv: number, g: number): number { return 1 + (wv - 0.5) * FX.waveAmp * g; }
+/** 水段色阶的位置：水下 rampE 起、跨 rampSpan 自深到浅 */
+export function waterT(e: number, ws: number): number { return Math.max(0, Math.min(1, (e - ws + WATER.rampE) / WATER.rampSpan)); }
+/** 等高线亮晕的份额：只画核外环（kh − k），按底色亮度 lum（0–1）在 haloLo..haloHi 渐隐 */
+export function haloK(lum: number, k: number, kh: number): number { return (1 - sstep01(FX.haloLo, FX.haloHi, lum)) * Math.max(0, kh - k); }
+/** 上面这些规则的 GLSL（同名、同式；颜色 0–1）。cavOf / latShift 的场格边、增益与纬度改正参数由调用方传 uniform */
+export function shadeGLSL(): string {
+  const f = glslF;
+  return `float slopeSoft(float sl){ float x=max(0.0,sl-float(${FX.slopeKnee})); return min(sl,float(${FX.slopeKnee}))+x*float(${FX.slopeSoft})/(float(${FX.slopeSoft})+x); }
+void shadeOf(float dn,out float sh,out vec3 shT){ float lt=smoothstep(float(${FX.shadeKnee}),1.0,dn); sh=mix(float(${FX.shadeLo}),float(${FX.shadeHi}),lt); shT=mix(vec3(${FX.cool.join(",")}),vec3(${FX.warm.join(",")}),lt); }
+float cavOf(float de,float fstep,float gain){ return clamp(de/fstep*gain*float(${2 * NRM0 * (1 + FX.macroW)})*float(${FX.cavAmp}), ${f(FX.cavLo)}, ${f(FX.cavHi)}); }
+float latShift(float lat,float on,float ref,float unit){ return on*(snowLatM(abs(lat))-ref)*unit; }
+float treeFade(float treeE,float dl,float band,float e){ return smoothstep(treeE+dl,treeE+dl+band,e); }
+float meadowK(float fade,float canopy){ return fade*clamp(canopy/float(${FOREST_CANOPY}),0.0,1.0); }
+float tintK(float tintW){ return ${f(FX.tintMix)}*tintW; }
+float sandK(float d){ return d*float(${FX.sandMix}); }
+float marshK(float m){ return m*float(${FX.marshMix}); }
+float poolGate(float pxCell,float m,float paper){ return smoothstep(float(${FX.poolLo}),float(${FX.poolHi}),pxCell)*m*paper; }
+vec2 poolMask(float pn){ float pw=smoothstep(${f(NOISE.pool.edge[1])},${f(NOISE.pool.edge[2])},pn); return vec2(smoothstep(${f(NOISE.pool.edge[0])},${f(NOISE.pool.edge[1])},pn)*(1.0-pw), pw); }
+float albM(float av,float albVar,float g){ return 1.0+av*albVar*float(${FX.albAmp})*g; }
+float rockK(float slp,float rock){ return smoothstep(float(${FX.rockSlopeLo}),float(${FX.rockSlopeHi}),slp)*rock; }
+float rockT(float e){ return clamp(e*${f(FX.rockK)},0.0,1.0); }
+float snowLine(float base,float dl){ return max(0.0, base+dl); }
+float snowAt(float snE,float e){ return smoothstep(snE,snE+float(${FX.snowBand}),e); }
+float snowSlope(float slp){ return 1.0-${f(FX.snowSlopeCut)}*smoothstep(float(${FX.snowSlopeLo}),float(${FX.snowSlopeHi}),slp); }
+float airK(float e){ return smoothstep(float(${FX.airLo}),float(${FX.airHi}),e)*float(${FX.airMix}); }
+float shoreK(float ec,float ws,float pxCell){ return smoothstep(ws-${f(WATER.shoreE)},ws-${f(WATER_EPS)},ec)*smoothstep(float(${FX.shoreLo}),float(${FX.shoreHi}),pxCell)*float(${FX.shoreMix}); }
+float waveM(float wv,float g){ return 1.0+(wv-0.5)*float(${FX.waveAmp})*g; }
+float waterT(float e,float ws){ return clamp((e-ws+${f(WATER.rampE)})/${f(WATER.rampSpan)},0.0,1.0); }
+float haloK(float lum,float k,float kh){ return max(0.0,kh-k)*(1.0-smoothstep(float(${FX.haloLo}),float(${FX.haloHi}),lum)); }`;
+}
+
+/** 等高线到最近整倍等值面的线强：d＝像素距（+1e-6 防零梯度平台整面刷线），w0..w1 是 smoothstep 的两沿 */
+function contourW(eh: number, itv: number, ad: number, w0: number, w1: number): number {
+  const u = eh / itv, d = (Math.abs(u - Math.round(u)) * itv + 1e-6) / ad;
+  return 1 - sstep01(w0, w1, d);
+}
+/** 等值面倍数的奇偶（间曲线、助曲线只补奇数倍＝首曲线之间的新线） */
+const oddK = (eh: number, itv: number): number => Math.round(eh / itv) % 2 === 0 ? 0 : 1;
+/**
+ * 一套线系在此像素的着墨（GL 由 contourGLSL 生成同式）：首曲线（挤线抑制：线距不足数像素的陡坎隐去）、计曲线（每第 CONTOUR.index 条，按自身线距评估）、
+ * 间曲线（1/2 距，长虚线）与助曲线（1/4 距，短虚线）——上一级线距 ≥ core/elev.SUP_* 才浮现。
+ * @param ad 线宽量（每 CSS 像素的高程变化）　@param gsl 粗坡（高程 / CSS 像素）　@param sdp 沿等值线切向的像素坐标（虚线相位）　@param bo 带宽外扩像素（亮晕用）
+ */
+export function contourK(eh: number, itv: number, ad: number, gsl: number, sdp: number, bo: number): number {
+  const C = CONTOUR, mn = contourW(eh, itv, ad, C.minorW[0] + bo, C.minorW[1] + bo) * sstep01(C.crowd[0], C.crowd[1], itv / ad);
+  const ix = contourW(eh, itv * C.index, ad, C.indexW[0] + bo, C.indexW[1] + bo) * sstep01(C.crowd[0], C.crowd[1], itv * C.index / ad);
+  const sp1 = itv / gsl, g1 = sstep01(SUP_LO_PX, SUP_HI_PX, sp1), g2 = g1 * sstep01(SUP_LO_PX, SUP_HI_PX, sp1 * 0.5);
+  let m2 = 0, m4 = 0;
+  if (g1 > 0) {
+    const sd = sdp / SUP_DASH_PX, fr = sd - Math.floor(sd), fr2 = 2 * sd - Math.floor(2 * sd);
+    const d1 = Math.abs(fr - 0.5) >= C.dash[0] ? 1 : 0, d2 = Math.abs(fr2 - 0.5) >= C.dash[1] ? 1 : 0;
+    m2 = contourW(eh, itv * 0.5, ad, C.minorW[0] + bo, C.minorW[1] + bo) * oddK(eh, itv * 0.5) * g1 * d1;
+    m4 = contourW(eh, itv * 0.25, ad, C.minorW[0] + bo, C.minorW[1] + bo) * oddK(eh, itv * 0.25) * g2 * d2;
+  }
+  return Math.max(mn * C.ink[0], ix * C.ink[1], m2 * C.ink[2], m4 * C.ink[3]);
+}
+/** contourK 的 GLSL（cwMinor / cwIndex＝首曲线与计曲线两组带宽的 contourW） */
+export function contourGLSL(): string {
+  const f = glslF, C = CONTOUR, lo = SUP_LO_PX.toFixed(1), hi = SUP_HI_PX.toFixed(1);
+  return `float cwMinor(float eh,float itv,float aa,float bo){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(${f(C.minorW[0])}+bo,${f(C.minorW[1])}+bo,d); }
+float cwIndex(float eh,float itv,float aa,float bo){ float u=eh/itv; float d=(abs(u-round(u))*itv+1e-6)/aa; return 1.0-smoothstep(${f(C.indexW[0])}+bo,${f(C.indexW[1])}+bo,d); }
+float oddK(float eh,float itv){ return mod(round(eh/itv),2.0); }
+float contourK(float eh,float itv,float aa,float gsl,float sdp,float bo){
+  float mn=cwMinor(eh,itv,aa,bo)*smoothstep(${f(C.crowd[0])},${f(C.crowd[1])},itv/aa);
+  float ix=cwIndex(eh,itv*${f(C.index)},aa,bo)*smoothstep(${f(C.crowd[0])},${f(C.crowd[1])},itv*${f(C.index)}/aa);
+  float sp1=itv/gsl;
+  float g1=smoothstep(${lo},${hi},sp1), g2=g1*smoothstep(${lo},${hi},sp1*0.5);
+  float sd=sdp/${SUP_DASH_PX.toFixed(1)};
+  float d1=step(${f(C.dash[0])},abs(fract(sd)-0.5)), d2=step(${f(C.dash[1])},abs(fract(sd*2.0)-0.5));
+  float m2=cwMinor(eh,itv*0.5,aa,bo)*oddK(eh,itv*0.5)*g1*d1;
+  float m4=cwMinor(eh,itv*0.25,aa,bo)*oddK(eh,itv*0.25)*g2*d2;
+  return max(max(mn*${f(C.ink[0])}, ix*${f(C.ink[1])}), max(m2*${f(C.ink[2])}, m4*${f(C.ink[3])}));
+}`;
+}
+
+/* —— 两端同式的取样与纹理规则（第一趟）：同上一段的约定；GLSL 版由 textureGLSL 生成，读着色器的 uPXPD（像素/度）与 uGridBB.z（类型格边，度），
+   噪声基元两端有意不同（GL 是 PCG2D fp32 的 vnoise2 / gnoise2，TS 是 core/noise.vnoise 与下面的 gnoise）——观感同构而非逐位一致 —— */
+
+/* 梯度噪声（±0.7，TS 版）：四角梯度按 (xi, yi) 精确比中记忆——命中返回同一批 double＝输出逐位不变；不记忆则每像素多十几次 sin / cos */
+const GC = 2048;
+const gcK = new Float64Array(GC * 2).fill(NaN), gcV = new Float64Array(GC * 8);   // [xi, yi] 键 · 四角 (cos, sin)
+/** 梯度噪声（Perlin 型）：棱脊、沙丘的 ridged 变换与反照率用——值噪声 ridged 后是迷宫纹 */
+export function gnoise(x: number, y: number): number {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const s = ((Math.imul(xi | 0, 0x9e3779b1) ^ Math.imul(yi | 0, 0x85ebca77)) >>> 0) & (GC - 1), o = s * 8;
+  if (gcK[s * 2] !== xi || gcK[s * 2 + 1] !== yi) {
+    const t0 = hash2(xi, yi) * NOISE.tau, t1 = hash2(xi + 1, yi) * NOISE.tau;
+    const t2 = hash2(xi, yi + 1) * NOISE.tau, t3 = hash2(xi + 1, yi + 1) * NOISE.tau;
+    gcV[o] = Math.cos(t0); gcV[o + 1] = Math.sin(t0); gcV[o + 2] = Math.cos(t1); gcV[o + 3] = Math.sin(t1);
+    gcV[o + 4] = Math.cos(t2); gcV[o + 5] = Math.sin(t2); gcV[o + 6] = Math.cos(t3); gcV[o + 7] = Math.sin(t3);
+    gcK[s * 2] = xi; gcK[s * 2 + 1] = yi;
+  }
+  const a = gcV[o] * xf + gcV[o + 1] * yf, b = gcV[o + 2] * (xf - 1) + gcV[o + 3] * yf;
+  const c = gcV[o + 4] * xf + gcV[o + 5] * (yf - 1), d = gcV[o + 6] * (xf - 1) + gcV[o + 7] * (yf - 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+/** 梯度噪声 → 脊形（峰 1 谷 0） */
+const rgd = (n: number): number => 1 - Math.min(1, Math.abs(n) * NOISE.ridgeK);
+/** 屏幕波长 tpx 锚定的两档世界频率与 crossfade：[f, 2f, 份额]（×2 阶梯嵌套，缩放连续无跳档） */
+export function lodF(pxpd: number, tpx: number): [number, number, number] {
+  const fi = Math.max(MICRO_F0, pxpd / tpx);
+  const n = Math.floor(Math.log2(fi / MICRO_F0));
+  return [MICRO_F0 * 2 ** n, MICRO_F0 * 2 ** (n + 1), Math.log2(fi / MICRO_F0) - n];
+}
+/** 域扭曲（色调 / 材质查找与晕渲高程共用）：双频、幅度 < 半格、格空间标定＝缩放稳定。rx / ry＝图幅局部坐标（度），o ← [wx, wy] */
+export function warpOf(rx: number, ry: number, step: number, o: Float64Array): void {
+  const wf = FX.warpF / step, { f2, a2, o: k } = NOISE.warp;
+  const w1x = vnoise(rx * wf + k[0][0], ry * wf + k[0][1]) - 0.5, w1y = vnoise(rx * wf + k[1][0], ry * wf + k[1][1]) - 0.5;
+  const w2x = vnoise(rx * wf * f2 + k[2][0], ry * wf * f2 + k[2][1]) - 0.5, w2y = vnoise(rx * wf * f2 + k[3][0], ry * wf * f2 + k[3][1]) - 0.5;
+  o[0] = (w1x + w2x * a2) * step * FX.warpAmp; o[1] = (w1y + w2y * a2) * step * FX.warpAmp;
+}
+/** 长波扭曲与边缘碎化（只喂色调 / 材质查找，有意超半格；不进高程）：o ← [长波 x, y, 碎化 x, y]——调用方逐项依次加，合成一项再加会差一位 */
+export function warp2Of(rx: number, ry: number, step: number, o: Float64Array): void {
+  const w2f = FX.warp2F / step, w3f = FX.warp3F / step, o2 = NOISE.warp2, o3 = NOISE.warp3;
+  o[0] = (vnoise(rx * w2f + o2[0][0], ry * w2f + o2[0][1]) - 0.5) * step * FX.warp2Amp; o[1] = (vnoise(rx * w2f + o2[1][0], ry * w2f + o2[1][1]) - 0.5) * step * FX.warp2Amp;
+  o[2] = (vnoise(rx * w3f + o3[0][0], ry * w3f + o3[0][1]) - 0.5) * step * FX.warp3Amp; o[3] = (vnoise(rx * w3f + o3[1][0], ry * w3f + o3[1][1]) - 0.5) * step * FX.warp3Amp;
+}
+/** 微八度：世界锚定 ×2 阶梯接续宏观 fbm 频谱，逐档按屏幕波长门控（整幅视角全零）、逐档旋转 37° 打散值噪声的格向（不旋＝梳毛状流纹） */
+export function micro(rx: number, ry: number, pxpd: number): number {
+  let s = 0, a = 0.5, f = MICRO_F0, px = rx, py = ry;
+  const [rc, rs] = NOISE.micro.rot, [kx, ky] = NOISE.micro.k;
+  for (let k = 0; k < MICRO_OCTAVES; k++) {
+    const g = octaveGate(pxpd, f); if (g <= 0) break;
+    s += a * g * (vnoise(px * f + k * kx, py * f + k * ky) - 0.5);
+    const nx = rc * px + rs * py, ny = -rs * px + rc * py;   // 同 GLSL 的 ROT（列主序展开）
+    px = nx; py = ny; f *= 2; a *= FX.microPers;
+  }
+  return s;
+}
+/** 材质纹理（只进光照法线）：林冠 / 沙丘 / 棱脊 / 沼泽各一对 lod 档 crossfade，权重为零的类整段跳过 */
+export function texAt(rx: number, ry: number, twc: number, twd: number, twr: number, twm: number, pxpd: number): number {
+  let h = 0;
+  if (twc > FX.wMin) {
+    const [f1, f2, fr] = lodF(pxpd, FX.canopyPx), g = octaveGate(pxpd, f1);
+    if (g > 0) {
+      const o = NOISE.canopy, a = vnoise(rx * f1 + o[0][0], ry * f1 + o[0][1]) - 0.5, b = vnoise(rx * f2 + o[1][0], ry * f2 + o[1][1]) - 0.5;   // 软鼓包（阈值化＝迷宫蠕虫纹）
+      h += twc * FX.canopyAmp * g * (a + (b - a) * fr);
+    }
+  }
+  if (twd > FX.wMin) {
+    const [f1, f2, fr] = lodF(pxpd, FX.dunePx), g = octaveGate(pxpd, f1);
+    if (g > 0) {
+      const { sx, o } = NOISE.dune, a = rgd(gnoise(rx * sx * f1 + o[0][0], ry * f1 + o[0][1])), b = rgd(gnoise(rx * sx * f2 + o[1][0], ry * f2 + o[1][1]));
+      h += twd * FX.duneAmp * g * (a + (b - a) * fr);
+    }
+  }
+  if (twr > FX.wMin) {
+    const [f1, f2, fr] = lodF(pxpd, FX.ridgePx), g = octaveGate(pxpd, f1);
+    if (g > 0) {   // 棱脊两级：主脉（×main 波长）调制支脉＝山系层级感
+      const { main, mix, o } = NOISE.ridge, m1 = rgd(gnoise(rx * f1 * main + o[0][0], ry * f1 * main + o[0][1]));
+      const a = rgd(gnoise(rx * f1 + o[1][0], ry * f1 + o[1][1])), b = rgd(gnoise(rx * f2 + o[2][0], ry * f2 + o[2][1]));
+      const r = a + (b - a) * fr;
+      h += twr * FX.ridgeAmp * g * (mix[0] * m1 * m1 + mix[1] * m1 * r);
+    }
+  }
+  if (twm > FX.wMin) {
+    const [f1, f2, fr] = lodF(pxpd, FX.marshPx), g = octaveGate(pxpd, f1);
+    if (g > 0) {
+      const o = NOISE.marsh, a = vnoise(rx * f1 + o[0][0], ry * f1 + o[0][1]), b = vnoise(rx * f2 + o[1][0], ry * f2 + o[1][1]);
+      h += twm * FX.marshAmp * g * (a + (b - a) * fr - 0.5);
+    }
+  }
+  return h;
+}
+/** 宏观 fbm 的幅度：按高程分三档，侵蚀过的场降到 fbmEroded 倍（真形自己带起伏） */
+export function fbmRough(e: number, eroded: number): number {
+  return (e > FX.fbmE[0] ? FX.fbmRough[0] : (e > FX.fbmE[1] ? FX.fbmRough[1] : FX.fbmRough[2])) * (eroded ? FX.fbmEroded : 1);
+}
+/** 坡度补糙度（smac＝宏观坡，抽象高程 / 度）：山的质感跟着坡走，与类型的糙度取大——手雕高山落在平原类型上也有岩理 */
+export function slopeRough(smac: number, rough: number): number { return Math.max(rough, Math.min(FX.slopeRoughMax, smac * FX.slopeRough)); }
+/** 坡度补棱脊权重（同上，与类型的棱脊权重取大） */
+export function slopeRidge(smac: number, ridge: number): number { return Math.max(ridge, Math.min(1, smac * FX.slopeRidge)); }
+/** 纹理疏密调制的噪声：世界锚定两八度（λ≈20 格） */
+export function patchN(rx: number, ry: number, step: number): number {
+  const pf = FX.texPatchF / step, P = NOISE.patch;
+  return P.w[0] * vnoise(rx * pf + P.o[0][0], ry * pf + P.o[0][1]) + P.w[1] * vnoise(rx * pf * P.f2 + P.o[1][0], ry * pf * P.f2 + P.o[1][1]);
+}
+/** 纹理幅度的疏密倍率（同一片林 / 沼 / 山有疏有密） */
+export function texPatchK(pn: number): number { return FX.texPatchLo + (FX.texPatchHi - FX.texPatchLo) * sstep01(NOISE.patch.edge[0], NOISE.patch.edge[1], pn); }
+/** 水洼噪声（世界锚定两八度梯度噪声，各转一角：值噪声的塘沿格线连成方块）；step＝类型格边（度） */
+export function poolN(rx: number, ry: number, step: number): number {
+  const pf = FX.poolF / step, qx = rx * pf, qy = ry * pf, [c1, s1, c2, s2] = POOL_ROT, { f2, w, o } = NOISE.pool;
+  return 0.5 + FX.poolK * (w[0] * gnoise(qx * c1 - qy * s1 + o[0][0], qx * s1 + qy * c1 + o[0][1]) + w[1] * gnoise(f2 * (qx * c2 - qy * s2) + o[1][0], f2 * (qx * s2 + qy * c2) + o[1][1]));
+}
+/** 反照率抖动的噪声：屏幕锚定两档（lodF 的 f1 / f2 / fr）梯度噪声，各转一角并缩半（ALB_ROT） */
+export function albAv(rx: number, ry: number, f1: number, f2: number, fr: number): number {
+  const [c1, s1, c2, s2] = ALB_ROT, o = NOISE.alb;
+  return gnoise((c1 * rx - s1 * ry) * f1 + o[0][0], (s1 * rx + c1 * ry) * f1 + o[0][1]) * (1 - fr) + gnoise((c2 * rx - s2 * ry) * f2 + o[1][0], (s2 * rx + c2 * ry) * f2 + o[1][1]) * fr;
+}
+/** 水面静态波纹的噪声：两档 ridged 值噪声（横向拉伸 NOISE.wave.sx）的 crossfade */
+export function waveWv(rx: number, ry: number, f1: number, f2: number, fr: number): number {
+  const { sx, o } = NOISE.wave, ra = 1 - Math.abs(2 * vnoise(rx * sx * f1 + o[0][0], ry * f1 + o[0][1]) - 1);
+  const rb = 1 - Math.abs(2 * vnoise(rx * sx * f2 + o[1][0], ry * f2 + o[1][1]) - 1);
+  return ra + (rb - ra) * fr;
+}
+/** 宏观坡（±1 格差分）进法线的系数 */
+export function macroK(step: number, gain: number): number { return FX.macroNrm / step * FX.macroW * gain; }
+/** 上面这些规则的 GLSL（同名、同式）；另含沼泽坡门 marshGate 与装饰门 decoGate（它们的 TS 版在本文件前面） */
+export function textureGLSL(): string {
+  const f = glslF, N = NOISE, v2 = (p: readonly number[]): string => `vec2(${f(p[0])},${f(p[1])})`;
+  return `float gate(float f){ return smoothstep(${f(OCT_GATE_PX[0])},${f(OCT_GATE_PX[1])},uPXPD/f); }
+float rg(float n){ return 1.0-min(1.0,abs(n)*${f(N.ridgeK)}); }
+float ridged(float n){ return 1.0-abs(2.0*n-1.0); }
+float poolN(vec2 rel){
+  float pf=float(${FX.poolF})/uGridBB.z;
+  vec2 pq=rel*pf;
+  return 0.5+float(${FX.poolK})*(${f(N.pool.w[0])}*gnoise2(vec2(pq.x*float(${POOL_ROT[0]})-pq.y*float(${POOL_ROT[1]}),pq.x*float(${POOL_ROT[1]})+pq.y*float(${POOL_ROT[0]}))+${v2(N.pool.o[0])})
+    +${f(N.pool.w[1])}*gnoise2(${f(N.pool.f2)}*vec2(pq.x*float(${POOL_ROT[2]})-pq.y*float(${POOL_ROT[3]}),pq.x*float(${POOL_ROT[3]})+pq.y*float(${POOL_ROT[2]}))+${v2(N.pool.o[1])}));
+}
+float albAv(vec2 rel,vec3 LA){
+  return mix(gnoise2(mat2(${ALB_ROT[0]},${ALB_ROT[1]},${-ALB_ROT[1]},${ALB_ROT[0]})*rel*LA.x+${v2(N.alb[0])}),
+             gnoise2(mat2(${ALB_ROT[2]},${ALB_ROT[3]},${-ALB_ROT[3]},${ALB_ROT[2]})*rel*LA.y+${v2(N.alb[1])}), LA.z);
+}
+float waveWv(vec2 rel,vec3 LW){
+  return mix(ridged(vnoise2(vec2(rel.x*${f(N.wave.sx)},rel.y)*LW.x+${v2(N.wave.o[0])})),
+             ridged(vnoise2(vec2(rel.x*${f(N.wave.sx)},rel.y)*LW.y+${v2(N.wave.o[1])})), LW.z);
+}
+vec3 lodF(float tpx){ float fi=max(MF0, uPXPD/tpx); float f=MF0*exp2(floor(log2(fi/MF0)));
+  return vec3(f, f*2.0, fract(log2(fi/MF0))); }
+vec2 warpOf(vec2 rel){
+  float wf=float(${FX.warpF})/uGridBB.z;
+  vec2 w1=vec2(vnoise2(rel*wf+${v2(N.warp.o[0])}), vnoise2(rel*wf+${v2(N.warp.o[1])}))-0.5;
+  vec2 w2=vec2(vnoise2(rel*wf*${f(N.warp.f2)}+${v2(N.warp.o[2])}), vnoise2(rel*wf*${f(N.warp.f2)}+${v2(N.warp.o[3])}))-0.5;
+  return (w1+w2*${f(N.warp.a2)})*(uGridBB.z*float(${FX.warpAmp}));
+}
+vec2 warp2Of(vec2 rel){
+  float wf=float(${FX.warp2F})/uGridBB.z;
+  vec2 lo=(vec2(vnoise2(rel*wf+${v2(N.warp2[0])}), vnoise2(rel*wf+${v2(N.warp2[1])}))-0.5)*(uGridBB.z*float(${FX.warp2Amp}));
+  float hf=float(${FX.warp3F})/uGridBB.z;
+  vec2 hi=(vec2(vnoise2(rel*hf+${v2(N.warp3[0])}), vnoise2(rel*hf+${v2(N.warp3[1])}))-0.5)*(uGridBB.z*float(${FX.warp3Amp}));
+  return lo+hi;
+}
+const mat2 ROT=mat2(${f(N.micro.rot[0])},${f(-N.micro.rot[1])},${f(N.micro.rot[1])},${f(N.micro.rot[0])});
+float micro(vec2 rel){
+  float s=0.0,a=0.5,f=MF0;
+  vec2 p=rel;
+  for(int k=0;k<${MICRO_OCTAVES};k++){
+    float g=gate(f); if(g<=0.0) break;
+    s+=a*g*(vnoise2(p*f+vec2(float(k)*${f(N.micro.k[0])},float(k)*${f(N.micro.k[1])}))-0.5);
+    p=ROT*p; f*=2.0; a*=float(${FX.microPers});
+  }
+  return s;
+}
+float texAt(vec2 rel, vec4 tw){
+  float h=0.0;
+  if(tw.x>${f(FX.wMin)}){ vec3 L=lodF(float(${FX.canopyPx})); float g=gate(L.x);
+    if(g>0.0){ float a=vnoise2(rel*L.x+${v2(N.canopy[0])})-0.5;
+      float b=vnoise2(rel*L.y+${v2(N.canopy[1])})-0.5;
+      h+=tw.x*float(${FX.canopyAmp})*g*mix(a,b,L.z); } }
+  if(tw.y>${f(FX.wMin)}){ vec3 L=lodF(float(${FX.dunePx})); float g=gate(L.x);
+    if(g>0.0){ float a=rg(gnoise2(vec2(rel.x*${f(N.dune.sx)},rel.y)*L.x+${v2(N.dune.o[0])}));
+      float b=rg(gnoise2(vec2(rel.x*${f(N.dune.sx)},rel.y)*L.y+${v2(N.dune.o[1])}));
+      h+=tw.y*float(${FX.duneAmp})*g*mix(a,b,L.z); } }
+  if(tw.z>${f(FX.wMin)}){ vec3 L=lodF(float(${FX.ridgePx})); float g=gate(L.x);
+    if(g>0.0){ float m1=rg(gnoise2(rel*L.x*${f(N.ridge.main)}+${v2(N.ridge.o[0])}));
+      float a=rg(gnoise2(rel*L.x+${v2(N.ridge.o[1])}));
+      float b=rg(gnoise2(rel*L.y+${v2(N.ridge.o[2])}));
+      float r=mix(a,b,L.z);
+      h+=tw.z*float(${FX.ridgeAmp})*g*(${f(N.ridge.mix[0])}*m1*m1+${f(N.ridge.mix[1])}*m1*r); } }
+  if(tw.w>${f(FX.wMin)}){ vec3 L=lodF(float(${FX.marshPx})); float g=gate(L.x);
+    if(g>0.0){ float a=vnoise2(rel*L.x+${v2(N.marsh[0])});
+      float b=vnoise2(rel*L.y+${v2(N.marsh[1])});
+      h+=tw.w*float(${FX.marshAmp})*g*(mix(a,b,L.z)-0.5); } }
+  return h;
+}
+float fbmRough(float e,float eroded){ return (e>${f(FX.fbmE[0])}?${f(FX.fbmRough[0])}:(e>${f(FX.fbmE[1])}?${f(FX.fbmRough[1])}:${f(FX.fbmRough[2])}))*mix(1.0,${f(FX.fbmEroded)},eroded); }
+float slopeRough(float smac,float rough){ return max(rough, min(float(${FX.slopeRoughMax}), smac*float(${FX.slopeRough}))); }
+float slopeRidge(float smac,float ridge){ return max(ridge, min(1.0, smac*float(${FX.slopeRidge}))); }
+float patchN(vec2 rel){ float pf=float(${FX.texPatchF})/uGridBB.z;
+  return ${f(N.patch.w[0])}*vnoise2(rel*pf+${v2(N.patch.o[0])})+${f(N.patch.w[1])}*vnoise2(rel*pf*${f(N.patch.f2)}+${v2(N.patch.o[1])}); }
+float texPatchK(float pn){ return mix(float(${FX.texPatchLo}), float(${FX.texPatchHi}), smoothstep(${f(N.patch.edge[0])},${f(N.patch.edge[1])},pn)); }
+float macroK(float cell,float gain){ return ${f(FX.macroNrm)}/cell*float(${FX.macroW})*gain; }
+float marshGate(float smac,float slopeK){ return 1.0-smoothstep(float(${FX.marshSlopeLo}),float(${FX.marshSlopeHi}),degrees(atan(smac*slopeK))); }
+float decoGate(float smac,float rough,float land,float fine){
+  float dk=max(smoothstep(float(${FX.decoSlopeLo}),float(${FX.decoSlopeHi}),smac), smoothstep(float(${FX.decoRoughLo}),float(${FX.decoRoughHi}),rough));
+  return 1.0+(dk-1.0)*land*fine;
+}`;
+}

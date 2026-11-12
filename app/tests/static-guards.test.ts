@@ -60,10 +60,10 @@ describe("静态守卫：单一真源", () => {
     const re = /0\.55,\s*0\.72,\s*0\.75|\b38(\.0)?,\s*66(\.0)?,\s*86\b|\b40(\.0)?,\s*90(\.0)?,\s*132\b|\b100(\.0)?,\s*160(\.0)?,\s*198\b/;
     assert.deepStrictEqual(hitsOutside(re, ["render/material.ts"]), [], "水色又写成了字面量——两个渲染器读 material.WATER，河口与湖面才接得上色");
   });
-  it("水段色阶的深端（水面下多少个高程单位到最深色）两个渲染器同读 WATER.rampE，且等于生成器压群岛浅滩的深度", () => {
-    const re = /e\s*-\s*ws\s*\+\s*(\$\{glF\()?WATER\.rampE\b/;
+  it("水段色阶的深端（水面下多少个高程单位到最深色）两端同读 WATER.rampE（material.waterT 的 TS 与 GLSL 各一处），且等于生成器压群岛浅滩的深度", () => {
+    assert.strictEqual(linesIn("render/material.ts", /e\s*-\s*ws\s*\+\s*(\$\{f\()?WATER\.rampE\b/), 2, "material 里 waterT 的 TS 与 GLSL 应各一处、深端读 WATER.rampE");
     for (const f of ["render/terrainGL.ts", "render/terrainCPU.ts"])
-      assert.strictEqual(linesIn(f, re), 1, `${f} 里水段色阶那一行应恰一处、深端读 WATER.rampE`);
+      assert.strictEqual(linesIn(f, /\bwaterT\(e,\s*ws\)/), 1, `${f} 的水段色阶应走 material.waterT`);
     assert.strictEqual(WATER.rampE, ISL_SHOAL_U, "WATER.rampE 与 gen2.ISL_SHOAL_U 不同——群岛的浅滩会压不到深海色，或压过了头");
   });
   it("两个地形渲染器不手写 material 表里的数与 WATER_EPS", () => {
