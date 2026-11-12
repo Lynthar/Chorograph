@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { gen2Meso, gen2Params, gen2Uplift, riverParams, type Gen2Uplift } from "../src/core/gen2.ts";
 import { buildGridCells, gridGeom } from "../src/core/grid.ts";
-import { elevBilinear, elevSmooth, type ElevField } from "../src/core/elev.ts";
+import { buildElevField, elevBilinear, elevSmooth, landformRel, type ElevField } from "../src/core/elev.ts";
 import { erodeField, erodeInput, erodeKey, ultraInput, upscaleOf, workNest, WORK_NEST_MIN, type ErodeInput } from "../src/core/erode.ts";
 import { NEST_TGT_Q, nestBaseOf, nestedField, nestSolOf, nestSolve, type NestSrc } from "../src/core/nested.ts";
 import { tileCells, tileCore, tileInput, tileKeyOf, tilePlan, type TilePlan } from "../src/core/tiles.ts";
@@ -73,6 +73,102 @@ const mountainTiles = (n: number): number[] => {
   };
   return plan.tiles.slice().sort((a, b) => cnt(b) - cnt(a) || a - b).slice(0, n);
 };
+
+/* 带中尺度的图认地貌涂改：把一片山（7×7 父格）涂成平原。中尺度的包络、抬升与稳态解不知道这次涂改，三条侵蚀路各自要认 */
+describe("带中尺度的图上侵蚀认地貌涂改（core/elev.landformRel）", () => {
+  interface Flat { k0: number; ovs: { lon: number; lat: number; t: string; step: number }[]; inp1: ErodeInput; w1: ErodeInput; W1: ElevField }
+  let FLAT: Flat | null = null;
+  const flat = (): Flat => {
+    if (FLAT) return FLAT;
+    const { R, nest, cols, rows } = fix(), st = R.st, out = st.pr.inp.out, fU = st.pr.fU, geom = gridGeom(META);
+    let k0 = -1;
+    for (let r = 30; r < rows - 30 && k0 < 0; r++) for (let c = 30; c < cols - 30; c++) {
+      let ok = fU[r * cols + c] >= 0.6;
+      for (let dr = -8; dr <= 8 && ok; dr++) for (let dc = -8; dc <= 8; dc++) if (out[(r + dr) * cols + c + dc] || fU[(r + dr) * cols + c + dc] < 0.3) { ok = false; break; }
+      if (ok) { k0 = r * cols + c; break; }
+    }
+    assert.ok(k0 >= 0, "夹具里找得到一片四周都是山的陆地");
+    const r0 = (k0 / cols) | 0, c0 = k0 % cols, ovs: Flat["ovs"] = [];
+    for (let dr = -3; dr <= 3; dr++) for (let dc = -3; dc <= 3; dc++)
+      ovs.push({ lon: geom.bb.lonMin + (c0 + dc + 0.5) * geom.step, lat: geom.bb.latMin + (r0 + dr + 0.5) * geom.step, t: "plain", step: geom.step });
+    const inp1 = erodeInput(META, [], buildGridCells(META, ovs, 0, R), 0)!, w1 = workNest(inp1, nest);
+    FLAT = { k0, ovs, inp1, w1, W1: nestedField(w1) };
+    return FLAT;
+  };
+  const span = (a: number[]): number => Math.max(...a) - Math.min(...a), mean = (a: number[]): number => a.reduce((x, y) => x + y, 0) / a.length;
+  /** 涂抹区正中 3×3 父格的全部细格（米）：再往外一圈是山脚到平地的过渡（目标面的双线性与低通），不算在「平」里 */
+  const inner = (f: ElevField, k0: number, cols: number, sx: number, um: number): number[] => {
+    const a: number[] = [];
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) for (const v of fineOf(f, k0 + dr * cols + dc, cols, sx)) a.push(v * um);
+    return a;
+  };
+
+  it("输入：涂过的单带起伏权重与基面增量（涂的格取平原的山地度 0，其余 −1），没涂的单两样都不带、键不变", () => {
+    const { inp, w } = fix(), { k0, inp1, w1 } = flat();
+    assert.ok(!inp.lfRel && !inp.lfDelta && !w.lfRel, "没涂的图：不带（键与输出照旧，输出的钉值在上一组）");
+    assert.ok(inp1.lfRel && inp1.lfDelta, "涂过的图：带");
+    assert.strictEqual(inp1.lfRel![k0], 0, "平原的山地度");
+    assert.strictEqual(inp1.lfRel!.reduce((n, v) => n + (v >= 0 ? 1 : 0), 0), 49, "只有涂的 49 格");
+    assert.ok(inp1.lfDelta![k0] < -0.3, "基面降了（抽象单位）：" + inp1.lfDelta![k0]);
+    const cols0 = fix().cols, far = inp1.lfDelta!.reduce((n, v, i) => n + (v !== 0 && (Math.abs(((i / cols0) | 0) - ((k0 / cols0) | 0)) > 4 || Math.abs(i % cols0 - k0 % cols0) > 4) ? 1 : 0), 0);
+    assert.strictEqual(far, 0, "增量只在涂改附近（对照的底稿是同一份中尺度场，不是宏观那份）");
+    assert.ok(w1.lfRel && !("lfDelta" in w1), "嵌套解的单带权重、不带增量");
+    assert.notStrictEqual(erodeKey(w1), erodeKey(w));
+    const other = Float32Array.from(w1.lfRel!); other[k0] = 0.42;
+    assert.notStrictEqual(erodeKey({ ...w1, lfRel: other }), erodeKey(w1), "别的都一样、只有权重不同：键也不同");
+    const { R, um } = fix(), g1 = buildGridCells(META, flat().ovs, 0, R);
+    assert.ok(landformRel(g1) && !landformRel(buildGridCells(META, [], 0, R)));
+    assert.ok(Math.abs(buildElevField(META, [], g1, 0)[k0] * um - 320) < 1e-3, "粗格场那格就是平原的类型基面");
+  });
+
+  it("工作档（嵌套解）：涂之前那片地是山，涂成平原后正中落在平原基面上、起伏不到 10 m；涂改外 12 格以远逐位不变", () => {
+    const { WN, um, cols, rows } = fix(), { k0, W1 } = flat();
+    const a = inner(WN, k0, cols, 2, um), b = inner(W1, k0, cols, 2, um);
+    assert.ok(span(a) > 300 && mean(a) > 1000, "前提：涂之前是山，起伏 " + span(a).toFixed(0) + " m、均高 " + mean(a).toFixed(0) + " m");
+    assert.ok(span(b) < 10, "涂之后起伏 " + span(b).toFixed(0) + " m");
+    assert.ok(Math.abs(mean(b) - 320) < 10, "均值 " + mean(b).toFixed(0) + " m（平原的类型基面 320 m）");
+    const r0 = (k0 / cols) | 0, c0 = k0 % cols;
+    let moved = 0;
+    for (let r = 0; r < rows * 2; r++) for (let c = 0; c < cols * 2; c++) {
+      if (Math.abs((r >> 1) - r0) <= 12 && Math.abs((c >> 1) - c0) <= 12) continue;
+      if (W1.data[r * W1.cols + c] !== WN.data[r * WN.cols + c]) moved++;
+    }
+    assert.strictEqual(moved, 0, "远处有 " + moved + " 个细格变了");
+  });
+
+  it("块：罩着涂改的那块里同一片地也是平的；离得远的块键不变（一笔地貌只换碰到它的块）", () => {
+    const { inp, nest, WN, plan, um, cols } = fix(), { k0, inp1, W1 } = flat(), sx = plan.geom.sx;
+    const r0 = (k0 / cols) | 0, c0 = k0 % cols;
+    const tIn = plan.tiles.find(t => { const T = tileCells(plan.geom, t); return r0 - 2 >= T.r0 && r0 + 2 < T.r1 && c0 - 2 >= T.c0 && c0 + 2 < T.c1; });
+    const tFar = plan.tiles.find(t => { const T = tileCells(plan.geom, t); return T.r1 < r0 - 40 || T.r0 > r0 + 40 || T.c1 < c0 - 40 || T.c0 > c0 + 40; })!;
+    const src0: NestSrc = { ...nest, work: { data: WN.data, sx: 2 } }, src1: NestSrc = { ...nest, work: { data: W1.data, sx: 2 } };
+    assert.strictEqual(tileKeyOf(inp1, plan, null, tFar, src1), tileKeyOf(inp, plan, null, tFar, src0), "远处的块：键一字不变");
+    assert.ok(!tileInput(inp1, plan, null, tFar, src1).lfRel, "窗里没有涂改的格：不带权重");
+    if (tIn === undefined) return;   // 涂抹区里层恰跨块界：这张夹具上不该发生，发生了就只验键
+    assert.notStrictEqual(tileKeyOf(inp1, plan, null, tIn, src1), tileKeyOf(inp, plan, null, tIn, src0));
+    const T = tileCells(plan.geom, tIn), ti = tileInput(inp1, plan, null, tIn, src1);
+    assert.ok(ti.lfRel && ti.lfRel.length === ti.cols * ti.rows, "权重按窗裁过");
+    const core = tileCore(nestedField(ti), plan, tIn), w = (T.c1 - T.c0) * sx, a: number[] = [];
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) for (let y = 0; y < sx; y++) for (let x = 0; x < sx; x++)
+      a.push(core[((r0 + dr - T.r0) * sx + y) * w + (c0 + dc - T.c0) * sx + x] * um);
+    assert.ok(span(a) < 10, "块里那片地正中起伏 " + span(a).toFixed(0) + " m");
+    assert.ok(Math.abs(mean(a) - 320) < 10, "均值 " + mean(a).toFixed(0) + " m");
+  });
+
+  it("1 倍的工作档（细级侵蚀）：涂出来的洼地不被填到溢出口", () => {
+    const { um, cols } = fix(), { k0, inp1 } = flat();
+    const one = { ...inp1, cap: inp1.cols * inp1.rows }, f = erodeField(one);
+    assert.strictEqual(f.cols, cols, "前提：1 倍");
+    const a: number[] = [];
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) a.push(f.data[k0 + dr * cols + dc] * um);
+    assert.ok(Math.max(...a) < 420, "没被填高：最高 " + Math.max(...a).toFixed(0) + " m（不认涂改时是溢出口的上千米）");
+    const { lfDelta: _d, lfRel: _r, ...bare } = one, g = erodeField(bare as ErodeInput), b: number[] = [];
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) b.push(g.data[k0 + dr * cols + dc] * um);
+    assert.ok(Math.min(...b) > 600, "对照：去掉这两样，同一片地被填到 " + Math.min(...b).toFixed(0) + " m 以上");
+  });
+
+});
+
 
 describe("工作档嵌套解（core/erode.workNest）", () => {
   it("工作档单：全图一窗、倍率同细级侵蚀工作档（这张图 2 倍）、不带包络；1 倍的图（整球）原样返回；嵌套解的图不发精修单", () => {

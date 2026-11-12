@@ -462,6 +462,8 @@ function nestFinish(inp: ErodeInput, G: NestGraph, hs: Float64Array, A: Float64A
   let noHov = true;   // 目标面是工作档时它已带着高程涂改：再叠一次就是两份
   if (!ne.tgt) for (let k = 0; k < hovGrid.length && noHov; k++) if (hovGrid[k] !== 0) noHov = false;
   const bm = basin ? Float32Array.from(basin, v => v & 1) : null, inB = bm && vfi ? new Uint8Array(n) : null;
+  /* 地貌涂改换了地貌的格（ErodeInput.lfRel）：细节权重改取涂上去的类型的山地度——目标面已是涂改后的基面，权重还按宏观抬升给，涂成平原的山就原样带着脊谷 */
+  const relM = inp.lfRel ? Float32Array.from(inp.lfRel, v => v >= 0 ? 1 : 0) : null, relR = inp.lfRel ? Float32Array.from(inp.lfRel, v => v > 0 ? v : 0) : null;
   for (let r = 0; r < FR; r++) {
     const cy = (gr0 + r + 0.5) / sx - 0.5 - ne.y0;
     for (let c = 0; c < FC; c++) {
@@ -473,6 +475,7 @@ function nestFinish(inp: ErodeInput, G: NestGraph, hs: Float64Array, A: Float64A
       fine[i] = (v > 1 ? v : 1) / um;
       let wu = sstep((bil(ne.fU, cols, rows, cx, cy) + (ne.du ? bil(ne.du, cols, rows, cx, cy) : 0) - MESO_PLAIN_U0) / (MESO_PLAIN_U1 - MESO_PLAIN_U0));
       if (kwv > wu) wu = kwv;
+      if (relM) { const m = bil(relM, cols, rows, cx, cy); if (m > 0) wu = wu * (1 - m) + bil(relR!, cols, rows, cx, cy); }
       if (bm) { const bv = bil(bm, cols, rows, cx, cy); wu *= 1 - bv; if (inB && bv > 0) inB[i] = 1; }   // 画的盆地：盆底与盆沿照目标面，谷底也不盖进去
       w[i] = wu;
       if (!noHov) hov[i] = bil(hovGrid, cols, rows, cx, cy);

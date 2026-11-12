@@ -9,7 +9,7 @@
      谷线走，旧档（relief>0）读数会移动；战略图与其战术烘焙在同一位置的起伏也从逐位一致降为
      近似一致（侵蚀依赖网格分辨率，噪声输入仍同锚）。 */
 import { hash2 as sinHash2 } from "./noise.ts";
-import { baseElev, dhOf, elevBilinear, elevUnitM, waterMask, waterSurface, LAND_FLOOR, SHORE_E, WATER_CEIL, WATER_EPS, type ElevField, type FieldGeom } from "./elev.ts";
+import { baseElev, dhOf, elevBilinear, elevUnitM, landformRel, waterMask, waterSurface, LAND_FLOOR, SHORE_E, WATER_CEIL, WATER_EPS, type ElevField, type FieldGeom } from "./elev.ts";
 import { gnoise, makeRelief, mountainness, type ReliefSampler, RELIEF_CARVE_K, RELIEF_MESO_CELLS, RELIEF_GATE_HI, RELIEF_GATE_LO, RELIEF_LAMBDA_KM, RELIEF_M,
   RELIEF_ROUGH_HI, RELIEF_ROUGH_LO, RELIEF_STRIKE, RELIEF_W, RELIEF_E0, RELIEF_E1, RIDGED_MEAN, RIDGED_MEAN3, reliefSeedOf } from "./relief.ts";
 import { kmPerDegXY } from "./geo.ts";
@@ -108,10 +108,13 @@ export interface ErodeInput {
       只在有它时进 erodeKey */
   basin?: Uint8Array;
   /** 地貌涂改造成的基面增量（粗格；陆格＝带涂改的 baseElev − 不带涂改的，水格 0）：粗级参照面与涂改盆掩码把它与高程涂改同算。
-      只由 erodeInput 在粗级 λ > 0 的图上挂（没有增量不挂），只在有它时进 erodeKey；窗口单必须按窗裁，否则细级盆掩码按错格取样 */
+      只由 erodeInput 挂：粗级 λ > 0 的图，或带中尺度的图上有涂改换了地貌（没有增量不挂）；只在有它时进 erodeKey；窗口单必须按窗裁，否则细级盆掩码按错格取样 */
   lfDelta?: Float32Array;
   /** 嵌套解的外层裁剪（core/tiles.tileInput 给带中尺度的图的块填、workNest 给工作档填；有它的单由 core/nested.nestedField 解，不走本模块）。只在有它时进 erodeKey */
   nest?: NestInput;
+  /** 带中尺度的图上地貌涂改换掉地貌的格的起伏权重（粗格，core/elev.landformRel：−1＝没换）：嵌套解收尾的细节权重在这些格上改取它（细级侵蚀不读，靠 lfDelta 认涂改）。
+      只在有换掉的格时挂、只在有它时进 erodeKey；窗口单必须按窗裁，窗里没有换掉的格就不带（不带＝那一块的键与输出照旧） */
+  lfRel?: Float32Array;
 }
 /** 粗级切割量（侵蚀后 − 侵蚀前，水域 0）与它的网格几何：只由参照细格定，同一份图的各档、各窗口共用 */
 export interface CoarseCarve { data: Float32Array; geo: FieldGeom }
@@ -254,6 +257,7 @@ export function erodeKey(inp: ErodeInput): string {
   if (inp.basin) mixA(inp.basin);   // 同理只在画了盆地的单上追加
   if (inp.lfDelta) mixA(new Uint32Array(inp.lfDelta.buffer, inp.lfDelta.byteOffset, inp.lfDelta.length));   // 同理只在有地貌涂改增量的单上追加
   if (inp.nest) for (const a of nestKeyParts(inp.nest)) mixA(a);   // 同理只在嵌套解的块单上追加
+  if (inp.lfRel) mixA(new Uint32Array(inp.lfRel.buffer, inp.lfRel.byteOffset, inp.lfRel.length));   // 同理只在涂改换了地貌的中尺度单上追加
   return ERODE_VER + "-" + (a >>> 0).toString(36) + "-" + (b >>> 0).toString(36);
 }
 
@@ -299,9 +303,11 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
   const { kmx, kmy } = kmPerDegXY(m, bb);
   const cap = scaleProfile(m).fineCap, menv = grid.meso ? grid.meso.env : null, bas = grid.meso ? grid.meso.basin : null;
   const cg = coarseGeom(cols, rows, step, step / upscaleOf(cols, rows, cap, 8));
-  const lfd = !menv && cg && carveLam(cg.cstep * Math.sqrt(kmx * kmy)) > 0 ? landformDelta(m, grid) : null;
+  /* 中尺度图：只在地貌涂改换掉了地貌时挂增量（涂出来的闭合洼地靠它不被细级填洼填平）与起伏权重；没涂过的图两样都不挂，键与输出照旧 */
+  const rel = menv ? landformRel(grid) : null;
+  const lfd = (menv ? !!rel : cg && carveLam(cg.cstep * Math.sqrt(kmx * kmy)) > 0) ? landformDelta(m, grid) : null;
   return { bb, step, cols, rows, elev0, water, wsurf: waterSurface(m, grid), amp, seed: reliefSeedOf(m), sphere: m.worldModel !== "flat", kmx, kmy, hovGrid,
-    cap, axisMax: 8, acrit: ACRIT_CELLS, bandS: 1, unitM: elevUnitM(m), ...(menv ? { mesoEnv: menv } : {}), ...(bas ? { basin: bas } : {}), ...(lfd ? { lfDelta: lfd } : {}) };
+    cap, axisMax: 8, acrit: ACRIT_CELLS, bandS: 1, unitM: elevUnitM(m), ...(menv ? { mesoEnv: menv } : {}), ...(bas ? { basin: bas } : {}), ...(lfd ? { lfDelta: lfd } : {}), ...(rel ? { lfRel: rel } : {}) };
 }
 
 /* 按 Grid 实例记忆（同一 Grid 只配一份 meta，同 core/elev 的派生场）：高程笔每笔复用 Grid＝不重算 */
@@ -310,7 +316,7 @@ const lfMemo = new WeakMap<Grid, Float32Array | null>();
 function landformDelta(m: Meta, grid: Grid): Float32Array | null {
   const hit = lfMemo.get(grid);
   if (hit !== undefined) return hit;
-  const g0 = buildGridCells(m, [], 0);
+  const g0 = buildGridCells(m, [], 0, grid.meso);   // 不带涂改的底稿：带中尺度的图按同一份中尺度场判
   let out: Float32Array | null = null;
   if (g0.cells.some((row, r) => row.some((t, c) => t !== grid.cells[r][c]))) {
     const b1 = baseElev(m, grid), b0 = baseElev(m, g0), water = waterMask(grid), d = new Float32Array(b1.length);
@@ -638,9 +644,9 @@ function erodeSetup(inp: ErodeInput) {
   /** 类型基面（陆地那一支：域扭曲 + 帐篷羽化，不含雕痕与起伏）：子格海岸线按它与水面的等值线定（见 ErodeWindow.coast） */
   const menv = inp.mesoEnv;
   const lfd = inp.lfDelta;
-  /* dLf 有则把地貌涂改增量按同一扭曲落点写进 dLf[i]（中尺度图不挂增量） */
+  /* dLf 有则把地貌涂改增量按与基面同一落点写进 dLf[i]（中尺度图不扭，直接取） */
   const landBase: (lon: number, lat: number, dLf?: Float32Array | null, i?: number) => number = menv
-    ? (lon, lat) => elevBilinear(elev0, geo, lon, lat)   // 中尺度图：谷网就是基底，扭与羽都会把它挪开、磨钝
+    ? (lon, lat, dLf, i) => { if (dLf) dLf[i!] = elevBilinear(lfd!, geo, lon, lat); return elevBilinear(elev0, geo, lon, lat); }   // 中尺度图：谷网就是基底，扭与羽都会把它挪开、磨钝
     : (lon, lat, dLf, i) => {
     const sl = lon + wA1 * gnoise(lon * fw1, lat * fw1, seed + 101) + wA2 * gnoise(lon * fw2, lat * fw2, seed + 303);
     const sa = lat + wA1 * gnoise(lon * fw1 + 53.7, lat * fw1 + 17.3, seed + 202) + wA2 * gnoise(lon * fw2 + 11.9, lat * fw2 + 41.2, seed + 404);

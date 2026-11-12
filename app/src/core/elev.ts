@@ -580,6 +580,25 @@ export function buildElevField(meta: Meta | undefined, hov: HeightOverride[] | u
   }
   return f;
 }
+const relMemo = new WeakMap<Grid, Float32Array | null>();
+/** 带中尺度的图上，地貌涂改把地貌换掉的格的起伏权重：−1＝没换（照中尺度的包络），0..1＝涂上去的地貌类型的山地度；一格都没换＝null。
+    中尺度的抬升与稳态解不知道这次涂改：嵌套解收尾的细节权重在这些格上改取它，否则涂成平原的山原样带着脊谷（目标面已是涂改后的基面）。
+    细级侵蚀那条路靠 ErodeInput.lfDelta 认涂改；有没有换掉的格也由这里定（erodeInput 据此决定挂不挂那两样） */
+export function landformRel(grid: Grid): Float32Array | null {
+  const ms = grid.meso;
+  if (!ms) return null;
+  const hit = relMemo.get(grid);
+  if (hit !== undefined) return hit;
+  const { cols, rows, cells } = grid, vc = ms.cls;
+  let out: Float32Array | null = null;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c, p = terrainProps(cells[r][c]);
+    if (LANDFORM_ORDER[(vc[i] / ECO_ORDER.length) | 0] === p.lf) continue;
+    (out ||= new Float32Array(cols * rows).fill(-1))[i] = mountainness(p.elev);
+  }
+  relMemo.set(grid, out);
+  return out;
+}
 const reliefMemo = new WeakMap<Grid, Float32Array>();
 /** 基底 + 起伏（涂改之前的场，按 Grid 记忆）；relief=0 ＝ 基底逐位拷贝 */
 function reliefField(m: Meta, grid: Grid): Float32Array {

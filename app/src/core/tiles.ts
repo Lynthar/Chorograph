@@ -129,15 +129,18 @@ export function tileInput(inp: ErodeInput, plan: TilePlan, carve: CoarseCarve | 
     return o;
   };
   const lonMin = g.lonMin + a0 * g.pstep, latMin = g.latMin + b0 * g.pstep, lonMax = g.lonMin + a1 * g.pstep, latMax = g.latMin + b1 * g.pstep;
+  /* 涂改换了地貌的格的起伏权重按窗裁；窗里一格都没有就不带——这一块的键与输出照旧（一笔地貌只换碰到它的块） */
+  const relW = inp.lfRel ? sub(inp.lfRel) : null, rel = relW && relW.some(v => v >= 0) ? { lfRel: relW } : {};
   if (nest) {
-    const { mesoEnv: _m, lfDelta: _l, win: _w, ...rest } = inp;
+    const { mesoEnv: _m, lfDelta: _l, win: _w, lfRel: _r, ...rest } = inp;
     const wa0 = Math.max(0, c0 - M), wa1 = Math.min(g.cols, c1 + M), wb0 = Math.max(0, r0 - M), wb1 = Math.min(g.rows, r1 + M);
     return { ...rest, bb: { lonMin, latMin, lonMax, latMax }, cols: w, rows: h, elev0: sub(inp.elev0), water: sub(inp.water), wsurf: sub(inp.wsurf), hovGrid: sub(inp.hovGrid),
-      cap: w * h * g.sx * g.sx, axisMax: g.sx, acrit: plan.acrit, bandS: g.sx / plan.sxW, ...(inp.basin ? { basin: sub(inp.basin) } : {}),
+      cap: w * h * g.sx * g.sx, axisMax: g.sx, acrit: plan.acrit, bandS: g.sx / plan.sxW, ...(inp.basin ? { basin: sub(inp.basin) } : {}), ...rel,
       nest: nestCrop(nest, wa0, wa1, wb0, wb1, a0, a1, b0, b1, g.sx, g.lonMin, g.latMin, g.pstep, !keyOnly) };
   }
   const sc = inp.sphere ? [(inp.bb.lonMin + inp.bb.lonMax) / 2, (inp.bb.latMin + inp.bb.latMax) / 2] as const : null;
-  return { ...inp, bb: { lonMin, latMin, lonMax, latMax }, cols: w, rows: h,
+  const { lfRel: _r, ...whole } = inp;
+  return { ...whole, ...rel, bb: { lonMin, latMin, lonMax, latMax }, cols: w, rows: h,
     elev0: sub(inp.elev0), water: sub(inp.water), wsurf: sub(inp.wsurf), hovGrid: sub(inp.hovGrid),
     cap: w * h * g.sx * g.sx, axisMax: g.sx, acrit: plan.acrit, bandS: g.sx / plan.sxW, ...(inp.mesoEnv ? { mesoEnv: sub(inp.mesoEnv) } : {}), ...(inp.basin ? { basin: sub(inp.basin) } : {}),
     ...(inp.lfDelta ? { lfDelta: sub(inp.lfDelta) } : {}),
