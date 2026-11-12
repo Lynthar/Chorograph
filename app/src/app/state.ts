@@ -152,6 +152,8 @@ export const saveConflictSig = signal<SaveConflict | null>(null);
 export const erodePhaseSig = signal<"idle" | "work" | "ultra" | "done">("idle");
 /** 分块精修停摆（host 独写）：车道复位后又失败、当前缩放用得上块而视口里有块不是当前那一份——胶囊空闲时报「精修不可用」 */
 export const tilesDownSig = signal(false);
+/** 中尺度不可用（host 独写）：这张 v2 图的中尺度车道复位一次后仍没有结果，屏上的地类、侵蚀与河都是宏观底——胶囊空闲时报「侵蚀计算不可用」，压过「精修不可用」 */
+export const mesoDownSig = signal(false);
 /** 落定的规则场（host 独写，换图时 setWorldState 清空）：门关＝粗格、门开＝工作档落地后的那份；演算中为 null。
     规则消费者只认它——ctx.ruleField 在等待窗里是过渡合成，视域算在上面就是「落笔即变、落地又变」。 */
 export const ruleFieldSig = signal<RuleField | null>(null);

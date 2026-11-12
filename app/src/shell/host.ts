@@ -2,7 +2,7 @@
    全部经 ctx 共享态工作；rebuild 同步把寻路上下文送进 Worker（官道格按当年连线重算）。 */
 import { buildGridCells, gridGeom, roadCellSet, type Grid } from "../core/grid.ts";
 import { isGen2, mesoKey, riverParams, type Gen2MesoField, type GenRiver, type UpliftCells } from "../core/gen2.ts";
-import { genRiverEdges, genRiverEdgesOf } from "../core/world.ts";
+import { genRiverEdgesOf } from "../core/world.ts";
 import { buildElevField, coarseField, fieldMix, fieldPlusDelta, upliftCells, waterSurface, type ElevField, type RuleField } from "../core/elev.ts";
 import { erodeGate, erodeInput, erodeKey, ultraInput, upscaleOf, workNest, type ErodeInput, erodeMode } from "../core/erode.ts";
 import { tilePlan } from "../core/tiles.ts";
@@ -11,7 +11,7 @@ import { fieldCacheGet, fieldCachePut } from "../data/fieldcache.ts";
 import { tileCacheGet, tileCachePut } from "../data/tilecache.ts";
 import { mesoCacheGet, mesoCachePut } from "../data/mesocache.ts";
 import { createTileManager } from "./tiles.ts";
-import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig, tilesDownSig, cellsVerSig, inStroke, mutateWorldLive, readOnlySig, selSig } from "../app/state.ts";
+import { worldSig, yearSig, gridVerSig, erodePhaseSig, ruleFieldSig, tilesDownSig, mesoDownSig, cellsVerSig, inStroke, mutateWorldLive, readOnlySig, selSig } from "../app/state.ts";
 import { syncGenRivers } from "../app/editops.ts";
 import { terrMetaKey } from "../app/history.ts";
 import { $ } from "./dom.ts";
@@ -167,14 +167,15 @@ export function createHost(ctx: ShellCtx): Host {
   }, TILE_BUDGET * 4 * 1.3);
   const tilesOn = (): boolean => scaleProfile(ctx.meta).tiles && ctx.routeClient.tileLanes > 0;
   /* —— 中尺度（v2 图，core/gen2.gen2Meso）：稳态解只依赖生成参数与几何，独立车道上算、解存进 IDB。到了之前不发侵蚀单（先侵蚀宏观底再换形＝多一次可见换场），
-     到了就换一个带它的新 Grid 重建；车道不可用或这一单失败＝这张图照旧用宏观底。 —— */
+     到了就换一个带它的新 Grid 重建。没有结果先复位车道再要一次，仍没有＝这张图照旧用宏观底、报不可用（mesoDownSig）；开图或换了键才再试。 —— */
   /** 中尺度场抽出的河与抽它用的滑杆键（riverParams）：滑杆换了要重抽，场不变 */
   interface RivSet { rk: string; rivers: GenRiver[] }
   const rkOf = (m: Meta): string => JSON.stringify(riverParams(m));
   let meso: { key: string; f: Gen2MesoField; riv: RivSet; nb: NestBase } | null = null;   // 当前图的那份（单槽）；nb＝块层嵌套解的静态场
   /** 中尺度场（中尺度单或画抬升的解）→ 它给块层嵌套解的那份：不挂在 Grid 上——Grid 换实例就整份克隆给寻路车道 */
   const nestOf = new WeakMap<Gen2MesoField, NestSrc>();
-  let mesoWant = "", mesoBad = "";   // 在飞单的键 · 没有结果的键（不再要、侵蚀不再等）
+  let mesoWant = "", mesoBad = "";   // 在飞单的键 · 复位后仍没有结果的键（不再要、侵蚀不再等）
+  let mesoReset = "", mesoSeen = ""; // 已复位过一次车道的键 · 上次重建的键（开图或换了键，这两条失败记录作废）
   let mesoHold = false;              // 这一轮的侵蚀单要等中尺度（rebuild 同拍定）
   function requestMeso(key: string): void {
     if (mesoWant === key) return;
@@ -183,6 +184,13 @@ export function createHost(ctx: ShellCtx): Host {
     const done = (m: { f: Gen2MesoField; riv: RivSet; nb: NestBase } | null, e?: unknown): void => {
       if (mesoWant !== key) return;   // 换了键：这一单撤了或用不上
       mesoWant = "";
+      if (!m && mesoReset !== key) {   // 头一回没有结果：复位车道（崩了的懒建新的、建不出的再试一次）再要，侵蚀照旧等
+        console.warn("中尺度稳态没有结果（复位车道再试一次）：", e ?? "车道不可用");
+        mesoReset = key;
+        ctx.routeClient.cancelMeso();
+        requestMeso(key);
+        return;
+      }
       if (m) meso = { key, ...m }; else { mesoBad = key; console.warn("中尺度稳态没有结果（这张图照旧用宏观底）：", e ?? "车道不可用"); }
       if (ctx.grid) rebuild();
     };
@@ -236,7 +244,7 @@ export function createHost(ctx: ShellCtx): Host {
   }, () => upFlight.fire());
   /* —— 生成的河跟着屏上的中尺度场走：场换了、两个河流滑杆或删改记录变了就换带 gen 标记的河（editops.syncGenRivers，逐条相同零写入）。
      不推撤销（河是场的函数：撤销换回旧场，河跟着换回）、只读态不写；笔画中途不写（会让空笔回收误判），收笔后再来。
-     中尺度没有结果（车道不可用）时用宏观河网兜底；还在算时留着存档里的河。 —— */
+     屏上没有中尺度场（还在算或车道不可用）时留着存档里的河：拿宏观河顶替＝存档随车道好坏来回改写。 —— */
   const NO_CELLS: UpliftCells = { idx: new Int32Array(0), peakM: new Float64Array(0) };
   let rivLast: unknown[] = [], rivQueued = false;
   const rivEntry = (mf: Gen2MesoField): { cells?: UpliftCells; riv: RivSet } | undefined => meso && meso.f === mf ? meso : upDone.find(e => e.f === mf);
@@ -249,17 +257,12 @@ export function createHost(ctx: ShellCtx): Host {
     const w = worldSig.peek(), g = ctx.grid;
     if (!w || !g || readOnlySig.peek() || !isGen2(ctx.meta)) return;
     if (inStroke()) { setTimeout(syncRiversSoon, 250); return; }
-    const rk = rkOf(ctx.meta), mf = g.meso;
-    let rivers: GenRiver[] | null = null;
-    if (mf) {
-      const e = rivEntry(mf);
-      if (!e) return;
-      if (e.riv.rk !== rk) { rivFlight.fire(); return; }
-      rivers = e.riv.rivers;
-    } else if (!mesoBad || mesoBad !== mesoKey(ctx.meta, gridGeom(ctx.meta))) return;
+    const rk = rkOf(ctx.meta), mf = g.meso, e = mf ? rivEntry(mf) : undefined;
+    if (!mf || !e) return;
+    if (e.riv.rk !== rk) { rivFlight.fire(); return; }
     const now = [mf, rk, w.genRiverOff, w.edges];
     if (now.every((v, i) => v === rivLast[i])) return;
-    const add = rivers ? genRiverEdgesOf(ctx.meta, rivers, w.genRiverOff) : genRiverEdges(ctx.meta, w.genRiverOff);
+    const add = genRiverEdgesOf(ctx.meta, e.riv.rivers, w.genRiverOff);
     const sel = selSig.peek(), selE = sel && sel.kind === "edge" ? w.edges[sel.idx] : null;
     mutateWorldLive(x => syncGenRivers(x, add));
     const w2 = worldSig.peek()!;
@@ -498,8 +501,10 @@ export function createHost(ctx: ShellCtx): Host {
     if (upOn && !(gridSg && gridSg.meso === sgF))
       gridSg = prev && same && prev.meso === sgF ? prev : buildGridCells(ctx.meta, ov || [], yearSig.value, sgF);
     if ((mesoWant && mesoWant !== mk) || (upFly && upFly !== mk)) { ctx.routeClient.cancelMeso(); mesoWant = ""; upFly = ""; }
+    if (ctx.builtFor === null || mk !== mesoSeen) { mesoBad = ""; mesoReset = ""; mesoSeen = mk; }   // 开图（landWorld 清空了 builtFor）或换了键：允许再试
     upWant = cells && !bad && !upF ? { key: mk, cells } : null;
     mesoHold = !!mk && mk !== mesoBad && (!sgF || !!upWant);
+    mesoDownSig.value = !!mk && mk === mesoBad;
     if (!sgF) { if (mesoHold) requestMeso(mk); }
     else if (upWant) upFlight.fire();
     syncRiversSoon();

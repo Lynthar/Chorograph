@@ -38,9 +38,10 @@ export interface RouteClient {
       被撤的结果不进场缓存（撤销回那一步要重算，用户拍板接受）。崩溃判死与主动撤单分开：撤单后下一单懒建新车道，判死后退回主 worker。 */
   cancelErode(): void;
   /** v2 图的中尺度稳态（独立车道，懒建）：整幅要 6–30 s，只依赖生成参数与几何——编辑不撤它；sg＝缓存的解（给了就只派生）。
-      建不出 Worker 或车道崩了返 null，绝不同步回退（同 erodeUltra） */
+      建不出 Worker 或车道崩了返 null，绝不同步回退（同 erodeUltra）；崩了的车道下一单懒建新的，建不出的要等 cancelMeso 才再试 */
   meso(meta: Meta, geom: FieldGeom, sg: Gen2Sg | null): Promise<MesoReply | null>;
-  /** 撤掉在飞的中尺度单（换了生成参数或几何，旧单算完也用不上当前图）：以 null 收场，下一单懒建新车道 */
+  /** 撤掉在飞的中尺度单（换了生成参数或几何，旧单算完也用不上当前图）：以 null 收场，下一单懒建新车道；无单在飞不动车道。
+      也是复位口：清掉「建不出」的记号，下一单再试着建一次车道 */
   cancelMeso(): void;
   /** 中尺度车道手里留着这把 mesoKey 的 Sg（上一单就是这张图、车道没被撤）：画抬升单这时不必带 sg */
   mesoHolds(key: string): boolean;
@@ -128,9 +129,10 @@ export function createRouteClient(): RouteClient {
     } catch { ew = null; ewDead = true; }
     return ew;
   };
-  let mw: Worker | null = null, mwTried = false;   // 中尺度车道（懒建）：几十秒的单不挤侵蚀与精修车道，编辑时也不撤
+  let mw: Worker | null = null, mwFailed = false;   // 中尺度车道（懒建）：几十秒的单不挤侵蚀与精修车道，编辑时也不撤；mwFailed＝上回没建出来，cancelMeso 之前不再试
   let mwKey = "";                                   // 车道留着哪把 mesoKey 的 Sg（单落地才记；车道没了即清）
   const pendingM = new Map<number, (r: RouteReply) => void>();
+  /* 崩了与撤单同样只丢掉车道：下一单懒建新的 */
   const killMesoWorker = () => {
     try { mw?.terminate(); } catch { /* 已死 */ }
     mw = null; mwKey = "";
@@ -138,14 +140,14 @@ export function createRouteClient(): RouteClient {
     pendingM.clear();
   };
   const ensureMw = (): Worker | null => {
-    if (mwTried) return mw;
-    mwTried = true;
+    if (mw || mwFailed) return mw;
     try {
-      mw = new RouteWorker();
-      mw.onmessage = e => { const r = e.data as RouteReply, f = pendingM.get(r.id); if (f) { pendingM.delete(r.id); f(r); } };
-      mw.onerror = killMesoWorker;
-      mw.onmessageerror = killMesoWorker;
-    } catch { mw = null; }
+      const nw = new RouteWorker(), kill = (): void => { if (mw === nw) killMesoWorker(); };   // 只认自己：换掉的车道迟到的错误不许杀新车道
+      mw = nw;
+      nw.onmessage = e => { const r = e.data as RouteReply, f = pendingM.get(r.id); if (f) { pendingM.delete(r.id); f(r); } };
+      nw.onerror = kill;
+      nw.onmessageerror = kill;
+    } catch { mw = null; mwFailed = true; }
     return mw;
   };
   const killUltraWorker = () => {
@@ -292,9 +294,8 @@ export function createRouteClient(): RouteClient {
       return r;
     },
     cancelMeso() {
-      if (!pendingM.size) return;
-      killMesoWorker();
-      mwTried = false;   // 主动撤单：车道要能再建
+      if (pendingM.size) killMesoWorker();   // 无单在飞不动车道：它留着的 Sg 下一单还用得上
+      mwFailed = false;
     },
     cancelErode() {
       if (!pendingE.size) return;

@@ -7,7 +7,7 @@ import { createHost } from "../src/shell/host.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
 import { genRiverEdges, genRiverEdgesOf, normalizeWorld } from "../src/core/world.ts";
 import { gridGeom } from "../src/core/grid.ts";
-import { beginStroke, canUndoSig, cellsVerSig, deleteEdgeIdx, editVerSig, endStroke, erodePhaseSig, gridVerSig, mutateWorld, readOnlySig, redoWorld, ruleFieldSig, undoWorld, worldSig, yearSig } from "../src/app/state.ts";
+import { beginStroke, canUndoSig, cellsVerSig, deleteEdgeIdx, editVerSig, endStroke, erodePhaseSig, gridVerSig, mesoDownSig, mutateWorld, readOnlySig, redoWorld, ruleFieldSig, undoWorld, worldSig, yearSig } from "../src/app/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import { waterSurface, type ElevField } from "../src/core/elev.ts";
 import { erodeKey, type ErodeInput } from "../src/core/erode.ts";
@@ -500,6 +500,10 @@ describe("中尺度阶段（host）", () => {
     };
     return { st, answer, answerUp };
   }
+  /** 让最近一份中尺度单以 null 收场 n 次（缺省两次＝头一回与复位后那一回） */
+  async function failMeso(M: ReturnType<typeof mesoRig>, n = 2): Promise<void> {
+    for (let i = 0; i < n; i++) { const x = M.st.q[M.st.q.length - 1]; x.done = true; x.res(null); await flush(); await tick(100); }
+  }
   it("到之前不发侵蚀单、胶囊报计算中；到了换一个带它的新 Grid，发一单：工作档走全图嵌套解（不带包络、不精修）", async () => {
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
     landWorld(ctx, V2(), "v1", 3050);
@@ -529,7 +533,7 @@ describe("中尺度阶段（host）", () => {
     assert.equal(seen.ultraCap, undefined, "工作档是嵌套解的图不发精修单");
     assert.equal(ctx.elevField, ctx.ruleField, "画面＝工作档");
   });
-  it("分块：中尺度到了，块单带外层裁剪（嵌套解）、不带包络；车道没有结果时块单照旧细级侵蚀（要切割量、不带裁剪）", async (tc) => {
+  it("分块：中尺度到了，块单带外层裁剪（嵌套解）、不带包络；车道复位后仍没有结果时块单照旧细级侵蚀（要切割量、不带裁剪）", async (tc) => {
     const warn = tc.mock.method(console, "warn", () => {});
     for (const fail of [false, true]) {
       const { ctx } = mkCtx(), M = mesoRig(ctx), tilesIn: ErodeInput[] = [];
@@ -543,9 +547,9 @@ describe("中尺度阶段（host）", () => {
       landWorld(ctx, V2(7, { gridN: 280 }), "v1", 3050);   // 280 列：工作档与精修都不到 8 倍，才分块
       host.rebuildIfNeeded();
       await flush();
-      if (fail) { M.st.q[0].done = true; M.st.q[0].res(null); } else M.answer(0);
+      if (fail) await failMeso(M); else M.answer(0);
       await flush(); await tick(240, 6); await flush();
-      assert.equal(warn.mock.callCount(), fail ? 1 : 0, "车道没有结果要响一声，有结果不响");
+      assert.equal(warn.mock.callCount(), fail ? 2 : 0, "没有结果每回响一声（头一回与复位后那一回），有结果不响");
       assert.ok(tilesIn.length >= 1, "发了块单");
       const t = tilesIn[0];
       if (!fail) {
@@ -559,27 +563,26 @@ describe("中尺度阶段（host）", () => {
       else { assert.ok(!t.nest && t.win, "宏观底的块单照旧"); assert.equal(carves, 1); }
     }
   });
-  it("车道没有结果（null）：这张图照旧用宏观底发单，不再等、不再要", async (t) => {
+  it("车道复位一次后仍没有结果（null）：这张图照旧用宏观底发单，不再等、不再要", async (t) => {
     const warn = t.mock.method(console, "warn", () => {});
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
     landWorld(ctx, V2(), "v1", 3050);
     host.rebuildIfNeeded();
     await flush();
-    M.st.q[0].done = true; M.st.q[0].res(null);
-    await flush(); await tick(100);
-    assert.equal(warn.mock.callCount(), 1, "没有结果要响一声");
-    assert.match(warn.mock.calls[0].arguments.join(""), /中尺度稳态没有结果.*车道不可用/);
+    await failMeso(M);
+    assert.equal(warn.mock.callCount(), 2, "头一回与复位后各响一声");
+    assert.match(warn.mock.calls[1].arguments.join(""), /中尺度稳态没有结果.*车道不可用/);
     assert.equal(seen.erodes, 1);
     assert.ok(!("mesoEnv" in seen.lastInp!), "宏观底的单不带包络");
     mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
     host.rebuild(); await flush(); await tick(100);
-    assert.equal(M.st.q.length, 1, "失败过的键不再要");
+    assert.equal(M.st.q.length, 2, "复位过又失败的键不再要");
     assert.equal(seen.erodes, 2, "编辑照常发单");
     const v1 = cellsVerSig.value;
     mutateWorld(w => { w.heightOverrides!.push({ lon: 100.15, lat: 30.05, dh: 0.2 }); }, { grid: true });
     host.rebuild(); await flush(); await tick(100);
     assert.equal(cellsVerSig.value, v1, "只动高程涂改：类型格没换，不换代");
-    assert.equal(warn.mock.callCount(), 1, "失败过的键不再要，也不再响");
+    assert.equal(warn.mock.callCount(), 2, "失败过的键不再要，也不再响");
   });
   it("换生成参数：在飞的单撤掉、按新键再要；撤掉的单不落地", async () => {
     const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
@@ -795,7 +798,7 @@ describe("中尺度阶段（host）", () => {
       assert.equal(worldSig.value!.edges.length, 0, "只读态不写");
     } finally { readOnlySig.value = false; }
   });
-  it("挪河流滑杆：地形不重建，用同一份格子再要一单、只换河；车道没有结果时用宏观河兜底", async (t) => {
+  it("挪河流滑杆：地形不重建，用同一份格子再要一单、只换河；车道不可用时存档里的河不动、零写入", async (t) => {
     const warn = t.mock.method(console, "warn", () => {});
     const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
     landWorld(ctx, V2(), "v1", 3050);
@@ -813,10 +816,89 @@ describe("中尺度阶段（host）", () => {
     landWorld(c2, V2(), "v2", 3050);
     h2.rebuildIfNeeded(); await flush();
     assert.equal(warn.mock.callCount(), 0, "有结果的那张图不响");
-    M2.st.q[0].done = true; M2.st.q[0].res(null);
+    assert.ok(genRiverEdges(c2.meta, undefined).length > 0, "前提：宏观河网有河可顶替");
+    const v = editVerSig.value;
+    for (const k of [0, 1]) { M2.st.q[k].done = true; M2.st.q[k].res(null); await flush(); await tick(100); }
+    assert.equal(warn.mock.callCount(), 2, "没有结果、复位后又没有结果，各响一声");
+    assert.deepStrictEqual(worldSig.value!.edges, [], "中尺度不可用：存档里的河不动（不拿宏观河顶替）");
+    assert.equal(editVerSig.value, v, "零写入");
+    mutateWorld(w => { w.meta.genRiv = 1; });
+    h2.rebuildIfNeeded(); await flush(); await tick(100);
+    assert.equal(editVerSig.value, v + 1, "挪滑杆只有它自己那一笔，河不跟着写");
+    assert.equal(M2.st.uq.length, 0, "没有中尺度场：不要重抽单");
+  });
+  const oldGenRiver = (): World["edges"][number] => ({ type: "river", pts: [[90, 30], [91, 31]], widthM: 50, gen: true });
+  it("车道头一回没有结果：复位再要一次、侵蚀照旧等；到了照常换场换河，不报不可用", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx), w0 = V2();
+    w0.edges.push(oldGenRiver());
+    landWorld(ctx, w0, "v1", 3050);
+    host.rebuildIfNeeded(); await flush();
+    await failMeso(M, 1);
+    assert.equal(warn.mock.callCount(), 1, "没有结果要响一声");
+    assert.match(warn.mock.calls[0].arguments.join(""), /中尺度稳态没有结果.*复位/);
+    assert.equal(M.st.q.length, 2, "复位后按同一把键再要");
+    assert.equal(seen.erodes, 0, "侵蚀照旧等");
+    assert.equal(erodePhaseSig.value, "work", "胶囊照报计算中");
+    assert.equal(mesoDownSig.value, false, "复位还没用完：不报不可用");
+    M.answer(1);
     await flush(); await tick(100);
-    assert.equal(warn.mock.callCount(), 1, "中尺度没有结果要响一声");
-    assert.deepStrictEqual(worldSig.value!.edges, genRiverEdges(c2.meta, undefined), "中尺度没有结果：宏观河兜底");
+    assert.ok(ctx.grid!.meso, "到了换上中尺度");
+    assert.equal(seen.erodes, 1);
+    assert.equal(mesoDownSig.value, false);
+    assert.deepStrictEqual(worldSig.value!.edges.filter(e => e.gen), genRiverEdgesOf(ctx.meta, gen2Meso(ctx.meta, gridGeom(ctx.meta)).rivers, undefined), "河照常换成中尺度的");
+  });
+  it("复位后又没有结果：报不可用；存档里的河不动、零写入；侵蚀在宏观底上照常落定；同一把键不再要", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const { ctx, seen } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx), w0 = V2();
+    w0.edges.push(oldGenRiver());
+    landWorld(ctx, w0, "v1", 3050);
+    const v = editVerSig.value, edges0 = worldSig.value!.edges;
+    host.rebuildIfNeeded(); await flush();
+    await failMeso(M);
+    assert.equal(warn.mock.callCount(), 2, "两次没有结果各响一声");
+    assert.match(warn.mock.calls[1].arguments.join(""), /中尺度稳态没有结果.*宏观底/);
+    assert.equal(mesoDownSig.value, true, "报不可用");
+    assert.equal(editVerSig.value, v, "世界零写入（不触发自动保存）");
+    assert.equal(worldSig.value!.edges, edges0, "存档里的河原样：带标记的生成河没被宏观河替换");
+    assert.ok(!ctx.grid!.meso, "屏上是宏观底");
+    assert.equal(seen.erodes, 1, "侵蚀不再等，在宏观底上发单");
+    assert.ok(!seen.lastInp!.nest && !("mesoEnv" in seen.lastInp!), "宏观底的单：不是嵌套解、不带包络");
+    await tick(240, 6);
+    assert.ok(ruleFieldSig.value === ctx.ruleField && ctx.ruleField!.src === "work", "工作档照常落定");
+    mutateWorld(w => { (w.heightOverrides ||= []).push({ lon: 100.05, lat: 30.05, dh: 0.2 }); }, { grid: true });
+    host.rebuild(); await flush(); await tick(100);
+    assert.equal(M.st.q.length, 2, "同一把键不再要");
+    assert.equal(mesoDownSig.value, true, "编辑之后照旧报不可用");
+    assert.equal(warn.mock.callCount(), 2, "不再要也不再响");
+  });
+  it("不可用之后：换图即清；重开同一张图再试一次；换了生成参数再试，到了不报、河换成中尺度的", async (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    const { ctx } = mkCtx(), M = mesoRig(ctx), host = createHost(ctx);
+    landWorld(ctx, V2(), "v1", 3050);
+    host.rebuildIfNeeded(); await flush();
+    await failMeso(M);
+    assert.equal(mesoDownSig.value, true, "前置：不可用");
+    landWorld(ctx, W(), "t1", 3050);
+    host.rebuildIfNeeded(); await flush();
+    assert.equal(mesoDownSig.value, false, "换成别的图：清掉");
+    landWorld(ctx, V2(), "v1", 3050);
+    host.rebuildIfNeeded(); await flush();
+    assert.equal(M.st.q.length, 3, "重开同一张图：同一把键再要");
+    assert.equal(mesoDownSig.value, false, "再试期间不报不可用");
+    await failMeso(M);
+    assert.equal(M.st.q.length, 4, "重开也只复位一次");
+    assert.equal(mesoDownSig.value, true);
+    mutateWorld(w => { w.meta.genSeed = 8; }, { grid: true });
+    host.rebuildIfNeeded(); await flush();
+    assert.equal(M.st.q.length, 5, "换了生成参数：按新键再要");
+    assert.equal(mesoDownSig.value, false, "新键不报不可用");
+    M.answer(4);
+    await flush(); await tick(100);
+    assert.ok(ctx.grid!.meso, "到了换上中尺度");
+    assert.equal(mesoDownSig.value, false);
+    assert.deepStrictEqual(worldSig.value!.edges.filter(e => e.gen), genRiverEdgesOf(ctx.meta, gen2Meso(ctx.meta, gridGeom(ctx.meta)).rivers, undefined), "河换成中尺度的");
+    assert.equal(warn.mock.callCount(), 4, "每次没有结果各响一声");
   });
   it("解不出：这一份不再等也不再要，侵蚀放行、屏上回到 Sg；下一笔照常再要", async (t) => {
     const warn = t.mock.method(console, "warn", () => {});
