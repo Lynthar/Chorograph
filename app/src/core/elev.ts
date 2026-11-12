@@ -211,6 +211,52 @@ export function upliftCells(meta: Meta | undefined, ups: UpliftOverride[] | unde
   if (fl.size) { const fidx = Int32Array.from(fl.keys()).sort(); out.fidx = fidx; out.floorM = Float64Array.from(fidx, i => fl.get(i)!); }
   return out;
 }
+/** 涂了还没应用的造山 / 造盆地目标的图上示意：三类格的行程（peak 要长山 / floor 要压盆 / erase 已应用的目标被擦掉）与每片连通区的标注 */
+export interface UpliftMarks {
+  runs: Record<"peak" | "floor" | "erase", number[]>;   // [行, 起列, 长, …]，行列按 grid
+  labels: { lon: number; lat: number; kind: "peak" | "floor" | "erase"; m: number }[];   // 落在区内离重心最近的格心；m＝区内最高峰 / 最低盆底（erase 为 0）
+}
+/** 草稿与已应用的那份逐格比（都栅到 grid、只看当年生效的）：一样的格不标；没有不同＝null */
+export function upliftDraftMarks(meta: Meta | undefined, applied: UpliftOverride[] | undefined, draft: UpliftOverride[] | undefined, grid: FieldGeom, yearNow: number): UpliftMarks | null {
+  if (!draft || !upliftOn(meta)) return null;
+  const { cols, rows, bb, step } = grid, kind = new Uint8Array(cols * rows), val = new Float64Array(cols * rows);   // kind：1 peak / 2 floor / 3 erase
+  const A = upliftCells(meta, applied, grid, yearNow), D = upliftCells(meta, draft, grid, yearNow);
+  const was = new Map<number, number>(), wasF = new Map<number, number>();   // 已应用的：格 → 峰高 / 格 → 盆底；草稿里对上的逐个划掉，剩下的就是被擦的
+  if (A) { A.idx.forEach((i, k) => was.set(i, A.peakM[k])); if (A.fidx) A.fidx.forEach((i, k) => wasF.set(i, A.floorM![k])); }
+  let any = false;
+  if (D) {
+    D.idx.forEach((i, k) => { if (was.get(i) !== D.peakM[k]) { kind[i] = 1; val[i] = D.peakM[k]; any = true; } was.delete(i); wasF.delete(i); });
+    if (D.fidx) D.fidx.forEach((i, k) => { if (wasF.get(i) !== D.floorM![k]) { kind[i] = 2; val[i] = D.floorM![k]; any = true; } was.delete(i); wasF.delete(i); });
+  }
+  for (const i of [...was.keys(), ...wasF.keys()]) { kind[i] = 3; any = true; }
+  if (!any) return null;
+  const NAME = ["", "peak", "floor", "erase"] as const, runs: UpliftMarks["runs"] = { peak: [], floor: [], erase: [] }, labels: UpliftMarks["labels"] = [];
+  for (let r = 0; r < rows; r++) for (let c = 1, c0 = 0; c <= cols; c++) {
+    const k0 = kind[r * cols + c0];
+    if (c === cols || kind[r * cols + c] !== k0) { if (k0) runs[NAME[k0] as "peak" | "floor" | "erase"].push(r, c0, c - c0); c0 = c; }
+  }
+  /* 每片四邻连通、同类的区一个标注：洪泛时累计重心与极值，落点取区内离重心最近的格 */
+  const seen = new Uint8Array(cols * rows), stack: number[] = [];
+  for (let s = 0; s < kind.length; s++) {
+    if (!kind[s] || seen[s]) continue;
+    const k = kind[s], cellsOf: number[] = [];
+    let sx = 0, sy = 0, ext = k === 2 ? Infinity : -Infinity;
+    seen[s] = 1; stack.push(s);
+    while (stack.length) {
+      const i = stack.pop()!, r = (i / cols) | 0, c = i - r * cols;
+      cellsOf.push(i); sx += c; sy += r;
+      if (k === 1 ? val[i] > ext : k === 2 && val[i] < ext) ext = val[i];
+      for (const j of [r > 0 ? i - cols : -1, r < rows - 1 ? i + cols : -1, c > 0 ? i - 1 : -1, c < cols - 1 ? i + 1 : -1])
+        if (j >= 0 && kind[j] === k && !seen[j]) { seen[j] = 1; stack.push(j); }
+    }
+    const mx = sx / cellsOf.length, my = sy / cellsOf.length;
+    let best = cellsOf[0], bd = Infinity;
+    for (const i of cellsOf) { const r = (i / cols) | 0, c = i - r * cols, d = (c - mx) * (c - mx) + (r - my) * (r - my); if (d < bd) { bd = d; best = i; } }
+    const br = (best / cols) | 0, bc = best - br * cols;
+    labels.push({ lon: bb.lonMin + (bc + 0.5) * step, lat: bb.latMin + (br + 0.5) * step, kind: NAME[k] as "peak" | "floor" | "erase", m: k === 3 ? 0 : ext });
+  }
+  return { runs, labels };
+}
 /** 画盆地的目标盆底预设（米）：可以低于海面；表单另有数字框 */
 export const UPLIFT_FLOORS_M = [-400, -100, 100, 300, 600, 1000];
 /** 画抬升的目标峰高预设（米）：表单另有数字框，预设之外的值照样能画 */

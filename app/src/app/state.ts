@@ -634,7 +634,7 @@ export const terrainAxisOf = (a: TerrainAxis, tac: boolean): TerrainAxis => a ==
 export const climPaintSig = signal<Climate>("temperate");      // 气候笔：当前档
 export const heightStepMSig = signal(0);                      // 高程笔幅度 米/笔；0=自动（战术 10/战略 50），生效值走 core/elev.heightStepM
 export const upliftPeakMSig = signal(3000);                   // 画抬升（v2 战略图的高程笔）：目标峰高（米）
-export const upliftModeSig = signal<"peak" | "floor">("peak");   // 画抬升两态：山 / 盆地
+export const upliftModeSig = signal<"sculpt" | "peak" | "floor">("sculpt");   // v2 战略图高程页三态：雕刻（直接改高低）/ 造山 / 造盆地（涂目标，点应用才长）
 export const basinFloorMSig = signal(300);                    // 画盆地：目标盆底（米，可为负）
 export const addTypeSig = signal<string>("city");             // 地点：落点预选类型（柱B——同布景选印章之例；缺省城市=旧行为）
 export const decorKindSig = signal<string>("tree");           // 布景：当前印章种类

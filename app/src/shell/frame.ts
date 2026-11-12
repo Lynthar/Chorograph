@@ -8,14 +8,15 @@ import { hexA, errText } from "../core/util.ts";
 import { drawOverlay, drawOp, type LoopBudget } from "../render/overlay.ts";
 import { contourStepOf, riverSet, terrainOpts } from "../render/renderer.ts";
 import { drawAnalysis } from "../render/analysis.ts";
-import { drawPaintCells, drawBrushRing, drawSelectBox, drawClimZones } from "../render/editHud.ts";
+import { drawPaintCells, drawBrushRing, drawSelectBox, drawClimZones, drawUpliftDraft } from "../render/editHud.ts";
+import { upliftDraftMarks, upliftOn, type UpliftMarks } from "../core/elev.ts";
 import { paintStep } from "../core/territory.ts";
 import { zoneField, zoneStep } from "../core/climzone.ts";
 import { brushRadiusCells } from "../core/brush.ts";
 import { dataLon } from "../app/editops.ts";
 import { worldSig, yearSig, selSig, hoverSig, layersSig, selNode, selEdge, selUnit,
   modeSig, editSubSig, linkTypeSig, linkFromSig, opDrawSig, opSelSig,
-  paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig, terrainAxisSig, terrainAxisOf, isTacSig,
+  paintFactionSig, paintLayerSig, brushSizeSig, brushEraseSig, brushSmoothSig, terrainAxisSig, terrainAxisOf, isTacSig, upliftModeSig,
   routePtsSig, routeResSig, unitLegsSig, visMaskSig, detectSig, ruleFieldSig, landedRuleField, spotTableSig, editVerSig, gridVerSig, saveConflictSig, erodePhaseSig, mesoDownSig, tilesDownSig, readOnlySig, uiPrefsSig, terrainStyleSig }
   from "../app/state.ts";
 import { $ } from "./dom.ts";
@@ -31,6 +32,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
   const { autosave } = libio;
   const times: number[] = [];
   let fps = "—", lastFtData = "";
+  let draftMemo: { a: unknown; d: unknown; g: unknown; y: number; m: UpliftMarks | null } | null = null;   // 待应用目标的示意按（已应用, 草稿, 网格, 年份）记
   /* 涂域环首算每帧限时：至少 TERR_FRAME_MS（低于 50 ms 长任务线），本帧其余绘制更慢时按它放大——首算最多占一帧的一半，
      否则边界极繁的图每帧重画已算的层就要几百 ms、每帧只进一层，画全要拖成一次算完的数倍。
      有层没算完就 terrPass+1，它进指纹＝下一帧接着画；常规地图一帧算得完，与不限时逐位同 */
@@ -74,6 +76,12 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       if (m === "edit" && editSubSig.value === "terrain" && climAxis) {   // 气候页：分区示意（涂的与派生的）
         const zf = zoneField(world);
         if (zf) drawClimZones(octx, cam(), zf, ctx.DPR);
+      }
+      /* 造山 / 造盆地两态：涂了还没应用的目标画成色块（地形在点「应用」之前不动，这层示意是唯一的回执） */
+      if (m === "edit" && editSubSig.value === "terrain" && terrainAxisSig.value === "height" && upliftModeSig.value !== "sculpt" && ctx.grid && world.upliftDraft && upliftOn(ctx.meta)) {
+        const g = ctx.grid, a = world.upliftOverrides, d = world.upliftDraft;
+        if (!draftMemo || draftMemo.a !== a || draftMemo.d !== d || draftMemo.g !== g || draftMemo.y !== yearNow) draftMemo = { a, d, g, y: yearNow, m: upliftDraftMarks(ctx.meta, a, d, g, yearNow) };
+        if (draftMemo.m) drawUpliftDraft(octx, cam(), draftMemo.m, g, ctx.DPR);
       }
       if (m === "edit" && editSubSig.value === "terrain" && ptr.mxy && ctx.grid) {   // 地形笔刷环（按 grid.step 定径；气候页按分区格）
         drawBrushRing(octx, cam(), ptr.mxy[0], ptr.mxy[1], climAxis ? (brushRadiusCells(ctx.meta, "clim", brushSizeSig.value) + 0.5) * zoneStep(ctx.meta)
@@ -149,7 +157,7 @@ export function startFrameLoop(ctx: ShellCtx, host: Host, libio: LibraryIO, ptr:
       // 选中/悬停/工具态
       selSig.value, hoverSig.value, modeSig.value, editSubSig.value, opSelSig.value,
       opDrawSig.value, linkTypeSig.value, linkFromSig.value,
-      paintFactionSig.value, paintLayerSig.value, terrainAxisSig.value,
+      paintFactionSig.value, paintLayerSig.value, terrainAxisSig.value, upliftModeSig.value,
       brushSizeSig.value, brushEraseSig.value, brushSmoothSig.value,
       routePtsSig.value, routeResSig.value, unitLegsSig.value, visMaskSig.value, detectSig.value, ruleFieldSig.value, spotTableSig.value,
       // 外壳可变态（非 signal，只能逐帧比）；elevField/ruleField=侵蚀细化异步换入（引用比较有效；推演底图画规则场）

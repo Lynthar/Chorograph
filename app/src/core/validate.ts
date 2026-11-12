@@ -21,7 +21,7 @@ const isNum = (x: unknown): x is number => typeof x === "number" && isFinite(x);
 
 /** 校验一份外部 JSON 是否能作为世界打开；不修改入参。 */
 /** 顶层数组的量级上限（校验闸）。往当前图并入 GeoJSON 也按它预算——能保存出的档必须能再导入。 */
-const WORLD_CAPS: Record<string, number> = { factions: 20000, terrainOverrides: 4000000, heightOverrides: 4000000, upliftOverrides: 4000000, climateZones: 64, genRiverOff: 4000000 };
+const WORLD_CAPS: Record<string, number> = { factions: 20000, terrainOverrides: 4000000, heightOverrides: 4000000, upliftOverrides: 4000000, upliftDraft: 4000000, climateZones: 64, genRiverOff: 4000000 };
 export const worldCap = (k: string): number => WORLD_CAPS[k] ?? 200000;
 
 export function validateWorld(w: unknown): ValidateResult {
@@ -43,7 +43,7 @@ export function validateWorld(w: unknown): ValidateResult {
   else if (!Array.isArray(o.nodes)) F("nodes", "nodes 不是数组");
 
   /* —— 数组字段成员必须是对象（否则打开即崩=fatal）；字段本身非数组则会被清空补齐=warning —— */
-  const listFields = ["factions", "nodes", "edges", "decor", "terrainOverrides", "heightOverrides", "upliftOverrides", "units", "events", "assets"];
+  const listFields = ["factions", "nodes", "edges", "decor", "terrainOverrides", "heightOverrides", "upliftOverrides", "upliftDraft", "units", "events", "assets"];
   /* 涂改上限 400 万（2026-08 审查修正，原 30 万）：闸的前提是「正常世界远够不到」，而编辑器
      自身已够得到——140km 战术图 196 万格、20km 笔刷一 dab ≈3.1 万条，重涂几分钟即破 30 万，
      导出的图再导入反被自己的闸拒掉（能保存出的档必须能再导入）。400 万＝格数上限 260 万 ×
@@ -233,8 +233,8 @@ export function validateWorld(w: unknown): ValidateResult {
     else if (Math.abs(h.dh as number) * unitM > DH_MAX_M) W(`${p}.dh`, `高程涂改幅度超出 ±${DH_MAX_M / 1000} km，按 ±${DH_MAX_M / 1000} km 计`);
     checkTimed(p, h);
   });
-  (Array.isArray(o.upliftOverrides) ? (o.upliftOverrides as Record<string, unknown>[]) : []).forEach((u, i) => {
-    const p = `upliftOverrides[${i}]`;   // 读端（core/elev.upliftCells）同判：坏项跳过、超限钳边
+  for (const key of ["upliftOverrides", "upliftDraft"]) (Array.isArray(o[key]) ? (o[key] as Record<string, unknown>[]) : []).forEach((u, i) => {
+    const p = `${key}[${i}]`;   // 读端（core/elev.upliftCells）同判：坏项跳过、超限钳边；没应用的草稿同一形状
     const pk = isNum(u.peakM) && (u.peakM as number) > 0, fl = isNum(u.floorM);
     if (!isNum(u.lon) || !isNum(u.lat) || pk === fl) W(p, "画抬升需要数字 lon/lat，以及正的 peakM 或数字 floorM 两者之一，该项不生效");
     else if (pk && (u.peakM as number) > DH_MAX_M) W(`${p}.peakM`, `目标峰高超出 ${DH_MAX_M / 1000} km，按 ${DH_MAX_M / 1000} km 计`);

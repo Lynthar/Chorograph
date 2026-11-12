@@ -6,6 +6,7 @@ import { project, viewCosK, type Camera } from "../core/projection.ts";
 import { hexA } from "../core/util.ts";
 import { DEFAULT_BBOX } from "../core/types.ts";
 import { CLIMATE_SWATCH, zoneClimate, type ZoneField } from "../core/climzone.ts";
+import type { UpliftMarks } from "../core/elev.ts";
 import type { BBox, PaintLayer } from "../core/types.ts";
 
 /** 当前编辑层的格底纹（对齐旧 drawPolitics 编辑态分支）。cells=逐格方块（旧档）;
@@ -61,6 +62,28 @@ function zoneLayers(f: ZoneField): { color: string; L: PaintLayer; painted: bool
 /** 气候分区示意（地形工具「气候」页）：涂的分区色重、派生的初稿色浅（只画陆上），未涂处不画 */
 export function drawClimZones(ctx: CanvasRenderingContext2D, cam: Camera, f: ZoneField, dpr: number): void {
   for (const z of zoneLayers(f)) drawPaintCells(ctx, cam, z.L, z.color, dpr, f.pd, f.bb, z.painted ? 0.32 : 0.14);
+}
+
+/* 造山 / 造盆地涂了还没应用的目标（core/elev.upliftDraftMarks）：山暖色、盆地冷色、被擦掉的已应用目标灰色。数据色，不走界面令牌 */
+const UPLIFT_MARK: Record<"peak" | "floor" | "erase", { color: string; alpha: number }> = {
+  peak: { color: "#c2571b", alpha: 0.42 }, floor: { color: "#1f6fb5", alpha: 0.42 }, erase: { color: "#3a3a3a", alpha: 0.34 }
+};
+/** 待应用目标的示意：三类格半透明色块，每片连通区在块心标目标米数（▲ 峰高 / ▽ 盆底 / 擦）。只在高程页的造山 / 造盆地两态下由帧循环调 */
+export function drawUpliftDraft(ctx: CanvasRenderingContext2D, cam: Camera, marks: UpliftMarks, grid: { bb: BBox; step: number }, dpr: number): void {
+  for (const k of ["erase", "floor", "peak"] as const)
+    if (marks.runs[k].length) drawPaintCells(ctx, cam, { runs: { pd: grid.step, d: marks.runs[k] } }, UPLIFT_MARK[k].color, dpr, grid.step, grid.bb, UPLIFT_MARK[k].alpha);
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.font = '700 12px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round";
+  for (const L of marks.labels) {
+    const [x, y] = project(cam, L.lon, L.lat);
+    if (x < -40 || y < -20 || x > cam.w + 40 || y > cam.h + 20) continue;
+    const t = L.kind === "peak" ? `▲ ${Math.round(L.m)} m` : L.kind === "floor" ? `▽ ${Math.round(L.m)} m` : "擦";
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(252,250,244,.92)"; ctx.strokeText(t, x, y);
+    ctx.fillStyle = L.kind === "erase" ? "#2b2620" : UPLIFT_MARK[L.kind].color; ctx.fillText(t, x, y);
+  }
+  ctx.restore();
 }
 
 /** 笔刷光圈：rDeg=盘半径（度）＝(R+0.5)×格边度数，由调用方经 core/brush 折算（2026-08-12 起

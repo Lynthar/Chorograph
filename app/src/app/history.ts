@@ -20,7 +20,7 @@ export function terrKey(w: World): string {
 }
 
 /** 地形域键（体积大头且多数编辑步不动）；其余键全归对象域 */
-const TERR_KEYS: readonly string[] = ["terrainOverrides", "heightOverrides", "upliftOverrides", "baseOverrides"];
+const TERR_KEYS: readonly string[] = ["terrainOverrides", "heightOverrides", "upliftOverrides", "baseOverrides", "upliftDraft"];
 
 interface Snap { t: string; o: string }
 

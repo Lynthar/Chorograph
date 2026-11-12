@@ -194,6 +194,7 @@ export function createHost(ctx: ShellCtx): Host {
   let mesoWant = "", mesoBad = "";   // 在飞单的键 · 复位后仍没有结果的键（不再要、侵蚀不再等）
   let mesoReset = "", mesoSeen = ""; // 已复位过一次车道的键 · 上次重建的键（开图或换了键，这两条失败记录作废）
   let mesoHold = false;              // 这一轮的侵蚀单要等中尺度（rebuild 同拍定）
+  let upWait = false;                // 胶囊亮着只因为早退支在等抬升的解（没有侵蚀单替它收场）
   function requestMeso(key: string): void {
     if (mesoWant === key) return;
     mesoWant = key;
@@ -555,10 +556,13 @@ export function createHost(ctx: ShellCtx): Host {
       ctx.ruleField = withDelta(work, workBase, workEg);
       ctx.elevField = ultra ? withDelta(ultra, workBase, workEg) : ctx.ruleField;
       if (workHere) settleRule();
+      /* 点了「应用」、解还没回来：侵蚀输入暂时没变所以走到这里，胶囊照样亮；解到了若仍走这一支（侵蚀不看这份抬升），由这里收掉 */
+      if (upWant) { upWait = true; setPhase("work"); } else if (upWait) { upWait = false; if (!pendLive) dropPhase(); }
       upload();
       settleBuild(t0, w);
       return;
     }
+    upWait = false;   // 全路径：相位归侵蚀单管
     buildN++;   // 侵蚀令牌：任何一次重建都使在飞的侵蚀单过期（见 requestErode 注）
     clearTimeout(ultraTimer);   // 改动来了＝撤掉排着的静置精修（工作档落定后自会重排）
     ultra = null;               // 精修只对本次构建有效：落笔即弃，画面回到工作档合成（见状态头注）

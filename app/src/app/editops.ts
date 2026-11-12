@@ -385,10 +385,9 @@ export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
      且雕痕下的格子往往本就是平原类型＝涂平原零改动、字面意义的「刷不动」（2026-08-08 用户实报）。
      只在**落笔**时清（橡皮各轴自守）；生态轴不清——林可以长在雕出的山上。 */
   const wipeHov = !erase && axis !== "eco";
-  const hovs = w.heightOverrides, ups = w.upliftOverrides;
+  const hovs = w.heightOverrides;
   const bkt = bucketByCell(ovs, bb, step);
   const hbkt = wipeHov && hovs && hovs.length ? bucketByCell(hovs, bb, step) : null;
-  const ubkt = wipeHov && ups && ups.length ? bucketByCell(ups, bb, step) : null;
   /* 尺寸判据带绝对项 +5.1e-5：吸收旧档 step 的 toFixed(4) 量化（最多 +5e-5，细格上超过 1.001 的
      相对容差），被量化撑成「粗块」的同格旧章才擦得掉、盖得掉。重建端（grid/elev/erode）的同式
      判据锁着黄金基准不能同改——旧章的自愈只发生在笔下：涂过/擦过即除。 */
@@ -396,7 +395,7 @@ export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
     clon: number, clat: number): boolean =>
     Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol
       && (+(o.step as number) || step) <= step * 1.001 + 5.1e-5 && activeAt(o, yearNow);
-  const deadT = new Set<TerrainOverride>(), deadH = new Set<HeightOverride>(), deadU = new Set<UpliftOverride>();
+  const deadT = new Set<TerrainOverride>(), deadH = new Set<HeightOverride>();
   const added: TerrainOverride[] = [];
   const seen = new Set<number>();
   let changed = false;
@@ -412,7 +411,6 @@ export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
       seen.add(k);
       for (const o of bkt.get(k) || []) if (!deadT.has(o) && hit(o, clon, clat)) { deadT.add(o); changed = true; }
       if (hbkt) for (const o of hbkt.get(k) || []) if (!deadH.has(o) && hit(o, clon, clat)) { deadH.add(o); changed = true; }
-      if (ubkt) for (const o of ubkt.get(k) || []) if (!deadU.has(o) && hit(o, clon, clat)) { deadU.add(o); changed = true; }
       if (!erase) {
         // 单轴笔刷：并入现格值的对应轴（地貌笔改地貌留生态、生态笔改生态留地貌）——现格=cells 已含旧涂改+初稿
         let cellT = t;
@@ -434,8 +432,7 @@ export function paintTerrainPath(w: World, grid: Grid, yearNow: number,
   if (deadT.size || added.length) pinBase(w, "terrain");
   w.terrainOverrides = deadT.size || added.length ? (deadT.size ? ovs.filter(o => !deadT.has(o)) : ovs).concat(added) : ovs;
   if (deadH.size) { pinBase(w, "height"); w.heightOverrides = hovs!.filter(o => !deadH.has(o)); }   // 只在真移除时赋回（缺键不落盘之约）
-  if (deadU.size) { pinBase(w, "uplift"); setUplifts(w, ups!.filter(o => !deadU.has(o))); }
-  if (wiped) wiped.n += deadH.size + deadU.size;
+  if (wiped) wiped.n += deadH.size;
   return changed;
 }
 
@@ -498,16 +495,37 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
   return changed;
 }
 
-/** 写回画抬升：删空则删键（缺键不落盘） */
+/** 写回已应用的造山 / 造盆地目标：删空则删键（缺键不落盘） */
 function setUplifts(w: World, list: UpliftOverride[]): void {
   if (list.length) w.upliftOverrides = list; else delete w.upliftOverrides;
+}
+const UP_KEYS = ["lon", "lat", "peakM", "floorM", "step", "since", "until"] as const;
+/** 写回草稿：与已应用的那份逐条相同＝没有待应用的，删键（「应用」按钮据此置灰） */
+function setDraft(w: World, list: UpliftOverride[]): void {
+  const cur = w.upliftOverrides || [];
+  if (list.length === cur.length && list.every((o, i) => UP_KEYS.every(k => (o[k] ?? null) === (cur[i][k] ?? null)))) delete w.upliftDraft;
+  else w.upliftDraft = list;
+}
+/** 「应用」：草稿成为已应用的目标（host 据此重解中尺度）；手动档下顺带把抬升那一轴收进侵蚀，地貌与高程两轴不动。没有草稿＝不动 */
+export function applyUplift(w: World): boolean {
+  if (!w.upliftDraft) return false;
+  setUplifts(w, w.upliftDraft);
+  delete w.upliftDraft;
+  if (erodeMode(w.meta) === "base") delete (w.baseOverrides || (w.baseOverrides = { height: [] })).uplift;   // 键缺＝没记过：高程照旧不进侵蚀
+  return true;
+}
+/** 「放弃」：丢掉没应用的草稿 */
+export function discardUplift(w: World): boolean {
+  if (!w.upliftDraft) return false;
+  delete w.upliftDraft;
+  return true;
 }
 
 /** 画抬升一笔的目标：山＝峰高（米，> 0），盆地＝盆底（米，可为负） */
 export type UpliftAim = { peakM: number } | { floorM: number };
-/* —— 画抬升（upliftOverrides[]；v2 战略图的高程笔，core/elev.upliftOn）——
+/* —— 造山 / 造盆地的目标（v2 战略图高程页，core/elev.upliftOn）：笔只改草稿 upliftDraft（没有就从已应用的那份起），地形等点「应用」——
    圆盘逐格记目标峰高或盆底：同格、同粒度、同时段再涂＝覆盖（不累加，量是「要多高 / 多低」不是「再加多少」；山盆互相覆盖）；
-   橡皮擦掉笔下当刻生效的抬升与旧的高程涂改（旧 dh 只读不叠，新笔清不掉它就无处可擦）。改了就换新数组。 */
+   橡皮擦掉笔下当刻生效的目标（已应用的也擦，应用后那座山才消失）。改了就换新数组。 */
 export function paintUpliftPath(w: World, grid: Grid, yearNow: number, path: readonly (readonly [number, number])[],
   aim: UpliftAim, size: number, erase: boolean, era?: EraNew | null): boolean {
   const { bb, step, cells } = grid;
@@ -515,13 +533,13 @@ export function paintUpliftPath(w: World, grid: Grid, yearNow: number, path: rea
   const R = size - 1, prec = step >= 0.05 ? 2 : 4, tol = step * 0.4;
   const pk = "peakM" in aim ? Math.round(Math.min(DH_MAX_M, aim.peakM)) : NaN, fl = "floorM" in aim ? Math.round(Math.max(-DH_MAX_M, Math.min(DH_MAX_M, aim.floorM))) : NaN;
   if (!erase && !(pk > 0) && !isFinite(fl)) return false;
-  const ups = w.upliftOverrides || [], hovs = w.heightOverrides;
+  const ups = w.upliftDraft || w.upliftOverrides || [];
   const es = era && era.on && era.since != null && isFinite(era.since) ? era.since : null;
   const eu = era && era.on && era.until != null && isFinite(era.until) ? era.until : null;
-  const ubkt = bucketByCell(ups, bb, step), hbkt = erase && hovs && hovs.length ? bucketByCell(hovs, bb, step) : null;
+  const ubkt = bucketByCell(ups, bb, step);
   const near = (o: { lon: number; lat: number; step?: number }, clon: number, clat: number): boolean =>
     Math.abs(o.lon - clon) < tol && Math.abs(o.lat - clat) < tol && (+(o.step as number) || step) <= step * 1.001 + 5.1e-5;   // 尺寸判据同 paintTerrainPath 的 hit
-  const deadU = new Set<UpliftOverride>(), deadH = new Set<HeightOverride>(), added: UpliftOverride[] = [], seen = new Set<number>();
+  const deadU = new Set<UpliftOverride>(), added: UpliftOverride[] = [], seen = new Set<number>();
   for (const [lon, lat] of path) {
     const c0 = Math.floor((lon - bb.lonMin) / step), r0 = Math.floor((lat - bb.latMin) / step);
     for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
@@ -534,7 +552,6 @@ export function paintUpliftPath(w: World, grid: Grid, yearNow: number, path: rea
       const clon = +(bb.lonMin + (c + 0.5) * step).toFixed(prec), clat = +(bb.latMin + (r + 0.5) * step).toFixed(prec);
       if (erase) {
         for (const o of ubkt.get(k) || []) if (!deadU.has(o) && near(o, clon, clat) && activeAt(o, yearNow)) deadU.add(o);
-        if (hbkt) for (const o of hbkt.get(k) || []) if (!deadH.has(o) && near(o, clon, clat) && activeAt(o, yearNow)) deadH.add(o);
         continue;
       }
       const ex = (ubkt.get(k) || []).find(o => !deadU.has(o) && near(o, clon, clat) && (o.since ?? null) === es && (o.until ?? null) === eu);
@@ -545,9 +562,8 @@ export function paintUpliftPath(w: World, grid: Grid, yearNow: number, path: rea
       added.push(applyEra(ov, era));
     }
   }
-  if (deadH.size) { pinBase(w, "height"); w.heightOverrides = hovs!.filter(o => !deadH.has(o)); }
-  if (deadU.size || added.length) { pinBase(w, "uplift"); setUplifts(w, (deadU.size ? ups.filter(o => !deadU.has(o)) : ups).concat(added)); }
-  return deadU.size + deadH.size + added.length > 0;
+  if (deadU.size || added.length) setDraft(w, (deadU.size ? ups.filter(o => !deadU.has(o)) : ups).concat(added));
+  return deadU.size + added.length > 0;
 }
 
 /** 气候分区一笔（路径版）：k＝CLIMATE_ORDER 序号 +1，0＝擦回未涂；R＝分区格半径。一格只属一档（涂 X 即抹掉它档）；

@@ -40,11 +40,12 @@ export function erodeBasis(w: World): ErodeBasis {
   if (!b) return { terrain, height: undefined, uplift: undefined };
   return { terrain: b.terrain ?? terrain, height: b.height ?? height, uplift: b.uplift ?? uplift };
 }
-/** 手动档下有没有还没收进侵蚀的涂改（「侵蚀」按钮可不可点）：钉过任一轴，或没记过的图带着高程涂改 / 画抬升 */
+/** 手动档下有没有还没收进侵蚀的涂改（「侵蚀」按钮可不可点）：侵蚀看到的某一轴不是现状那份。
+    两边都空算相同（没记过的图高程轴读作空），其余只比是不是同一个数组——钉过又画回原样的会多报一次，点了也只是命中缓存 */
 export function erodePending(w: World): boolean {
   if (erodeMode(w.meta) !== "base") return false;
-  const b = w.baseOverrides, some = (a: unknown[] | undefined): boolean => !!a && a.length > 0;
-  return b ? !!(b.terrain || b.height || b.uplift) : some(w.heightOverrides) || some(w.upliftOverrides);
+  const b = erodeBasis(w), off = (a: unknown[] | undefined, now: unknown[] | undefined): boolean => a !== now && !!((a && a.length) || (now && now.length));
+  return off(b.terrain, w.terrainOverrides) || off(b.height, w.heightOverrides) || off(b.uplift, w.upliftOverrides);
 }
 /** 高程涂改的内容指纹（顺序相关；空与缺同为 ""）：host 判「侵蚀看到的高程涂改变没变」，只在数组引用换了时算 */
 export function hovSig(list: HeightOverride[] | undefined): string {

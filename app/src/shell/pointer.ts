@@ -279,15 +279,17 @@ export function wireInteractions(ctx: ShellCtx, host: Host, libio: LibraryIO, de
       mutateWorldLive(w => paintClimatePath(w, path, k, Rz));
       return;
     }
+    /* v2 战略图的造山 / 造盆地只改草稿（地形等点「应用」）：不重建——重建在自动档下会白发一张侵蚀单 */
+    const draft = axis === "height" && upliftOn(ctx.meta) && upliftModeSig.peek() !== "sculpt";
     mutateWorldLive(w => {
-      changed = axis === "height" && upliftOn(ctx.meta)
+      changed = draft
         ? paintUpliftPath(w, grid, yearSig.peek(), path, upliftModeSig.peek() === "floor" ? { floorM: basinFloorMSig.peek() } : { peakM: upliftPeakMSig.peek() }, R + 1, brushEraseSig.peek(), eraNewSig.peek())
         : axis === "height"
         ? paintHeightPath(w, grid, path, brushEraseSig.peek() ? -dhAbs : dhAbs, R + 1, eraNewSig.peek())
         : paintTerrainPath(w, grid, yearSig.peek(), path, paintTerrainSig.value, R + 1, brushEraseSig.value, eraNewSig.peek(), axis, terrainStroke?.wiped);
       return changed;
     });
-    if (changed) rebuildSoon();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）；整条路径只重建一次、连笔按耗时节流
+    if (changed && !draft) rebuildSoon();   // overrides 变了→重建网格与高程场（undo 靠 terrKey 重建）；整条路径只重建一次、连笔按耗时节流
     if (axis !== "eco") return;
     /* 生态轴：改地面之外随笔落/擦真实印章（橡皮＝抹地面同时擦附近印章）。
        ⚠ 扫除是 O(布景数)/次，不能每个插值点都跑——按笔刷半径节流（播撒自带节流，见 ecoStamp）。 */

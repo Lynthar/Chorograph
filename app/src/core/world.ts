@@ -43,7 +43,7 @@ export function normalizeWorld(w: unknown): World {
     if (v != null && !(isFinite(+v) && +v > 0)) delete o.meta[k];
   }
   // heightOverrides / upliftOverrides 保持「缺键不落盘」（旧档形状不变）：仅当存在时清理，非数组则删键
-  for (const k of ["heightOverrides", "upliftOverrides"]) if (o[k] != null) {
+  for (const k of ["heightOverrides", "upliftOverrides", "upliftDraft"]) if (o[k] != null) {
     if (Array.isArray(o[k])) o[k] = o[k].filter(isRec);
     else delete o[k];
   }

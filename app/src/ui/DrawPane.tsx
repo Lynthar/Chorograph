@@ -7,12 +7,12 @@ import { isGen2 } from "../core/gen2.ts";
 import { CLIMATE, CLIMATE_ORDER, DECOR, ECO, ECO_ORDER, EDGE_STYLE, LANDFORM, LANDFORM_ORDER, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, nodeCatOf, parseComposite } from "../core/constants.ts";
 import { calOf, eraPh, eraTy, fmtWhen, fmtWhenForm, parseWhenForm } from "../core/calendar.ts";
 import { DH_MAX_M, UPLIFT_FLOORS_M, UPLIFT_PEAKS_M, heightStepM, upliftOn } from "../core/elev.ts";
-import { erodeMode, erodePending } from "../core/erode.ts";
+import { erodeMode, erodePending, type ErodeMode } from "../core/erode.ts";
 import { scaleProfile } from "../core/scale.ts";
 import { useLayoutEffect } from "preact/hooks";
-import { addFaction, foldIntoErosion, removePaintLayer, setPaintLayerSpan } from "../app/editops.ts";
+import { addFaction, applyUplift, discardUplift, foldIntoErosion, removePaintLayer, setPaintLayerSpan } from "../app/editops.ts";
 import { stampPoolSig, poolAdd, poolRemove, fileToAsset } from "../app/stamps.ts";
-import type { Edge, Ecotype, Landform } from "../core/types.ts";
+import type { Edge, Ecotype, Landform, Meta } from "../core/types.ts";
 import { addTypeSig, brushEraseSig, canRedoSig, canUndoSig, climPaintSig, decorKindSig, editSubSig, eraNewSig, erodePhaseSig, heightStepMSig, upliftPeakMSig, upliftModeSig, basinFloorMSig, isTacSig, linkFromSig, linkTypeSig,
   mutateWorld, paintFactionSig, paintLayerSig, paintTerrainSig, parseWhenInput, pickEditSub, pickLinkType, redoWorld, selSig, showToast, terrainAxisOf, terrainAxisSig, undoWorld, worldSig,
   type EditSub } from "../app/state.ts";
@@ -118,7 +118,7 @@ function TerrainCtx() {
   const tac = isTacSig.value, axis = terrainAxisOf(terrainAxisSig.value, tac);
   const meta = worldSig.value?.meta || {};
   const stepM = heightStepM(meta, heightStepMSig.value);   // 生效的每笔米数（0=自动档）
-  const up = upliftOn(meta), pk = upliftPeakMSig.value, floor = upliftModeSig.value === "floor", fm = basinFloorMSig.value;
+  const up = upliftOn(meta), pk = upliftPeakMSig.value, um = upliftModeSig.value, floor = um === "floor", fm = basinFloorMSig.value;
   const mode = erodeMode(meta);
   const setLf = (id: Landform) => { paintTerrainSig.value = eco === "none" ? id : id + "/" + eco; };
   const setEco = (id: Ecotype) => { paintTerrainSig.value = id === "none" ? lf : lf + "/" + id; };
@@ -127,7 +127,7 @@ function TerrainCtx() {
       <div class="seg2">
         <button aria-pressed={axis === "lf"} title="只改地貌（平原/丘陵/山地…），生态保留；涂到之处的手雕高程一并复位" onClick={() => { terrainAxisSig.value = "lf"; }}>地貌</button>
         <button aria-pressed={axis === "eco"} title="只改生态：地面色调/寻路代价 + 随笔落下真实布景印章（可单独选中调整）" onClick={() => { terrainAxisSig.value = "eco"; }}>生态</button>
-        <button aria-pressed={axis === "height"} title={up ? "画山或盆地：涂抹区长成所选峰高的山、压成所选盆底的盆地，地貌、寻路、等高线、读数与视域随之变" : "抬升/下切地势：等高线、读数与视域随之变，地貌与寻路不变"} onClick={() => { terrainAxisSig.value = "height"; }}>⛰ 高程</button>
+        <button aria-pressed={axis === "height"} title={up ? "雕刻＝直接抬升 / 下切地势；造山、造盆地＝涂目标再点应用，山形与盆形由生成器的流程长出来" : "抬升/下切地势：等高线、读数与视域随之变，地貌与寻路不变"} onClick={() => { terrainAxisSig.value = "height"; }}>⛰ 高程</button>
         {!tac && <button aria-pressed={axis === "clim"} title="把一片涂成某种气候：配色、林线与雪线随之变，地貌、生态与寻路不变" onClick={() => { terrainAxisSig.value = "clim"; }}>气候</button>}
       </div>
       {axis === "lf" ? (
@@ -168,13 +168,14 @@ function TerrainCtx() {
         </>
       ) : up ? (
         <>
-          <div class="seg2" role="group" aria-label="画山还是画盆地" style={{ marginTop: "4px" }}>
-            <button aria-pressed={!floor} onClick={() => { upliftModeSig.value = "peak"; }}>山</button>
-            <button aria-pressed={floor} onClick={() => { upliftModeSig.value = "floor"; }}>盆地</button>
+          <div class="seg2" role="group" aria-label="高程页三态：雕刻、造山、造盆地" style={{ marginTop: "4px" }}>
+            <button aria-pressed={um === "sculpt"} title="直接抬升 / 下切，笔落即最终" onClick={() => { upliftModeSig.value = "sculpt"; }}>雕刻</button>
+            <button aria-pressed={um === "peak"} title="涂出要长山的范围与目标峰高，点应用后长出来" onClick={() => { upliftModeSig.value = "peak"; }}>造山</button>
+            <button aria-pressed={floor} title="涂出要压成盆地的范围与目标盆底，点应用后沉下去" onClick={() => { upliftModeSig.value = "floor"; }}>造盆地</button>
           </div>
-          {floor ? (
+          {um === "sculpt" ? sculptRows(meta, stepM, mode) : floor ? (
             <>
-              <div class="sec" style={{ marginTop: "4px" }}>目标盆底<span class="mini">画盆地 · 可低于海面</span></div>
+              <div class="sec" style={{ marginTop: "4px" }}>目标盆底<span class="mini">造盆地 · 可低于海面</span></div>
               <div class="chips">
                 {UPLIFT_FLOORS_M.map(v => (
                   <button key={v} class="ch tr" aria-pressed={!brushEraseSig.value && fm === v} onClick={() => { basinFloorMSig.value = v; brushEraseSig.value = false; }}>{v}m</button>
@@ -185,42 +186,65 @@ function TerrainCtx() {
                     if (el.value.trim() !== "" && Math.abs(v) <= DH_MAX_M) { basinFloorMSig.value = v; brushEraseSig.value = false; } else el.value = String(basinFloorMSig.peek());
                   }} />
               </div>
-              <div class="hint">按住拖动把一片地压成盆地：每片连着的涂抹区里最低的那处压到所选盆底{brushEraseSig.value ? <>（现为 <b>橡皮</b>）</> : null}，可以低于海面。整片地面往下沉，盆心被泥沙填平，盆缘的山脊与谷照旧留着。盆里成外流湖、咸湖还是盐滩由水量定（光标移到盆上读得到），与海之间没有高过海面的陆地隔着就被海灌进。同一处再涂＝改成新的盆底、不累加，涂在画过的山上＝改成盆地；<kbd>E</kbd> 切橡皮、<kbd>[ ]</kbd> 调大小。松笔后约一秒解出盆形{mode === "all" ? <>，侵蚀计算再补细节（进度见顶栏）</> : null}。地貌按新的高度重判，寻路随之变；视野、火力与雷达圈按新地势重算。</div>
+              {applyRow()}
+              <div class="hint">按住拖动涂出要压成盆地的范围{brushEraseSig.value ? <>（现为 <b>橡皮</b>）</> : null}：涂的时候地形不动，图上以蓝色块标出、块心是目标盆底。点<b>应用</b>后沉下去并接着侵蚀（进度见顶栏），一步可撤销；<b>放弃</b>＝丢掉没应用的目标。每片连着的涂抹区里最低的那处压到所选盆底，可以低于海面；整片地面往下沉，盆心被泥沙填平，盆缘的山脊与谷照旧留着。盆里成外流湖、咸湖还是盐滩由水量定（应用后光标移到盆上读得到），与海之间没有高过海面的陆地隔着就被海灌进。同一处再涂＝改成新的盆底、不累加，涂在山的目标上＝改成盆地；<kbd>E</kbd> 切橡皮（已应用的也能擦，应用后才消失）、<kbd>[ ]</kbd> 调大小。</div>
             </>
           ) : (
             <>
-          <div class="sec" style={{ marginTop: "4px" }}>目标峰高<span class="mini">画山 · 地貌与寻路随山变</span></div>
-          <div class="chips">
-            {UPLIFT_PEAKS_M.map(v => (
-              <button key={v} class="ch tr" aria-pressed={!brushEraseSig.value && pk === v} onClick={() => { upliftPeakMSig.value = v; brushEraseSig.value = false; }}>{v}m</button>
-            ))}
-            <input class="fld" type="number" min={1} max={DH_MAX_M} step={100} value={pk} style={{ width: "6em" }} aria-label="目标峰高（米）"
-              onChange={e => {
-                const el = e.currentTarget as HTMLInputElement, v = Math.round(+el.value);
-                if (v > 0 && v <= DH_MAX_M) { upliftPeakMSig.value = v; brushEraseSig.value = false; } else el.value = String(upliftPeakMSig.peek());
-              }} />
-          </div>
-          <div class="hint">按住拖动把一片地画成山：每片连着的涂抹区里最高的那处长到所选峰高{brushEraseSig.value ? <>（现为 <b>橡皮</b>）</> : null}，山脊、支谷与山麓由生成器的流程长出来，山体宽窄随涂抹区。同一处再涂＝改成新的峰高、不累加；<kbd>E</kbd> 切橡皮（连旧的手雕高程一起擦）、<kbd>[ ]</kbd> 调大小。松笔后约一秒解出山形{mode === "all" ? <>，侵蚀计算再补沟谷细节（进度见顶栏）</> : null}。峰高指解出来的山顶；读数与标高点按格平滑，读到的数会比所选峰高略低，格子越粗低得越多。地貌按解出的高度重判（高处成山地、高山），寻路随之变；视野、火力与雷达圈按新地势重算。</div>
+              <div class="sec" style={{ marginTop: "4px" }}>目标峰高<span class="mini">造山 · 地貌与寻路随山变</span></div>
+              <div class="chips">
+                {UPLIFT_PEAKS_M.map(v => (
+                  <button key={v} class="ch tr" aria-pressed={!brushEraseSig.value && pk === v} onClick={() => { upliftPeakMSig.value = v; brushEraseSig.value = false; }}>{v}m</button>
+                ))}
+                <input class="fld" type="number" min={1} max={DH_MAX_M} step={100} value={pk} style={{ width: "6em" }} aria-label="目标峰高（米）"
+                  onChange={e => {
+                    const el = e.currentTarget as HTMLInputElement, v = Math.round(+el.value);
+                    if (v > 0 && v <= DH_MAX_M) { upliftPeakMSig.value = v; brushEraseSig.value = false; } else el.value = String(upliftPeakMSig.peek());
+                  }} />
+              </div>
+              {applyRow()}
+              <div class="hint">按住拖动涂出要长山的范围{brushEraseSig.value ? <>（现为 <b>橡皮</b>）</> : null}：涂的时候地形不动，图上以橙色块标出、块心是目标峰高。点<b>应用</b>后长出来并接着侵蚀出沟谷（进度见顶栏），一步可撤销；<b>放弃</b>＝丢掉没应用的目标。每片连着的涂抹区里最高的那处长到所选峰高，山脊、支谷与山麓由生成器的流程长出来，山体宽窄随涂抹区。同一处再涂＝改成新的峰高、不累加；<kbd>E</kbd> 切橡皮（已应用的也能擦，应用后才消失）、<kbd>[ ]</kbd> 调大小。峰高指解出来的山顶；读数与标高点按格平滑，读到的数会比所选峰高略低，格子越粗低得越多。地貌按解出的高度重判（高处成山地、高山），寻路随之变；视野、火力与雷达圈按新地势重算。</div>
             </>
           )}
         </>
-      ) : (
-        <>
-          {/* 幅度分档（2026-08-10 精度批，用户点单）：战术 1m 起精雕、战略 10m 起粗塑；米数经
-              elevUnitM 折成抽象 dh（pointer.terrainDab）。档表按图种取＝换图自动换排 */}
-          <div class="sec" style={{ marginTop: "4px" }}>幅度<span class="mini">只改高低 · 不改地貌与寻路</span></div>
-          <div class="chips">
-            {scaleProfile(meta).heightStepsM.map(v => (
-              <button key={v} class="ch tr" aria-pressed={stepM === v} onClick={() => { heightStepMSig.value = v; }}>±{v}m</button>
-            ))}
-          </div>
-          <div class="hint">高程画笔：按住拖动{brushEraseSig.value ? <b>▼ 下切</b> : <b>▲ 抬升</b>}地势（每笔 ±{stepM}m，可反复叠加；<kbd>E</kbd> 换向、<kbd>[ ]</kbd> 调大小）。山峰/棱线/凹路皆可雕；开「等高线」图层看效果。地貌与寻路不变，视野、火力与雷达圈按新地势重算。水域恒平、陆地不跌成滩涂。{mode === "all" ? <>笔画即时可见；松笔后侵蚀计算约需一至三秒把草稿冲出沟谷（进度见顶栏），等高线与读数都取自计算后的地势。</> : <>笔落即最终，等高线与读数随笔即变。</>}</div>
-        </>
-      )}
+      ) : sculptRows(meta, stepM, mode)}
       {axis !== "clim" && <ErodeCtx />}
     </>
   );
 }
+
+/* 幅度分档（2026-08-10 精度批，用户点单）：战术 1m 起精雕、战略 10m 起粗塑；米数经 elevUnitM 折成抽象 dh（pointer.terrainDab），
+   档表按图种取＝换图自动换排。普通函数直接返回节点（旧式高程页与 v2 的「雕刻」态共用），不是组件 */
+function sculptRows(meta: Meta, stepM: number, mode: ErodeMode) {
+  return (
+    <>
+      <div class="sec" style={{ marginTop: "4px" }}>幅度<span class="mini">只改高低 · 不改地貌与寻路</span></div>
+      <div class="chips">
+        {scaleProfile(meta).heightStepsM.map(v => (
+          <button key={v} class="ch tr" aria-pressed={stepM === v} onClick={() => { heightStepMSig.value = v; }}>±{v}m</button>
+        ))}
+      </div>
+      <div class="hint">高程画笔：按住拖动{brushEraseSig.value ? <b>▼ 下切</b> : <b>▲ 抬升</b>}地势（每笔 ±{stepM}m，可反复叠加；<kbd>E</kbd> 换向、<kbd>[ ]</kbd> 调大小）。山峰/棱线/凹路皆可雕；开「等高线」图层看效果。地貌与寻路不变，视野、火力与雷达圈按新地势重算。水域恒平、陆地不跌成滩涂。{mode === "all" ? <>笔画即时可见；松笔后侵蚀计算约需一至三秒把草稿冲出沟谷（进度见顶栏），等高线与读数都取自计算后的地势。</> : <>笔落即最终，等高线与读数随笔即变。</>}</div>
+    </>
+  );
+}
+/** 造山 / 造盆地的「应用 / 放弃」一行：有没应用的目标才可点；应用＝一步可撤销的命令（解中尺度、接着侵蚀，进度看顶栏） */
+function applyRow() {
+  const draft = !!worldSig.value?.upliftDraft, busy = erodePhaseSig.value === "work";
+  return (
+    <div role="group" aria-label="应用或放弃没应用的目标" style={{ display: "flex", gap: "6px" }}>
+      <button type="button" class={"bt tr" + (draft ? " zhu" : "")} id="upliftApply" style={{ flex: 1 }} disabled={!draft || busy}
+        title={busy ? "侵蚀计算中…" : draft ? "按涂好的目标长出山、压出盆地，并接着侵蚀（可撤销）" : "没有待应用的目标：先在图上涂"}
+        onClick={() => {
+          mutateWorld(w => { applyUplift(w); }, { grid: true });
+          showToast("已应用，正在解出地形并侵蚀（进度见顶栏）", { undo: true });
+        }}>应用</button>
+      <button type="button" class="bt ghost tr" id="upliftDiscard" disabled={!draft} title="丢掉没应用的目标，已应用的不动"
+        onClick={() => { mutateWorld(w => { discardUplift(w); }); showToast("已放弃没应用的目标", { undo: true }); }}>放弃</button>
+    </div>
+  );
+}
+
 
 /** 地形页底部的侵蚀一行（地貌 / 生态 / 高程三页共用）：手动档给「侵蚀」按钮，其余两档只说现在是哪一档、去哪改 */
 function ErodeCtx() {

@@ -240,6 +240,7 @@ export interface World {
   heightOverrides?: HeightOverride[];   // 可选（不入 normalizeWorld 数组清单——旧档形状不变）
   upliftOverrides?: UpliftOverride[];   // 画抬升（可选键，缺省不落盘——同 heightOverrides；只在 v2 战略图上生效）
   baseOverrides?: BaseOverrides;        // 手动档下侵蚀看到的涂改（可选键；见 BaseOverrides）
+  upliftDraft?: UpliftOverride[];       // 造山 / 造盆地涂了还没应用的目标（整份，将替换 upliftOverrides）：只画示意、不进地形；与已应用的相同就不留这个键
   units: Unit[];
   assets?: Asset[];                     // 自定义印章资产（可选键，缺省不落盘——同 heightOverrides）
   climateZones?: ClimateZone[];         // 气候分区（core/climzone；可选键，缺省不落盘；只进观感）
