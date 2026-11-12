@@ -46,7 +46,7 @@ function PeriodRow({ modern }: { modern: boolean }) {
   );
 }
 
-/** 侵蚀计算档（既有图可改；缺键＝底图与涂改，新图亦此）。普通函数直接返回节点，不是组件（同 PeriodRow） */
+/** 侵蚀计算档（既有图可改；缺键＝底图与涂改，新图出生时盖章「仅底图」）。普通函数直接返回节点，不是组件（同 PeriodRow） */
 function ErodeRow({ cur }: { cur: ErodeMode }) {
   return (
     <div class="setrow" role="group" aria-labelledby="sw_erode_lab"><label id="sw_erode_lab">侵蚀计算</label>

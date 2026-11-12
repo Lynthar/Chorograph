@@ -9,7 +9,7 @@ import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, 
 import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
 import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, upliftCells, upliftOn, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, stampRect, type Grid } from "../src/core/grid.ts";
-import { erodeGate, erodeInput } from "../src/core/erode.ts";
+import { erodeGate, erodeInput, erodeMode } from "../src/core/erode.ts";
 import { peakTable, pickPeaks, waterSpots, type PickOpts } from "../src/core/spots.ts";
 import { handleRouteMsg } from "../src/worker/routeProto.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
@@ -1369,6 +1369,17 @@ describe("可靠性分级 certainty（柱B）", () => {
     const w = validateWorld({ meta: {}, nodes: [{ id: "a", type: "city", lon: 1, lat: 2, certainty: "存疑" }] });
     assert.strictEqual(w.ok, true);
     assert.ok(w.warnings.some(i => i.path.endsWith(".certainty")), "未知档位应有警告");
+  });
+});
+
+describe("新图的侵蚀计算档", () => {
+  it("新建的战略图与战术战场出生即「仅底图」；存档里没有这个键的旧图仍按「底图与涂改」读", () => {
+    const strat = blankWorld({ 名称: "甲", worldModel: "sphere", terrain: "plain", bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } }, "d");
+    const tac = blankTacticalWorld({ 名称: "乙", lon: 114, lat: 38, diaKm: 20, battleYear: 1 }, "d");
+    assert.strictEqual(strat.meta.erode, "base");
+    assert.strictEqual(tac.meta.erode, "base");
+    assert.strictEqual(erodeMode(strat.meta), "base");
+    assert.strictEqual(erodeMode({ ...strat.meta, erode: undefined }), "all", "缺键＝旧图，不许跟着新缺省变");
   });
 });
 

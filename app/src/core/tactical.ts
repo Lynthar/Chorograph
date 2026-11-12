@@ -86,6 +86,7 @@ export function blankTacticalWorld(s: BlankTacSpec, today: string): World {
   if (s.vault) meta.vault = s.vault;
   if (s.period === "modern") meta.period = "modern";
   meta.gridN = autoGridN(meta);   // 尺度身份盖章（创建时定形）：此后法则常数演进不动旧图
+  meta.erode = "base";            // 同 blankWorld：新图出生即「仅底图」
   return { meta, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] };
 }
 

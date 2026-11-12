@@ -233,6 +233,7 @@ export function blankWorld(s: BlankWorldSpec, today: string): World {
      kmPerDeg/半径）创建后冻结,公式却会演进;盖章后旧图永远按建图当天的格边打开,法则常数
      此后只影响新图。⚠ 对黄金基准属 sanctioned 附加键：parity 比对时剥掉此键另断言其值。 */
   w.meta.gridN = autoGridN(w.meta);
+  w.meta.erode = "base";   // 新图出生即「仅底图」：涂改叠在侵蚀之后、笔落即最终；缺键的旧图仍是「底图与涂改」，不许改缺省
   w.edges = genRiverEdges(w.meta);   // 网格几何要等 gridN 盖章
   return w as World;
 }
