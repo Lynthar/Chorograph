@@ -7,6 +7,8 @@ import type { Arm, Climate, Ecotype, Landform, TerrainId } from "./types.ts";
 export const WATER_EPS = 0.02;
 /** 水格床面封在水面 + SHORE_E 以下：渲染端「低于水面即水」的判据才成立 */
 export const SHORE_E = -0.03;
+/** 陆地的下限与侵蚀基准面（相对所在格水面）：落在水陆判据线上，抬 1e-4 免 Float32 舍入落到线下显示成水 */
+export const SHORE_LAND = -WATER_EPS + 1e-4;
 /** 没有水面（画的盆地里没有水邻的陆格）：「高程 < 水面 − WATER_EPS」恒不成立、陆地钳不到它；取有限值，Float32 与纹理照常装得下 */
 export const NO_WATER = -1000;
 

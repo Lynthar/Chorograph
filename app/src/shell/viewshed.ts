@@ -5,7 +5,7 @@
    落定换引用即重算；规则场只在换引用时推送 Worker 一次（拖部队的连发不再逐单克隆整幅场）。 */
 import { effect } from "@preact/signals-core";
 import { kmPerDeg, kmPerDegXY } from "../core/geo.ts";
-import { elevUnitM, waterSurface, type RuleField } from "../core/elev.ts";
+import { elevUnitM, type RuleField } from "../core/elev.ts";
 import { isModern, arcDegOf, nodeEyeM, nodeVisionKm, rangeDirect, unitAltAt, unitArm, unitEyeM, unitFireDirect, unitFireKm, unitPos, radarKmOf, radarMOf, radarTgtMOf, unitVantageM } from "../core/units.ts";
 import { activeAt, ownerAt } from "../core/time.ts";
 import { REFRACT_OPTICAL, REFRACT_RADAR, TARGET_M, noMasks, type ViewField, type VisMask } from "../core/viewshed.ts";
@@ -87,12 +87,12 @@ export function sightReqs(w: World, T: number, obs: VisReq[]): SightReq[] {
   return out;
 }
 
-/** 规则场 + 粗格水面 + 物理标定 → 视线场。曲率半径按每度里程反推（战术图是切平面投影，圆周＝360×km/度） */
-export function viewFieldOf(meta: Meta, f: RuleField, grid: Grid): ViewField {
+/** 规则场 + 粗格水面（屏上粗格场所出的那份，ShellCtx.wsurf）+ 物理标定 → 视线场。曲率半径按每度里程反推（战术图是切平面投影，圆周＝360×km/度） */
+export function viewFieldOf(meta: Meta, f: RuleField, grid: Grid, wsurf: Float32Array): ViewField {
   const { kmx, kmy } = kmPerDegXY(meta, f.bb);
   return {
     bb: f.bb, step: f.step, cols: f.cols, rows: f.rows, data: f.data,
-    wsurf: waterSurface(meta, grid), gstep: grid.step, gcols: grid.cols, grows: grid.rows,
+    wsurf, gstep: grid.step, gcols: grid.cols, grows: grid.rows,
     unitM: elevUnitM(meta), kmx, kmy, curvKm: kmPerDeg(meta) * 180 / Math.PI
   };
 }
@@ -108,9 +108,9 @@ export function wireViewshed(ctx: ShellCtx): () => void {
     if (!visFailSig.peek()) showToast(`视域计算失败（${why}）　图上可达区未更新`, { err: true });
     visFailSig.value = true;
   };
-  const flight = singleFlight((meta: Meta, f: RuleField, grid: Grid, obs: VisReq[], sights: SightReq[]) => {
+  const flight = singleFlight((meta: Meta, f: RuleField, grid: Grid, wsurf: Float32Array, obs: VisReq[], sights: SightReq[]) => {
     const my = ++seq;
-    ctx.routeClient.setViewField(viewFieldOf(meta, f, grid));   // 每单都推：槽与标高点共用，自己记「推过了」会按对方留下的场算；同一份场客户端不重发
+    ctx.routeClient.setViewField(viewFieldOf(meta, f, grid, wsurf));   // 每单都推：槽与标高点共用，自己记「推过了」会按对方留下的场算；同一份场客户端不重发
     if (!memo || memo.f !== f) memo = { f, masks: new Map() };
     const have = memo.masks, keys = obs.map(o => JSON.stringify(o)), need: VisReq[] = [], needKeys: string[] = [];
     obs.forEach((o, i) => { if (!have.has(keys[i])) { need.push(o); needKeys.push(keys[i]); } });
@@ -145,9 +145,9 @@ export function wireViewshed(ctx: ShellCtx): () => void {
   }, () => fire());
   function fire(): void {
     const w = worldSig.peek(), f = ruleFieldSig.peek(), meta = w ? w.meta || {} : null;
-    if (!w || !meta || !f || !ctx.grid || !isTacSig.peek()) return;
+    if (!w || !meta || !f || !ctx.grid || !ctx.wsurf || !isTacSig.peek()) return;
     const obs = visObservers(w, yearSig.peek(), layersSig.peek(), meta);
-    if (obs.length) flight.fire(meta, f, ctx.grid, obs, sightReqs(w, yearSig.peek(), obs));   // effect 已同步清过 sig
+    if (obs.length) flight.fire(meta, f, ctx.grid, ctx.wsurf, obs, sightReqs(w, yearSig.peek(), obs));   // effect 已同步清过 sig
   }
   const dispose = effect(() => {
     const w = worldSig.value, T = yearSig.value, L = layersSig.value, tac = isTacSig.value, f = ruleFieldSig.value;

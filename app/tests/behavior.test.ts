@@ -256,22 +256,22 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     }
     assert.ok(new Set(mts.map(v => v.toFixed(4))).size > 5, "山与山高度不同");
   });
-  it("高程涂改：单格加性、粗块盖章、时段过滤、下切钳制", () => {
+  it("高程涂改：单格加性、粗块盖章、时段过滤、下切照涂", () => {
     const g = buildGridCells(MP, [], 3107);
     const f = buildElevField(MP, [
       { lon: 101.5, lat: 31.5, dh: 0.3 }, { lon: 101.5, lat: 31.5, dh: 0.1 },   // 同格两章相加
       { lon: 103, lat: 33, dh: 0.2, step: 2 },                                   // 粗块铺 2°
       { lon: 100.5, lat: 30.5, dh: 0.5, since: 3200 },                           // 未生效
-      { lon: 100.5, lat: 33.5, dh: -0.5 }                                        // 下切→钳制
+      { lon: 100.5, lat: 33.5, dh: -0.5 }                                        // 下切：不挨水，照涂到海面以下
     ], g, 3107);
     const at = (lon: number, lat: number) => f[Math.floor((lat - 30) / g.step) * g.cols + Math.floor((lon - 100) / g.step)];
     close(at(101.5, 31.5), 0.16 + 0.4, 6);
     close(at(102.5, 32.5), 0.16 + 0.2, 6);
     close(at(103.5, 33.5), 0.16 + 0.2, 6);
     close(at(100.5, 30.5), 0.16, 6);   // 时段外涂改不生效（Float32 容差）
-    close(at(100.5, 33.5), 0.1, 6);
+    close(at(100.5, 33.5), 0.16 - 0.5, 6);
   });
-  it("钳制地板随类型收敛：开特性不动未涂改的沿海/沼泽低地；涂改格钳在 min(0.1, 自身基础)", () => {
+  it("钳制地板随类型收敛：开特性不动未涂改的沿海/沼泽低地；往下涂的格不受类型地板管", () => {
     const tov = [{ lon: 100.5, lat: 30.5, t: "coast" }, { lon: 101.5, lat: 31.5, t: "plain/marsh" }];
     const g = buildGridCells(MP, tov, 3107);
     const at = (f: Float32Array, lon: number, lat: number) => f[Math.floor((lat - 30) / g.step) * g.cols + Math.floor((lon - 100) / g.step)];
@@ -279,9 +279,9 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     const f = buildElevField(MP, [{ lon: 103.5, lat: 33.5, dh: 0.2 }], g, 3107);
     assert.strictEqual(at(f, 100.5, 30.5), Math.fround(ELEV.coast), "沿海 0.06 不动");
     assert.strictEqual(at(f, 101.5, 31.5), Math.fround(ELEV.marsh), "沼泽 0.03 不动");
-    // 沿海下切 0.5：护栏仍在，钳在自身基础 0.06（而非通用地板 0.10）
+    // 沿海下切 0.5：类型地板随涂改一起下移（这张图没有水，那一格成了海面以下的干地）
     const f2 = buildElevField(MP, [{ lon: 100.5, lat: 30.5, dh: -0.5 }], g, 3107);
-    close(at(f2, 100.5, 30.5), ELEV.coast, 6);
+    close(at(f2, 100.5, 30.5), ELEV.coast - 0.5, 6);
   });
   it("连续基底 baseElev（2026-09-02）：纯平原全图＝ELEV.plain；同一 Grid 实例按引用记忆", () => {
     const g = buildGridCells(MP, [], 0), b = baseElev(MP, g);
@@ -1774,12 +1774,12 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     const f = coarseField(grid, data);
     const west = { lonMin: 0.02, lonMax: 0.22, latMin: 0.02, latMax: 0.14 }, east = { lonMin: 0.40, lonMax: 0.60, latMin: 0.02, latMax: 0.14 };
     const whole = { lonMin: -0.1, lonMax: 0.8, latMin: -0.1, latMax: 0.3 };
-    assert.strictEqual(contourStepOf({ ...F }, 0.001, grid, f, null, west).m, 10, "西半幅视口：缓坡＝地板");
-    assert.strictEqual(contourStepOf({ ...F }, 0.001, grid, f, null, east).m, 1000, "东半幅视口：陡坡＝1000 m");
+    assert.strictEqual(contourStepOf({ ...F }, 0.001, grid, waterSurface(F, grid), f, null, west).m, 10, "西半幅视口：缓坡＝地板");
+    assert.strictEqual(contourStepOf({ ...F }, 0.001, grid, waterSurface(F, grid), f, null, east).m, 1000, "东半幅视口：陡坡＝1000 m");
     const M = { ...F };
-    assert.strictEqual(contourStepOf(M, 0.001, grid, f, null, whole).m, contourStepFor(0.001, F, contourStats(f, grid, waterSurface(F, grid), F)).m, "整幅视角＝全场统计");
-    assert.strictEqual(contourStepOf(M, 0.001, grid, f, null, east).m, 1000, "同一 meta 换视口照常换档（东半幅）");
-    assert.strictEqual(contourStepOf({ ...F }, 0.001, null, null, null, east).m, contourStepFor(0.001, F, null).m, "没有网格＝无场手感");
+    assert.strictEqual(contourStepOf(M, 0.001, grid, waterSurface(F, grid), f, null, whole).m, contourStepFor(0.001, F, contourStats(f, grid, waterSurface(F, grid), F)).m, "整幅视角＝全场统计");
+    assert.strictEqual(contourStepOf(M, 0.001, grid, waterSurface(F, grid), f, null, east).m, 1000, "同一 meta 换视口照常换档（东半幅）");
+    assert.strictEqual(contourStepOf({ ...F }, 0.001, null, null, null, null, east).m, contourStepFor(0.001, F, null).m, "没有网格＝无场手感");
   });
   it("pinnedStackH：屏幕角标注堆的占高（出图图例据此让开 se）", () => {
     const T = 3107;

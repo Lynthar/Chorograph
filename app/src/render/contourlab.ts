@@ -3,7 +3,7 @@
    绘制——恒正立、纸色描边压线、走标签避让场**最后**占位（让地名、部队与标高点）。
    数字＝制图面高程取整＝与光标读数同一个数；线本身也画在同一面上（§9.15），故图内自洽。
    ⚠ 等值线的角态表与链折线只在 render/maskraster（与视线掩膜的轮廓共用一份）。 */
-import { elevSmooth, elevUnitM, waterSurface, type RuleField } from "../core/elev.ts";
+import { elevSmooth, elevUnitM, type RuleField } from "../core/elev.ts";
 import { project, unproject, type Camera } from "../core/projection.ts";
 import { CONTOUR } from "./material.ts";
 import type { Grid } from "../core/grid.ts";
@@ -76,12 +76,12 @@ function worldBox(cam: Camera, x0: number, y0: number, x1: number, y1: number): 
   return { lonMin: tl[0] - sh, lonMax: br[0] - sh, latMin: br[1], latMax: tl[1] };
 }
 
-function build(cam: Camera, meta: Meta | undefined, f: RuleField, grid: Grid, base: number): LabCache {
+function build(cam: Camera, meta: Meta | undefined, f: RuleField, grid: Grid, wsurf: Float32Array, base: number): LabCache {
   const mx = cam.w * LAB_MARGIN, my = cam.h * LAB_MARGIN, sh = cam.lonShift || 0;
   const x0 = -mx, y0 = -my;
   const sw = Math.floor((cam.w + 2 * mx) / LAB_SAMPLE_PX) + 1, shh = Math.floor((cam.h + 2 * my) / LAB_SAMPLE_PX) + 1;
   const v = new Float32Array(sw * shh);
-  const wsurf = waterSurface(meta, grid), bb = grid.bb, st = grid.step, U = elevUnitM(meta);
+  const bb = grid.bb, st = grid.step, U = elevUnitM(meta);
   let mn = Infinity, mxv = -Infinity;
   for (let j = 0; j < shh; j++) for (let i = 0; i < sw; i++) {
     const [ul, lat] = unproject(cam, x0 + i * LAB_SAMPLE_PX, y0 + j * LAB_SAMPLE_PX);
@@ -140,7 +140,7 @@ function build(cam: Camera, meta: Meta | undefined, f: RuleField, grid: Grid, ba
 /** 画本拷贝的等高线注记：base＝渲染器这一帧用的等距（抽象单位，renderer.contourStepOf），不在此另算；避让场撞位即弃标。 */
 export function drawContourLabels(
   ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
-  f: RuleField, grid: Grid, lf: LabelField, base: number
+  f: RuleField, grid: Grid, wsurf: Float32Array, lf: LabelField, base: number
 ): void {
   if (!(base > 0)) return;
   let byShift = labCache.get(f);
@@ -150,7 +150,7 @@ export function drawContourLabels(
   let c = byShift.get(sh);
   if (!c || c.base !== base || cam.degPerPx > c.dpp * 1.2 || cam.degPerPx < c.dpp / 1.2
     || !(c.region.lonMin <= vb.lonMin && c.region.lonMax >= vb.lonMax && c.region.latMin <= vb.latMin && c.region.latMax >= vb.latMax)) {
-    byShift.set(sh, c = build(cam, meta, f, grid, base));
+    byShift.set(sh, c = build(cam, meta, f, grid, wsurf, base));
   }
   if (!c.items.length) return;
   ctx.save();

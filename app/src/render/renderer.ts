@@ -3,7 +3,7 @@
    WebGL2 上下文（含软渲）一律走 GPU**；仅上下文创建/着色器编译失败才退 CPU 瓦片。 */
 import type { Grid } from "../core/grid.ts";
 import type { TileLayer } from "../core/tiles.ts";
-import { contourStats, contourStepFor, waterSurface, type ContourStep, type ElevField, type FieldRect, type RuleField } from "../core/elev.ts";
+import { contourStats, contourStepFor, type ContourStep, type ElevField, type FieldRect, type RuleField } from "../core/elev.ts";
 import type { BBox, Meta } from "../core/types.ts";
 import { beachOf, climLook, paperOf, shadeGain, slopeKOf, snowSpec, type ClimLook, type SnowSpec } from "./material.ts";
 import { zoneLooks, zoneWeights, type ZoneLooks, type ZoneWeights } from "./zones.ts";
@@ -43,14 +43,14 @@ export function terrainOpts(meta: Meta, degPerPx: number, layers: Record<string,
     gain: shadeGain(meta, degPerPx) * relief, dpr, px };
 }
 /** 等距的取场与取档：三个渲染调用点与注记都经此，等距才不会「落笔即变、落地又变」，注记也才与线同一档。
-    场＝落定的规则场优先（演算中沿用上一份），没有就用当前规则场；坡度按**视口窗**统计（放大进山不再按整图的 75 分位算＝线距不随放大变密），
+    场＝落定的规则场优先（演算中沿用上一份），没有就用当前规则场；ws＝屏上粗格场所出的水面（与 grid 成对）；坡度按**视口窗**统计（放大进山不再按整图的 75 分位算＝线距不随放大变密），
     高程范围按全场（「整幅至少四级」是整张图的承诺，不随视窗变）；上一档按 meta 记忆＝换档带迟滞（平移中统计量小幅漂移不来回跳）。没有网格＝无场手感。 */
 const lastStep = new WeakMap<Meta, number>();
-export function contourStepOf(meta: Meta, degPerPx: number, grid: Grid | null, landed: RuleField | null, current: RuleField | null, view: BBox): ContourStep {
+export function contourStepOf(meta: Meta, degPerPx: number, grid: Grid | null, ws: Float32Array | null, landed: RuleField | null, current: RuleField | null, view: BBox): ContourStep {
   const f = landed || current;
   let stats = null;
-  if (grid && f) {
-    const ws = waterSurface(meta, grid), whole = contourStats(f, grid, ws, meta), win = statsWindow(f, view, meta.worldModel !== "flat");
+  if (grid && ws && f) {
+    const whole = contourStats(f, grid, ws, meta), win = statsWindow(f, view, meta.worldModel !== "flat");
     stats = win ? { slope75: contourStats(f, grid, ws, meta, win).slope75, rangeM: whole.rangeM } : whole;
   }
   const cs = contourStepFor(degPerPx, meta, stats, lastStep.get(meta));

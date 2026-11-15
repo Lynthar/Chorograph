@@ -39,6 +39,8 @@ export interface ShellCtx {
   ruleField: RuleField | null;
   /** 分块精修的块层（只进画面，同 elevField 的精修档；规则场与读数不读它）：host 的分块管理器独写，null＝没有块 */
   tileLayer: TileLayer | null;
+  /** 屏上那份粗格场所出的水面（host 每次重建写，与 grid 成对）：湖面随高程涂改变，读水面的都读它，别自己按 Grid 取 */
+  wsurf: Float32Array | null;
   /** 地形渲染器（boot 创建；无 WebGL2 自动退 CPU 瓦片） */
   R: TerrainRenderer | null;
   /** `${mapId}@${year}@${gridVer}`——年份/换图/地形改动重建网格的去重键 */
@@ -71,7 +73,7 @@ export function createShellCtx(canvas: HTMLCanvasElement, ov: HTMLCanvasElement,
     DPR: Math.max(1, devicePixelRatio || 1),
     meta: { terrain: "auto", genSeed: 1234, genStyle: "continent" },
     view: { lon0: 106, lat0: 38, degPerPx: 0.06 },
-    grid: null, elevField: null, ruleField: null, tileLayer: null, R: null, builtFor: null, repaint: null,
+    grid: null, elevField: null, ruleField: null, tileLayer: null, wsurf: null, R: null, builtFor: null, repaint: null,
     lib: null, mapId: null, baseVer: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
   };

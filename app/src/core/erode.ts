@@ -9,7 +9,7 @@
      谷线走，旧档（relief>0）读数会移动；战略图与其战术烘焙在同一位置的起伏也从逐位一致降为
      近似一致（侵蚀依赖网格分辨率，噪声输入仍同锚）。 */
 import { hash2 as sinHash2 } from "./noise.ts";
-import { baseElev, dhOf, elevBilinear, elevUnitM, landformRel, waterMask, waterSurface, LAND_FLOOR, SHORE_E, WATER_CEIL, WATER_EPS, type ElevField, type FieldGeom } from "./elev.ts";
+import { baseElev, buildSurface, dhOf, DH_EPS, elevBilinear, elevUnitM, landformRel, waterMask, waterSurface, LAND_FLOOR, SHORE_E, SHORE_LAND, WATER_CEIL, WATER_EPS, type ElevField, type FieldGeom } from "./elev.ts";
 import { gnoise, makeRelief, mountainness, type ReliefSampler, RELIEF_CARVE_K, RELIEF_MESO_CELLS, RELIEF_GATE_HI, RELIEF_GATE_LO, RELIEF_LAMBDA_KM, RELIEF_M,
   RELIEF_ROUGH_HI, RELIEF_ROUGH_LO, RELIEF_STRIKE, RELIEF_W, RELIEF_E0, RELIEF_E1, RIDGED_MEAN, RIDGED_MEAN3, reliefSeedOf } from "./relief.ts";
 import { kmPerDegXY } from "./geo.ts";
@@ -201,12 +201,12 @@ export function upscaleOf(cols: number, rows: number, cap: number, axisMax: numb
    年份免去 1~2s 重算，「先粗后细」的可见换场（用户实报读感像「还在施工/出错了」）就不再发生。
    指纹自动涵盖上方全部旋钮值；⚠ 改**公式/流程**而不动旋钮的数值行为变更须 EALGO+1，
    否则旧缓存会以旧观感还魂。 */
-/** 陆地的下限与侵蚀基准面（相对所在格水面）：落在水陆判据线上，抬 1e-4 免 Float32 舍入落到线下显示成水 */
-const SHORE_LAND = -WATER_EPS + 1e-4;
 /** 中尺度路径的代号（只混进带 mesoEnv 的单的键）：这条路径的流程变了而旋钮没变时加一。不进 KNOB_FP——进了就让全部旧图的缓存作废 */
 const MESO_EALGO = 2;
 /** 中尺度图细级侵蚀的汇流微地形（米；波长 km 与权重）：平原的基底近乎匀坡，D8 下切沿格轴与对角刻成直沟——侵蚀前叠上、侵蚀后减掉，地形本身不动 */
 const MESO_MICRO_M = 8, MESO_MICRO_KM: readonly [number, number][] = [[15, 1], [6, 0.5]];
+/** 负高程涂改那条路径的代号（只混进带负涂改的细级侵蚀单的键）：陆地地板随涂改下移的做法变了而旋钮没变时加一。不进 KNOB_FP，理由同 MESO_EALGO */
+const HOV_EALGO = 1;
 const EALGO = 14;   // 14=地貌涂改的基面增量与高程涂改同作粗级参照面、同进涂改盆掩码；13=粗级扩散对涂改的磨平按 σ≤4 km 封顶、涂改造出的闭合洼地不填平；12=起伏球面按三维取样、梯度集避开坐标轴、起伏种子分存；11=不再烘焙投影阴影（只留晕渲）；10=投影阴影光向改西北；9=侵蚀基准面与陆格下限取水陆判据线；8=粗级扩散按 km²（只给类型路）；7=多重网格（粗级先长谷网）；6=起伏改公里锚定的异质多尺度脊线场（core/relief），5=连续基底，4=细带归一，3=4K 精修
 const KNOB_FP = [EALGO, MAX_FINE, MAX_FINE_TAC, ITERS, KDT, ACRIT_CELLS, DIFF, POST_DIFF, COARSE_K, COARSE_ITERS, COARSE_DIFF, COARSE_MIN, COARSE_D_KM2, COARSE_CARVE_SIG_KM, CARVED_BASIN_M, DIFF_MONO,
   WARP1, WARP2, TYPE_FEATHER, DETAIL_AMP, DETAIL_SLOPE_K, DETAIL_SLOPE_CAP, EPS,
@@ -258,6 +258,7 @@ export function erodeKey(inp: ErodeInput): string {
   if (inp.lfDelta) mixA(new Uint32Array(inp.lfDelta.buffer, inp.lfDelta.byteOffset, inp.lfDelta.length));   // 同理只在有地貌涂改增量的单上追加
   if (inp.nest) for (const a of nestKeyParts(inp.nest)) mixA(a);   // 同理只在嵌套解的块单上追加
   if (inp.lfRel) mixA(new Uint32Array(inp.lfRel.buffer, inp.lfRel.byteOffset, inp.lfRel.length));   // 同理只在涂改换了地貌的中尺度单上追加
+  if (!inp.nest && inp.hovGrid.some(v => v < -DH_EPS)) mixA(new Uint32Array([HOV_EALGO]));   // 同理只在带负高程涂改的细级侵蚀单上追加
   return ERODE_VER + "-" + (a >>> 0).toString(36) + "-" + (b >>> 0).toString(36);
 }
 
@@ -299,14 +300,20 @@ export function erodeInput(meta: Meta | undefined, hov: HeightOverride[] | undef
     hasHov = true;
   }
   if (amp <= 0 && !hasHov) return null;
-  const elev0 = baseElev(m, grid), water = waterMask(grid);   // 三份（含 wsurf）都是按 Grid 记忆的共享只读数组（postMessage 克隆）
+  const water = waterMask(grid), ws0 = waterSurface(m, grid), wsurf = hasHov ? buildSurface(m, hov, grid, yearNow).wsurf : ws0;
+  /* 没有涂改动到水面时三份都是按 Grid 记忆的共享只读数组（postMessage 克隆）；湖面被岸边的涂改带着走了，水格床面跟着平移 */
+  let elev0 = baseElev(m, grid);
+  if (wsurf !== ws0) {
+    elev0 = elev0.slice();
+    for (let i = 0; i < elev0.length; i++) if (water[i] && wsurf[i] !== ws0[i]) elev0[i] += wsurf[i] - ws0[i];
+  }
   const { kmx, kmy } = kmPerDegXY(m, bb);
   const cap = scaleProfile(m).fineCap, menv = grid.meso ? grid.meso.env : null, bas = grid.meso ? grid.meso.basin : null;
   const cg = coarseGeom(cols, rows, step, step / upscaleOf(cols, rows, cap, 8));
   /* 中尺度图：只在地貌涂改换掉了地貌时挂增量（涂出来的闭合洼地靠它不被细级填洼填平）与起伏权重；没涂过的图两样都不挂，键与输出照旧 */
   const rel = menv ? landformRel(grid) : null;
   const lfd = (menv ? !!rel : cg && carveLam(cg.cstep * Math.sqrt(kmx * kmy)) > 0) ? landformDelta(m, grid) : null;
-  return { bb, step, cols, rows, elev0, water, wsurf: waterSurface(m, grid), amp, seed: reliefSeedOf(m), sphere: m.worldModel !== "flat", kmx, kmy, hovGrid,
+  return { bb, step, cols, rows, elev0, water, wsurf, amp, seed: reliefSeedOf(m), sphere: m.worldModel !== "flat", kmx, kmy, hovGrid,
     cap, axisMax: 8, acrit: ACRIT_CELLS, bandS: 1, unitM: elevUnitM(m), ...(menv ? { mesoEnv: menv } : {}), ...(bas ? { basin: bas } : {}), ...(lfd ? { lfDelta: lfd } : {}), ...(rel ? { lfRel: rel } : {}) };
 }
 
@@ -639,8 +646,8 @@ function erodeSetup(inp: ErodeInput) {
   const reliefU = RELIEF_M / inp.unitM;
   /** 一点的初始场（细级与粗级共用）：类型基面按域扭曲采样＋4 抽头帐篷羽化（水域不扭不羽＝基准面逐位、
       雕痕不扭＝落在用户画的地方）＋雕痕＋起伏，写入 dstB/dstH[i]。山地度两路取大：类型路＝基面高程
-      （含雕体）× meta.relief；雕体路＝|dh| 自带（与 meta.relief 解耦＝纯手雕图 relief=0 也有真形）。
-      dstT 有则逐格记「类型路主导」（粗级物理扩散的门）。 */
+      （含雕体）× meta.relief；雕体路＝往上雕的 dh 自带（与 meta.relief 解耦＝纯手雕图 relief=0 也有真形；往下涂的不给——
+      涂低的平原按涂改幅度加山的起伏，读数就不在涂的高度上）。dstT 有则逐格记「类型路主导」（粗级物理扩散的门）。 */
   /** 类型基面（陆地那一支：域扭曲 + 帐篷羽化，不含雕痕与起伏）：子格海岸线按它与水面的等值线定（见 ErodeWindow.coast） */
   const menv = inp.mesoEnv;
   const lfd = inp.lfDelta;
@@ -662,7 +669,7 @@ function erodeSetup(inp: ErodeInput) {
     if (dstHb) dstHb[i] = isWater ? 0 : hb;   // 水格侵蚀时站在判据线上，不带涂改
     let e = b + hb;
     if (!isWater) {
-      const mT = amp > 0 ? amp * (menv ? elevBilinear(menv, geo, lon, lat) : mountainness(e)) : 0, mC = Math.min(1, Math.abs(hb) * RELIEF_CARVE_K), m = Math.max(mT, mC);
+      const mT = amp > 0 ? amp * (menv ? elevBilinear(menv, geo, lon, lat) : mountainness(e)) : 0, mC = hb < -DH_EPS ? 0 : Math.min(1, Math.abs(hb) * RELIEF_CARVE_K), m = Math.max(mT, mC);
       if (m > 0) e += relief(lon, lat, m) * reliefU;
       if (dstT) dstT[i] = amp > 0 && mT >= mC ? 1 : 0;
     }
@@ -830,14 +837,14 @@ export function erodeField(inp: ErodeInput): ElevField {
     }
   }
 
-  /* 类型钳制（地板/天花同 buildElevField；参照＝连续类型基面、不含涂改：按最近父格钳会把海岸缓坡削回台阶，挖地不穿类型地板）。
+  /* 类型钳制（地板/天花同 buildSurface；参照＝连续类型基面：按最近父格钳会把海岸缓坡削回台阶）。涂改为负的细格，地板随涂改一起下移。
      陆格另不低于所在粗格的水陆判据线：低于它就在渲染端判成水，岸边出现细水道与孤立的细陆地。 */
   for (let r = 0; r < FR; r++) {
     const pr = Math.min(rows - 1, (r / sx) | 0);
     for (let c = 0; c < FC; c++) {
       const i = r * FC + c;
       h[i] = wat[i] ? Math.min(Math.max(WATER_CEIL, base[i]), h[i])
-        : Math.max(Math.min(LAND_FLOOR, base[i]), wsurf[pr * cols + Math.min(cols - 1, (c / sx) | 0)] + SHORE_LAND, h[i]);
+        : Math.max(Math.min(LAND_FLOOR, base[i]) + (hbf && hbf[i] < -DH_EPS ? hbf[i] : 0), wsurf[pr * cols + Math.min(cols - 1, (c / sx) | 0)] + SHORE_LAND, h[i]);
     }
   }
 

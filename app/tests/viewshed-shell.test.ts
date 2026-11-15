@@ -9,7 +9,7 @@ import { wireSpots } from "../src/shell/spots.ts";
 import { landWorld } from "../src/shell/orchestrate.ts";
 import { normalizeWorld } from "../src/core/world.ts";
 import { buildGridCells } from "../src/core/grid.ts";
-import { coarseField, type RuleField } from "../src/core/elev.ts";
+import { coarseField, waterSurface, type RuleField } from "../src/core/elev.ts";
 import { detectSig, layersSig, mutateWorld, ruleFieldSig, toastSig, visFailSig, visMaskSig, worldSig, yearSig } from "../src/app/state.ts";
 import type { ShellCtx } from "../src/shell/ctx.ts";
 import type { SightReq, SightRes, VisReq, VisRes } from "../src/worker/routeProto.ts";
@@ -41,7 +41,7 @@ function mkCtx(): { ctx: ShellCtx; seen: Seen } {
       }
     },
     DPR: 1, meta: {}, view: { lon0: 100.5, lat0: 30.5, degPerPx: 0.001 },
-    grid: null, elevField: null, ruleField: null, R: null, builtFor: null, repaint: null,
+    grid: null, wsurf: null, elevField: null, ruleField: null, R: null, builtFor: null, repaint: null,
     lib: null, mapId: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
   } as unknown as ShellCtx;
@@ -57,6 +57,7 @@ const size = (): number => visMaskSig.peek().unit.size + visMaskSig.peek().node.
 function open(ctx: ShellCtx, w: World, T = 3050): RuleField {
   landWorld(ctx, w, "t1", T);
   ctx.grid = buildGridCells(ctx.meta, w.terrainOverrides, T);
+  ctx.wsurf = waterSurface(ctx.meta, ctx.grid);
   const f = coarseField(ctx.grid, new Float32Array(ctx.grid.cols * ctx.grid.rows));
   ctx.ruleField = f; ruleFieldSig.value = f;
   return f;

@@ -1,7 +1,7 @@
 /* 标高点绘制：峰表（shell/spots 在 Worker 里算）按（半窗, 突出度门槛）选点并缓存，水面按 grid 缓存；
    走标签避让场**最后**占位（让地名与部队）。数字＝制图面高程取整（与光标读数同一个数）；水面前缀「水面」。 */
 import { pickPeaks, waterSpots, type PeakTable, type SpotHeight, type SpotTable } from "../core/spots.ts";
-import { contourFloorM, elevUnitM, waterSurface } from "../core/elev.ts";
+import { contourFloorM, elevUnitM } from "../core/elev.ts";
 import { kmPerDegXY } from "../core/geo.ts";
 import { EDGE_STYLE } from "../core/constants.ts";
 import { project, type Camera } from "../core/projection.ts";
@@ -23,11 +23,11 @@ const PEAK_FONT = "10px sans-serif", PEAK_INK = "rgba(70,52,28,.95)", WATER_FONT
 const PICK_CACHE_MAX = 32;
 
 const pickCache = new WeakMap<PeakTable, Map<string, SpotHeight[]>>();
-const waterCache = new WeakMap<Grid, SpotHeight[]>();
+const waterCache = new WeakMap<Float32Array, SpotHeight[]>();   // 按水面数组记：湖面随高程涂改换新数组
 
 /** 山顶门槛＝本帧等高距（突出度不到一个等距的起伏在线上画不出闭合圈）；地形层关着（cstep=0）时取本图最细等高距。
     lines＝等高线画着：此时显示值恰为等距整数倍的山顶不标（数字与线重复）。 */
-export function drawSpotHeights(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined, tab: SpotTable | null, grid: Grid, lf: LabelField, cstep: number, lines: boolean): void {
+export function drawSpotHeights(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined, tab: SpotTable | null, grid: Grid, wsurf: Float32Array, lf: LabelField, cstep: number, lines: boolean): void {
   const U = elevUnitM(meta);
   let peaks: SpotHeight[] = [];
   if (tab) {
@@ -43,8 +43,8 @@ export function drawSpotHeights(ctx: CanvasRenderingContext2D, cam: Camera, meta
       if (byKey.size > PICK_CACHE_MAX) byKey.delete(byKey.keys().next().value!);
     }
   }
-  let water = waterCache.get(grid);
-  if (!water) waterCache.set(grid, water = waterSpots(grid, waterSurface(meta, grid), U, kmPerDegXY(meta, grid.bb), SPOT_WATER_SEP_KM));
+  let water = waterCache.get(wsurf);
+  if (!water) waterCache.set(wsurf, water = waterSpots(grid, wsurf, U, kmPerDegXY(meta, grid.bb), SPOT_WATER_SEP_KM));
   ctx.save();
   ctx.textBaseline = "middle"; ctx.textAlign = "left";
   ctx.lineJoin = "round"; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(246,239,220,.85)";

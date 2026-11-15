@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { LAB_MAX_LEVELS, drawContourLabels, labStepFor, placeLabels } from "../src/render/contourlab.ts";
 import { tracePolylines, type IsoSurf } from "../src/render/maskraster.ts";
 import { buildGridCells } from "../src/core/grid.ts";
-import { coarseField } from "../src/core/elev.ts";
+import { coarseField, waterSurface } from "../src/core/elev.ts";
 
 /** 采样面：行 0 在上，v(x,y) 给值（NaN＝不出线） */
 function surf(w: number, h: number, v: (x: number, y: number) => number): IsoSurf {
@@ -95,7 +95,7 @@ describe("注记完整入口（drawContourLabels）对外来高程有界完成",
       data[r * grid.cols + c] = fill(grid.bb.lonMin + (c + 0.5) * grid.step, grid.bb.latMin + (r + 0.5) * grid.step);
     const texts: string[] = [];
     const ctx = new Proxy({}, { get: (_t, k) => k === "measureText" ? () => ({ width: 10 }) : k === "fillText" ? (s: string) => { texts.push(s); } : () => {} });
-    drawContourLabels(ctx as never, cam, meta, coarseField(grid, data), grid, { tryPlace: () => true } as never, 0.01);
+    drawContourLabels(ctx as never, cam, meta, coarseField(grid, data), grid, waterSurface(meta, grid), { tryPlace: () => true } as never, 0.01);
     return texts;
   };
   it("常数 1e20 的高程场（校验放行的超大涂改）立即返回、不出注记", () => {

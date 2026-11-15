@@ -1,7 +1,7 @@
 /* 分块精修的编排：拿到全图工作档输入 → Worker 算一份粗级切割量（中尺度图不跑粗级、没有这一步） → 各块的键 → 内存/缓存命中直接认领，其余按「视口里的先、离视心近的先」排队算。
    新一份输入的块全部攒着不上屏，到齐了报 onReady，host 调 commit 才与工作档在同一帧换上；编辑后旧块照旧显示、叠上粗格增量（同工作档的等待窗合成）。
    块只进画面：规则场、读数与等高线不读这里。 */
-import { applyDelta, deltaOf, type CoarseDelta } from "../core/elev.ts";
+import { applyDelta, deltaOf, type CoarseDelta, type Surface } from "../core/elev.ts";
 import { tileCells, tileCore, tileField, tileInput, tileKeyOf, tilesInView, tileWeight, type TileLayer, type TilePlan } from "../core/tiles.ts";
 import type { CoarseCarve, ErodeInput } from "../core/erode.ts";
 import type { NestSrc } from "../core/nested.ts";
@@ -31,8 +31,8 @@ export interface TileManager {
   setInput(inp: ErodeInput, plan: TilePlan, base: Float32Array, key: string, nest?: NestSrc | null): void;
   /** 把攒着的块（已是当前输入那一份的）一起放上屏：host 在换工作档的同一帧调 */
   commit(): void;
-  /** 当前含涂改的粗格场与网格（每次重建都送）：在屏块按它补增量；drop＝地貌被涂改换掉的粗格（core/elev.deltaOf 的 drop，没有传 null） */
-  setCoarse(now: Float32Array, grid: Grid, drop: Float32Array | null): void;
+  /** 当前含涂改的粗格场与网格（每次重建都送）：在屏块按它补增量；drop＝地貌被涂改换掉的粗格（core/elev.deltaOf 的 drop，没有传 null）；sf＝now 所出的那份 Surface */
+  setCoarse(now: Float32Array, grid: Grid, drop: Float32Array | null, sf: Surface | null): void;
   /** 视口与缩放（每帧送，没变就不动）：只定先算哪几块与停摆时报不报，不放块上屏 */
   setView(view: BBox, degPerPx: number): void;
 }
@@ -58,7 +58,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
   const fresh = new Map<number, Shown>();   // 在屏块的新一份：commit 才换上
   const probeQ = new Set<number>(), probing = new Map<number, string>();   // 等查缓存的块 · 在查的
   const queue = new Set<number>(), inflight = new Map<number, string>();   // 等算的块（缓存里没有）· 在算的
-  let now: Float32Array | null = null, grid: Grid | null = null, drop: Float32Array | null = null;
+  let now: Float32Array | null = null, grid: Grid | null = null, drop: Float32Array | null = null, sf: Surface | null = null;
   let view: BBox | null = null, dpp = 0, vis = new Set<number>();
   let disp = new Map<number, Float32Array>(), dispFor = new Map<number, [Float32Array, Float32Array, Float32Array, Float32Array | null]>();   // 在屏块 → (raw, base, now, drop) 算出的显示数组
   let readied = false, computed = false, up = false, down = false;   // readied＝这份输入报过 onReady 了；up＝块层在屏（下屏只在上过屏时报）
@@ -93,7 +93,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
         if (now && grid && s.base !== now) {
           if (!deltas.has(s.base)) deltas.set(s.base, deltaOf(s.base, now, grid, drop));
           const dl = deltas.get(s.base);
-          if (dl) a = applyDelta(tileField(plan.geom, i, s.raw), dl, now, grid, grid.cells, grid.meso ? grid.meso.basin : null).data;
+          if (dl) a = applyDelta(tileField(plan.geom, i, s.raw), dl, now, grid, grid.cells, grid.meso ? grid.meso.basin : null, sf).data;
         }
         if (a !== disp.get(i)) changed = true;
       }
@@ -225,7 +225,7 @@ export function createTileManager(d: TileDeps, memCapBytes: number): TileManager
       if (any) publish();
       if (frozen) { frozen = false; if (!published.size) emit(null); }   // 新几何一块都没有（车道停摆）：旧块层这时才下屏
     },
-    setCoarse(n, g, dr) { now = n; grid = g; drop = dr; publish(); },
+    setCoarse(n, g, dr, s) { now = n; grid = g; drop = dr; sf = s; publish(); },
     setView(v, degPerPx) {
       if (view && v.lonMin === view.lonMin && v.lonMax === view.lonMax && v.latMin === view.latMin && v.latMax === view.latMax && degPerPx === dpp) return;
       view = v; dpp = degPerPx;

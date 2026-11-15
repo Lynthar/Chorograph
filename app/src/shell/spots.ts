@@ -13,19 +13,19 @@ import type { ShellCtx } from "./ctx.ts";
 
 export function wireSpots(ctx: ShellCtx): () => void {
   let seq = 0, lineage: Meta | undefined;
-  const flight = singleFlight((meta: Meta, f: RuleField, grid: Grid) => {
+  const flight = singleFlight((meta: Meta, f: RuleField, grid: Grid, wsurf: Float32Array) => {
     const my = ++seq;
-    ctx.routeClient.setViewField(viewFieldOf(meta, f, grid));
+    ctx.routeClient.setViewField(viewFieldOf(meta, f, grid, wsurf));
     return ctx.routeClient.peaks().then(t => {
       if (seq !== my) return;
       if (t) spotTableSig.value = { f, t };
-      else flight.fire(meta, f, grid);   // 车道在飞时崩了：闸落地后补发一次，下一单走同步回退
+      else flight.fire(meta, f, grid, wsurf);   // 车道在飞时崩了：闸落地后补发一次，下一单走同步回退
     }, e => console.warn("标高点峰表计算失败（保持上一份）：", e));
   }, () => fire());
   function fire(): void {
     const w = worldSig.peek(), f = ruleFieldSig.peek(), meta = w ? w.meta || {} : null;
-    if (!meta || !f || !ctx.grid || !layerOn(layersSig.peek(), meta, "spots")) return;
-    if (spotTableSig.peek()?.f !== f) flight.fire(meta, f, ctx.grid);
+    if (!meta || !f || !ctx.grid || !ctx.wsurf || !layerOn(layersSig.peek(), meta, "spots")) return;
+    if (spotTableSig.peek()?.f !== f) flight.fire(meta, f, ctx.grid, ctx.wsurf);
   }
   const dispose = effect(() => {
     const w = worldSig.value, f = ruleFieldSig.value, L = layersSig.value;

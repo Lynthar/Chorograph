@@ -49,6 +49,7 @@ export interface OverlayOpts {
   selId?: string | null;              // 选中地点 id（金圈高亮；战役任意年显示作战线）
   opSel?: { evId: string; i: number } | null;   // 选中的作战线（泥金光晕）
   grid?: Grid;                        // 布景印章尺度源（应恒传；缺则印章尺度回退 1°）
+  wsurf?: Float32Array;               // 屏上粗格场所出的水面（与 grid 成对；标高点的水面与等高线注记的陆地门读它）
   multiIds?: string[] | null;         // 框选的地点 id（金圈高亮全部）
   unitSelId?: string | null;          // 选中部队 id（泥金光晕框；战术图）
   multiUnitIds?: string[] | null;     // 框选的部队 id（同款光晕；战术图）
@@ -120,9 +121,9 @@ export function drawOverlay(
       if (on("units")) drawUnits(ctx, c2, meta, world, yearNow,   // 部队【记号】压在地点之上（战场主角）；标签让地名
         { trails: on("trails"), labels: on("labels"), selId: opts.unitSelId, multiIds: opts.multiUnitIds, legs: opts.unitLegs, labelField: field, detect: opts.detect,
           handleUnit: opts.editing ? (opts.unitSelId || null) : null });   // 阵形朝向手柄（同圈手柄之规：编辑态选中对象才出）
-      if (on("spots") && opts.grid) drawSpotHeights(ctx, c2, meta, opts.spotTable || null, opts.grid, field, opts.contourStep || 0, on("terrain") && on("contour"));   // 标高点占位：让地名与部队
-      if (on("terrain") && on("contour") && opts.ruleField && opts.grid)   // 等高线注记**最后**占位：让地名、部队与标高点（线由地形渲染器画，故并 terrain 门）
-        drawContourLabels(ctx, c2, meta, opts.ruleField, opts.grid, field, opts.contourStep || 0);
+      if (on("spots") && opts.grid && opts.wsurf) drawSpotHeights(ctx, c2, meta, opts.spotTable || null, opts.grid, opts.wsurf, field, opts.contourStep || 0, on("terrain") && on("contour"));   // 标高点占位：让地名与部队
+      if (on("terrain") && on("contour") && opts.ruleField && opts.grid && opts.wsurf)   // 等高线注记**最后**占位：让地名、部队与标高点（线由地形渲染器画，故并 terrain 门）
+        drawContourLabels(ctx, c2, meta, opts.ruleField, opts.grid, opts.wsurf, field, opts.contourStep || 0);
     }
     /* 图页：网线先画、图廓外那段随后被纸盖住；纸与图廓线之后才是刻度字与屏幕 chrome（字在图里，不在纸上） */
     const rects = frameRectsPx(cam, meta);

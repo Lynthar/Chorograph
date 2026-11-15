@@ -176,7 +176,7 @@ const ERODE_ANCHORS: Record<string, Anchor> = {
   COARSE_CARVE_SIG_KM: phys("km（涂改被磨平的 σ 上限）"),
   CARVED_BASIN_M: phys("m"),
   DIFF_MONO: grid("每轮每格扩散系数的单调上限（4 邻显式格式）"),
-  SHORE_LAND: none("抽象高程"),
+  HOV_EALGO: none("代号"),
   MESO_EALGO: none("代号"),
   MESO_MICRO_M: phys("m"),
   MESO_MICRO_KM: phys("（波长 km，权重）"),

@@ -13,7 +13,7 @@ import { activeAt } from "./time.ts";
 import { stampRect, type Grid } from "./grid.ts";
 import { gen2Fine, isGen2, type UpliftCells } from "./gen2.ts";
 import { scaleProfile } from "./scale.ts";
-import { ECO_ORDER, LANDFORM_ORDER, NO_WATER, SHORE_E, WATER_EPS } from "./constants.ts";
+import { ECO_ORDER, LANDFORM_ORDER, NO_WATER, SHORE_E, SHORE_LAND, WATER_EPS } from "./constants.ts";
 import type { BBox, HeightOverride, Meta, UpliftOverride } from "./types.ts";
 
 /* 起伏/涂改后的钳制：陆地不跌成海滩之下、水面不浮出海（类型才是真源，观感须与类型自洽）。
@@ -21,6 +21,8 @@ import type { BBox, HeightOverride, Meta, UpliftOverride } from "./types.ts";
    基础值天然合规 ⇒ 未涂改格永不因开起伏/涂高程而被钳动；否则沿海(0.06)/沼泽复合(0.03/-0.07)
    这些设计低地会在特性开启瞬间被全图统一抬到 0.10（局部动一笔、远处海岸线等高线堆聚）。 */
 export const LAND_FLOOR = 0.10, WATER_CEIL = -0.06;
+/** 一格的高程涂改合计，绝对值不到它当没涂：同格一加一减在 Float32 上留 1e-8 量级的残差 */
+export const DH_EPS = 1e-6;
 
 /** 场几何（采样只需这四样——Grid 与细分 ElevField 都满足，结构子型） */
 export interface FieldGeom { bb: BBox; step: number; cols: number; rows: number }
@@ -51,9 +53,9 @@ export function coarseField(grid: FieldGeom, data: Float32Array): RuleField {
     参照是扭曲基面邻域）不许被人为抬高，增量为零的细格因此恒等于 fine=原位不动之约保持；
     水域格天花=max(WATER_CEIL, 本次粗格场该格值)——涂水后残留的陆高须压进水面，否则新画的
     水面上浮着旧地形的干斑；取粗格场而非类型表，内陆湖才不会在等待窗里被按回海平面。 */
-export function fieldPlusDelta<F extends ElevField>(fine: F, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null, drop?: Float32Array | null): F {
+export function fieldPlusDelta<F extends ElevField>(fine: F, base: Float32Array, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null, drop?: Float32Array | null, sf?: Surface | null): F {
   const d = deltaOf(base, now, geom, drop);
-  return d ? applyDelta(fine, d, now, geom, cells, free) : fine;
+  return d ? applyDelta(fine, d, now, geom, cells, free, sf) : fine;
 }
 /** 粗格增量 now − base 与它的变化范围（粗格闭区间）；两份逐位相同且没有 drop 格＝null。
     drop＝细场在这些粗格上的细节作废多少（0..1，dropWeights 给）：取 1 的地方不叠增量、改取 now 的双线性，之间按权重混 */
@@ -122,9 +124,10 @@ export function dropWeights(meta: Meta | undefined, from: Grid, to: Grid, only: 
   return out;
 }
 /** 把一份粗格增量羽化进细场 fine（语义见 fieldPlusDelta；free＝不钳陆地地板的粗格，即画的盆地 Grid.meso.basin，盆底可低于类型地板与海面）。fine 可以只是图幅的一块（分块精修），原点须落在细格网上；
-    补丁窗碰不到这块＝返回 fine 本身（引用不变） */
-export function applyDelta<F extends ElevField>(fine: F, d: CoarseDelta, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null): F {
-  const { cols, rows } = geom, { diff, c0, r0, c1, r1, drop } = d;
+    补丁窗碰不到这块＝返回 fine 本身（引用不变）。
+    sf＝now 所出的那份 Surface：涂改合计为负的粗格上陆地地板随涂改下移，改以该格水面的判据线为底（不传＝地板不动，被涂低的地停在类型地板上） */
+export function applyDelta<F extends ElevField>(fine: F, d: CoarseDelta, now: Float32Array, geom: FieldGeom, cells?: string[][], free?: Uint8Array | null, sf?: Surface | null): F {
+  const { cols, rows } = geom, { diff, c0, r0, c1, r1, drop } = d, low = sf ? sf.low : null;
   /* 补丁窗＝变化粗格 [c0..c1]×[r0..r1] 的双线性支撑域折到细格（k=粗细步长比），外留 1 格余量；
      出界钳到边缘格＝边缘章的支撑域自然含边界细格。oc/or＝fine 原点在全图细格网上的偏移（整幅场为 0） */
   const k = geom.step / fine.step;
@@ -146,8 +149,11 @@ export function applyDelta<F extends ElevField>(fine: F, d: CoarseDelta, now: Fl
         const p = terrainProps(cells[pr][pc]);
         /* 水域天花取**本次粗格场**的该格值（＝所属水体的水面下切后的床面），不取类型表：
            类型表只有一个 −0.35，拿它当天花会把内陆湖在等待窗里按回海平面、侵蚀落地又弹回来。 */
-        v = p.lf === "water" ? Math.min(v, Math.max(WATER_CEIL, now[pr * cols + pc]))
-          : free && free[pr * cols + pc] ? v : Math.max(v, Math.min(Math.min(LAND_FLOOR, p.elev), fine.data[i]));
+        const k = pr * cols + pc, lo = low ? low[k] : 0;
+        v = p.lf === "water" ? Math.min(v, Math.max(WATER_CEIL, now[k]))
+          : free && free[k] ? v
+          : lo < 0 ? Math.max(v, Math.min(Math.min(LAND_FLOOR, p.elev) + lo, fine.data[i]), sf!.wsurf[k] + SHORE_LAND)
+          : Math.max(v, Math.min(Math.min(LAND_FLOOR, p.elev), fine.data[i]));
       }
       data[i] = v;
     }
@@ -372,7 +378,7 @@ export const SUP_LO_PX = 28, SUP_HI_PX = 56, SUP_DASH_PX = 16;
       （见 waterSurfaceOf）：海的水面是 0＝逐位同旧式，内陆湖的水面在岸线高度上。
    ⚠ 只改基底不改分类；水格恒 ≤ 水面 + SHORE_E＝渲染端「低于水面即水」的判据成立。 */
 export const BASE_SLOPE_DEG = 15, SEABED_SLOPE_DEG = 3, BASE_BLUR_KM = 0.6;
-export { NO_WATER, SHORE_E, WATER_EPS };
+export { NO_WATER, SHORE_E, SHORE_LAND, WATER_EPS };
 /** 生成器连续高程 h → 抽象高程：分段线性，各地貌带的均值落回类型值（平原 0.16 / 丘陵 0.5 / 山地 0.9） */
 export function elevFromGenH(h: number, meta: Meta | undefined): number {
   const sea = genSeaLevel(meta);
@@ -442,8 +448,8 @@ function boxBlur3(f: Float32Array, cols: number, rows: number, r: number): void 
    meta.outside==="land"（图幅外是陆地）时无海可言，被图幅切开的湖也按湖算。
    ⚠ 陆格也记一份（相邻水体水面取最小、无水邻＝0；画的盆地里无水邻＝NO_WATER，那里的干地可以低于海面）：渲染端按格最近取，湖面不晕开一格则
      湖岸线被粗格边切成方块；取最小＝夹在高低两湖之间的陆地不被高的那个淹掉。 */
-function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: number, inland: boolean, seaSeed: Uint8Array | null, dry: Uint8Array | null): Float32Array {
-  const n = cols * rows, lab = new Int32Array(n).fill(-1), surf: number[] = [], st: number[] = [];
+function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: number, inland: boolean, seaSeed: Uint8Array | null, dry: Uint8Array | null): { ws: Float32Array; bodies: WaterBodies } {
+  const n = cols * rows, lab = new Int32Array(n).fill(-1), surf: number[] = [], seas: number[] = [], st: number[] = [];
   const DR = [0, 0, 1, -1], DC = [1, -1, 0, 0];
   for (let s0 = 0; s0 < n; s0++) {
     if (!water[s0] || lab[s0] >= 0) continue;
@@ -462,6 +468,7 @@ function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: 
       }
     }
     surf.push(sea || !isFinite(lo) ? 0 : lo);   // 整幅皆水（无岸）同样按海平面
+    seas.push(sea || !isFinite(lo) ? 1 : 0);
   }
   const ws = new Float32Array(n);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
@@ -475,8 +482,10 @@ function waterSurfaceOf(t: Float32Array, water: Uint8Array, cols: number, rows: 
     }
     ws[i] = isFinite(v) ? v : dry && dry[i] ? NO_WATER : 0;
   }
-  return ws;
+  return { ws, bodies: { lab, sea: Uint8Array.from(seas), surf: Float32Array.from(surf) } };
 }
+/** 连通水体（4 邻）：lab＝每格所属水体号（陆格 −1），sea＝该水体算海（水面钉 0），surf＝不看高程涂改时的水面 */
+interface WaterBodies { lab: Int32Array; sea: Uint8Array; surf: Float32Array }
 
 /* —— 按 Grid 实例记忆的派生场（水域掩码 / 基底与水面 / 基底+起伏）——
    ⚠ 键是 Grid 的引用，值却还读 meta：调用方须保证一个 Grid 实例只与一份 meta 配对
@@ -492,13 +501,14 @@ export function waterMask(grid: Grid): Uint8Array {
   waterMemo.set(grid, w);
   return w;
 }
-const baseMemo = new WeakMap<Grid, { base: Float32Array; wsurf: Float32Array }>();
+interface BaseFields { base: Float32Array; wsurf: Float32Array; bodies: WaterBodies }
+const baseMemo = new WeakMap<Grid, BaseFields>();
 /** 连续高程基底（同一 Grid 实例按引用记忆：一次重建里 buildElevField 与 erodeInput 各取一次） */
 export function baseElev(meta: Meta | undefined, grid: Grid): Float32Array { return baseFields(meta, grid).base; }
-/** 每格水面高程（海 0 / 内陆湖在岸线高度；陆格取相邻水体水面）：渲染端水陆判据与深浅色的基准。
-    ⚠ 与 baseElev 同源同一次计算——两处各算一遍就会出「水面判在这、基底刻在那」的错位。 */
+/** 不看高程涂改时的每格水面（海 0 / 内陆湖在岸线类型高程；陆格取相邻水体水面）：连续基底的参照。
+    ⚠ 屏上与侵蚀用的水面取 buildSurface 的 wsurf（湖面随岸边的涂改变）——拿这份去判水陆，涂过岸的湖就对不上高程场。 */
 export function waterSurface(meta: Meta | undefined, grid: Grid): Float32Array { return baseFields(meta, grid).wsurf; }
-function baseFields(meta: Meta | undefined, grid: Grid): { base: Float32Array; wsurf: Float32Array } {
+function baseFields(meta: Meta | undefined, grid: Grid): BaseFields {
   const hit = baseMemo.get(grid);
   if (hit) return hit;
   const m = meta || {};
@@ -521,7 +531,7 @@ function baseFields(meta: Meta | undefined, grid: Grid): { base: Float32Array; w
   }
   let seed: Uint8Array | null = null;   // v2：生成器的海格（没被涂成别的）作海的种子——整球图与「图幅外＝陆地」下碰图幅边判不出海
   if (v2) { seed = new Uint8Array(n); for (let i = 0; i < n; i++) if (v2.sea[i] && water[i]) seed[i] = 1; }
-  const ws = waterSurfaceOf(t, water, cols, rows, m.outside === "land", seed, grid.meso ? grid.meso.basin : null);
+  const { ws, bodies } = waterSurfaceOf(t, water, cols, rows, m.outside === "land", seed, grid.meso ? grid.meso.basin : null);
   const b = new Float32Array(n), d = new Float32Array(n);
   for (let i = 0; i < n; i++) { b[i] = water[i] ? ws[i] : t[i]; d[i] = water[i] ? Infinity : 0; }
   chamferMin(b, cols, rows, gLand * dxKm, gLand * dyKm, gLand * ddKm);   // 陆地：水格作源（海=0，湖=湖面），坡不超山前坡
@@ -531,9 +541,27 @@ function baseFields(meta: Meta | undefined, grid: Grid): { base: Float32Array; w
   chamferMin(d, cols, rows, dxKm, dyKm, ddKm);                           // 水：到最近陆格的距离 km
   for (let i = 0; i < n; i++) if (water[i]) b[i] = Math.max(t[i], ws[i] - 0.35, ws[i] + SHORE_E - gSea * d[i]);
   else if (b[i] < ws[i]) b[i] = ws[i];                                   // 模糊后的陆地不许跌破身旁的水面（钳制参照系之约）
-  const out = { base: b, wsurf: ws };
+  const out = { base: b, wsurf: ws, bodies };
   baseMemo.set(grid, out);
   return out;
+}
+const rimMemo = new WeakMap<Grid, Int32Array>();
+/** 岸格：八邻里有水的陆格（按 Grid 记忆） */
+function rimCells(grid: Grid): Int32Array {
+  let rim = rimMemo.get(grid);
+  if (rim) return rim;
+  const { cols, rows } = grid, water = waterMask(grid), out: number[] = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    if (water[r * cols + c]) continue;
+    let near = false;
+    for (let dr = -1; dr <= 1 && !near; dr++) for (let dc = -1; dc <= 1; dc++) {
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nc >= 0 && nr < rows && nc < cols && water[nr * cols + nc]) { near = true; break; }
+    }
+    if (near) out.push(r * cols + c);
+  }
+  rimMemo.set(grid, rim = Int32Array.from(out));
+  return rim;
 }
 
 /** 整幅高程场（行主序 rows×cols，与 grid.cells 对齐）。relief 与涂改全无 → 逐格 === 连续基底 baseElev。
@@ -541,23 +569,115 @@ function baseFields(meta: Meta | undefined, grid: Grid): { base: Float32Array; w
     是同一套山系的两种解析度，换场时不再「换了张图」。 */
 export function buildElevField(meta: Meta | undefined, hov: HeightOverride[] | undefined,
   grid: Grid, yearNow: number): Float32Array {
+  return buildSurface(meta, hov, grid, yearNow).field;
+}
+
+/** 粗格高程场与它的水面（同一次计算，两者必须成对用） */
+export interface Surface {
+  /** 整幅高程场（行主序，与 grid.cells 对齐） */
+  field: Float32Array;
+  /** 每格水面；高程涂改没动到任何水面时就是 waterSurface(meta, grid) 那份数组本身 */
+  wsurf: Float32Array;
+  /** 每格高程涂改合计的负的那部分（≤ 0；一格都没有＝null）：陆地地板随它下移 */
+  low: Float32Array | null;
+}
+/**
+ * 高程场与水面：水面由岸定，陆地高程由涂改定。
+ * - 类型地板（min(LAND_FLOOR, 基底)）只管起伏：涂改合计为负的格，地板随涂改一起下移；合计非负的格照旧钳。
+ * - 海恒 0；紧挨着海（八邻）又被涂低的陆格不低于海面。
+ * - 湖面跟岸走：岸格（八邻）有涂改时取涂过的岸格的最低高程——四邻岸格都涂过就照它，还有没涂过的只降不升；水格床面随湖面平移。
+ * - 不挨水的陆格被涂到海面以下＝干地，它与它不挨水的八邻记 NO_WATER。
+ * 没有涂改碰到岸、也没有格被涂到海面以下时，wsurf 就是按 Grid 记忆的那份（引用相同＝不重传、侵蚀键不变）。
+ */
+export function buildSurface(meta: Meta | undefined, hov: HeightOverride[] | undefined, grid: Grid, yearNow: number): Surface {
   const m = meta || {};
   const amp = Math.max(0, Math.min(1, +(m.relief as number) || 0));
-  const { cols } = grid;
-  const base = baseElev(m, grid), water = waterMask(grid);
-  const f = reliefField(m, grid).slice();   // 涂改逐笔叠在记忆的「基底+起伏」上：高程笔每个 move 只剩这三步
+  const { cols, rows } = grid, n = cols * rows;
+  const { base, wsurf: ws0, bodies } = baseFields(m, grid), water = waterMask(grid);
+  const rel = reliefField(m, grid), f = rel.slice();   // 涂改逐笔叠在记忆的「基底+起伏」上
+  let stamped = false;
   (hov || []).forEach(o => {
     if (!activeAt(o, yearNow)) return;
     const dh = dhOf(o, m); if (!dh) return;
     const rc = stampRect(o, grid);
     if (!rc) return;
     for (let r = rc.r0; r <= rc.r1; r++) for (let c = rc.c0; c <= rc.c1; c++) f[r * cols + c] += dh;
+    stamped = true;
   });
-  if (amp > 0 || (hov && hov.length)) {           // 钳制只在特性生效时跑（全关路径零改动）；参照系＝连续基底
-    for (let i = 0; i < f.length; i++)
-      f[i] = water[i] ? Math.min(Math.max(WATER_CEIL, base[i]), f[i]) : Math.max(Math.min(LAND_FLOOR, base[i]), f[i]);
+  if (!(amp > 0 || (hov && hov.length))) return { field: f, wsurf: ws0, low: null };   // 全关路径零改动
+  const rim = stamped ? rimCells(grid) : null, dRim = rim ? new Float32Array(rim.length) : null;
+  if (rim) for (let k = 0; k < rim.length; k++) dRim![k] = f[rim[k]] - rel[rim[k]];   // 岸格的涂改合计（钳之前取）
+  let low: Float32Array | null = null, deep: number[] | null = null;
+  for (let i = 0; i < n; i++) {
+    if (water[i]) { f[i] = Math.min(Math.max(WATER_CEIL, base[i]), f[i]); continue; }
+    const fl = Math.min(LAND_FLOOR, base[i]), d = stamped ? f[i] - rel[i] : 0;
+    if (d < -DH_EPS) {
+      (low ||= new Float32Array(n))[i] = d;
+      if (f[i] < fl + d) f[i] = fl + d;
+      if (f[i] < 0) (deep ||= []).push(i);
+    } else f[i] = Math.max(fl, f[i]);
   }
-  return f;
+  if (!rim) return { field: f, wsurf: ws0, low };
+  const { lab, sea, surf } = bodies, nb = surf.length;
+  /* 八邻的水体：fn(水体号, 是否四邻) */
+  const around = (i: number, fn: (b: number, side: boolean) => void): void => {
+    const r = (i / cols) | 0, c = i - r * cols;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      const nr = r + dr, nc = c + dc;
+      if ((dr || dc) && nr >= 0 && nc >= 0 && nr < rows && nc < cols && lab[nr * cols + nc] >= 0) fn(lab[nr * cols + nc], !dr || !dc);
+    }
+  };
+  for (let k = 0; k < rim.length; k++) if (dRim![k] < -DH_EPS && f[rim[k]] < 0) {   // 海不会因为挖岸而降
+    let bySea = false;
+    around(rim[k], b => { if (sea[b]) bySea = true; });
+    if (bySea) f[rim[k]] = 0;
+  }
+  const minT = new Float64Array(nb).fill(Infinity), minU = new Float64Array(nb).fill(Infinity), all4 = new Uint8Array(nb).fill(1);
+  for (let k = 0; k < rim.length; k++) {
+    const i = rim[k], v = f[i], touched = Math.abs(dRim![k]) > DH_EPS;
+    around(i, (b, side) => {
+      if (sea[b]) return;
+      if (touched) { if (v < minT[b]) minT[b] = v; }
+      else { const u = v > surf[b] ? v : surf[b]; if (u < minU[b]) minU[b] = u; if (side) all4[b] = 0; }
+    });
+  }
+  const lvl = Float32Array.from(surf);
+  let moved = false;
+  for (let b = 0; b < nb; b++) {
+    if (minT[b] === Infinity) continue;
+    lvl[b] = all4[b] ? Math.min(minT[b], minU[b]) : Math.min(surf[b], minT[b]);
+    if (lvl[b] !== surf[b]) moved = true;
+  }
+  /* 干地：涂到海面以下、八邻没有水的陆格，连同它不挨水的八邻（坡面在邻格里接着往下走，那里也不许判成水） */
+  let dry: number[] | null = null;
+  if (deep) {
+    const lone = (i: number): boolean => { let w = false; around(i, () => { w = true; }); return !w; };
+    for (const i of deep) {
+      if (!lone(i)) continue;
+      (dry ||= []).push(i);
+      const r = (i / cols) | 0, c = i - r * cols;
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const nr = r + dr, nc = c + dc, j = nr * cols + nc;
+        if ((dr || dc) && nr >= 0 && nc >= 0 && nr < rows && nc < cols && !water[j] && lone(j)) dry.push(j);
+      }
+    }
+  }
+  if (!moved && !dry) return { field: f, wsurf: ws0, low };
+  const ws = ws0.slice();
+  if (moved) {
+    for (let i = 0; i < n; i++) {
+      const b = lab[i];
+      if (b < 0 || lvl[b] === surf[b]) continue;
+      ws[i] = lvl[b]; f[i] += lvl[b] - surf[b];
+    }
+    for (let k = 0; k < rim.length; k++) {
+      let v = Infinity;
+      around(rim[k], b => { if (lvl[b] < v) v = lvl[b]; });
+      ws[rim[k]] = v;
+    }
+  }
+  if (dry) for (const i of dry) ws[i] = NO_WATER;
+  return { field: f, wsurf: ws, low };
 }
 const relMemo = new WeakMap<Grid, Float32Array | null>();
 /** 带中尺度的图上，地貌涂改把地貌换掉的格的起伏权重：−1＝没换（照中尺度的包络），0..1＝涂上去的地貌类型的山地度；一格都没换＝null。
