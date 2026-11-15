@@ -21,7 +21,7 @@ export type TerrainStyle = "shaded" | "flat";
 
 /** flat=推演底图（见 TerrainStyle）；cStep=等高距（抽象单位，contourStepFor 产出：1-2-5 阶梯上的一档，任一时刻只有一套线系）；
     paper=地形画布的纸模式（material.paperOf：画布上图幅外的底色与小水塘；屏上看得见的纸由叠加层一律铺上）；
-    beach=画 <180 m 滩带（material.beachOf：只战术图；缺省＝画）；slopeK=宏观坡换坡角正切（material.slopeKOf；缺省 0＝沼泽不按坡淡出）；
+    beach=画滩带：挨着水的低地（material.beachOf：只战术图；缺省＝画）；slopeK=宏观坡换坡角正切（material.slopeKOf；缺省 0＝沼泽不按坡淡出）；
     snow=雪线参数（material.snowSpec：气候档基准 + 球面图随纬度；缺省=不落雪）；clim=气候配色与林线（material.climLook；缺省＝出厂色阶、无林线）；
     zones=气候分区（render/zones：各档权重 + 观感表；缺省＝无分区，两端走 snow/clim 的旧路径，逐位不变）；
     rivers=当水画的河（render/rivers：河段 + 本帧门槛；缺省＝不画，两端逐位不变）；

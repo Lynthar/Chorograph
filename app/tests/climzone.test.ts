@@ -163,15 +163,15 @@ describe("气候分区：渲染输入", () => {
     for (const e of [0.05, 0.3, 0.8, 1.6]) {
       for (const c of CLIMATE_ORDER) {
         wv.fill(0); wv[zoneIndex(c)] = 1;
-        const L = climLook({ ...meta, climate: c })!, col = L.n > 0 ? climRampColor(L, e, 0) : rampColor(e, false);
-        zoneColMix(Z, wv, e, 0.3, false, out);
+        const L = climLook({ ...meta, climate: c })!, col = L.n > 0 ? climRampColor(L, e, 0) : rampColor(e);
+        zoneColMix(Z, wv, e, 0.3, out);
         assert.deepStrictEqual([out[0], out[1], out[2]].map(v => Math.round(v * 1000)), col.map(v => Math.round(v * 1000)), `${c} @${e}：涂的档不吃纬度改正`);
         const snE = CLIMATE[c].snowM / 2000;
         assert.ok(Math.abs(out[3] - sstep(snE, snE + FX.snowBand, e)) < 1e-6, `${c} 雪线`);
       }
       wv.fill(0); wv[0] = 1;
       const L0 = climLook(meta)!, S0 = snowSpec(meta);
-      zoneColMix(Z, wv, e, 0.3, false, out);
+      zoneColMix(Z, wv, e, 0.3, out);
       assert.deepStrictEqual([out[0], out[1], out[2]].map(v => Math.round(v * 1000)), climRampColor(L0, e, 0.3).map(v => Math.round(v * 1000)), "未涂＝meta.climate 那档 + 纬度改正");
       assert.ok(Math.abs(out[3] - sstep(Math.max(0, S0.base + 0.3), Math.max(0, S0.base + 0.3) + FX.snowBand, e)) < 1e-6);
     }

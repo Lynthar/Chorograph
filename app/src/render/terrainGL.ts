@@ -52,7 +52,7 @@ uniform vec3 uLight;
 uniform int uMode;                // 0=观感底图 1=推演底图（逐格平色）
 uniform int uContour;
 uniform int uWrap;                // 1=球面经度环绕（把片元经度折回世界本初域），0=平面
-uniform int uBeach;               // 1=有 <180 m 滩带（material.beachOf，只战术图）
+uniform int uBeach;               // 1=画滩带：挨着水的低地（material.beachK，只战术图）
 uniform int uPaper;               // 1=纸模式（material.paperOf）：画布上图幅外铺纸色、开小水塘
 uniform float uSnowE;             // 雪线抽象高程（图幅中心；material.snowSpec.base；不落雪=1e9）
 uniform float uSnowLat, uSnowRef, uSnowUnit;   // 随纬度：开关 0/1（球面图且设了气候档）、参考曲线在中心纬度的米值、1/elevUnitM
@@ -230,7 +230,7 @@ float shoreAt(vec2 rw){
 vec3 elevRamp(float e,float ws,float dl){
   if(e<ws-${EPS}){ float t=waterT(e,ws); return ${WG.ramp}; }
   if(uClimN>0) return climRamp(e,dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移）
-  return uBeach==1 ? elevLand(e) : elevLow(e);   // 陆地分层设色＝material.rampColor 同源（CPU 同）
+  return elevLand(e);   // 陆地分层设色＝material.rampColor 同源（CPU 同）
 }
 void main(){
   float x=gl_FragCoord.x-0.5, yTop=uRes.y-gl_FragCoord.y-0.5;   // 与 CPU 版角点采样对齐
@@ -314,6 +314,7 @@ void main(){
   float zsn=0.0;
   if(ec>=ws-${EPS}){
     if(uZone==1) zoneCol(e,dLat,col,zsn);   // 气候分区：各档色阶与雪盖按权重混
+    if(uBeach==1) col=mix(col, vec3(${FX.beachC.join(",")}), beachK(shs, e-ws+${EPS}));   // 滩带：挨着水的低地（先于类型色调：林地、沼泽照旧盖过它）
     if(mt.tintW>0.0) col=mix(col, fk>0.0 ? mix(mt.tint,mead,fk) : mt.tint, tintK(mt.tintW));   // 软过渡；林线以上的森林换草甸色
     // 生态辨识度：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重 tw.y/tw.w，详见 material.ts）
     col=mix(col, vec3(${FX.sandC.join(",")}), sandK(mt.tw.y));

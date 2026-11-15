@@ -142,11 +142,11 @@ export function zoneTreeMix(Z: ZoneLooks, w: Float32Array, ecd: number, dl: numb
 }
 
 /** 陆地色与雪盖（CPU；GL 的 zoneCol 同式）：雪盖未乘陡坡折扣。out＝[r, g, b(0..255), 雪盖] */
-export function zoneColMix(Z: ZoneLooks, w: Float32Array, e: number, dl: number, beach: boolean, out: Float32Array): Float32Array {
+export function zoneColMix(Z: ZoneLooks, w: Float32Array, e: number, dl: number, out: Float32Array): Float32Array {
   let r = 0, g = 0, b = 0, s = 0, ws = 0;
   for (let k = 0; k < ZONE_N; k++) {
     if (w[k] < W_EPS) continue;
-    const L = Z.L[k], d = k === 0 ? dl : 0, c = L.n > 0 ? climRampColor(L, e, d) : rampColor(e, beach), snE = Math.max(0, L.snow + d);
+    const L = Z.L[k], d = k === 0 ? dl : 0, c = L.n > 0 ? climRampColor(L, e, d) : rampColor(e), snE = Math.max(0, L.snow + d);
     r += w[k] * c[0]; g += w[k] * c[1]; b += w[k] * c[2]; s += w[k] * sstep(snE, snE + FX.snowBand, e); ws += w[k];
   }
   out[0] = r / ws; out[1] = g / ws; out[2] = b / ws; out[3] = s / ws;
@@ -164,7 +164,7 @@ void zoneW(vec2 ll){
 }
 vec3 zRamp(int k,float e0,float dl){
   int n=int(texelFetch(uZLook,ivec2(${CLIM_STOPS},k),0).x+0.5);
-  if(n==0) return uBeach==1 ? elevLand(e0) : elevLow(e0);
+  if(n==0) return elevLand(e0);
   vec4 a=texelFetch(uZLook,ivec2(0,k),0);
   if(e0<a.x) return a.yzw;
   float e=max(a.x,e0-dl);

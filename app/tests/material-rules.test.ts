@@ -12,7 +12,7 @@ import { WATER_EPS } from "../src/core/constants.ts";
 describe("两端同式的观感规则（render/material）", () => {
   it("每条规则都有同名 GLSL：TS 改了、GLSL 没跟（或反过来）就是两端观感分家", () => {
     const glsl = shadeGLSL() + "\n" + contourGLSL() + "\n" + textureGLSL();
-    const names = ["slopeSoft", "shadeOf", "cavOf", "latShift", "treeFade", "meadowK", "tintK", "sandK", "marshK", "poolGate", "poolMask", "albM", "rockK", "rockT",
+    const names = ["slopeSoft", "shadeOf", "cavOf", "latShift", "treeFade", "meadowK", "tintK", "sandK", "beachK", "marshK", "poolGate", "poolMask", "albM", "rockK", "rockT",
       "snowLine", "snowAt", "snowSlope", "airK", "shoreK", "waveM", "waterT", "haloK", "contourK", "lodF", "warpOf", "warp2Of", "micro", "texAt", "fbmRough",
       "slopeRough", "slopeRidge", "patchN", "texPatchK", "macroK", "marshGate", "decoGate", "poolN", "albAv", "waveWv"];
     const missing = names.filter(n => !new RegExp(`\\b(?:float|vec2|vec3|void) ${n}\\(`).test(glsl));

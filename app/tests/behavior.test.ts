@@ -33,7 +33,7 @@ import { MAX_RUN_DIM, eachPaintCenter, paintCellSet, paintDims, paintStep, resam
 import { layerOn, nodesInBox, pickEdge, pickNode, pinnedStackH } from "../src/render/overlay.ts";
 import { DECOR_CAP, decorSizePx, drawDecor, pickDecor } from "../src/render/decor.ts";
 import { legendItems } from "../src/render/legend.ts";
-import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NOISE, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, beachOf, decoGate, exagFor, marshGate, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, blendSharp, shoreElev, shoreGLSL, SHADE_LIGHT, shadeGain, slopeKOf, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
+import { CLIM_STOPS, ELEV_RAMP, FOREST_CANOPY, FX, MICRO_F0, NOISE, NRM0, SNOW_LAT_M, climLook, climRampColor, climRampGLSL, beachOf, beachK, decoGate, exagFor, marshGate, materialFor, materialTable, octaveGate, paperOf, rampColor, rampGLSL, blendSharp, shoreElev, shoreGLSL, SHADE_LIGHT, shadeGain, slopeKOf, snowEOf, snowLatGLSL, snowLatM, snowSpec } from "../src/render/material.ts";
 import { terrainOpts, contourStepOf } from "../src/render/renderer.ts";
 import { CLIMATE, CLIMATE_ORDER, allComposites } from "../src/core/constants.ts";
 import { poolInsert } from "../src/app/stamps.ts";
@@ -408,9 +408,8 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     assert.strictEqual(paperOf({ mapKind: "tactical" }), true, "战术图恒铺纸色（旧行为）");
     assert.strictEqual(paperOf({}), false, "战略图缺省仍是深海");
   });
-  it("分层设色 ELEV_RAMP（2026-09-07 CMP-2）：滩带 <180 m、绿到 800 m、褐到 2500 m、3600 m 近白；GL 与 CPU 同一张表", () => {
-    const m = (meters: number) => rampColor(meters / 2000, true);   // 出厂标定 1 单位＝2000 m；战术图（有滩带）
-    assert.deepStrictEqual(m(100), [214, 205, 168], "滩带恒色");
+  it("分层设色 ELEV_RAMP（2026-09-07 CMP-2）：绿到 800 m、褐到 2500 m、3600 m 近白；GL 与 CPU 同一张表", () => {
+    const m = (meters: number) => rampColor(meters / 2000);   // 出厂标定 1 单位＝2000 m
     for (const h of [200, 400, 600, 750]) { const [r, g] = m(h); assert.ok(g > r, `${h} m 仍是绿主导（绿转褐曾早在 600 m）：${m(h)}`); }
     { const [r, g] = m(900); assert.ok(r > g, `900 m 起转黄褐：${m(900)}`); }
     for (const h of [1600, 2000, 2400]) { const [r, , b] = m(h); assert.ok(r - b > 40, `${h} m 仍是褐、不是灰（褐转灰曾早在 1640 m）：${m(h)}`); }
@@ -420,19 +419,28 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     for (let i = 1; i < ELEV_RAMP.length; i++) assert.ok(ELEV_RAMP[i][0] >= ELEV_RAMP[i - 1][0], "档位按高程升序（同高程＝台阶）");
     const g = rampGLSL();
     const segs = ELEV_RAMP.filter((s, i) => i > 0 && s[0] !== ELEV_RAMP[i - 1][0]).length;
-    assert.strictEqual((g.match(/mix\(/g) || []).length, 2 * segs + 1, "GLSL 段数＝非退化档对数（同高程台阶不成段）；elevLow 多海平面到 180 m 一段");
-    assert.ok(!/NaN|Infinity|undefined/.test(g) && g.includes("e<1.800000"), "GLSL 与表同一份数字");
+    assert.strictEqual((g.match(/mix\(/g) || []).length, segs + 1, "GLSL 段数＝非退化档对数（同高程台阶不成段）加海平面到 180 m 一段");
+    assert.ok(!/NaN|Infinity|undefined/.test(g) && g.includes("e<1.800000") && !g.includes("elevLow"), "GLSL 与表同一份数字，只有一条陆地色阶");
   });
-  it("战略图无滩带（2026-10-01 作者拍板）：0–180 m 是绿色系、与 180 m 以上连续；战术图滩带照旧", () => {
-    const s = (m: number) => rampColor(m / 2000, false), t = (m: number) => rampColor(m / 2000, true);
+  it("低地不按高程画滩色（2026-10-01 战略图，2026-11-14 起战术图同）：0–180 m 是绿色系、与 180 m 以上连续", () => {
+    const s = (m: number) => rampColor(m / 2000);
     const d = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
     for (const h of [-50, 0, 60, 120, 179]) { const [r, g, b] = s(h); assert.ok(g > r && g > b, `${h} m 绿主导：${s(h)}`); }
     assert.ok(d(s(179.9), s(180.1)) < 1, "180 m 处无台阶");
     for (let h = 0; h < 800; h += 20) assert.ok(d(s(h), s(h + 20)) < 8, `相邻 20 m 色差有上限（${h} m）`);
-    for (const h of [200, 800, 2000, 3600]) assert.deepStrictEqual(s(h), t(h), `180 m 以上两种图同色（${h} m）`);
-    assert.deepStrictEqual(t(100), [214, 205, 168], "战术图滩带照旧");
+    assert.strictEqual(climLook({ mapKind: "tactical", climate: "tropical" })!.key, climLook({ climate: "tropical" })!.key, "气候色阶不分图种");
+  });
+  it("滩带只画在挨着水的低地（2026-11-14 作者定；只战术图）：贴岸又低＝满，离岸一格或高出水面几十米＝无", () => {
     assert.strictEqual(beachOf({ mapKind: "tactical" }), true);
     assert.strictEqual(beachOf({}), false, "战略图（缺键）无滩带");
+    close(beachK(0, 0), FX.beachMix, 9);
+    close(beachK(FX.beachS0, FX.beachH0), FX.beachMix, 9);
+    assert.strictEqual(beachK(0.5, 0), 0, "离岸一格");
+    assert.strictEqual(beachK(FX.beachS1, 0), 0);
+    assert.strictEqual(beachK(0, FX.beachH1), 0, "陡岸：贴着水但高出判据线 70 m");
+    let prev = Infinity;
+    for (let s = 0; s <= 0.5; s += 0.02) { const k = beachK(s, 0.005); assert.ok(k <= prev + 1e-12, "离岸越远越淡"); prev = k; }
+    assert.ok(FX.beachH1 * 2000 < 180, "滩带的高度门远低于旧的 180 m 滩带：低地战场不再整片滩色");
   });
   it("elevFromGenH：分段线性、各地貌带端点与类型值对齐、海面侧 ≤ SHORE_E", () => {
     const M = { genStyle: "continent" as const }, sea = genSeaLevel(M);
@@ -2480,11 +2488,9 @@ describe("渲染材质表", () => {
       if (k === "temperate") continue;
       assert.ok(L.n >= 3 && L.n <= CLIM_STOPS, `${k}：段数 ${L.n}`);
       for (let i = 1; i < L.n; i++) assert.ok(L.ramp[i * 4] >= L.ramp[(i - 1) * 4], `${k}：色阶高程须不降`);
-      assert.ok(L.ramp[0] === 0 && Math.abs(L.ramp[4] - 180 / 2000) < 1e-7, `${k}：战略图自海平面起、180 m 接本档低地色`);
+      assert.ok(L.ramp[0] === 0 && Math.abs(L.ramp[4] - 180 / 2000) < 1e-7, `${k}：自海平面起、180 m 接本档低地色`);
       const T = climLook({ climate: k, mapKind: "tactical" })!;
-      assert.ok(Math.abs(T.ramp[0] - 180 / 2000) < 1e-7 && T.ramp[0] === T.ramp[4], `${k}：战术图滩带到 180 m、其上一道台阶`);
-      assert.deepStrictEqual(Array.from(T.ramp.slice(8)), Array.from(L.ramp.slice(8)), `${k}：180 m 以上两种图同一色阶`);
-      assert.notStrictEqual(T.key, L.key, `${k}：渲染缓存键分得开两种图`);
+      assert.deepStrictEqual(Array.from(T.ramp), Array.from(L.ramp), `${k}：两种图同一色阶（滩带不在色阶里，按离水远近另画）`);
       assert.ok(Math.abs(L.ramp[(L.n - 2) * 4] - CLIMATE[k].snowM / 2000) < 1e-6, `${k}：岩灰落在雪线`);
       const px = (i: number): number[] => [1, 2, 3].map(j => L.ramp[i * 4 + j] * 255);
       for (let i = 1; i < L.n; i++) if (L.ramp[i * 4] > L.ramp[(i - 1) * 4]) {

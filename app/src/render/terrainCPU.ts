@@ -11,7 +11,7 @@ import { fbm } from "../core/noise.ts";
 import { terrainProps, compositeIndex, WATER_EPS } from "../core/constants.ts";
 import { elevBilinear, elevSmooth, waterMask, type ElevField, type RuleField } from "../core/elev.ts";
 import { zoneColMix, zoneTreeMix, zoneWeightsAt, ZONE_N, type ZoneWeights } from "./zones.ts";
-import { airK, albM, blendSharp, cavOf, climRampColor, contourK, fbmRough, haloK, latShift, lodF, macroK, marshK, materialFor, meadowK, micro, octaveGate, decoGate, marshGate, patchN, poolGate, poolMask, rampColor, rockK, rockT,
+import { airK, albM, beachK, blendSharp, cavOf, climRampColor, contourK, fbmRough, haloK, latShift, lodF, macroK, marshK, materialFor, meadowK, micro, octaveGate, decoGate, marshGate, patchN, poolGate, poolMask, rampColor, rockK, rockT,
   sandK, shadeOf, shoreElev, shoreK, slopeRidge, slopeRough, slopeSoft, snowAt, snowLine, snowSlope, texAt, texPatchK, tintK, treeFade, warp2Of, warpOf, waterT, waveM,
   albAv, poolN, sstep01 as sstep, waveWv, CONTOUR, PAPER, PAPER_RGB, FINE_STEP_K, FULL_WRAP_DEG, MICRO_F0, NRM_K, NRM_PX, FX, SHADE_LIGHT, WATER, type ClimLook } from "./material.ts";
 import { riverDirty, riverSD } from "./rivers.ts";
@@ -132,10 +132,10 @@ export function unionBB(bs: BBox[]): BBox {
 
 
 
-function elevRamp(e: number, ws: number, beach: boolean, clim?: ClimLook, dl = 0): [number, number, number] {
+function elevRamp(e: number, ws: number, clim?: ClimLook, dl = 0): [number, number, number] {
   if (e < ws - WATER_EPS) { const t = waterT(e, ws), D = WATER.deep, S = WATER.shallow; return [D[0] + t * (S[0] - D[0]), D[1] + t * (S[1] - D[1]), D[2] + t * (S[2] - D[2])]; }
-  if (clim && clim.n > 0) return climRampColor(clim, e, dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移；同 GL）
-  return rampColor(e, beach);   // 陆地分层设色（GL 同源）
+  if (clim && clim.n > 0) return climRampColor(clim, e, dl);   // 气候色阶（dl＝球面图纬度改正；同 GL）
+  return rampColor(e);   // 陆地分层设色（GL 同源）
 }
 
 export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
@@ -299,6 +299,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const wrapC = !!opts.wrap && grid!.bb.lonMax - grid!.bb.lonMin > FULL_WRAP_DEG;   // 岸值的列环绕（同 GL）
     const elev = new Float32Array(W * H), esh = new Float32Array(W * H), ed = new Float32Array(W * H), cav = new Float32Array(W * H);
     const wsv = new Float32Array(W * H);   // 逐像素水面（同 GL：与晕渲高程同取扭曲后坐标）
+    const shv = opts.beach !== false ? new Float32Array(W * H) : null;   // 逐像素岸值：趟二的滩带读它（同 GL shs）
     const mgx = new Float32Array(W * H), mgy = new Float32Array(W * H);   // 宏观场坡（±1 格、无噪声；同 GL mn）
     /* 球面图气候带的纬度改正（同 GL dLat：雪线、林线、色阶同一个），只随纬度＝逐行一个值；
        林线淡出按未扭曲点的双线性画面场高程判（同 GL cd.x），趟一算好趟二复用 */
@@ -330,7 +331,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         e += (fbm(lonW * FX.fbmF, latW * FX.fbmF) - 0.5) * rough * 2 * decoK;
         if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp * decoK;
       }
-      e = shoreElev(e, wsv[i], shoreAt(cellWater!, grid!.cols, grid!.rows, (rx + wx) / step - 0.5, (ry + wy) / step - 0.5, wrapC));   // 画面的水陆由岸值定（同 GL shoreFix）；岸线墨与趟二的法线都读它
+      const shs = shoreAt(cellWater!, grid!.cols, grid!.rows, (rx + wx) / step - 0.5, (ry + wy) / step - 0.5, wrapC);
+      if (shv) shv[i] = shs;
+      e = shoreElev(e, wsv[i], shs);   // 画面的水陆由岸值定（同 GL shoreFix）；岸线墨与趟二的法线都读它
       elev[i] = e;
       /* 纹理疏密（同 GL；见 FX.texPatchF 头注）：世界锚定两八度低频调制，同一片林/沼/山有疏有密 */
       const texW = texW0 * texPatchK(patchN(rx, ry, step));
@@ -362,9 +365,13 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       shadeOf(dn, SH);
       const sh = SH[0], shR = SH[1], shG = SH[2], shB = SH[3];
       const ec = rsd && rsd[i] < 0 && e >= ws - WATER_EPS ? ws - WATER.riverE : e;   // 陆上的河面＝紧贴判据线下的浅水（同 GL）
-      let col = elevRamp(ec, ws, beach, clim, rowShift[y]), zsn = 0;
+      let col = elevRamp(ec, ws, clim, rowShift[y]), zsn = 0;
       if (ec >= ws - WATER_EPS) {
-        if (Z) { zoneColMix(Z.looks, zoneWeightsAt(Z.wt, p[0], p[1], zw), e, rowShift[y], beach, zc); col = [zc[0], zc[1], zc[2]]; zsn = zc[3]; }
+        if (Z) { zoneColMix(Z.looks, zoneWeightsAt(Z.wt, p[0], p[1], zw), e, rowShift[y], zc); col = [zc[0], zc[1], zc[2]]; zsn = zc[3]; }
+        if (shv) {   // 滩带：挨着水的低地（同 GL；先于类型色调）
+          const a = beachK(shv[i], e - ws + WATER_EPS);
+          if (a > 0) col = [col[0] * (1 - a) + FX.beachC[0] * 255 * a, col[1] * (1 - a) + FX.beachC[1] * 255 * a, col[2] * (1 - a) + FX.beachC[2] * 255 * a];
+        }
         matAt(rx, ry);   // 趟二重取材质（色调/反照率/岩化）——省四条逐像素缓存数组的内存
         if (MT.tintW > 0) {
           const a = tintK(MT.tintW);

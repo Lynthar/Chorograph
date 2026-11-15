@@ -91,7 +91,7 @@ export function snowSpec(meta: Meta | undefined): SnowSpec {
 export function snowEOf(meta: Meta | undefined): number { return snowSpec(meta).base; }
 
 /* —— 气候配色与林线（缺键＝undefined＝两端都走旧路径，逐位不变）——
-   色阶按米：战术图滩带 <180 m、战略图海平面低地（lowOf）→ 180 m V₀ → 0.6·林线 V₁ → 林线 V₂ → 林线与雪线中点（高山草甸 A）→ 雪线（岩灰 R）→ 雪线 +700 m 近白；
+   色阶按米：海平面低地（lowOf）→ 180 m V₀ → 0.6·林线 V₁ → 林线 V₂ → 林线与雪线中点（高山草甸 A）→ 雪线（岩灰 R）→ 雪线 +700 m 近白；
    极地无林＝苔原 A 直接到 R；温带沿用 ELEV_RAMP。林线以上手涂森林的染色换成高山草甸色、林冠纹理淡出。 */
 type RGB3 = readonly [number, number, number];
 const CLIM_PAL: Record<Climate, { V?: readonly [RGB3, RGB3, RGB3]; A?: RGB3; R?: RGB3; meadow: RGB3 }> = {
@@ -104,7 +104,7 @@ const CLIM_PAL: Record<Climate, { V?: readonly [RGB3, RGB3, RGB3]; A?: RGB3; R?:
 };
 /** 气候色阶最多段数（GL uniform 数组长度同此） */
 export const CLIM_STOPS = 8;
-const BEACH_M = 180, TREE_BAND_M = 150, TOP_M = 700;
+const LOWLAND_M = 180, TREE_BAND_M = 150, TOP_M = 700;
 /** 无林（极地）的林线抽象高程：远低于任何地面，又不能大到 +带宽后丢精度（smoothstep 两沿相等＝未定义） */
 const NO_TREE_E = -100;
 /** 气候观感：ramp＝[抽象高程, r, g, b(0..1)]×n，n=0＝沿用 ELEV_RAMP；treeE/band＝林线与淡出带宽（抽象）；meadow 为 0..255。
@@ -113,20 +113,19 @@ export interface ClimLook { n: number; ramp: Float32Array; treeE: number; band: 
 export function climLook(meta: Meta | undefined): ClimLook | undefined {
   const m = meta || {}, c = tget(CLIMATE, m.climate as string);
   if (!c) return undefined;
-  const p = CLIM_PAL[m.climate as Climate], U = elevUnitM(meta), S = c.snowM, T = c.treeM, beach = beachOf(meta);
+  const p = CLIM_PAL[m.climate as Climate], U = elevUnitM(meta), S = c.snowM, T = c.treeM;
   const st: (readonly number[])[] = [];
   if (p.A && p.R) {
     const v0 = T == null || !p.V ? p.A : p.V[0];   // 180 m 处的颜色
-    st.push(beach ? [BEACH_M, ...ELEV_RAMP[0].slice(1)] : [0, ...lowOf(v0)], [BEACH_M, ...v0]);
+    st.push([0, ...lowOf(v0)], [LOWLAND_M, ...v0]);
     if (T != null && p.V) st.push([0.6 * T, ...p.V[1]], [T, ...p.V[2]], [(T + S) / 2, ...p.A]);
     st.push([S, ...p.R], [S + TOP_M, ...ELEV_RAMP[ELEV_RAMP.length - 1].slice(1)]);
   }
   const ramp = new Float32Array(CLIM_STOPS * 4);
   st.forEach((s, i) => { ramp[i * 4] = s[0] / U; ramp[i * 4 + 1] = s[1] / 255; ramp[i * 4 + 2] = s[2] / 255; ramp[i * 4 + 3] = s[3] / 255; });
-  return { n: st.length, ramp, treeE: T == null ? NO_TREE_E : T / U, band: TREE_BAND_M / U, meadow: p.meadow, key: `${m.climate}:${U}:${beach ? 1 : 0}` };
+  return { n: st.length, ramp, treeE: T == null ? NO_TREE_E : T / U, band: TREE_BAND_M / U, meadow: p.meadow, key: `${m.climate}:${U}` };
 }
-/** 气候色阶取色（CPU，0..255；GL 走 climRampGLSL 同式、读同一份 ramp）。dl＝纬度改正：滩带不移（按 e 判），其上按 e−dl 取且不落回滩带——
-    否则宽纬跨球面图的低纬一侧（dl 可达 +0.7）整片低地被刷成滩色 */
+/** 气候色阶取色（CPU，0..255；GL 走 climRampGLSL 同式、读同一份 ramp）。dl＝纬度改正：首档以下不移（按 e 判），其上按 e−dl 取且不落回首档以下 */
 export function climRampColor(L: Pick<ClimLook, "n" | "ramp">, e0: number, dl = 0): [number, number, number] {
   const r = L.ramp, n = L.n;
   if (e0 < r[0]) return [r[1] * 255, r[2] * 255, r[3] * 255];
@@ -157,12 +156,11 @@ export function climRampGLSL(): string {
 }
 
 /* —— 陆地分层设色（抽象高程 → RGB 0..255）——
-   段内线性；相邻两档同高程＝一道色阶台阶（滩带→绿）。GL 由 rampGLSL() 生成同式的着色器函数、
+   段内线性；相邻两档同高程＝一道色阶台阶。GL 由 rampGLSL() 生成同式的着色器函数、
    CPU 兜底走 rampColor()：改分界只动这张表。水段不在此表（渲染器按水面深度另算）。
    转折按 2026-09-02 真实地区对照标定（绿转褐曾早 200 m、褐转灰早 900 m、顶端只到 206 灰）：
-   出厂 elevUnitM 2000 下 0.09＝180 m 滩带、0.40＝800 m 绿顶、0.75＝1500 m、1.25＝2500 m 褐顶、1.80＝3600 m 近白。 */
+   出厂 elevUnitM 2000 下 0.09＝180 m（其下由 LOW_RAMP 接到海平面色）、0.40＝800 m 绿顶、0.75＝1500 m、1.25＝2500 m 褐顶、1.80＝3600 m 近白。 */
 export const ELEV_RAMP: readonly (readonly [number, number, number, number])[] = [
-  [0.09, 214, 205, 168],   // 滩带 <180 m（其下恒此色；压灰半档——原 224,216,172 在整幅下发白光）
   [0.09, 132, 174, 98],    // 绿 180→800 m
   [0.40, 170, 172, 110],
   [0.40, 170, 166, 110],   // 黄褐 800→1500 m（同高程两档＝旧表留下的一道浅台阶，随色保留）
@@ -172,9 +170,9 @@ export const ELEV_RAMP: readonly (readonly [number, number, number, number])[] =
   [1.50, 183, 172, 168],   // 岩灰 3000 m
   [1.80, 240, 239, 240]    // 近白 3600 m 顶满（原 3200 m 只到 206 灰＝四千米级读不出高）
 ];
-/** 滩带只在战术图画：战略图上 <180 m 的大片低地画成沙滩、180 m 处是一道假岸线（作者拍板） */
+/** 滩带只在战术图画（TerrainRenderOpts.beach）：挨着水、又只比水高一点的陆地画滩色，份额见 beachK。按高程画（<180 m 一律滩色）＝低地战场整片沙色 */
 export function beachOf(meta: Meta | undefined): boolean { return (meta || {}).mapKind === "tactical"; }
-/** 战略图低地：由 180 m 处的颜色推出海平面的颜色，0→180 m 线性接上＝无台阶；出厂色阶与各气候色阶同用 */
+/** 低地：由 180 m 处的颜色推出海平面的颜色，0→180 m 线性接上＝无台阶；出厂色阶与各气候色阶同用 */
 function lowOf(c: readonly number[]): [number, number, number] {
   const k = LOW_K[0], ch = (i: number): number => Math.round(c[i] * k + LOW_K[i + 1] * (1 - k));
   return [ch(0), ch(1), ch(2)];
@@ -182,11 +180,11 @@ function lowOf(c: readonly number[]): [number, number, number] {
 /** [保留比例, 掺入色 r, g, b]：海平面色＝180 m 色 × 保留比例 + 掺入色 × 其余。
     掺一半浅灰绿＝越低越浅，海岸一带留一点亮度但不是沙色（作者从三候选中挑定） */
 const LOW_K = [0.5, 206, 206, 176] as const;
-/** 无滩带的陆地色阶（战略图）：ELEV_RAMP 去掉滩带档、补海平面一档 */
-const LOW_RAMP: readonly (readonly [number, number, number, number])[] = [[0, ...lowOf(ELEV_RAMP[1].slice(1))], ...ELEV_RAMP.slice(1)];
-/** 陆地色阶取色（CPU 兜底；GL 走 rampGLSL 生成的同式函数）。beach＝beachOf(meta) */
-export function rampColor(e: number, beach: boolean): [number, number, number] {
-  const R = beach ? ELEV_RAMP : LOW_RAMP, n = R.length - 1;
+/** 陆地色阶：ELEV_RAMP 前面补海平面一档 */
+const LOW_RAMP: readonly (readonly [number, number, number, number])[] = [[0, ...lowOf(ELEV_RAMP[0].slice(1))], ...ELEV_RAMP];
+/** 陆地色阶取色（CPU 兜底；GL 走 rampGLSL 生成的同式函数） */
+export function rampColor(e: number): [number, number, number] {
+  const R = LOW_RAMP, n = R.length - 1;
   if (e < R[0][0]) return [R[0][1], R[0][2], R[0][3]];
   for (let i = 0; i < n; i++) {
     const a = R[i], b = R[i + 1];
@@ -194,7 +192,7 @@ export function rampColor(e: number, beach: boolean): [number, number, number] {
   }
   return [R[n][1], R[n][2], R[n][3]];
 }
-/** rampColor 的 GLSL：`vec3 elevLand(float e)`（有滩带）与 `vec3 elevLow(float e)`（无滩带），返回 0..1 色 */
+/** rampColor 的 GLSL：`vec3 elevLand(float e)`，返回 0..1 色 */
 export function rampGLSL(): string {
   const v = (s: readonly number[]) => `vec3(${s[1]}.0,${s[2]}.0,${s[3]}.0)`;
   const f = (x: number) => x.toFixed(6);
@@ -212,7 +210,7 @@ export function rampGLSL(): string {
     return g + `  return ${v(R[n])}/255.0;
 }`;
   };
-  return fn("elevLand", ELEV_RAMP) + "\n" + fn("elevLow", LOW_RAMP);
+  return fn("elevLand", LOW_RAMP);
 }
 
 /** 纸色：图廓外的纸与出图垫纸（tokens.css 的 canvas-wrap 底色另留一份同值字面量） */
@@ -353,6 +351,8 @@ export const FX = {
      不进色阶/海岸/等高线判据；水洼静态无动画（空闲降频之约）。定调项不随缩放＝战略图同样一眼可辨；
      水洼/湿泥按 px/° 渐显（整幅视角斑点读不出、徒增噪）。 */
   sandMix: 0.42, sandC: [0.855, 0.745, 0.52],    // 荒漠暖沙定调
+  /* 滩带：岸值 beachS0 以内满、到 beachS1 淡尽（岸线 0、离岸一格 0.5）；高出水陆判据线 beachH0 以内满、到 beachH1 淡尽（抽象高程） */
+  beachMix: 0.9, beachC: [0.839, 0.804, 0.659], beachS0: 0.1, beachS1: 0.42, beachH0: 0.012, beachH1: 0.035,
   marshMix: 0.30, marshC: [0.44, 0.54, 0.47],    // 沼泽湿绿定调（比 tint 更沉的水草绿）
   poolLo: 2, poolHi: 7,                           // 水洼随 px/格 渐显区间（同 shoreLo/Hi 之规：战略 6.67 km 格整幅 2 px 即归零）
   poolF: 0.4,                                     // 水洼斑块频率（周期/格＝格锚定；0.8 时屏上 ~8px 斑点=细碎噪点而非浅水滩，放宽成 ~2.5 格的塘）
@@ -504,6 +504,8 @@ export function meadowK(fade: number, canopy: number): number { return fade * Ma
 export function tintK(tintW: number): number { return FX.tintMix * tintW; }
 /** 荒漠暖沙定调的份额（沙丘权重 d） */
 export function sandK(d: number): number { return d * FX.sandMix; }
+/** 滩带的份额：s＝岸值（材质.shoreElev 的那个），h＝画面高程高出所在格水陆判据线多少。陡岸（h 大）与离岸一格以外都不是滩 */
+export function beachK(s: number, h: number): number { return (1 - sstep01(FX.beachS0, FX.beachS1, s)) * (1 - sstep01(FX.beachH0, FX.beachH1, h)) * FX.beachMix; }
 /** 沼泽湿绿定调的份额（坡门之后的沼泽权重 m） */
 export function marshK(m: number): number { return m * FX.marshMix; }
 /** 水洼的显隐：一格占几像素 pxCell 渐显 × 沼泽权重 m × paper（只在战术图：战略格上两格半的塘是十几公里的湖） */
@@ -548,6 +550,7 @@ float treeFade(float treeE,float dl,float band,float e){ return smoothstep(treeE
 float meadowK(float fade,float canopy){ return fade*clamp(canopy/float(${FOREST_CANOPY}),0.0,1.0); }
 float tintK(float tintW){ return ${f(FX.tintMix)}*tintW; }
 float sandK(float d){ return d*float(${FX.sandMix}); }
+float beachK(float s,float h){ return (1.0-smoothstep(float(${FX.beachS0}),float(${FX.beachS1}),s))*(1.0-smoothstep(float(${FX.beachH0}),float(${FX.beachH1}),h))*float(${FX.beachMix}); }
 float marshK(float m){ return m*float(${FX.marshMix}); }
 float poolGate(float pxCell,float m,float paper){ return smoothstep(float(${FX.poolLo}),float(${FX.poolHi}),pxCell)*m*paper; }
 vec2 poolMask(float pn){ float pw=smoothstep(${f(NOISE.pool.edge[1])},${f(NOISE.pool.edge[2])},pn); return vec2(smoothstep(${f(NOISE.pool.edge[0])},${f(NOISE.pool.edge[1])},pn)*(1.0-pw), pw); }
