@@ -18,6 +18,7 @@
 import { terrainProps, compositeIndex, allComposites, COMPOSITE_COUNT, WATER_EPS } from "../core/constants.ts";
 import { climRampGLSL, contourGLSL, glslF as glF, materialTable, rampGLSL, shadeGLSL, shoreGLSL, snowLatGLSL, textureGLSL, waterGLSL, CLIM_STOPS, CONTOUR, FINE_STEP_K, FULL_WRAP_DEG, MICRO_F0, NOISE, NRM_K, NRM_PX, FX, PAPER_RGB, SHADE_LIGHT, WATER } from "./material.ts";
 import { riverGLSL, riverTexels, RIV_TEX_W, type RiverSet } from "./rivers.ts";
+import { bandField } from "./beach.ts";
 import { zoneGLSL, zoneLookTexels, ZLOOK_W, ZONE_N, type ZoneWeights } from "./zones.ts";
 import type { Grid } from "../core/grid.ts";
 import type { ElevField, RuleField } from "../core/elev.ts";
@@ -52,7 +53,8 @@ uniform vec3 uLight;
 uniform int uMode;                // 0=观感底图 1=推演底图（逐格平色）
 uniform int uContour;
 uniform int uWrap;                // 1=球面经度环绕（把片元经度折回世界本初域），0=平面
-uniform int uBeach;               // 1=画滩带：挨着水的低地（material.beachK，只战术图）
+uniform int uBeach;               // 1=画滩带：水边的浅色带（material.beachK，只战术图）
+uniform sampler2D uBand;          // RG32F 滩带场（render/beach.bandField）：R=还在带内多少格 G=那片水的水面；不画滩带时是 1×1 占位
 uniform int uPaper;               // 1=纸模式（material.paperOf）：画布上图幅外铺纸色、开小水塘
 uniform float uSnowE;             // 雪线抽象高程（图幅中心；material.snowSpec.base；不落雪=1e9）
 uniform float uSnowLat, uSnowRef, uSnowUnit;   // 随纬度：开关 0/1（球面图且设了气候档）、参考曲线在中心纬度的米值、1/elevUnitM
@@ -213,6 +215,15 @@ ${zoneGLSL()}
 ${riverGLSL()}
 ${shoreGLSL()}
 ${shadeGLSL()}
+/* 滩带场的双线性（rw＝已扭曲的局部坐标；出格取边格，同 render/beach.bandAt）。战术图不环绕 */
+vec2 bandAt(vec2 rw){
+  vec2 f=rw/uGridBB.z-0.5;
+  ivec2 c0=clamp(ivec2(floor(f)), ivec2(0), uGridDim-1), c1=min(c0+1, uGridDim-1);
+  vec2 t=clamp(f-vec2(c0), 0.0, 1.0);
+  vec2 lo=mix(texelFetch(uBand,c0,0).rg, texelFetch(uBand,ivec2(c1.x,c0.y),0).rg, t.x);
+  vec2 hi=mix(texelFetch(uBand,ivec2(c0.x,c1.y),0).rg, texelFetch(uBand,c1,0).rg, t.x);
+  return mix(lo,hi,t.y);
+}
 /* 岸值：四角类型格水陆标志的双线性，陆占比−0.5（rw＝已扭曲的局部坐标） */
 float shoreAt(vec2 rw){
   vec2 f=rw/uGridBB.z-0.5;
@@ -229,7 +240,7 @@ float shoreAt(vec2 rw){
 }
 vec3 elevRamp(float e,float ws,float dl){
   if(e<ws-${EPS}){ float t=waterT(e,ws); return ${WG.ramp}; }
-  if(uClimN>0) return climRamp(e,dl);   // 气候色阶（dl＝球面图纬度改正，滩带不移）
+  if(uClimN>0) return climRamp(e,dl);   // 气候色阶（dl＝球面图纬度改正）
   return elevLand(e);   // 陆地分层设色＝material.rampColor 同源（CPU 同）
 }
 void main(){
@@ -314,7 +325,7 @@ void main(){
   float zsn=0.0;
   if(ec>=ws-${EPS}){
     if(uZone==1) zoneCol(e,dLat,col,zsn);   // 气候分区：各档色阶与雪盖按权重混
-    if(uBeach==1) col=mix(col, vec3(${FX.beachC.join(",")}), beachK(shs, e-ws+${EPS}));   // 滩带：挨着水的低地（先于类型色调：林地、沼泽照旧盖过它）
+    if(uBeach==1){ vec2 bd=bandAt(rws); col=mix(col, vec3(${FX.beachC.join(",")}), beachK(bd.x, e-bd.y)); }   // 滩带：水边的浅色带（先于类型色调：林地、沼泽照旧盖过它）
     if(mt.tintW>0.0) col=mix(col, fk>0.0 ? mix(mt.tint,mead,fk) : mt.tint, tintK(mt.tintW));   // 软过渡；林线以上的森林换草甸色
     // 生态辨识度：荒漠暖沙定调；沼泽湿绿+近景水洼/湿泥（键=材质权重 tw.y/tw.w，详见 material.ts）
     col=mix(col, vec3(${FX.sandC.join(",")}), sandK(mt.tw.y));
@@ -444,6 +455,20 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   let zwFor: ZoneWeights | null = null, zlKey: string | null = null;
   /* 河段纹理（8＝河段、9＝桶表与段号）：没有河时绑 1×1 占位；按河段集引用换代重传 */
   let rseg: WebGLTexture | null = null, ridx: WebGLTexture | null = null, rivFor: RiverSet | null = null;
+  /* 滩带场纹理（10 号单元）：只在画滩带的帧上建，按场数组的引用换代；不画时绑 1×1 占位 */
+  let band: WebGLTexture | null = null, bandFor: Float32Array | null = null;
+  function bandTex(data: Float32Array | null, cols: number, rows: number): void {
+    if (band) gl.deleteTexture(band);
+    band = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE10);
+    gl.bindTexture(gl.TEXTURE_2D, band);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, data ? cols : 1, data ? rows : 1, 0, gl.RG, gl.FLOAT, data || new Float32Array(2));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.activeTexture(gl.TEXTURE0);
+    bandFor = data;
+  }
   function zoneTex(unit: number, t: WebGLTexture | null, w: number, h: number, data: ArrayBufferView, float: boolean): WebGLTexture | null {
     if (t) gl.deleteTexture(t);
     const nt = gl.createTexture();
@@ -547,8 +572,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform1i(U("uRule"), 2);
     gl.uniform1i(U("uZW0"), 3); gl.uniform1i(U("uZW1"), 4); gl.uniform1i(U("uZLook"), 5);
     gl.uniform1i(U("uTAtlas"), 6); gl.uniform1i(U("uTPage"), 7);
-    gl.uniform1i(U("uRSeg"), 8); gl.uniform1i(U("uRIdx"), 9);
-    riverTex(null);
+    gl.uniform1i(U("uRSeg"), 8); gl.uniform1i(U("uRIdx"), 9); gl.uniform1i(U("uBand"), 10);
+    riverTex(null); bandTex(null, 1, 1);
     placeTileTex(1, 1, 1, 1); atlasFor = null;   // 占位；块层来了按它的几何重建
     zw0 = zoneTex(3, null, 1, 1, new Uint8Array(4), false); zw1 = zoneTex(4, null, 1, 1, new Uint8Array(4), false);
     zlook = zoneTex(5, null, 1, 1, new Float32Array(4), true); zwFor = null; zlKey = null;
@@ -654,7 +679,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   };
   let name = queryName();
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; zw0 = zw1 = zlook = null; atlas = page = null; rseg = ridx = null; rivFor = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
+  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; zw0 = zw1 = zlook = null; atlas = page = null; rseg = ridx = null; rivFor = null; band = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
@@ -676,6 +701,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
         + `|${opts.cStep}|${opts.dpr}|${opts.gain}|${opts.slopeK ?? 0}|${S ? `${S.base},${S.lat},${S.refM},${S.unitM}` : ""}|${opts.clim ? opts.clim.key : ""}|${Z ? `${Z.wt.id}:${Z.looks.key}` : ""}|${tw > 0 ? `${tVer}:${tw}` : ""}|${rivOn ? `${RV!.set.id}:${RV!.thr}` : ""}`;
       if (key === lastKey) return;   // 画布上已是这一帧
       lastKey = key;
+      const bf = opts.beach !== false && !opts.flat ? bandField(g, lastWS) : null;
+      if (bf !== bandFor) bandTex(bf, g.cols, g.rows);
       gl.viewport(0, H - vh, vw, vh);   // 可见区贴画布顶；GL 原点在左下
       bindField(1, f, "uFDim", "uFStep");
       gl.uniform1f(U("uEroded"), f.eroded);

@@ -15,6 +15,7 @@ import { airK, albM, beachK, blendSharp, cavOf, climRampColor, contourK, fbmRoug
   sandK, shadeOf, shoreElev, shoreK, slopeRidge, slopeRough, slopeSoft, snowAt, snowLine, snowSlope, texAt, texPatchK, tintK, treeFade, warp2Of, warpOf, waterT, waveM,
   albAv, poolN, sstep01 as sstep, waveWv, CONTOUR, PAPER, PAPER_RGB, FINE_STEP_K, FULL_WRAP_DEG, MICRO_F0, NRM_K, NRM_PX, FX, SHADE_LIGHT, WATER, type ClimLook } from "./material.ts";
 import { riverDirty, riverSD } from "./rivers.ts";
+import { bandAt, bandField } from "./beach.ts";
 import type { Grid } from "../core/grid.ts";
 import type { BBox } from "../core/types.ts";
 import { tileCells, tileElevAt, tileWeight, type TileLayer } from "../core/tiles.ts";
@@ -154,6 +155,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   let cellIdx: Uint8Array | null = null;    // 逐格复合索引（色界锐化按它合并同类）
   let cellWS: Float32Array | null = null;   // 每格水面高程（core/elev.waterSurface；海 0／内陆湖岸线高）
   let cellWater: Uint8Array | null = null;  // 每格水域掩码（core/elev.waterMask，按 Grid 记忆的共享只读数组）
+  let cellBand: Float32Array | null = null;  // 滩带场（render/beach.bandField）：画过滩带才有，此后随上传换代
+  const BD = new Float64Array(2);
 
   /* 画面场取样（同 GL cellAt）：块层按缩放权重 tw 混入（tw 由 render 按本帧缩放定，进瓦片键）；块所在处 tHere 给装饰噪声退场用 */
   let tLayer: TileLayer | null = null, tw = 0;
@@ -299,7 +302,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     const wrapC = !!opts.wrap && grid!.bb.lonMax - grid!.bb.lonMin > FULL_WRAP_DEG;   // 岸值的列环绕（同 GL）
     const elev = new Float32Array(W * H), esh = new Float32Array(W * H), ed = new Float32Array(W * H), cav = new Float32Array(W * H);
     const wsv = new Float32Array(W * H);   // 逐像素水面（同 GL：与晕渲高程同取扭曲后坐标）
-    const shv = opts.beach !== false ? new Float32Array(W * H) : null;   // 逐像素岸值：趟二的滩带读它（同 GL shs）
+    const bkv = opts.beach !== false ? new Float32Array(W * H) : null;   // 逐像素滩带份额：趟一按扭曲后坐标取场（同 GL bandAt），趟二混色
     const mgx = new Float32Array(W * H), mgy = new Float32Array(W * H);   // 宏观场坡（±1 格、无噪声；同 GL mn）
     /* 球面图气候带的纬度改正（同 GL dLat：雪线、林线、色阶同一个），只随纬度＝逐行一个值；
        林线淡出按未扭曲点的双线性画面场高程判（同 GL cd.x），趟一算好趟二复用 */
@@ -332,9 +335,9 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
         if (microOn) e += micro(rx + wx, ry + wy, pxpd) * roughEff * FX.microAmp * decoK;
       }
       const shs = shoreAt(cellWater!, grid!.cols, grid!.rows, (rx + wx) / step - 0.5, (ry + wy) / step - 0.5, wrapC);
-      if (shv) shv[i] = shs;
       e = shoreElev(e, wsv[i], shs);   // 画面的水陆由岸值定（同 GL shoreFix）；岸线墨与趟二的法线都读它
       elev[i] = e;
+      if (bkv) { bandAt(cellBand!, grid!.cols, grid!.rows, (rx + wx) / step - 0.5, (ry + wy) / step - 0.5, BD); bkv[i] = beachK(BD[0], e - BD[1]); }
       /* 纹理疏密（同 GL；见 FX.texPatchF 头注）：世界锚定两八度低频调制，同一片林/沼/山有疏有密 */
       const texW = texW0 * texPatchK(patchN(rx, ry, step));
       if (Z) { zoneTreeMix(Z.looks, zoneWeightsAt(Z.wt, p[0], p[1], zw), eu, rowShift[y], zt); tfade![i] = zt[0]; tmead![i * 3] = zt[1]; tmead![i * 3 + 1] = zt[2]; tmead![i * 3 + 2] = zt[3]; }
@@ -368,8 +371,8 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       let col = elevRamp(ec, ws, clim, rowShift[y]), zsn = 0;
       if (ec >= ws - WATER_EPS) {
         if (Z) { zoneColMix(Z.looks, zoneWeightsAt(Z.wt, p[0], p[1], zw), e, rowShift[y], zc); col = [zc[0], zc[1], zc[2]]; zsn = zc[3]; }
-        if (shv) {   // 滩带：挨着水的低地（同 GL；先于类型色调）
-          const a = beachK(shv[i], e - ws + WATER_EPS);
+        if (bkv) {   // 滩带：水边的浅色带（同 GL；先于类型色调）
+          const a = bkv[i];
           if (a > 0) col = [col[0] * (1 - a) + FX.beachC[0] * 255 * a, col[1] * (1 - a) + FX.beachC[1] * 255 * a, col[2] * (1 - a) + FX.beachC[2] * 255 * a];
         }
         matAt(rx, ry);   // 趟二重取材质（色调/反照率/岩化）——省四条逐像素缓存数组的内存
@@ -443,7 +446,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
 
   /** 把上传前后两份数据的差异折成经纬矩形（外扩到每个像素取样所及：扭曲 + 宏观坡 ±1 格 + 双线性与帐篷平滑）；
       网格或场换了形状＝"all"（整块重画） */
-  function changedSince(p: { g: Grid; f: ElevField; r: ElevField; ws: Float32Array; water: Uint8Array; mat: Float32Array; tint: Float32Array; has: Uint8Array }): BBox[] | "all" {
+  function changedSince(p: { g: Grid; f: ElevField; r: ElevField; ws: Float32Array; water: Uint8Array; band: Float32Array | null; mat: Float32Array; tint: Float32Array; has: Uint8Array }): BBox[] | "all" {
     const g = grid!, f = field!, r = rule!;
     if (g !== p.g && !sameGeom(g, p.g)) return "all";
     const m = g.step * 3 + Math.max(f.step, r.step) * 2, out: BBox[] = [];
@@ -458,6 +461,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
     }
     if (p.ws !== cellWS) add(changedBox(p.ws, cellWS!, g.cols, g.rows), g);
     if (p.water !== cellWater) add(changedBox(p.water, cellWater!, g.cols, g.rows), g);
+    if (p.band && p.band !== cellBand) add(changedBox(p.band, cellBand!, g.cols, g.rows, 2), g);
     if (p.mat !== cellMat) {
       add(changedBox(p.mat, cellMat!, g.cols, g.rows, 7), g); add(changedBox(p.tint, cellTint!, g.cols, g.rows, 3), g);
       add(changedBox(p.has, cellTintHas!, g.cols, g.rows), g);
@@ -488,9 +492,10 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
   return {
     canvas, kind: "cpu",
     uploadGrid(g: Grid, wsurf: Float32Array, f: ElevField, r: RuleField) {
-      const prev = tiles.length && grid ? { g: grid, f: field!, r: rule!, ws: cellWS!, water: cellWater!, mat: cellMat!, tint: cellTint!, has: cellTintHas! } : null;
+      const prev = tiles.length && grid ? { g: grid, f: field!, r: rule!, ws: cellWS!, water: cellWater!, band: cellBand, mat: cellMat!, tint: cellTint!, has: cellTintHas! } : null;
       const sameGrid = g === grid;
       grid = g; field = f; rule = r; cellWS = wsurf; cellWater = waterMask(g);
+      if (cellBand) cellBand = bandField(g, wsurf);
       if (!sameGrid) {   // 同一 Grid 实例＝只动了高程，逐格材质/色调不变
         const n = g.rows * g.cols;   // 逐格材质/色调预算（renderTile 每像素四角查表）
         cellMat = new Float32Array(n * 7); cellTint = new Float32Array(n * 3); cellTintHas = new Uint8Array(n); cellIdx = new Uint8Array(n);
@@ -522,6 +527,7 @@ export function createTerrainCPU(canvas: HTMLCanvasElement): TerrainRenderer {
       if (!grid) return;
       if (opts.flat) { renderFlat(viewBB, opts); return; }
       const [W, H] = opts.px ?? [canvas.width, canvas.height];   // 可见区（画布可更大，只画左上这一块）
+      if (opts.beach !== false && !cellBand) cellBand = bandField(grid, cellWS!);   // 头一回画滩带才建场
       tw = tLayer ? +tileWeight(tLayer.geom.step * H / (viewBB.latMax - viewBB.latMin) / (opts.dpr ?? 1)).toFixed(3) : 0;   // 同 GL；取三位进瓦片键
       const pxpd = W / (viewBB.lonMax - viewBB.lonMin);
       // 球面环绕：视口按每份拷贝平移 c 折回网格所在域做瓦片判定/重建，贴图时再按拷贝偏移回来

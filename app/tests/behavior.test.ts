@@ -430,17 +430,20 @@ describe("高程场（buildElevField：起伏+涂改+标定）", () => {
     for (let h = 0; h < 800; h += 20) assert.ok(d(s(h), s(h + 20)) < 8, `相邻 20 m 色差有上限（${h} m）`);
     assert.strictEqual(climLook({ mapKind: "tactical", climate: "tropical" })!.key, climLook({ climate: "tropical" })!.key, "气候色阶不分图种");
   });
-  it("滩带只画在挨着水的低地（2026-11-14 作者定；只战术图）：贴岸又低＝满，离岸一格或高出水面几十米＝无", () => {
+  it("滩带是水边的浅色带（2026-11-15 作者定；只战术图）：带内、又在那片水的水面以上 180 m 之内＝满，带外、更高或沉在水面以下＝无", () => {
     assert.strictEqual(beachOf({ mapKind: "tactical" }), true);
     assert.strictEqual(beachOf({}), false, "战略图（缺键）无滩带");
-    close(beachK(0, 0), FX.beachMix, 9);
-    close(beachK(FX.beachS0, FX.beachH0), FX.beachMix, 9);
-    assert.strictEqual(beachK(0.5, 0), 0, "离岸一格");
-    assert.strictEqual(beachK(FX.beachS1, 0), 0);
-    assert.strictEqual(beachK(0, FX.beachH1), 0, "陡岸：贴着水但高出判据线 70 m");
+    assert.strictEqual(beachK(FX.beachFade, 0), 1, "带内、与水面齐平");
+    assert.strictEqual(beachK(FX.beachW, FX.beachHi0), 1);
+    assert.strictEqual(beachK(FX.beachW, FX.beachLo0), 1, "岸边的陆地可以略低于水面（水陆判据线在水面以下）");
+    assert.strictEqual(beachK(0, 0), 0, "带的外沿");
+    assert.strictEqual(beachK(-3, 0), 0, "带外");
+    assert.strictEqual(beachK(FX.beachW, FX.beachHi1), 0, "高出水面 180 m");
+    assert.strictEqual(beachK(FX.beachW, FX.beachLo1), 0, "沉在水面以下");
     let prev = Infinity;
-    for (let s = 0; s <= 0.5; s += 0.02) { const k = beachK(s, 0.005); assert.ok(k <= prev + 1e-12, "离岸越远越淡"); prev = k; }
-    assert.ok(FX.beachH1 * 2000 < 180, "滩带的高度门远低于旧的 180 m 滩带：低地战场不再整片滩色");
+    for (let m = FX.beachFade; m >= 0; m -= 0.1) { const k = beachK(m, 0.01); assert.ok(k <= prev + 1e-12, "越靠外沿越淡"); prev = k; }
+    close(FX.beachHi1 * 2000, 180, 9);
+    assert.ok(FX.beachW > FX.beachFade && FX.beachLakeW > FX.beachFade && FX.beachLo1 < FX.beachLo0 && FX.beachLo0 < 0 && FX.beachHi0 < FX.beachHi1);
   });
   it("elevFromGenH：分段线性、各地貌带端点与类型值对齐、海面侧 ≤ SHORE_E", () => {
     const M = { genStyle: "continent" as const }, sea = genSeaLevel(M);

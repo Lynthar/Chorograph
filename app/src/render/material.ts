@@ -170,7 +170,7 @@ export const ELEV_RAMP: readonly (readonly [number, number, number, number])[] =
   [1.50, 183, 172, 168],   // 岩灰 3000 m
   [1.80, 240, 239, 240]    // 近白 3600 m 顶满（原 3200 m 只到 206 灰＝四千米级读不出高）
 ];
-/** 滩带只在战术图画（TerrainRenderOpts.beach）：挨着水、又只比水高一点的陆地画滩色，份额见 beachK。按高程画（<180 m 一律滩色）＝低地战场整片沙色 */
+/** 滩带只在战术图画（TerrainRenderOpts.beach）：水边一条浅色带，份额见 beachK。按高程画（<180 m 一律滩色）＝低地战场整片沙色 */
 export function beachOf(meta: Meta | undefined): boolean { return (meta || {}).mapKind === "tactical"; }
 /** 低地：由 180 m 处的颜色推出海平面的颜色，0→180 m 线性接上＝无台阶；出厂色阶与各气候色阶同用 */
 function lowOf(c: readonly number[]): [number, number, number] {
@@ -351,8 +351,9 @@ export const FX = {
      不进色阶/海岸/等高线判据；水洼静态无动画（空闲降频之约）。定调项不随缩放＝战略图同样一眼可辨；
      水洼/湿泥按 px/° 渐显（整幅视角斑点读不出、徒增噪）。 */
   sandMix: 0.42, sandC: [0.855, 0.745, 0.52],    // 荒漠暖沙定调
-  /* 滩带：岸值 beachS0 以内满、到 beachS1 淡尽（岸线 0、离岸一格 0.5）；高出水陆判据线 beachH0 以内满、到 beachH1 淡尽（抽象高程） */
-  beachMix: 0.9, beachC: [0.839, 0.804, 0.659], beachS0: 0.1, beachS1: 0.42, beachH0: 0.012, beachH1: 0.035,
+  /* 滩带：带宽上限海 beachW 格、内陆湖 beachLakeW 格（render/beach 的离水场按它算），外沿 beachFade 格淡出；
+     高出那片水的水面 beachHi0 以内满、到 beachHi1（180 m）淡尽，沉在水面以下 beachLo0 起淡、到 beachLo1 淡尽（抽象高程） */
+  beachC: [0.839, 0.804, 0.659], beachW: 8.5, beachLakeW: 3, beachFade: 1.5, beachHi0: 0.082, beachHi1: 0.09, beachLo0: -0.02, beachLo1: -0.05,
   marshMix: 0.30, marshC: [0.44, 0.54, 0.47],    // 沼泽湿绿定调（比 tint 更沉的水草绿）
   poolLo: 2, poolHi: 7,                           // 水洼随 px/格 渐显区间（同 shoreLo/Hi 之规：战略 6.67 km 格整幅 2 px 即归零）
   poolF: 0.4,                                     // 水洼斑块频率（周期/格＝格锚定；0.8 时屏上 ~8px 斑点=细碎噪点而非浅水滩，放宽成 ~2.5 格的塘）
@@ -504,8 +505,10 @@ export function meadowK(fade: number, canopy: number): number { return fade * Ma
 export function tintK(tintW: number): number { return FX.tintMix * tintW; }
 /** 荒漠暖沙定调的份额（沙丘权重 d） */
 export function sandK(d: number): number { return d * FX.sandMix; }
-/** 滩带的份额：s＝岸值（材质.shoreElev 的那个），h＝画面高程高出所在格水陆判据线多少。陡岸（h 大）与离岸一格以外都不是滩 */
-export function beachK(s: number, h: number): number { return (1 - sstep01(FX.beachS0, FX.beachS1, s)) * (1 - sstep01(FX.beachH0, FX.beachH1, h)) * FX.beachMix; }
+/** 滩带的份额：m＝还在带内多少格（render/beach 的离水场），h＝画面高程高出那片水的水面多少。带外、高出水面 180 m 以上、沉在水面以下的都不画 */
+export function beachK(m: number, h: number): number {
+  return sstep01(0, FX.beachFade, m) * sstep01(FX.beachLo1, FX.beachLo0, h) * (1 - sstep01(FX.beachHi0, FX.beachHi1, h));
+}
 /** 沼泽湿绿定调的份额（坡门之后的沼泽权重 m） */
 export function marshK(m: number): number { return m * FX.marshMix; }
 /** 水洼的显隐：一格占几像素 pxCell 渐显 × 沼泽权重 m × paper（只在战术图：战略格上两格半的塘是十几公里的湖） */
@@ -550,7 +553,7 @@ float treeFade(float treeE,float dl,float band,float e){ return smoothstep(treeE
 float meadowK(float fade,float canopy){ return fade*clamp(canopy/float(${FOREST_CANOPY}),0.0,1.0); }
 float tintK(float tintW){ return ${f(FX.tintMix)}*tintW; }
 float sandK(float d){ return d*float(${FX.sandMix}); }
-float beachK(float s,float h){ return (1.0-smoothstep(float(${FX.beachS0}),float(${FX.beachS1}),s))*(1.0-smoothstep(float(${FX.beachH0}),float(${FX.beachH1}),h))*float(${FX.beachMix}); }
+float beachK(float m,float h){ return smoothstep(0.0,float(${FX.beachFade}),m)*smoothstep(float(${FX.beachLo1}),float(${FX.beachLo0}),h)*(1.0-smoothstep(float(${FX.beachHi0}),float(${FX.beachHi1}),h)); }
 float marshK(float m){ return m*float(${FX.marshMix}); }
 float poolGate(float pxCell,float m,float paper){ return smoothstep(float(${FX.poolLo}),float(${FX.poolHi}),pxCell)*m*paper; }
 vec2 poolMask(float pn){ float pw=smoothstep(${f(NOISE.pool.edge[1])},${f(NOISE.pool.edge[2])},pn); return vec2(smoothstep(${f(NOISE.pool.edge[0])},${f(NOISE.pool.edge[1])},pn)*(1.0-pw), pw); }
