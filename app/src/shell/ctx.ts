@@ -49,6 +49,9 @@ export interface ShellCtx {
       设 canvas 宽高即清屏，若等下一帧 rAF 补画，检查器滑开/收起期间 ResizeObserver 逐帧清屏＝空白帧闪烁）。
       full＝涂域环一次算全（出图要完整）；缺省按帧限时、没算完的由帧循环续画 */
   repaint: ((full?: boolean) => void) | null;
+  /** 开着的图换了网格几何、又有东西要算（设置里改图幅，及它的撤销 / 重做）：host 报给外壳盖加载页。
+      不接＝画面先换成粗格帧、算完再变一次 */
+  onReframe: (() => void) | null;
   /* —— 图库+ 自动保存共享态 —— */
   lib: Library | null;
   mapId: string | null;
@@ -73,7 +76,7 @@ export function createShellCtx(canvas: HTMLCanvasElement, ov: HTMLCanvasElement,
     DPR: Math.max(1, devicePixelRatio || 1),
     meta: { terrain: "auto", genSeed: 1234, genStyle: "continent" },
     view: { lon0: 106, lat0: 38, degPerPx: 0.06 },
-    grid: null, elevField: null, ruleField: null, tileLayer: null, wsurf: null, R: null, builtFor: null, repaint: null,
+    grid: null, elevField: null, ruleField: null, tileLayer: null, wsurf: null, R: null, builtFor: null, repaint: null, onReframe: null,
     lib: null, mapId: null, baseVer: null, source: "browser", folderDir: null, fcache: {},
     bootNote: "", savedAt: null, saveErr: null, libOpen: false
   };

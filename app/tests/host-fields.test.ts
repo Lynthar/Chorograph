@@ -561,6 +561,48 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(gridVerSig.peek(), ver0 + 2, "原地改涂改数组也认得出");
   });
 
+  it("改图幅（开着的图换了网格几何）：同一次重建里报给外壳盖加载页，算完才落定；开图、几何没变的重建、不用算的图都不报；撤销回去同样报", async () => {
+    const { ctx, seen } = mkCtx();
+    let n = 0;
+    ctx.onReframe = () => { n++; };
+    const host = createHost(ctx);
+    landWorld(ctx, W(), "t1", 3050);
+    host.rebuildIfNeeded();
+    await flush(); await tick(240, 6); await tick(6000);
+    assert.equal(n, 0, "开图不报：开图流程自己盖着加载页");
+    mutateWorld(w => { w.meta.relief = 1; }, { grid: "ifChanged" });
+    host.rebuildIfNeeded();
+    await flush(); await tick(240, 6); await tick(6000);
+    assert.equal(n, 0, "几何没变的重建不报：屏上的旧解叠增量，不出粗格帧");
+    seen.holdUltra = true;
+    mutateWorld(w => { w.meta.bbox = { lonMin: 100, lonMax: 100.2, latMin: 30, latMax: 30.1 }; }, { grid: "ifChanged" });
+    host.rebuildIfNeeded();
+    assert.equal(n, 1, "换了图幅：报一次");
+    let done = false;
+    void host.settled().then(() => { done = true; });
+    await flush();
+    assert.equal(done, false, "精修还没到：加载页不该撤");
+    seen.release!(fakeField(seen.lastUInp!, 4)); seen.release = undefined;
+    await flush();
+    assert.equal(done, true, "到齐换上才算完");
+    seen.holdUltra = false;
+    undoWorld();
+    ctx.meta = worldSig.peek()!.meta;   // 撤销换了世界对象；app 里由编排 effect 重挂
+    host.rebuildIfNeeded();
+    assert.equal(n, 2, "撤销回原图幅同样报");
+    await flush(); await tick(240, 6); await tick(6000);
+    const flat = mkCtx();
+    let m = 0;
+    flat.ctx.onReframe = () => { m++; };
+    const h2 = createHost(flat.ctx);
+    landWorld(flat.ctx, W({ relief: 0 }), "t2", 3050);
+    h2.rebuildIfNeeded();
+    await flush();
+    mutateWorld(w => { w.meta.bbox = { lonMin: 100, lonMax: 100.2, latMin: 30, latMax: 30.1 }; }, { grid: "ifChanged" });
+    h2.rebuildIfNeeded();
+    assert.equal(m, 0, "侵蚀门关着的图：粗格就是终态，没有东西要等");
+  });
+
   it("分块的战略图：工作档到手不单独换上，全图的块到齐了同一帧换；编辑后同理，「已完成」与换上同拍；撤销同一次重建里换回", async () => {
     const { ctx, seen } = mkCtx();
     const held: (() => void)[] = [];

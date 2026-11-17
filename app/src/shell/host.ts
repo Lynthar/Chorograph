@@ -543,6 +543,8 @@ export function createHost(ctx: ShellCtx): Host {
     if (!pendGate || workKey !== key) { work = null; workBase = null; workKey = ""; workEg = null; workEh = ""; ultra = null; }
     setSettled(!(pendGate || mesoHold));
     setProg(mesoHold ? "meso" : pendGate ? "work" : null);
+    /* 改图幅：旧几何的场留不到新图幅上，屏上只能先换成粗格。开图有开图流程自己的加载页（builtFor 为空），这里只报开着的图 */
+    if (ctx.builtFor !== null && lastBuiltKey && key !== lastBuiltKey && (pendGate || mesoHold)) ctx.onReframe?.();
     /* 年份变了不查：播放与拨年每步都换 Grid、地形又多半不随年变，每步组装求键＝每帧白付几十毫秒 */
     const back = recallOk && sameYear && pendGate && !mesoHold && key === lastBuiltKey ? recall(key, coarse) : null;
     if (back) {   // 内容对上＝这就是该换上的工作档，不发单；精修沿用或取缓存、块全在内存时本调用内换上（撤销、重做同一帧见效）

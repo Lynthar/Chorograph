@@ -327,6 +327,17 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
       await stageFinish(t0);
     } finally { loadStageSig.value = null; }
   }
+  /** 改图幅（host 经 ctx.onReframe 报来）：和开图同一套——盖上加载页，算完才撤；点「返回图库」就不等。
+      加载页已经盖着（开图流程里）就不另起 */
+  async function reframeStage(): Promise<void> {
+    if (loadStageSig.peek()) return;
+    const t0 = performance.now();
+    stageStep(1, ctx.meta.名称 || "未命名");
+    try {
+      if (!(await terrainReady(true))) { showHome(); return; }
+      await stageFinish(t0);
+    } finally { loadStageSig.value = null; }
+  }
   async function stageFinish(t0: number): Promise<void> {
     stageStep(2);
     await paintFrame();                        // 帧循环按新世界/纪年画一帧（时段过滤生效）
@@ -827,6 +838,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
   };
   function bindLib(): void {
     libActionsSig.value = libActions;
+    ctx.onReframe = () => { void reframeStage(); };
     addEventListener("pagehide", () => { autosave.flush(); snapView(); });
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { autosave.flush(); snapView(); } });
   }
