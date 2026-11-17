@@ -77,6 +77,10 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     t => showToast(t, { err: true })
   );
   if (bc) bc.onmessage = e => tabs.receive(e.data);
+  /* 还有改动没落盘时离开页面（关标签、跳走、刷新）先拦一下：离页那一刻的保存是先读后写，页面被冻住或销毁时写等不到读的回调，
+     那一笔会丢。浏览器弹自带的确认框，框开着时页面照常跑，这里催的那一次保存趁这会儿落盘。
+     只在脏的时候挂着：常挂的 beforeunload 会让有的浏览器不把页面收进往返缓存 */
+  const leaveGuard = (e: BeforeUnloadEvent): void => { void autosave.flush(); e.preventDefault(); e.returnValue = true; };
   const autosave = createAutosave(async () => {
     const w = worldSig.peek();
     /* 这三种本就没有落盘一说，返回不算谎报：没开图＝无事可存；图库打不开与只读分享图
@@ -112,7 +116,7 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     if (first) showToast("自动保存失败——改动仍在内存，建议立即导出 JSON 备份", {
       err: true, action: { label: "导出 JSON", run: () => libActions.exportCurrent() }
     });
-  });
+  }, dirty => { if (dirty) addEventListener("beforeunload", leaveGuard); else removeEventListener("beforeunload", leaveGuard); });
 
   /* 离图闸（2026-08 审查修正）：save 的失败被 autosave 吞成 pending（flush 永不 reject，契约见
      data/autosave 头注），而换图/切库原先无条件继续换世界＝把「自动保存失败」静默升级成「丢改动」。

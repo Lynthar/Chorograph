@@ -12,10 +12,16 @@ export interface Autosave {
   dispose(): void;
 }
 
-export function createAutosave(save: () => Promise<void> | void, delayMs = 600, onError?: (e: unknown) => void): Autosave {
+/**
+ * @param onDirty 还有东西没落盘（等防抖的，或写到一半的）时报 true，都落盘了报 false，只在变的时候报。
+ *   写失败之后一直是 true。外壳靠它决定离开页面前拦不拦
+ */
+export function createAutosave(save: () => Promise<void> | void, delayMs = 600, onError?: (e: unknown) => void, onDirty?: (dirty: boolean) => void): Autosave {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending = false;
   let inflight: Promise<void> | null = null;   // 在途 save：flush 须等它（否则「已落盘」谎报）、run 须排队（否则并发写同一文件）
+  let dirty = false;
+  const mark = (): void => { const d = pending || !!inflight; if (d !== dirty) { dirty = d; if (onDirty) onDirty(d); } };
   const run = async () => {
     if (timer) { clearTimeout(timer); timer = null; }
     while (inflight) await inflight;           // 串行：慢速写（文件夹库）期间 timer 再触发不并发
@@ -30,11 +36,12 @@ export function createAutosave(save: () => Promise<void> | void, delayMs = 600, 
       }
     })();
     inflight = p;
-    try { await p; } finally { if (inflight === p) inflight = null; }
+    try { await p; } finally { if (inflight === p) inflight = null; mark(); }
   };
   return {
     touch() {
       pending = true;
+      mark();
       if (timer) clearTimeout(timer);
       timer = setTimeout(run, delayMs);
     },
@@ -47,6 +54,7 @@ export function createAutosave(save: () => Promise<void> | void, delayMs = 600, 
       if (timer) clearTimeout(timer);
       timer = null;
       pending = false;
+      mark();
     }
   };
 }

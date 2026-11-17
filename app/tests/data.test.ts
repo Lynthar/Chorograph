@@ -370,6 +370,29 @@ describe("自动保存调度", () => {
     await as.flush();                     // 下次 flush 自然重试成功
     assert.strictEqual(as.pending, false);
   });
+  it("onDirty：标脏即报、写到一半仍算脏、落盘才报干净；写失败一直算脏；只在变的时候报", async () => {
+    let release!: () => void, fail = false;
+    const seen: boolean[] = [];
+    const as = createAutosave(() => fail ? Promise.reject(new Error("磁盘炸了")) : new Promise<void>(r => { release = r; }), 1, () => {}, d => seen.push(d));
+    as.touch(); as.touch();
+    assert.deepStrictEqual(seen, [true], "连着标脏只报一次");
+    await tick(10);                       // save 在途、pending 已复位
+    assert.strictEqual(as.pending, false);
+    assert.deepStrictEqual(seen, [true], "写到一半：还没落盘，仍算脏");
+    release();
+    await as.flush();
+    assert.deepStrictEqual(seen, [true, false], "落盘才报干净");
+    fail = true;
+    as.touch();
+    await as.flush();
+    assert.deepStrictEqual(seen, [true, false, true], "写失败：改动还在内存里，一直算脏");
+    fail = false;
+    const f = as.flush();
+    await tick(5);
+    release();
+    await f;
+    assert.deepStrictEqual(seen, [true, false, true, false], "重试成功才干净");
+  });
 });
 
 describe("多标签提醒（tabsync 协议）", () => {
