@@ -333,7 +333,10 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(ruleFieldSig.value, ctx.ruleField, "立即落定");
     assert.deepEqual(worldSig.value!.baseOverrides, { height: [{ lon: 100.03, lat: 30.03, dh: 0.1 }] });
     yearSig.value = 3051; host.rebuildIfNeeded(); await flush(); await tick(240, 6);
-    assert.equal(seen.erodes, erodes0 + 1, "拨年走全路径");
+    assert.equal(seen.erodes, erodes0, "只拨年、带时段的涂改一个没变：不发单");
+    mutateWorld(w => { w.meta.relief = 0.6; }, { grid: true });
+    host.rebuildIfNeeded(); await flush(); await tick(240, 6);
+    assert.equal(seen.erodes, erodes0 + 1, "换了地形设置走全路径");
     assert.deepEqual(seen.lastInp!.hovGrid, hov0, "全路径的单里仍只有收进去的那份");
     mutateWorld(w => { foldIntoErosion(w); }, { grid: true });
     host.rebuildIfNeeded(); await tick(100); await tick(240, 6);
@@ -414,7 +417,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(erodePhaseSig.peek(), "done");
   });
 
-  it("类型网格按实例复用：只动高程不换 Grid；涂改 / 年份 / meta 任一变即换新实例", () => {
+  it("类型网格按实例复用：只动高程不换 Grid；涂改 / meta 任一变即换新实例；拨年只在跨过带时段的涂改时换", () => {
     const { ctx } = mkCtx();
     const host = createHost(ctx);
     landWorld(ctx, W(), "t1", 3050);
@@ -430,7 +433,19 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(g1.cells[Math.floor(0.05 / g1.step)][Math.floor(0.05 / g1.step)], "hill", "新实例带着新涂改");
     yearSig.value = 3051;
     host.rebuildIfNeeded();
-    assert.notEqual(ctx.grid, g1, "年份变了＝新实例（涂改可带时段）");
+    assert.equal(ctx.grid, g1, "只拨年、带时段的涂改一个没变：同一实例");
+    const g1b0 = ctx.grid!, ix = 20, c = g1b0.bb.lonMin + (ix + 0.5) * g1b0.step, r = g1b0.bb.latMin + (ix + 0.5) * g1b0.step;   // 取格心，免得落在格边上
+    mutateWorld(w => { w.terrainOverrides = [...w.terrainOverrides, { lon: c, lat: r, t: "hill", since: 3053 }]; }, { grid: true });
+    host.rebuild();
+    const g1b = ctx.grid!, at = (g: typeof g1b): string => g.cells[ix][ix];
+    assert.notEqual(at(g1b), "hill", "还没到它的起点");
+    yearSig.value = 3052;
+    host.rebuildIfNeeded();
+    assert.equal(ctx.grid, g1b, "没跨过分界：同一实例");
+    yearSig.value = 3053;
+    host.rebuildIfNeeded();
+    assert.notEqual(ctx.grid, g1b, "跨过带时段的涂改的起点＝新实例");
+    assert.equal(at(ctx.grid!), "hill", "新实例里它生效了");
     const g2 = ctx.grid!;
     mutateWorld(w => { (w.meta ||= {}).outside = "land"; }, { grid: true });   // ctx.meta 与 w.meta 同一对象（生产由编排 effect 同步）
     host.rebuild();
@@ -509,7 +524,7 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(seen.erodes, erodes, "没有再发工作档单");
   });
 
-  it("离散换场落到在屏那一份（侵蚀单一字不变的设置改动）：同一次重建里落定，屏上的工作档与精修原样、不发单；拨年照旧走等待窗", async () => {
+  it("离散换场落到在屏那一份（侵蚀单一字不变的设置改动）：同一次重建里落定，屏上的工作档与精修原样、不发单；只拨年不进演算", async () => {
     const { ctx, seen } = mkCtx();
     const host = createHost(ctx);
     landWorld(ctx, W(), "t1", 3050);
@@ -524,9 +539,80 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(ruleFieldSig.value, work0, "同拍落定");
     await tick(500);
     assert.equal(seen.erodes, erodes, "没有发单");
+    const g0 = ctx.grid, ups = seen.uploads;
     yearSig.value = 3051;
     host.rebuildIfNeeded();
-    assert.equal(ruleFieldSig.value, null, "拨年不查最近落地：照旧进演算、等防抖后的那一单（播放每步不付组装求键的账）");
+    assert.ok(ruleFieldSig.value === work0 && ctx.elevField === ultra0 && ctx.grid === g0, "只拨年：落定的规则场、精修、格都原样（播放每步不重建、不撤在飞的单）");
+    assert.equal(seen.uploads, ups, "不重传");
+    await tick(500);
+    assert.equal(seen.erodes, erodes, "不发单");
+  });
+
+  /* 自动档、带一条 3055 年起生效的地貌涂改：3050–3054 是一个时段，3055 起是另一个 */
+  async function epochRig(): Promise<{ ctx: ShellCtx; seen: Seen; host: ReturnType<typeof createHost> }> {
+    const { ctx, seen } = mkCtx();
+    const w0 = W();
+    w0.terrainOverrides = [{ lon: 100.05, lat: 30.05, t: "hill", since: 3055 }];
+    const host = createHost(ctx);
+    landWorld(ctx, w0, "t1", 3050);
+    host.rebuildIfNeeded();
+    await flush(); await tick(240, 6); await tick(6000);
+    return { ctx, seen, host };
+  }
+  it("拨年跨过带时段的地貌涂改：头一回到那个时段屏上先不动、到齐一次换上；同一时段里接着拨年不撤在飞的单；拨回去过的时段同一次重建里换上", async () => {
+    const { ctx, seen, host } = await epochRig();
+    const workA = ctx.ruleField!, ultraA = ctx.elevField!, gA = ctx.grid!, ups0 = seen.uploads, erodes0 = seen.erodes;
+    assert.ok(ultraA !== workA && ruleFieldSig.value === workA, "前置：工作档与精修都在屏、已落定");
+    seen.holdUltra = true;
+    yearSig.value = 3055;
+    host.rebuildIfNeeded();
+    assert.notEqual(ctx.grid, gA, "格换成新时段的（寻路与读数跟着年份走）");
+    assert.equal(seen.uploads, ups0, "屏上先不动：过渡合成不上传");
+    assert.ok(ruleFieldSig.value === null, "演算中");
+    await flush(); await tick(100);
+    assert.equal(seen.erodes, erodes0 + 1, "发了新时段的单");
+    assert.equal(seen.uploads, ups0, "工作档到手也不换：等精修");
+    yearSig.value = 3056;
+    host.rebuildIfNeeded();
+    await tick(100);
+    assert.equal(seen.cancels, 0, "同一时段里接着拨年（播放）：在飞的精修单没撤");
+    assert.ok(seen.erodes === erodes0 + 1 && seen.uploads === ups0, "也不重发、不上传");
+    seen.release!(fakeField(seen.lastUInp!, 4)); seen.release = undefined;
+    await flush();
+    assert.equal(seen.uploads, ups0 + 1, "到齐：一次换上");
+    const workB = ctx.ruleField!, ultraB = ctx.elevField!;
+    assert.ok(workB !== workA && ultraB !== ultraA && ruleFieldSig.value === workB, "换上的是新时段的工作档与精修，同拍落定");
+    seen.holdUltra = false;
+    yearSig.value = 3051;
+    host.rebuildIfNeeded();
+    assert.ok(ctx.ruleField === workA && ctx.elevField === ultraA && ruleFieldSig.value === workA, "拨回去过的时段：同一次重建里换上那份工作档与它的精修");
+    assert.equal(seen.uploads, ups0 + 2);
+    yearSig.value = 3060;
+    host.rebuildIfNeeded();
+    assert.ok(ctx.ruleField === workB && ctx.elevField === ultraB && ruleFieldSig.value === workB, "再拨过去同样当场换");
+    await tick(500);
+    assert.equal(seen.erodes, erodes0 + 1, "来回都不再发单");
+  });
+  it("屏上先不动的那一轮：那一单算不出＝换上当下这份合成；等的时候落笔＝当场收掉、照常跟笔", async () => {
+    const a = await epochRig();
+    a.seen.holdErode = true;
+    yearSig.value = 3055;
+    a.host.rebuildIfNeeded();
+    await tick(100);
+    const ups = a.seen.uploads;
+    a.seen.releaseE!(null); a.seen.releaseE = undefined;
+    await flush();
+    assert.equal(a.seen.uploads, ups + 1, "算不出：不停在旧时段的画面上");
+    assert.ok(ruleFieldSig.value === a.ctx.ruleField, "读数落定在当下这份");
+    const b = await epochRig();
+    b.seen.holdErode = true;
+    yearSig.value = 3055;
+    b.host.rebuildIfNeeded();
+    await tick(100);
+    const ups2 = b.seen.uploads;
+    mutateWorld(w => { paintHeightPath(w, b.ctx.grid!, [[100.03, 30.03]], 0.05, 2, null); }, { grid: true });
+    b.host.rebuild();
+    assert.equal(b.seen.uploads, ups2 + 1, "落笔的同一次重建里上传（输入的同一帧可以变）");
   });
 
   it("设置应用（grid: ifChanged）：不动地形的项不重建——在飞的精修单不撤、不发工作档单、换上的照旧在屏；动地形的项照旧重建", async () => {
@@ -603,6 +689,39 @@ describe("规则场只认工作档，精修档只进画面（host 高程场记�
     assert.equal(m, 0, "侵蚀门关着的图：粗格就是终态，没有东西要等");
   });
 
+  it("分块的战略图拨年跨过带时段的地貌涂改：新时段的工作档与全图的块到齐之前，地形与块层都不上传；到齐一次换上", async () => {
+    const { ctx, seen } = mkCtx();
+    const held: (() => void)[] = [];
+    Object.assign(ctx.routeClient, {
+      tileLanes: 1,
+      erodeCarve: async (inp: ErodeInput) => ({ data: new Float32Array(inp.cols * inp.rows), geo: { bb: inp.bb, step: inp.step, cols: inp.cols, rows: inp.rows } }),
+      erodeTile: (inp: ErodeInput) => new Promise<ElevField>(res => {
+        const sx = inp.axisMax;
+        held.push(() => res({ bb: inp.bb, step: inp.step / sx, cols: inp.cols * sx, rows: inp.rows * sx, data: new Float32Array(inp.cols * inp.rows * sx * sx), eroded: true }));
+      })
+    });
+    let tileUps = 0;
+    (ctx.R as unknown as { uploadTiles: () => void }).uploadTiles = () => { tileUps++; };
+    els.canvasWrap = { dataset: {}, value: "", clientWidth: 200, clientHeight: 150 } as never;
+    const host = createHost(ctx);
+    const w0 = normalizeWorld({ meta: { 名称: "陆", worldModel: "sphere", terrain: "plain", relief: 0.5, gridN: 280,
+      bbox: { lonMin: 100, lonMax: 115, latMin: 30, latMax: 40 } } });
+    w0.terrainOverrides = [{ lon: 105.03, lat: 34.03, t: "hill", since: 3055 }];
+    landWorld(ctx, w0, "s1", 3050);
+    host.rebuildIfNeeded();
+    await flush();
+    while (held.length) { held.shift()!(); await flush(); }
+    assert.equal(erodePhaseSig.value, "done", "前置：开图到齐");
+    const ups = seen.uploads, tu = tileUps, layer0 = ctx.tileLayer;
+    yearSig.value = 3055;
+    host.rebuildIfNeeded();
+    await tick(100); await flush();
+    assert.ok(held.length > 0, "换了键的块在算");
+    assert.ok(seen.uploads === ups && tileUps === tu, "跨进新时段：工作档到手、块没齐，地形与块层都不上传");
+    while (held.length) { held.shift()!(); await flush(); }
+    assert.equal(seen.uploads, ups + 1, "到齐：地形一次换上");
+    assert.ok(tileUps > tu && ctx.tileLayer !== layer0, "块层同拍换上");
+  });
   it("分块的战略图：工作档到手不单独换上，全图的块到齐了同一帧换；编辑后同理，「已完成」与换上同拍；撤销同一次重建里换回", async () => {
     const { ctx, seen } = mkCtx();
     const held: (() => void)[] = [];
@@ -928,7 +1047,10 @@ describe("中尺度阶段（host）", () => {
     host.rebuild(); await flush(); await tick(500);
     assert.equal(seen.erodes, erodes0, "抬升在屏时再落旧式涂改：侵蚀的 Grid 仍是 Sg 那个，照旧走早退支");
     yearSig.value = 3051; host.rebuildIfNeeded(); await flush(); await tick(200);
-    assert.ok(seen.erodes > erodes0, "拨年＝换网格，走全路径发单");
+    assert.equal(seen.erodes, erodes0, "只拨年、带时段的涂改一个没变：不发单");
+    mutateWorld(w => { w.terrainOverrides = [...w.terrainOverrides, { lon, lat, t: "hill" }]; }, { grid: true });   // 没钉过的地貌涂改＝侵蚀看到的格换了
+    host.rebuildIfNeeded(); await flush(); await tick(200);
+    assert.ok(seen.erodes > erodes0, "侵蚀的格换了：全路径发单");
     assert.ok(seen.lastInp!.nest && !seen.lastInp!.nest.du, "全路径的单也取只带 Sg 的 Grid（侵蚀不看笔）");
     assert.notEqual(ctx.grid!.meso, sgF, "屏上仍是画抬升的解");
   });
@@ -977,10 +1099,13 @@ describe("中尺度阶段（host）", () => {
     assert.equal(ruleFieldSig.value, ctx.ruleField, "立即落定");
     assert.deepEqual(worldSig.value!.baseOverrides, { uplift: [{ lon, lat, peakM: 3000 }] });
     yearSig.value = 3051; host.rebuildIfNeeded(); await flush(); await tick(300);
-    assert.equal(M.st.uq.length, 6, "拨年：两份解都在手，不重解");
+    assert.equal(seen.erodes, erodes0 + 1, "只拨年、带时段的涂改一个没变：不发单");
+    mutateWorld(w => { w.terrainOverrides = [...w.terrainOverrides, { lon, lat, t: "hill" }]; }, { grid: true });   // 没钉过的地貌涂改＝侵蚀看到的格换了
+    host.rebuildIfNeeded(); await flush(); await tick(300);
+    assert.equal(M.st.uq.length, 6, "两份解都在手，不重解");
     assert.equal(seen.erodes, erodes0 + 2);
     assert.ok(seen.lastInp!.nest!.du, "全路径的单仍取收进去那份抬升");
-    undoWorld(); undoWorld(); undoWorld(); undoWorld(); undoWorld(); undoWorld();
+    undoWorld(); undoWorld(); undoWorld(); undoWorld(); undoWorld(); undoWorld(); undoWorld();
     host.rebuildIfNeeded(); await flush(); await tick(300);
     assert.equal(M.st.uq.length, 6, "撤回到刚点完侵蚀：屏上与侵蚀看到的是同一份，就是留着的那份");
   });

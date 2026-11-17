@@ -96,11 +96,16 @@ describe("编排 effect × host 重建计数（开图批末恰建一次）", () 
     assert.equal(counts.rebuilds, 0);
   });
 
-  it("换年/涂改地形各恰一次；批内年+地形版本同改仍恰一次", () => {
-    openLikeLibrary(ctx, host, W(), "m1", 3050);
+  it("换年：带时段的地貌涂改一个没变就不重建，跨过它恰一次；涂改地形恰一次；批内年+地形版本同改仍恰一次", () => {
+    openLikeLibrary(ctx, host, W({ terrainOverrides: [{ lon: 101.5, lat: 31.5, t: "water", since: 3065 }] }), "m1", 3050);
     counts.rebuilds = 0;
-    yearSig.value = 3060;                                             // 年份进键（时段地形随年重算）
-    assert.equal(counts.rebuilds, 1, "换年一次");
+    yearSig.value = 3060;
+    assert.equal(counts.rebuilds, 0, "换年、地形没变：不重建");
+    assert.equal(ctx.builtFor, `m1@3060@${gridVerSig.peek()}`, "去重键照样跟到当年");
+    assert.equal(cellAt(101.5, 31.5), "plain", "那条涂改还没到起点");
+    yearSig.value = 3065;                                             // 跨过带时段的涂改的起点
+    assert.equal(counts.rebuilds, 1, "跨过分界一次");
+    assert.equal(cellAt(101.5, 31.5), "water", "网格按新时段重建");
     mutateWorld(w => { w.terrainOverrides.push({ lon: 101, lat: 31, t: "water" }); }, { grid: true });
     assert.equal(counts.rebuilds, 2, "地形涂改一次");
     batch(() => { yearSig.value = 3070; gridVerSig.value++; });

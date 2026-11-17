@@ -6,7 +6,7 @@ import { calOf, fmtDayTime, fmtMD, fmtT, fmtWhenRange, fmtYMD, fmtYear, fmtYearF
 import { COS_LAT_FLOOR, distKm, haversine, kmPerDeg, kmPerDegXY, lonCos, wrapLon } from "../src/core/geo.ts";
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
 import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, GEN_SEED_MAX, seedTerrain } from "../src/core/terrain.ts";
-import { activeAt, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
+import { activeAt, spanCrossed, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
 import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, upliftCells, upliftOn, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, stampRect, type Grid } from "../src/core/grid.ts";
 import { erodeBasis, erodeGate, erodeInput, erodeMode } from "../src/core/erode.ts";
@@ -617,6 +617,15 @@ describe("时间过滤（[since, until) 半开区间）", () => {
     assert.strictEqual(activeAt({ since: 3100, until: 3105 }, 3100), true);
     assert.strictEqual(activeAt({ since: 3100, until: 3105 }, 3105), false);
     assert.strictEqual(activeAt({}, -99999), true);
+    /* spanCrossed 与 activeAt 同判：拨过去前后有对象的存在与否变了，当且仅当有 since / until 落在 (小, 大] 里 */
+    const timed = [{ since: 3100, until: 3105 }, {}, { since: 3200 }];
+    for (const [a, b] of [[3090, 3099], [3099, 3100], [3100, 3104], [3104, 3105], [3105, 3199], [3199, 3200], [3200, 3300], [3090, 3300], [3101, 3101]]) {
+      const changed = timed.some(o => activeAt(o, a) !== activeAt(o, b));
+      assert.strictEqual(spanCrossed(timed, a, b), changed, `${a} → ${b}`);
+      assert.strictEqual(spanCrossed(timed, b, a), changed, `${b} → ${a}（拨回去同判）`);
+    }
+    assert.strictEqual(spanCrossed(undefined, 0, 9999), false);
+    assert.strictEqual(spanCrossed([{ since: NaN }, { until: null }], 0, 9999), false, "读不成数的边界从不生效，也就不会变");
   });
   it("归属沿革：命中区间→该派系；owners 空数组→回退固定 faction；有 owners 但无命中→null", () => {
     const n = { owners: [{ faction: "a", until: 3100 }, { faction: "b", since: 3100, until: 3105 }], faction: "z" };

@@ -8,6 +8,17 @@ export function activeAt(o: Timed, yr: number): boolean {
   const s = (o.since == null ? -Infinity : o.since), u = (o.until == null ? Infinity : o.until);
   return yr >= s && yr < u;
 }
+/** 从 a 拨到 b，这组对象里有没有哪个的存在与否可能变了：有 since / until 落在 (小, 大] 里（与 activeAt 的 [since, until) 同判）。
+    返回 false＝两个时刻的存在集合相同 */
+export function spanCrossed(arr: readonly Timed[] | null | undefined, a: number, b: number): boolean {
+  if (!arr || a === b) return false;
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  for (const o of arr) {
+    const s = o.since, u = o.until;
+    if ((s != null && s > lo && s <= hi) || (u != null && u > lo && u <= hi)) return true;
+  }
+  return false;
+}
 
 /** 归属沿革：节点在某年属谁。无 owners 则用固定 faction */
 export function ownerAt(n: Pick<WorldNode, "owners" | "faction">, yr: number): string | null {
