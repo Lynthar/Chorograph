@@ -189,28 +189,30 @@ export function createRouteClient(): RouteClient {
      结构化克隆整个 grid.cells——196 万格字符串数组一次克隆上百 ms,连笔＝每 move 白扔一次。
      故 setContext 只同步镜像到回退态（存引用,零克隆）并**记下待送件**,真正 postMessage 推迟到
      下一个 route/legs 请求之前（flushCtx）——查询永远先于自己看到最新上下文（同信道保序），
-     没有查询的连笔一次都不用克隆。
+     没有查询的连笔一次都不用克隆。视域、标高点这些单只读规则场，不为它们送上下文：
+     规则场每笔落定的图上标高点每个 move 要一单，跟着送＝每个 move 克隆一遍。
+     世界只送 Worker 读的那一点（路线报告读地点）：整个世界带着全部涂改，几十万条时克隆一次几十毫秒。
      网格是不可变实例：与 Worker 手里那份同一实例就不随 ctx 再送（1400² 一次序列化主线程约 65 ms）。 */
   let ctxMsg: (RouteRequest & { t: "ctx" }) | null = null, vfMsg: RouteRequest | null = null, vfCur: ViewField | null = null;
   let sentGrid: Grid | undefined;
-  const flushCtx = () => {
+  const flushCtx = (t: RouteRequest["t"]) => {
     if (!w) return;
-    if (ctxMsg) {
+    if (ctxMsg && (t === "route" || t === "legs")) {
       const { grid, ...rest } = ctxMsg;
       w.postMessage(grid === sentGrid ? rest : ctxMsg);
       sentGrid = grid; ctxMsg = null;
     }
-    if (vfMsg) { w.postMessage(vfMsg); vfMsg = null; }
+    if (vfMsg && (t === "viewshed" || t === "sight" || t === "peaks")) { w.postMessage(vfMsg); vfMsg = null; }
   };
   function ask(msg: RouteRequest & { id: number }): Promise<RouteReply> {
-    if (w) { flushCtx(); return new Promise(res => { pending.set(msg.id, res); w!.postMessage(msg); }); }
+    if (w) { flushCtx(msg.t); return new Promise(res => { pending.set(msg.id, res); w!.postMessage(msg); }); }
     return Promise.resolve(handleRouteMsg(fallback, msg)!);
   }
 
   return {
     get usingWorker() { return !!w; },
     setContext(ctx) {
-      const msg = { t: "ctx" as const, meta: ctx.meta, grid: ctx.grid, roads: ctx.roads, world: ctx.world, yearNow: ctx.yearNow };
+      const msg = { t: "ctx" as const, meta: ctx.meta, grid: ctx.grid, roads: ctx.roads, world: { nodes: ctx.world.nodes }, yearNow: ctx.yearNow };
       handleRouteMsg(fallback, msg);          // 镜像到回退态（引用赋值,便宜;Worker 侧见 flushCtx）
       if (w) ctxMsg = msg;
     },

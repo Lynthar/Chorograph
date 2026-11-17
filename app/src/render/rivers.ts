@@ -28,14 +28,29 @@ export interface RiverGeom {
   pts: [number, number][]; w: number[]; g: number[];
   m: { base: [number, number][]; bw: number[]; bg: number[]; M: Meander } | null;
 }
-const geomMemo = new WeakMap<Edge, { pts: unknown; ws: unknown; mz: unknown; wm: unknown; mk: string; G: RiverGeom }>();
+interface GeomHit { pts: unknown; ws: unknown; mz: unknown; wm: unknown; mk: string; G: RiverGeom; snap: Float64Array | null }
+const geomMemo = new WeakMap<Edge, GeomHit>(), baseMemo = new WeakMap<Edge, GeomHit>();   // 带曲流的 · 只有底线的（同一条河两种都会被要，各记各的）
+/* 底线那份连点列与逐点宽的值一起记（[经, 纬…, 宽…]）、逐个比：原地换掉一个点也认得出。带曲流的照旧只认数组 */
+const snapOf = (raw: [number, number][], ws: unknown): Float64Array => {
+  const w = Array.isArray(ws) ? ws as number[] : null, a = new Float64Array(raw.length * 2 + (w ? w.length : 0));
+  for (let k = 0; k < raw.length; k++) { a[k * 2] = raw[k][0]; a[k * 2 + 1] = raw[k][1]; }
+  if (w) for (let k = 0; k < w.length; k++) a[raw.length * 2 + k] = w[k];
+  return a;
+};
+const sameSnap = (a: Float64Array, raw: [number, number][], ws: unknown): boolean => {
+  const w = Array.isArray(ws) ? ws as number[] : null;
+  if (a.length !== raw.length * 2 + (w ? w.length : 0)) return false;
+  for (let k = 0; k < raw.length; k++) if (a[k * 2] !== raw[k][0] || a[k * 2 + 1] !== raw[k][1]) return false;
+  if (w) for (let k = 0; k < w.length; k++) if (a[raw.length * 2 + k] !== w[k]) return false;
+  return true;
+};
 /** 底线：球面图先把经度接成连续的（跨 ±180° 不横穿），Chaikin 两遍柔化，逐点宽 ws 同式插值（没有就整条 widthM）。
-    归用户的河带合法 mz（与 pts 等长）时再在底线上合成曲流（render/meander），按边对象与它读的每个字段记忆；生成的河只画底线。
-    meander＝false 只要底线（叠加层在整条河都弯不起来的缩放下用，不为它合成曲流） */
+    归用户的河带合法 mz（与 pts 等长）时再在底线上合成曲流（render/meander）；生成的河只画底线。meander＝false 只要底线。
+    按边对象与它读的每个字段记忆，返回的是共享的那一份，调用方只读 */
 export function riverGeom(meta: Meta | undefined, e: Edge, meander = true): RiverGeom {
-  const raw = e.pts!, mz = meander && !e.gen && Array.isArray(e.mz) && e.mz.length === raw.length ? e.mz : null, mk = mz ? `${(meta || {}).worldModel}|${kmPerDeg(meta)}` : "";
-  const hit = mz ? geomMemo.get(e) : undefined;
-  if (hit && hit.pts === raw && hit.ws === e.ws && hit.mz === mz && hit.wm === e.widthM && hit.mk === mk) return hit.G;
+  const raw = e.pts!, mz = meander && !e.gen && Array.isArray(e.mz) && e.mz.length === raw.length ? e.mz : null, mk = `${(meta || {}).worldModel}|${kmPerDeg(meta)}`;
+  const memo = mz ? geomMemo : baseMemo, hit = memo.get(e);
+  if (hit && hit.pts === raw && hit.ws === e.ws && hit.mz === mz && hit.wm === e.widthM && hit.mk === mk && (!hit.snap || sameSnap(hit.snap, raw, e.ws))) return hit.G;
   const src: [number, number][] = [raw[0]];
   for (let k = 1; k < raw.length; k++) {
     const x = raw[k][0], d = (meta || {}).worldModel === "flat" ? 0 : x - src[k - 1][0];
@@ -48,7 +63,7 @@ export function riverGeom(meta: Meta | undefined, e: Edge, meander = true): Rive
   for (let k = 0; k < pts.length; k++) { const v = ws ? ws[k] : wm; w.push(v); g.push(gOf(v)); }
   const M = mz ? meanderOf(meta, pts, w, mz, meanderSeed(raw[0])) : null;
   const G: RiverGeom = M ? { pts: M.pts, w: M.w, g: M.w.map(gOf), m: { base: pts, bw: w, bg: g, M } } : { pts, w, g, m: null };
-  if (mz) geomMemo.set(e, { pts: raw, ws: e.ws, mz, wm: e.widthM, mk, G });
+  memo.set(e, { pts: raw, ws: e.ws, mz, wm: e.widthM, mk, G, snap: mz ? null : snapOf(raw, e.ws) });
   return G;
 }
 

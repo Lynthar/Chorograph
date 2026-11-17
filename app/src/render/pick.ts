@@ -6,7 +6,9 @@ import { project, projectSeq, visibleWorldCopies, type Camera } from "../core/pr
 import { EDGE_STYLE } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
 import { nodeVisibleAt, noteHit, noteMeasure, type NodeGateOpts, type NoteMeasure } from "./nodes.ts";
-import { riverDrawn, riverShape, riverWpx } from "./edges.ts";
+import { riverDrawn, riverNear, riverShape, riverWpx } from "./edges.ts";
+import { riverWidest } from "./rivers.ts";
+import { kmPerDeg } from "../core/geo.ts";
 import type { Edge, Meta, World, WorldNode } from "../core/types.ts";
 
 /** 点到线段距离（拾取共用） */
@@ -39,6 +41,8 @@ export function pickEdge(
       if (!activeAt(e, yearNow)) return;
       const wpx = e.type === "river" ? riverWpx(meta, cam, e) : 0, tol = e.type === "river" ? Math.max(6, wpx / 2 + 4) : 6;
       if ((e.type === "river" || e.type === "wall") && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由折线（河/工事）：逐段到自身折线拾取（同 pickOp）；河按渲染柔化后折线与逐点画宽、工事原样——与绘制同源
+        /* 河：光标离原始折线的外框比「曲流最远横移 + 最宽处的拾取走廊」还远，就一段也点不中——不为它算形状（河多的图每次悬停都要过一遍全部的河） */
+        if (e.type === "river" && !riverNear(meta, c2, e, Math.max(6, Math.max(2.6, riverWidest(e) / 1000 / kmPerDeg(meta) / c2.degPerPx) / 2 + 4), x, y, x, y)) return;
         const sh = e.type === "river" ? riverShape(meta, c2, e) : null, pp = projectSeq(c2, sh ? sh.pts : e.pts);
         for (let k = 1; k < pp.length; k++) {
           if (sh && !riverDrawn((sh.px[k - 1] + sh.px[k]) / 2)) continue;   // 缩小到细得不画的河段：看不见的不许点得中

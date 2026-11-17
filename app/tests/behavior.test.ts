@@ -15,14 +15,14 @@ import { handleRouteMsg } from "../src/worker/routeProto.ts";
 import type { ElevField as SpotField } from "../src/core/elev.ts";
 import { BRUSH_NOTCHES, brushActualKm, brushDabStepDeg, brushNominalKm, brushRadiusCells, brushStepDeg, fmtBrushKm, interpolatePath } from "../src/core/brush.ts";
 import { ELEV, MZ_MAX, NO_WATER, RANK_KM_PX, WATER_EPS } from "../src/core/constants.ts";
-import { ZOOM_CELL_PX, clampView, minDegPerPx, minDppFor, project, unproject, type Camera } from "../src/core/projection.ts";
+import { ZOOM_CELL_PX, clampView, minDegPerPx, minDppFor, project, projectSeq, unproject, type Camera } from "../src/core/projection.ts";
 import { TILE_MAX_X } from "../src/core/tiles.ts";
 import { esc, errText, fmtKm, hexA, newId, parseKV, safeName } from "../src/core/util.ts";
 import { ALL_KINDS, ARM_OPT_KINDS, EDGE_STYLE, EYE_M, EYE_M_KIND, EYE_M_NODE, FIRE_DIRECT_KIND, LEGACY_KIND, MODERN_KINDS, NODE_CATS, NODE_CAT_ORDER, NODE_STYLE, NODE_TMPL, NODE_TYPES, TERRAIN, TERRAIN_ORDER, UNIT_KINDS, armOptional, certaintyStyle, flattenTerrain, isValidTerrain, nodeCatOf, parseComposite, terrainProps } from "../src/core/constants.ts";
 import { fmtStrength, nodeEyeM, parseStrength, rangeDirect, setUnitPoint, unitAltAt, unitFireDirect, unitInheritedAt, unitLegs, unitMoraleAt, unitPos, unitSpeedAt, unitStrengthAt } from "../src/core/units.ts";
 import { astar, computeRoute } from "../src/core/route.ts";
-import { drawEdges, RIVER_FAR_KM, RIVER_FAR_PX, RIVER_HEAD_PX, RIVER_MIN_PX, riverFloorPx, riverHeads, riverShape, riverTaper, riverWpx, wallTeeth } from "../src/render/edges.ts";
-import { RIVER_WATER_PX, riverSet, riverThr } from "../src/render/rivers.ts";
+import { drawEdges, RIVER_FAR_KM, RIVER_FAR_PX, RIVER_HEAD_PX, RIVER_MIN_PX, riverFloorPx, riverHeads, riverNear, riverShape, riverTaper, riverWpx, wallTeeth } from "../src/render/edges.ts";
+import { RIVER_WATER_PX, riverGeom, riverSet, riverThr } from "../src/render/rivers.ts";
 import { facingHandlePx, pickFacingHandle, unitSpots } from "../src/render/units.ts";
 import { changedBox, coastInk, planTile, sameGeom, shoreAt, tileCovers, unionBB, wrapCopies } from "../src/render/terrainCPU.ts";
 import { drawFactions, type LoopBudget } from "../src/render/factions.ts";
@@ -1893,6 +1893,50 @@ describe("拾取图层门（绘制与拾取同源，防隐形可选）", () => {
     assert.ok(pickEdge(zoom, w.meta, w, 3107, 560, 310), "宽的那头（真宽约 17 px）偏 10 px 点得中");
     assert.strictEqual(pickEdge(zoom, w.meta, w, 3107, 240, 310), null, "窄的那头偏 10 px 点不中");
   });
+  it("河的几何按边对象记：反复要的是同一份；换了点列、水面宽或每度里程才重算；带曲流的与只有底线的各记各的", () => {
+    const meta: Meta = { worldModel: "sphere", planetRadiusKm: 10000 };
+    const e: Edge = { type: "river", pts: [[99.8, 30], [100, 30.05], [100.2, 30]], widthM: 300 };
+    const G = riverGeom(meta, e);
+    assert.strictEqual(riverGeom(meta, e), G, "同一条河、什么都没变：同一份");
+    e.widthM = 600;
+    const G2 = riverGeom(meta, e);
+    assert.notStrictEqual(G2, G, "水面宽变了");
+    assert.ok(G2.w.every(v => v === 600));
+    e.pts = e.pts!.map(p => [p[0], p[1] + 0.01] as [number, number]);
+    const G3 = riverGeom(meta, e);
+    assert.ok(G3 !== G2 && G3.pts[0][1] === 30.01, "换了点列");
+    assert.notStrictEqual(riverGeom({ ...meta, planetRadiusKm: 6371 }, e), G3, "每度里程变了（判水面的真宽按度记）");
+    const G4 = riverGeom(meta, e);
+    e.pts![1] = [100, 30.2];
+    const G5 = riverGeom(meta, e);
+    assert.ok(G5 !== G4 && G5.pts.some(p => p[1] > 30.1), "原地换掉一个点也认得出");
+    assert.strictEqual(riverGeom(meta, e), G5);
+    const m: Edge = { type: "river", pts: [[99.8, 30], [100, 30], [100.2, 30]], widthM: 2000, mz: [3, 3, 3] };
+    const full = riverGeom(meta, m), base = riverGeom(meta, m, false);
+    assert.ok(full.m && !base.m, "前置：一份带曲流、一份只有底线");
+    assert.ok(riverGeom(meta, m) === full && riverGeom(meta, m, false) === base, "两种轮着要也都是各自那一份");
+  });
+  it("riverNear 只会多留不会多裁：判它碰不到的河，柔化（与曲流）后的中线整条在矩形外——绘制与拾取靠它提前跳过", () => {
+    const meta: Meta = { worldModel: "sphere", planetRadiusKm: 10000 };
+    let seed = 99; const rnd = (): number => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
+    const rivers: Edge[] = [];
+    for (let k = 0; k < 40; k++) {
+      let lon = 100 + rnd() * 4, lat = 30 + rnd() * 3, a = rnd() * 6.28; const pts: [number, number][] = [];
+      for (let i = 0; i < 12; i++) { pts.push([lon, lat]); a += (rnd() - 0.5) * 1.2; lon += Math.cos(a) * 0.08; lat += Math.sin(a) * 0.08; }
+      rivers.push({ type: "river", pts, widthM: 200 + rnd() * 3000, ...(k % 3 === 0 ? { mz: pts.map(() => 3) } : {}) });
+    }
+    let off = 0, on = 0;
+    for (const dpp of [0.02, 0.004, 0.0008, 0.0002]) for (let t = 0; t < 6; t++) {
+      const cam: Camera = { lon0: 100 + rnd() * 4, lat0: 30 + rnd() * 3, degPerPx: dpp, w: 800, h: 600, flat: false };
+      for (const e of rivers) {
+        if (riverNear(meta, cam, e, 0, 0, 0, cam.w, cam.h)) { on++; continue; }
+        off++;
+        const pp = projectSeq(cam, riverShape(meta, cam, e).pts), xs = pp.map(p => p[0]), ys = pp.map(p => p[1]);
+        assert.ok(Math.max(...xs) < 0 || Math.min(...xs) > cam.w || Math.max(...ys) < 0 || Math.min(...ys) > cam.h, `中线还碰得到屏幕：${dpp}°/px`);
+      }
+    }
+    assert.ok(off > 100 && on > 20, `两种都要有（裁掉 ${off}，留下 ${on}）`);
+  });
   /* 缩到一个像素几十公里：真宽只有百分之几像素的河若还按两三个像素画，整球全景上是一团上百公里宽的粗线 */
   it("河的底宽：到中档地点隐去那一档为止按水面宽分档（逐位旧值），再缩小按屏上真宽分档并收细——越缩越细、大河始终比小河粗、细到不画的也点不中", () => {
     const [k0, k1] = RIVER_FAR_KM, tier = (w: number): number => 1 + 1.6 * Math.min(1, Math.max(0, Math.log10(w / 10) / 2));
@@ -3152,6 +3196,27 @@ describe("涂域环首算按帧限时（drawFactions 的 LoopBudget）", () => {
       frames.push([b.done, b.skipped]);
     }
     assert.deepStrictEqual(frames, [[1, 2], [1, 1], [1, 0], [0, 0]]);
+  });
+  it("屏内的环逐点等于 project() 的结果；整环在屏外的不进路径；标签照旧落在最大环的质心（在不在屏上都算）", () => {
+    const w = mkWorld(), near = { lon0: 2, lat0: 0.75, degPerPx: 0.002, w: 400, h: 400, flat: true };   // 400 px 只够看见最下面那个派系
+    const r = recorder();
+    drawFactions(r.ctx, near, meta, w, 0, 2);
+    const ref: string[] = [], labs: string[] = [];
+    let culled = 0;
+    for (const fa of (w as World).factions) {
+      let best: [number, number][] = [];
+      for (const lp of territoryLoops(fa.paint![0], (meta as Meta).bbox, 2, paintStep(meta as Meta))) {
+        const pts = lp.map(p => project(near, p[0], p[1])), xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+        if (pts.length > best.length) best = pts;
+        if (Math.max(...xs) < -3 || Math.min(...xs) > 403 || Math.max(...ys) < -3 || Math.min(...ys) > 403) { culled++; continue; }
+        pts.forEach((q, i) => ref.push((i ? "lineTo" : "moveTo") + JSON.stringify(q)));
+        ref.push("closePath[]");
+      }
+      labs.push("fillText" + JSON.stringify([fa.名称, best.reduce((t, q) => t + q[0], 0) / best.length, best.reduce((t, q) => t + q[1], 0) / best.length]));
+    }
+    assert.ok(culled > 0 && ref.length > 0, "前置：这个机位有的环在屏外、有的在屏内");
+    assert.deepStrictEqual(r.log.filter(x => /^(moveTo|lineTo|closePath)/.test(x)), ref);
+    assert.deepStrictEqual(r.log.filter(x => x.startsWith("fillText")), labs);
   });
   it("分帧算完后画出的与一次算全逐位相同；额度无限＝一帧算全", () => {
     const a = mkWorld(), b = mkWorld();

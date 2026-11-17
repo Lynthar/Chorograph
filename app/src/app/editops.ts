@@ -329,6 +329,17 @@ const bucketByCell = <T extends { lon: number; lat: number }>(list: T[], bb: BBo
   return m;
 };
 
+/* 高程笔的桶跨 move 留着：一笔里每个 move 都对全部高程涂改重新分桶，涂改多的图（真高程几十万条）每个 move 白付几十毫秒。
+   按数组与长度认——这支笔只往数组尾上 push（同时就地补进桶）或整份换新数组；别处要在同一个数组上增删，必须换新数组，否则桶对不上 */
+const hovBkt = new WeakMap<HeightOverride[], { n: number; lonMin: number; latMin: number; step: number; m: Map<number, HeightOverride[]> }>();
+function heightBuckets(ovs: HeightOverride[], bb: BBox, step: number): Map<number, HeightOverride[]> {
+  const hit = hovBkt.get(ovs);
+  if (hit && hit.n === ovs.length && hit.lonMin === bb.lonMin && hit.latMin === bb.latMin && hit.step === step) return hit.m;
+  const m = bucketByCell(ovs, bb, step);
+  hovBkt.set(ovs, { n: ovs.length, lonMin: bb.lonMin, latMin: bb.latMin, step, m });
+  return m;
+}
+
 /* 涂改要不要记自身块尺寸——判据自 2026-08-12 起**不再是「是不是战术图」**:缺 step 键＝按 1° 粗块
    解读(`grid.ts`/`erode.ts`/`elev.ts` 三处 `+(o.step) || step` 与 `core/tactical.ts` 烘焙的 `|| 1` 同规),
    故凡格细于 1° 都必须记。战略图一开网格密度就落在这一档,不记则烘焙成战术图时按 1° 粗块盖章
@@ -458,7 +469,7 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
   const ovs = w.heightOverrides || (w.heightOverrides = []);
   const es = era && era.on && era.since != null && isFinite(era.since) ? era.since : null;
   const eu = era && era.on && era.until != null && isFinite(era.until) ? era.until : null;
-  const bkt = bucketByCell(ovs, bb, step);   // 逐 dab 索引（预筛，候选仍过全谓词；桶内保数组序＝find 首个命中）
+  const bkt = heightBuckets(ovs, bb, step);   // 逐 dab 索引（预筛，候选仍过全谓词；桶内保数组序＝find 首个命中）；跨 move 留着
   const cap = DH_MAX_M / elevUnitM(w.meta);   // 写端与读端 dhOf 同一上限：笔下存不出读端会钳掉的值
   const dead = new Set<HeightOverride>();
   const seen = new Set<number>();
@@ -487,6 +498,9 @@ export function paintHeightPath(w: World, grid: Grid, path: readonly (readonly [
         if (recStep) ov.step = +step.toFixed(7);   // 7 位防细格量化误判粗块（同 paintTerrainPath 之规）
         pinBase(w, "height");
         ovs.push(applyEra(ov, era));
+        const bk = Math.floor((ov.lat - bb.latMin) / step) * 4096 + Math.floor((ov.lon - bb.lonMin) / step), ba = bkt.get(bk);   // 与 bucketByCell 同一个键
+        if (ba) ba.push(ov); else bkt.set(bk, [ov]);
+        hovBkt.get(ovs)!.n = ovs.length;
       }
       changed = true;
     }

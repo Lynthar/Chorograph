@@ -14,7 +14,7 @@ import type { ElevField, FieldGeom } from "../core/elev.ts";
 import type { Grid } from "../core/grid.ts";
 import type { Arm, Meta, Unit, World } from "../core/types.ts";
 
-export interface RouteCtx { meta?: Meta; grid?: Grid; roads?: Set<string>; world?: World; yearNow?: number; vfield?: ViewField;
+export interface RouteCtx { meta?: Meta; grid?: Grid; roads?: Set<string>; world?: Pick<World, "nodes">; yearNow?: number; vfield?: ViewField;
   /** 中尺度车道留着的这张图的 Sg（按 mesoKey）与求解状态（中尺度单带回；只收到画抬升单时现建） */
   meso?: { key: string; sg: Gen2Sg; st?: MesoState } }
 
@@ -29,7 +29,7 @@ export interface SightReq { obs: VisReq; tgt: string; lon: number; lat: number; 
 export interface SightRes extends VisTag { tgt: string; hit: SightHit | null }
 
 export type RouteRequest =
-  | { t: "ctx"; meta: Meta | undefined; grid?: Grid; roads: Set<string> | string[]; world: World; yearNow: number }
+  | { t: "ctx"; meta: Meta | undefined; grid?: Grid; roads: Set<string> | string[]; world: Pick<World, "nodes">; yearNow: number }
   | { t: "route"; id: number; A: RoutePoint; B: RoutePoint; arm: Arm }
   | { t: "legs"; id: number; unit: Unit }
   | ({ t: "erode"; id: number } & ErodeInput)

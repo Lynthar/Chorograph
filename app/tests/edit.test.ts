@@ -545,6 +545,24 @@ describe("编辑操作内核", () => {
     assert.strictEqual(w.heightOverrides!.length, 5);
     assert.ok(w.heightOverrides!.every(o => o.dh === -0.02));
   });
+  it("高程笔的桶跨 move 留着：连着几笔的结果与每笔现建相同；别处往数组里添了一条，下一笔照样并进去", () => {
+    const M = { worldModel: "sphere", terrain: "plain", gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;
+    const g = buildGridCells(M, [], 0);
+    const mk = () => ({ meta: M, factions: [], nodes: [], edges: [], decor: [], terrainOverrides: [], units: [] }) as never as import("../src/core/types.ts").World;
+    const a = mk(), b = mk();
+    for (const [lon, lat, dh] of [[101.5, 31.5, 0.02], [102.5, 31.5, 0.02], [101.5, 31.5, 0.03], [102.5, 32.5, -0.01], [101.5, 31.5, -0.05], [100.5, 30.5, 0.04]]) {
+      paintHeightAt(a, g, lon, lat, dh, 2, null);
+      if (b.heightOverrides) b.heightOverrides = b.heightOverrides.map(o => ({ ...o }));   // 换成新数组：留着的桶用不上，这一笔现建
+      paintHeightAt(b, g, lon, lat, dh, 2, null);
+    }
+    assert.ok(a.heightOverrides!.length > 5, "前置：画出了一批图章");
+    assert.deepStrictEqual(a.heightOverrides, b.heightOverrides);
+    a.heightOverrides!.push({ lon: 103.5, lat: 33.5, dh: 0.1 });   // 不经这支笔添的一条（长度变了＝桶重建）
+    const n = a.heightOverrides!.length;
+    paintHeightAt(a, g, 103.5, 33.5, 0.02, 1, null);
+    assert.strictEqual(a.heightOverrides!.length, n, "认得出那一条：并进去，不另起");
+    assert.strictEqual(a.heightOverrides![n - 1].dh, 0.12);
+  });
   it("地貌笔＝重定基面：涂到之处清当刻手雕高程；生态轴不清、橡皮不清、时段外不清（2026-08-08）", async () => {
     const { paintTerrainAt } = await import("../src/app/editops.ts");
     const M = { worldModel: "sphere", terrain: "plain", gridN: 4, bbox: { lonMin: 100, lonMax: 104, latMin: 30, latMax: 34 } } as never as import("../src/core/types.ts").Meta;   // 4 列＝1°/格

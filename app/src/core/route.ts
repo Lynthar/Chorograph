@@ -204,7 +204,7 @@ export interface ComputedRoute {
 
 /** 行军计算总入口（对应旧 computeRoute，纯化）：飞行=直线；陆/水军 A*，附沿途报告与迂回率素材 */
 export function computeRoute(meta: Meta | undefined, grid: Grid, roads: Set<string> | undefined,
-  world: World, yearNow: number, A: RoutePoint, B: RoutePoint, arm: Arm): ComputedRoute {
+  world: Pick<World, "nodes">, yearNow: number, A: RoutePoint, B: RoutePoint, arm: Arm): ComputedRoute {
   if (arm === "air") {
     const dist = distKm(meta, A.lon, A.lat, B.lon, B.lat);
     return { dist, straight: dist, path: null, arm: "air" };

@@ -4,7 +4,7 @@
 import { EDGE_STYLE, RANK_KM_PX, certaintyStyle } from "../core/constants.ts";
 import { tget } from "../core/util.ts";
 import { activeAt, opVisibleAt } from "../core/time.ts";
-import { project, projectSeq, type Camera } from "../core/projection.ts";
+import { project, projectSeq, viewCosK, type Camera } from "../core/projection.ts";
 import { kmPerDeg } from "../core/geo.ts";
 import { meander } from "../core/geometry.ts";
 import { RIVER_WATER_PX, riverGeom, riverSD, riverWidest, type RiverGeom, type TerrainRivers } from "./rivers.ts";
@@ -61,6 +61,26 @@ function nearView(cam: Camera, pp: [number, number][], pad: number): boolean {
   for (const [x, y] of pp) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   return x1 + pad >= 0 && x0 - pad <= cam.w && y1 + pad >= 0 && y0 - pad <= cam.h;
 }
+/* 原始折线的外框，经度按与前一点的最短经差接成连续的（同 projectSeq）、记成相对首点的经差：[经差小, 经差大, 纬小, 纬大]。
+   每次现算（一条河几十个点），不记忆——点列可以被原地改 */
+const BOX = new Float64Array(4);
+function rawBox(pts: [number, number][], flat: boolean): Float64Array {
+  let d = 0, d0 = 0, d1 = 0, y0 = pts[0][1], y1 = y0;
+  for (let k = 1; k < pts.length; k++) {
+    let s = pts[k][0] - pts[k - 1][0]; if (!flat) s = ((s + 180) % 360 + 360) % 360 - 180;
+    d += s; if (d < d0) d0 = d; if (d > d1) d1 = d;
+    const y = pts[k][1]; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  BOX[0] = d0; BOX[1] = d1; BOX[2] = y0; BOX[3] = y1;
+  return BOX;
+}
+/** 自由折线河连同曲流的最远横移，再外扩 extra（px），碰不碰得到屏幕上的矩形 [x0, x1] × [y0, y1]。柔化后的底线落在原始折线的外框里，
+    所以碰不到＝画出来的中线一定在矩形外：绘制与拾取先拿它裁，免得为看不见、点不到的河算一遍形状 */
+export function riverNear(meta: Meta | undefined, cam: Camera, e: Edge, extra: number, x0: number, y0: number, x1: number, y1: number): boolean {
+  const pts = e.pts!, B = rawBox(pts, cam.flat), k = 1 / cam.degPerPx, kx = k * viewCosK(cam), X = project(cam, pts[0][0], pts[0][1])[0];
+  const pad = meanderPad(riverWidest(e), 1 / 1000 / kmPerDeg(meta) / cam.degPerPx) + 1 + extra, cy = cam.h / 2;
+  return X + B[1] * kx + pad >= x0 && X + B[0] * kx - pad <= x1 && cy - (B[2] - cam.lat0) * k + pad >= y0 && cy - (B[3] - cam.lat0) * k - pad <= y1;
+}
 /** 曲流按本帧缩放渐入：逐点偏移乘 meanderFade(河的屏幕真宽)；整段不弯（含离屏幕超过最大横移的底线段）的点都在底线上，换回稀疏的底线点。
     宽到画成水面的点恒是满幅（MEANDER_FADE_WPX 的门），与地形渲染器读的满幅曲线是同一条 */
 function meanderView(meta: Meta | undefined, cam: Camera, G: RiverGeom): { pts: [number, number][]; w: number[]; g: number[] } {
@@ -91,11 +111,12 @@ function addRibbon(ctx: CanvasRenderingContext2D, P: [number, number][], R: numb
   for (let k = a; k < b; k++) {
     const [x0, y0] = P[k], [x1, y1] = P[k + 1], dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy);
     if (!(L > 0)) continue;
-    const nx = -dy / L, ny = dx / L, q = [[x0 + nx * R[k], y0 + ny * R[k]], [x1 + nx * R[k + 1], y1 + ny * R[k + 1]], [x1 - nx * R[k + 1], y1 - ny * R[k + 1]], [x0 - nx * R[k], y0 - ny * R[k]]];
+    const nx = -dy / L, ny = dx / L, r0 = R[k], r1 = R[k + 1];
+    const ax = x0 + nx * r0, ay = y0 + ny * r0, bx = x1 + nx * r1, by = y1 + ny * r1, cx = x1 - nx * r1, cy = y1 - ny * r1, ex = x0 - nx * r0, ey = y0 - ny * r0;
     let area = 0;
-    for (let i = 0; i < 4; i++) area += q[i][0] * q[(i + 1) % 4][1] - q[(i + 1) % 4][0] * q[i][1];
-    const o = area > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
-    ctx.moveTo(q[o[0]][0], q[o[0]][1]); for (let i = 1; i < 4; i++) ctx.lineTo(q[o[i]][0], q[o[i]][1]);
+    area += ax * by - bx * ay; area += bx * cy - cx * by; area += cx * ey - ex * cy; area += ex * ay - ax * ey;
+    ctx.moveTo(ax, ay);
+    if (area > 0) { ctx.lineTo(bx, by); ctx.lineTo(cx, cy); ctx.lineTo(ex, ey); } else { ctx.lineTo(ex, ey); ctx.lineTo(cx, cy); ctx.lineTo(bx, by); }
   }
   for (let k = a; k <= b; k++) {
     if ((k === a && !capA) || (k === b && !capB)) continue;
@@ -136,6 +157,8 @@ function drawRiverVar(ctx: CanvasRenderingContext2D, P0: [number, number][], px0
   }
   /* 跳过的小段：地形渲染器当水画的，与细到不画的（两端画宽的均值过不了 riverDrawn；拾取同判） */
   const n = P.length, wetAt = (j: number): boolean => !!wet && wet[par[j]], off = (j: number): boolean => wetAt(j) || !riverDrawn((px[j] + px[j + 1]) / 2);
+  /* 三层的半宽（选中红晕、白衬底、河蓝）：整条河各算一次。逐小段现算＝每段把整条的宽数组再映射三遍，渐隐段多的河是平方的账 */
+  const rSel = selected ? px.map(v => (v + 6.4) / 2) : null, rUnder = px.map(v => (v + Math.min(2.4, v)) / 2), rMain = px.map(v => v / 2);
   for (let a = 0; a < n - 1;) {
     let b = a + 1;
     const wt = wetAt(a), hid = off(a), whole = A[a] >= 1;
@@ -144,16 +167,16 @@ function drawRiverVar(ctx: CanvasRenderingContext2D, P0: [number, number][], px0
     else if (hid) { /* 细到不画 */ }
     else if (whole) {
       const capA = a === 0 || !off(a - 1), capB = b === n - 1 || !off(b);
-      const fill = (grow: (v: number) => number, col: string): void => { ctx.beginPath(); addRibbon(ctx, P, px.map(v => grow(v) / 2), a, b, capA, capB); ctx.fillStyle = col; ctx.fill("nonzero"); };
-      if (selected) fill(v => v + 6.4, "rgba(192,57,43,.35)");
-      fill(v => v + Math.min(2.4, v), "rgba(255,255,255,.5)");
-      fill(v => v, "#3f7fc4");
+      const fill = (R: number[], col: string): void => { ctx.beginPath(); addRibbon(ctx, P, R, a, b, capA, capB); ctx.fillStyle = col; ctx.fill("nonzero"); };
+      if (rSel) fill(rSel, "rgba(192,57,43,.35)");
+      fill(rUnder, "rgba(255,255,255,.5)");
+      fill(rMain, "#3f7fc4");
     } else for (let k = a; k < b; k++) {   // 线状的渐隐段：逐小段按透明度画
-      const piece = (grow: (v: number) => number, col: string, al: number): void => { ctx.beginPath(); addRibbon(ctx, P, px.map(v => grow(v) / 2), k, k + 1, false, false); ctx.globalAlpha = al; ctx.fillStyle = col; ctx.fill("nonzero"); };
+      const piece = (R: number[], col: string, al: number): void => { ctx.beginPath(); addRibbon(ctx, P, R, k, k + 1, false, false); ctx.globalAlpha = al; ctx.fillStyle = col; ctx.fill("nonzero"); };
       const g0 = ctx.globalAlpha;
-      if (selected) piece(v => v + 6.4, "rgba(192,57,43,.35)", g0 * A[k]);
-      piece(v => v + Math.min(2.4, v), "rgba(255,255,255,.5)", g0 * A[k]);
-      piece(v => v, "#3f7fc4", g0 * A[k]);
+      if (rSel) piece(rSel, "rgba(192,57,43,.35)", g0 * A[k]);
+      piece(rUnder, "rgba(255,255,255,.5)", g0 * A[k]);
+      piece(rMain, "#3f7fc4", g0 * A[k]);
       ctx.globalAlpha = g0;
     }
     a = b;
@@ -233,6 +256,7 @@ function offscreenPts(pp: [number, number][], cam: Camera): boolean {
 function strokeEdge(ctx: CanvasRenderingContext2D, cam: Camera, meta: Meta | undefined,
   byId: Map<string, WorldNode>, e: Edge, st: { color: string; w: number }, selected: boolean, dash: number[] | null, wet: ((lon: number, lat: number) => boolean) | null, rv: TerrainRivers | undefined, head: number): void {
   if (e.type === "river" && Array.isArray(e.pts) && e.pts.length >= 2) {   // 自由画河：沿自身折线（Chaikin 柔化），无端点
+    if (!riverNear(meta, cam, e, 0, 0, 0, cam.w, cam.h)) return;   // 先按原始折线的外框裁：下面的 offscreenPts 一定也判它离屏
     const sh = riverShape(meta, cam, e), pp = projectSeq(cam, sh.pts);
     if (offscreenPts(pp, cam)) return;
     /* 首尾落在水里的那一头（水格，或地形渲染器画成水面的别的河），原始折线的末段整段渐隐（画面岸线另有域扭曲与分块，不硬截） */
