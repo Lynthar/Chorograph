@@ -11,7 +11,7 @@ import { fcachePatch, fcacheRemove, folderCreate, folderList, folderMtime, folde
 import { isStaleError, staleError, staleWrite } from "../src/data/guard.ts";
 import { openDB, reqP, txDone } from "../src/data/idb.ts";
 import { parseTemplates, pickCalendarCfg, removeTemplate, upsertTemplate, type CalTemplate } from "../src/data/calstore.ts";
-import { createTabSync, tabMapKey, TAB_WARN_OPEN, TAB_WARN_SAVED, type TabMsg } from "../src/data/tabsync.ts";
+import { createTabSync, tabMapKey, TAB_WARN_OPEN, TAB_WARN_SAVED, type TabHello, type TabMsg } from "../src/data/tabsync.ts";
 
 let seq = 0;
 const freshLib = () => openLibrary("test-db-" + (++seq));
@@ -374,7 +374,7 @@ describe("自动保存调度", () => {
 
 describe("多标签提醒（tabsync 协议）", () => {
   const mk = (tab: string) => {
-    const posts: TabMsg[] = [], warns: string[] = [];
+    const posts: (TabMsg | TabHello)[] = [], warns: string[] = [];
     const s = createTabSync(tab, m => posts.push(m), t => warns.push(t));
     return { s, posts, warns };
   };
@@ -408,6 +408,15 @@ describe("多标签提醒（tabsync 协议）", () => {
     assert.strictEqual(saves.length, 3, "本端每次落盘都广播");
     for (const m of saves) b.s.receive(m);
     assert.deepStrictEqual(b.warns, [TAB_WARN_SAVED], "对端只提醒一次");
+  });
+  it("启动招呼：发一条不带图键的 boot；活着的标签收到不回应、不提醒（它只为逐出往返缓存里的旧页）", () => {
+    const a = mk("A"), b = mk("B");
+    b.s.setMap("browser:m1");
+    a.s.hello();
+    assert.deepStrictEqual(a.posts, [{ t: "boot", tab: "A" }]);
+    b.s.receive(a.posts[0]);
+    assert.deepStrictEqual(b.warns, []);
+    assert.strictEqual(b.posts.length, 1, "只有 B 自己那条 open");
   });
   it("他图/自己/畸形消息一律忽略", () => {
     const a = mk("A");

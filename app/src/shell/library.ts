@@ -871,6 +871,9 @@ export function createLibraryIO(ctx: ShellCtx, dl: DeepLink, host: Host): Librar
     return true;
   }
   async function boot(): Promise<void> {
+    /* 必须先于开库：留在往返缓存里的旧页若冻在建库中途，下面的 open 会排在它后面等几十秒；
+       收到广播的缓存页被浏览器丢弃，库随之放开 */
+    tabs.hello();
     /* ⚠ 三件事分开接：只有「库打不开」才算图库不可用。原先一个 try 罩住全部——一张大体量旧档
        迁移时撞上配额，create 抛 QuotaExceeded，整个图库就被判死（已有地图全不可见不可开），
        而迁移是幂等的，下次启动照样再炸一遍。迁移/缓存失败只该少一样东西，不该连库一起赔进去。 */

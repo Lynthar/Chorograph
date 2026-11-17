@@ -10,6 +10,9 @@ export type TabMsg =
   | { t: "open"; map: string; tab: string }     // 我打开了这张图
   | { t: "here"; map: string; tab: string }     // 回应：我也开着这张图
   | { t: "saved"; map: string; tab: string };   // 我刚把这张图写进了图库
+/** 启动招呼：收到广播的往返缓存页会被浏览器丢弃——旧页若冻在建库中途，新页开库要排在它后面等几十秒。
+    活着的标签不认它（isTabMsg 拒收），所以不带图键 */
+export type TabHello = { t: "boot"; tab: string };
 
 /** 图键带来源前缀：浏览器图库的 id 与文件夹图库的文件名各成一套，别互相误认 */
 export const tabMapKey = (source: string, mapId: string | null): string | null => mapId ? source + ":" + mapId : null;
@@ -38,6 +41,8 @@ export function onTabMsg(st: TabView, m: TabMsg): { reply?: TabMsg; warn?: strin
 }
 
 export interface TabSync {
+  /** 本标签启动：开图库之前喊一声，把留在往返缓存里的旧页逐出 */
+  hello(): void;
   /** 开图/换图/回图库（null）：换图即重置「已提醒」并向别的标签打招呼 */
   setMap(map: string | null): void;
   /** 本标签刚把当前图写进图库 */
@@ -46,9 +51,10 @@ export interface TabSync {
   receive(raw: unknown): void;
 }
 
-export function createTabSync(tab: string, post: (m: TabMsg) => void, warn: (text: string) => void): TabSync {
+export function createTabSync(tab: string, post: (m: TabMsg | TabHello) => void, warn: (text: string) => void): TabSync {
   const st: TabView = { tab, map: null, warned: { open: false, saved: false } };
   return {
+    hello() { post({ t: "boot", tab }); },
     setMap(map) {
       if (map === st.map) return;
       st.map = map;
