@@ -7,7 +7,7 @@ import { COS_LAT_FLOOR, distKm, haversine, kmPerDeg, kmPerDegXY, lonCos, wrapLon
 import { chaikin, chaikinOpen, convexHull, edgeLenKm, meander, pointInPoly, polylineKm, segIntersectsRect } from "../src/core/geometry.ts";
 import { genHeightAt, genLandformOf, genSeaLevel, genTerrainAt, GEN_COAST_BAND, GEN_HILL, GEN_MOUNTAIN, GEN_SEED_MAX, seedTerrain } from "../src/core/terrain.ts";
 import { activeAt, spanCrossed, evCurrentAt, evFutureAt, opVisibleAt, ownerAt, paintLayersAt, strategicExtent, yearRangeOf } from "../src/core/time.ts";
-import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, upliftCells, upliftOn, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
+import { BASE_SLOPE_DEG, CONTOUR_HYST, CONTOUR_LEVELS, CONTOUR_PX, DH_MAX_M, SEABED_SLOPE_DEG, SHORE_E, baseElev, buildElevField, dhOf, coarseField, shrinkField, contourStats, contourStepFor, elevBilinear, elevFromGenH, elevSmooth, elevUnitM, heightStepM, upliftCells, upliftOn, waterMask, waterSurface, type ElevField } from "../src/core/elev.ts";
 import { STRAT_GRID_MAX, autoGridN, buildGridCells, gridStepDeg, roadCellSet, stampRect, type Grid } from "../src/core/grid.ts";
 import { erodeBasis, erodeGate, erodeInput, erodeMode } from "../src/core/erode.ts";
 import { peakTable, pickPeaks, waterSpots, type PickOpts } from "../src/core/spots.ts";
@@ -3492,5 +3492,32 @@ describe("内置示例", () => {
     assert.equal(m.gridN, autoGridN(m));
     assert.deepEqual([w.nodes.length, w.factions.length], [0, 0]);
     assert.ok(w.edges.length > 0 && w.edges.every(e => e.gen === true));
+  });
+});
+
+describe("放不进纹理的场合并成较粗的一份（shrinkField）", () => {
+  const mk = (cols: number, rows: number, fn: (c: number, r: number) => number): ElevField => {
+    const data = new Float32Array(cols * rows);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) data[r * cols + c] = fn(c, r);
+    return { bb: { lonMin: 10, latMin: 20, lonMax: 10 + cols * 0.1, latMax: 20 + rows * 0.1 }, step: 0.1, cols, rows, data, eroded: true };
+  };
+  it("每个粗格＝它盖住的那一块的均值；原点不变、步长按倍数放大、侵蚀标记照带", () => {
+    const f = mk(6, 4, (c, r) => c * 10 + r), s = shrinkField(f, 2);
+    assert.deepStrictEqual([s.cols, s.rows, s.step, s.bb, s.eroded], [3, 2, 0.2, f.bb, true]);
+    assert.deepStrictEqual(Array.from(s.data), [5.5, 25.5, 45.5, 7.5, 27.5, 47.5]);
+    assert.ok(!("src" in s), "不是规则场");
+  });
+  it("边长不整除时，贴边那一排按有的格平均", () => {
+    const s = shrinkField(mk(5, 3, (c, r) => c + r * 100), 2);
+    assert.deepStrictEqual([s.cols, s.rows], [3, 2]);
+    assert.deepStrictEqual(Array.from(s.data), [50.5, 52.5, 54, 200.5, 202.5, 204]);
+  });
+  it("线性坡面合并之后，图内各处的双线性读数不变（粗格心落在所盖那一块的正中）", () => {
+    const f = mk(12, 8, (c, r) => 3 * c - 2 * r + 7);
+    for (const k of [2, 4]) {
+      const s = shrinkField(f, k);
+      for (const [lon, lat] of [[10.6, 20.4], [10.43, 20.31], [10.77, 20.52], [10.95, 20.25]] as const)
+        assert.ok(Math.abs(elevBilinear(s.data, s, lon, lat) - elevBilinear(f.data, f, lon, lat)) < 1e-4, `k=${k} @${lon},${lat}`);
+    }
   });
 });

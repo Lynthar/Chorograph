@@ -21,7 +21,7 @@ import { riverGLSL, riverTexels, RIV_TEX_W, type RiverSet } from "./rivers.ts";
 import { bandField } from "./beach.ts";
 import { zoneGLSL, zoneLookTexels, ZLOOK_W, ZONE_N, type ZoneWeights } from "./zones.ts";
 import type { Grid } from "../core/grid.ts";
-import type { ElevField, RuleField } from "../core/elev.ts";
+import { shrinkField, type ElevField, type RuleField } from "../core/elev.ts";
 import type { BBox } from "../core/types.ts";
 import { tileResidency, tilesInView, tileSlotsFor, tileWeight, TILE_SLOTS, type TileLayer } from "../core/tiles.ts";
 
@@ -440,7 +440,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   let tex: WebGLTexture | null = null;    // 类型粗格纹理（TEXTURE0）
   /* 高程场纹理（侵蚀细分后维度 ≠ 粗格）：画面场与规则场各一份——TEXTURE1 绑本帧的画面（观感底图＝画面场，
      精修档在此；推演底图＝规则场），TEXTURE2 恒绑规则场供等高线取样（与光标读数同源）。两场同一对象时只建一份。 */
-  interface FieldTex { tex: WebGLTexture | null; cols: number; rows: number; step: number; eroded: number; of: ElevField | undefined }
+  interface FieldTex { tex: WebGLTexture | null; cols: number; rows: number; step: number; eroded: number; of: ElevField }
   let fDisp: FieldTex | null = null, fRule: FieldTex | null = null;
   let g: Grid | null = null;
   let lastField: ElevField | undefined, lastRule: ElevField | undefined;   // 存最近两场：上下文丢失恢复时重传
@@ -586,26 +586,22 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform4fv(U("uMatB[0]"), mats.flatMap((m, i) => [m.rough, m.albVar, m.rock, terrainProps(comps[i]).lf === "water" ? 1 : 0]));
     return true;
   }
-  /* 纹理边长上限（2026-08-31 审查）：精修档 axisMax=16 只按总格数与单轴倍率封顶，不看设备能力——
-     细长战场（如手编/导入的 2048×1）算出的场是 32768×16，是常见 MAX_TEXTURE_SIZE(16384) 的两倍。
-     超限的 texImage2D 只置 GL 错误码、不抛异常，采样恒零＝整幅地形静默变白。超了就退回粗格场：
-     少的是侵蚀细节，不是整张图。 */
+  /* 场的边长超出本机纹理上限就不能原样上传：超限的 texImage2D 只置错误码、不抛异常，采样恒零＝整幅地形静默变白。
+     画面场超限改画规则场；规则场也超限就合并成放得下的一份（等高线随之略离读数）。
+     合并的那份按源场记住：纹理按场对象留用，每次现算一份＝每次上传都重传 */
   const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
   let texWarned = false;
-  const fieldFits = (f?: ElevField): boolean => {
-    if (!f || (f.cols <= maxTex && f.rows <= maxTex)) return true;
-    if (!texWarned) { texWarned = true; console.warn(`细分场 ${f.cols}×${f.rows} 超出本机纹理上限 ${maxTex}，退回粗格高程（地形仍可用，少的是侵蚀细节）`); }
-    return false;
+  const shrunk = new WeakMap<ElevField, ElevField>();
+  const fits = (f: ElevField): boolean => f.cols <= maxTex && f.rows <= maxTex;
+  const fitted = (f: ElevField): ElevField => {
+    if (fits(f)) return f;
+    let s = shrunk.get(f);
+    if (!s) shrunk.set(f, s = shrinkField(f, Math.ceil(Math.max(f.cols, f.rows) / maxTex)));
+    return s;
   };
-  /* 高程场纹理：R=高程（未传场＝按类型合成粗格，旧行为）。在 1 号单元上建、建完还原到 0 号 */
-  function fieldTex(grid: Grid, field?: ElevField): FieldTex {
-    const fc = field ? field.cols : grid.cols, fr = field ? field.rows : grid.rows;
-    let fd: Float32Array;
-    if (field) fd = field.data;
-    else {
-      fd = new Float32Array(fc * fr);
-      for (let r = 0; r < grid.rows; r++) for (let c = 0; c < grid.cols; c++) fd[r * grid.cols + c] = terrainProps(grid.cells[r][c]).elev;
-    }
+  /* 高程场纹理：R=高程。在 1 号单元上建、建完还原到 0 号 */
+  function fieldTex(field: ElevField): FieldTex {
+    const fc = field.cols, fr = field.rows, fd = field.data;
     const t = gl.createTexture();
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, t);
@@ -614,12 +610,10 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.activeTexture(gl.TEXTURE0);   // 常规活动纹理还原到 0 号（类型纹理绑定预期）
-    return { tex: t, cols: fc, rows: fr, step: field ? field.step : grid.step, eroded: field && field.eroded ? 1 : 0, of: field };
+    return { tex: t, cols: fc, rows: fr, step: field.step, eroded: field.eroded ? 1 : 0, of: field };
   }
-  /* 场纹理按 ElevField 引用留用：只换画面场（叠涂改增量、精修）时规则场不动——不留用就是每次多传一份 8 MB 的规则场。
-     缺省场（未传 field＝按类型合成）没有引用可认，照旧重建。 */
-  const heldTex = (f: ElevField | undefined): FieldTex | null =>
-    f ? (fDisp && fDisp.of === f ? fDisp : fRule && fRule.of === f ? fRule : null) : null;
+  /* 场纹理按 ElevField 引用留用：只换画面场（叠涂改增量、精修）时规则场不动——不留用就是每次多传一份 8 MB 的规则场 */
+  const heldTex = (f: ElevField): FieldTex | null => fDisp && fDisp.of === f ? fDisp : fRule && fRule.of === f ? fRule : null;
   const dropFieldTex = (): void => {
     if (fDisp) gl.deleteTexture(fDisp.tex);
     if (fRule && fRule !== fDisp) gl.deleteTexture(fRule.tex);
@@ -633,10 +627,13 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     gl.uniform2i(U(dim), f.cols, f.rows);
     gl.uniform1f(U(step), f.step);
   }
-  function doUpload(grid: Grid, wsurf: Float32Array, fieldIn: ElevField | undefined, ruleIn: ElevField | undefined) {
+  function doUpload(grid: Grid, wsurf: Float32Array, fieldIn: ElevField, ruleIn: ElevField) {
     if (!pr) return;
-    const field = fieldFits(fieldIn) ? fieldIn : undefined;
-    const rule = ruleIn === fieldIn ? field : fieldFits(ruleIn) ? ruleIn : undefined;
+    const rule = fitted(ruleIn), field = fits(fieldIn) ? fieldIn : rule;
+    if ((field !== fieldIn || rule !== ruleIn) && !texWarned) {
+      texWarned = true;
+      console.warn(`高程场 ${fieldIn.cols}×${fieldIn.rows} 超出本机纹理上限 ${maxTex}，画面改用 ${field.cols}×${field.rows} 的一份（地形仍可用，少的是细节）`);
+    }
     /* 类型粗格纹理：R=水面高程（core/elev.waterSurface）G=复合索引（core/constants.compositeIndex）。
        同一 Grid 实例配同一份水面（两者都按 Grid 记忆）＝只动了高程的重建，纹理原样留用不重传 */
     if (!(tex && grid === texFor && wsurf === texWS)) {
@@ -656,8 +653,8 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       texFor = grid; texWS = wsurf;
     }
-    const nd = heldTex(field) || fieldTex(grid, field);
-    const nr = rule === field ? nd : heldTex(rule) || fieldTex(grid, rule);
+    const nd = heldTex(field) || fieldTex(field);
+    const nr = rule === field ? nd : heldTex(rule) || fieldTex(rule);
     for (const t of new Set([fDisp, fRule])) if (t && t !== nd && t !== nr) gl.deleteTexture(t.tex);   // 旧的两份里没被留用的删掉
     fDisp = nd; fRule = nr;
     lastKey = null;
@@ -679,7 +676,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
   };
   let name = queryName();
   const onLost = (e: Event) => { e.preventDefault(); };
-  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; zw0 = zw1 = zlook = null; atlas = page = null; rseg = ridx = null; rivFor = null; band = null; name = queryName(); if (initProgram() && g) doUpload(g, lastWS, lastField, lastRule); };
+  const onRestored = () => { tex = null; fDisp = fRule = null; lastKey = null; zw0 = zw1 = zlook = null; atlas = page = null; rseg = ridx = null; rivFor = null; band = null; name = queryName(); if (initProgram() && g && lastField && lastRule) doUpload(g, lastWS, lastField, lastRule); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
 
@@ -687,7 +684,7 @@ export function createTerrainGL(canvas: HTMLCanvasElement): TerrainRenderer | nu
     canvas, kind: "webgl2",
     uploadGrid(grid: Grid, wsurf: Float32Array, field: ElevField, rule: RuleField) {
       g = grid; lastWS = wsurf; lastField = field; lastRule = rule;
-      doUpload(grid, wsurf, field, lastRule);
+      doUpload(grid, wsurf, field, rule);
     },
     uploadTiles(layer: TileLayer | null) { tLayer = layer; tVer++; lastKey = null; },
     render(viewBB: BBox, opts: TerrainRenderOpts = {}) {

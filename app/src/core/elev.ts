@@ -36,6 +36,18 @@ export interface RuleField extends ElevField { src: "coarse" | "work" }
 export function coarseField(grid: FieldGeom, data: Float32Array): RuleField {
   return { bb: grid.bb, step: grid.step, cols: grid.cols, rows: grid.rows, data, eroded: false, src: "coarse" };
 }
+/** 把场按整数倍 k 合并成较粗的一份：k×k 块取平均（贴边不足一块的按有的格平均），原点不变、步长 ×k。
+    只给放不进显卡纹理的场用；读数与规则不读它（返回的不是 RuleField） */
+export function shrinkField(f: ElevField, k: number): ElevField {
+  const cols = Math.ceil(f.cols / k), rows = Math.ceil(f.rows / k), data = new Float32Array(cols * rows);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const y1 = Math.min(f.rows, (r + 1) * k), x1 = Math.min(f.cols, (c + 1) * k);
+    let s = 0;
+    for (let y = r * k; y < y1; y++) for (let x = c * k; x < x1; x++) s += f.data[y * f.cols + x];
+    data[r * cols + c] = s / ((y1 - r * k) * (x1 - c * k));
+  }
+  return { bb: f.bb, step: f.step * k, cols, rows, data, eroded: f.eroded };
+}
 
 /** 侵蚀等待窗的显示合成：细分场 + 粗格增量（now − base）按细格中心双线性上采样叠加。
     重建到侵蚀单落地之间隔着 150ms 防抖 + 数百 ms Worker 计算，这段空窗若直接换回粗格场，
